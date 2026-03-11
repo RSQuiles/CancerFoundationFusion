@@ -1,22 +1,25 @@
 from tokenizers import Tokenizer, models, pre_tokenizers, trainers
 from pathlib import Path
 from typing import List, Union, Optional, Dict
-import json
 import pickle
 import os
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 class GeneVocab:
     def __init__(
         self,
-        gene_list_or_vocab: Union[List[str], 'GeneVocab'],
+        gene_list_or_vocab: Union[List[str], "GeneVocab"],
         specials: Optional[List[str]] = None,
         special_first: bool = True,
         default_token: Optional[str] = "<pad>",
     ):
         if isinstance(gene_list_or_vocab, GeneVocab):
             if specials:
-                raise ValueError("Cannot pass specials when initializing from GeneVocab.")
+                raise ValueError(
+                    "Cannot pass specials when initializing from GeneVocab."
+                )
             self.tokenizer = gene_list_or_vocab.tokenizer
         elif isinstance(gene_list_or_vocab, list):
             specials = specials or []
@@ -33,18 +36,23 @@ class GeneVocab:
             trainer = trainers.WordLevelTrainer(special_tokens=specials)
             self.tokenizer = Tokenizer(models.WordLevel(unk_token=None))
             self.tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
-            self.tokenizer.train_from_iterator([[token] for token in vocab_tokens], trainer=trainer)
+            self.tokenizer.train_from_iterator(
+                [[token] for token in vocab_tokens], trainer=trainer
+            )
         else:
-            raise ValueError("gene_list_or_vocab must be a list of tokens or a GeneVocab instance.")
+            raise ValueError(
+                "gene_list_or_vocab must be a list of tokens or a GeneVocab instance."
+            )
 
         self.default_token = default_token
         if default_token is not None and default_token in self.get_stoi():
             self.set_default_token(default_token)
-    
+
     def __call__(self, tokens: Union[str, List[str]]) -> Union[int, List[int]]:
         if isinstance(tokens, str):
             return self[tokens]
         return [self[token] for token in tokens]
+
     @classmethod
     def from_dict(
         cls,
@@ -52,7 +60,7 @@ class GeneVocab:
         default_token: Optional[str] = "<pad>",
         specials: Optional[List[str]] = None,
         special_first: bool = True,
-    ) -> 'GeneVocab':
+    ) -> "GeneVocab":
         # Sort tokens by index to preserve ordering
         sorted_tokens = sorted(token2idx.items(), key=lambda x: x[1])
         vocab_tokens = [token for token, _ in sorted_tokens]
@@ -68,7 +76,7 @@ class GeneVocab:
         return vocab
 
     @classmethod
-    def from_file(cls, file_path: Union[str, Path]) -> 'GeneVocab':
+    def from_file(cls, file_path: Union[str, Path]) -> "GeneVocab":
         file_path = Path(file_path)
         if file_path.suffix == ".json":
             tokenizer = Tokenizer.from_file(str(file_path))
@@ -116,10 +124,11 @@ class GeneVocab:
         return self.tokenizer.get_vocab()
 
     def get_itos(self) -> List[str]:
-        return [token for token, _ in sorted(self.get_stoi().items(), key=lambda x: x[1])]
+        return [
+            token for token, _ in sorted(self.get_stoi().items(), key=lambda x: x[1])
+        ]
 
     def set_default_token(self, default_token: str):
         if default_token not in self:
             raise ValueError(f"Default token '{default_token}' not in vocabulary.")
         self.default_token = default_token
-

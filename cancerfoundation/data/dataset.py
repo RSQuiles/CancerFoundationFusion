@@ -55,7 +55,7 @@ class DatasetDir:
 
 
 class SingleCellDataset(Dataset):
-    GENE_ID = "_cf_gene_id"
+    GENE_ID = "_cf_gene_id"  # column in the obs dataframe that contains the gene ids corresponding to the expression values
     CLS_TOKEN = "<cls>"
     PAD_TOKEN = "<pad>"
 
@@ -93,10 +93,12 @@ class SingleCellDataset(Dataset):
         return self.memmap.number_of_rows()
 
     def __getitem__(self, index: int) -> dict[str, int | torch.Tensor]:
+        # Return expression values and gene ids from _cf_gene_id
         exp, genes = self.memmap.get_row_padded(
             index, return_features=True, feature_vars=[self.GENE_ID]
         )
 
+        # Add CLS token at the beginning of the sequence and pad gene ids with pad_value
         genes = np.insert(genes[0], 0, self.vocab["<cls>"])
         exp = np.insert(exp, 0, self.pad_value)
 

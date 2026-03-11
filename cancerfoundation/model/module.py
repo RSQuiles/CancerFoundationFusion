@@ -120,11 +120,13 @@ class TransformerModule(nn.Module):
 
         mvc_decoder_d_in = d_model
         expr_decoder_d_in = d_model
+        # Conditions are taken into account only in the decoder
         if self.conditions:
             mvc_decoder_d_in = d_model * (len(self.conditions) + 1)
             if where_condition == "end":
                 expr_decoder_d_in = d_model * (len(self.conditions) + 1)
 
+        # Conditions are encoded as separate embeddings
         if conditions:
             self.condition_encoders = nn.ModuleDict({})
             for cond_name, cond_num in self.conditions.items():
@@ -601,6 +603,7 @@ class TransformerModule(nn.Module):
             loss_gen = self.criterion(preds, gen_expr_target, positions_to_match)
             loss = loss + use_cell_embedding * loss_gen
             loss_dict["loss_gen"] = loss_gen
+
         else:  # Perceptual training
             input_gene_ids, input_values, src_key_padding_mask, target_values = (
                 self._prepare_perceptual_input(tensors)

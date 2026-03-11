@@ -3,9 +3,10 @@
 {
 	"name": "cancerfoundation",
 	"image": "nvcr.io/nvidia/clara/bionemo-framework:2.7",
+	// "image": "mcr.microsoft.com/devcontainers/python:3.11",
 	"runArgs": [
-    "--gpus",
-    "all",
+    // "--gpus",
+    // "all",
 	"--shm-size",
     "32g", // Set shared memory to a high value, e.g., 32GB, for large datasets
 	"--env-file",
@@ -14,8 +15,8 @@
 
 	// Git integration
     "mounts": [
-        "source=${localEnv:HOME}/.ssh,target=/root/.ssh,type=bind,consistency=cached",
-		"source=${localEnv:HOME}/.gitconfig,target=/root/.gitconfig,type=bind"
+        "source=${localEnv:USERPROFILE}/.ssh,target=/root/.ssh,type=bind,consistency=cached", // Use HOME instead of USERPROFILE if on Linux/Mac
+		"source=${localEnv:USERPROFILE}/.gitconfig,target=/root/.gitconfig,type=bind"
     ],
 
 	// Allow for tmux usage in the container, to run long training runs

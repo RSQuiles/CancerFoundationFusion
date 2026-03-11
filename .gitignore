@@ -20,7 +20,7 @@ example/
 training_data/pretraining_data/
 wandb/
 debug_data/
-DATA/
+# DATA/
 lightning_logs/
 
 *.png
@@ -41,3 +41,6 @@ training_data/.cache
 training_data/data
 training_data/downloads
 drug_response_prediction/data
+
+# Virtual enviroment
+.devcontainer/

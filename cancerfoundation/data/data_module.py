@@ -105,7 +105,7 @@ class SingleCellDataModule(pl.LightningDataModule):
         )
 
         if self.conditions:
-            self.conditions_nums = {}
+            self.conditions_nums = {}  # condition cardinalities
             for cond in self.conditions:
                 self.conditions_nums[cond] = len(self.dataset.mapping[cond].keys())
 
@@ -124,7 +124,7 @@ class SingleCellDataModule(pl.LightningDataModule):
         if self.balance_primary and train:
             sampler = get_balanced_sampler(
                 dataset,
-                primary_condition=self.balance_primary,
+                primary_condition=self.balance_primary,  # to oversample underrepresented categories
                 secondary_condition=self.balance_secondary,
                 oversample=True,
             )
