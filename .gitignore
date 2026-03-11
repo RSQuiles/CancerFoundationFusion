@@ -41,6 +41,7 @@ training_data/.cache
 training_data/data
 training_data/downloads
 drug_response_prediction/data
+tutorials/dummy_data
 
 # Virtual enviroment
 .devcontainer/
