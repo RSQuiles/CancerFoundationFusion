@@ -1,11 +1,11 @@
 #!/bin/bash -l
-#SBATCH --job-name=dummy_testrun
-#SBATCH --output=./outputs/%x_%j.out
-#SBATCH --time=04:00:00
-#SBATCH --partition=gpu
-#SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:rtx4090:1
-#SBATCH --cpus-per-task=3
+# SBATCH --job-name=dummy_testrun
+# SBATCH --output=./outputs/%x_%j.out
+# SBATCH --time=04:00:00
+# SBATCH --partition=gpu
+# SBATCH --ntasks-per-node=1
+# SBATCH --gres=gpu:rtx4090:1
+# SBATCH --cpus-per-task=3
 
 set -e
 
@@ -13,12 +13,7 @@ SAVE_DIR="./save/${SLURM_JOB_NAME}_${SLURM_JOB_ID}"
 TRAIN_DIR="/cluster/work/boeva/rquiles/data/dummy_test"
 mkdir -p "$SAVE_DIR"
 
-srun singularity run \
-    --pwd /cluster/work/boeva/rquiles/CancerFoundation \
-    --bind /cluster/work/boeva/rquiles/CancerFoundation:/cluster/work/boeva/rquiles/CancerFoundation \
-    --bind $TRAIN_DIR:$TRAIN_DIR \
-    --nv /cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif \
-    python pretrain.py \
+python ../pretrain.py \
     --gpus 1 \
     --save-dir "$SAVE_DIR" \
     --max-seq-len 1200 \
@@ -47,8 +42,8 @@ srun singularity run \
     --gen-method "theirs" \
     --compile \
     --num-workers 3
-   #  --wandb "brain" \
-   #  --wandb-name "${SLURM_JOB_NAME}_${SLURM_JOB_ID}" \
+    #  --wandb "brain" \
+    #  --wandb-name "${SLURM_JOB_NAME}_${SLURM_JOB_ID}" \
 
 if [ -d "./lightning_logs/version_${SLURM_JOB_ID}" ]; then
     mv "./lightning_logs/version_${SLURM_JOB_ID}" "$SAVE_DIR/lightning_log"
@@ -56,5 +51,5 @@ fi
 
 cp "$TRAIN_DIR/vocab.json" "$SAVE_DIR/vocab.json"
 cp "$0" "$SAVE_DIR/run_script.sh"
-mv "./${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out" "$SAVE_DIR/slurm.out"
+# mv "./outputs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out" "$SAVE_DIR/slurm.out"
 echo "Job finished. Outputs and logs are in $SAVE_DIR"

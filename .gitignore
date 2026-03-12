@@ -45,3 +45,6 @@ tutorials/dummy_data
 
 # Virtual enviroment
 .devcontainer/
+
+# Outputs
+submits_biomed/outputs
