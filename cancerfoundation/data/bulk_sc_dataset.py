@@ -60,13 +60,24 @@ class BulkSCDataset(Dataset):
         self.data_dir = DatasetDir(data_dir)
         self.vocab = self._load_vocab()
         self.pad_value = pad_value
-        self.memmap = SingleCellMemMapDataset(self.data_dir.memmap_path)
+        self.memmap = SingleCellMemMapDataset(str(self.data_dir.memmap_path))
         self.obs = pd.read_parquet(self.data_dir.obs_path)
         self.mapping = self._load_mapping()
-        self.obs_columns = obs_columns
+        if obs_columns is not None:
+            self.obs_columns = (
+                obs_columns
+                + [modality_column]
+                + ([group_column] if group_column is not None else [])
+            )
+        else:
+            self.obs_columns = [modality_column] + (
+                [group_column] if group_column is not None else []
+            )
 
         self.modality_column = modality_column
         self.group_column = group_column
+        self.group_to_bulk: Optional[dict[int, np.ndarray]] = None
+        self.group_to_sc: Optional[dict[int, np.ndarray]] = None
 
         assert self.memmap.number_of_rows() == self.obs.shape[0]
         assert modality_column in self.obs.columns
@@ -82,13 +93,13 @@ class BulkSCDataset(Dataset):
         assert len(self.bulk_indices) > 0, "No bulk samples found"
         assert len(self.sc_indices) > 0, "No SC samples found"
 
-        # Per-group index pools (used by BulkSCBatchSampler)
+        # Per-group index pools
         if group_column is not None:
             assert group_column in self.obs.columns
-            group_vals = self.obs[group_column].values
+            group_vals = np.asarray(self.obs[group_column].values)
 
-            self.group_to_bulk: dict[int, np.ndarray] = {}
-            self.group_to_sc: dict[int, np.ndarray] = {}
+            self.group_to_bulk = {}
+            self.group_to_sc = {}
             for g in np.unique(group_vals):
                 g_mask = group_vals == g
                 b = np.where(g_mask & (modality_vals == bulk_code))[0]
@@ -100,8 +111,6 @@ class BulkSCDataset(Dataset):
             self.groups = sorted(self.group_to_bulk.keys())
             assert len(self.groups) > 0, "No groups with both bulk and SC"
         else:
-            self.group_to_bulk = None
-            self.group_to_sc = None
             self.groups = None
 
     # ------------------------------------------------------------------
@@ -135,13 +144,12 @@ class BulkSCDataset(Dataset):
         data = {
             "expressions": torch.tensor(exp, dtype=torch.float32),
             "genes": torch.from_numpy(genes),
-            "modality": int(self.obs.iloc[index][self.modality_column]),
         }
 
-        if self.obs_columns is not None:
-            row = self.obs.iloc[index]
-            for col in self.obs_columns:
-                data[col] = row[col]
+        # Additional conditions input to model (e.g. tissue type)
+        row = self.obs.iloc[index]
+        for col in self.obs_columns:
+            data[col] = row[col]
 
         return data
 
@@ -152,25 +160,21 @@ class BulkSCDataset(Dataset):
 
 
 class BulkSCBatchSampler(Sampler[list[int]]):
-    """Yields batches where each *pair* = ``n_sc_samples`` SC indices +
-    ``n_bulk_samples`` bulk indices, all from the same group.
+    """Yields batches made of exactly ``batch_size - n_bulk_samples`` SC
+    indices plus ``n_bulk_samples`` bulk indices.
 
-    ``batch_size`` controls the number of pseudobulk↔bulk **pairs** per
-    batch, so the effective number of memmap rows loaded is
-    ``batch_size * (n_sc_samples + n_bulk_samples)``.
+    ``batch_size`` is interpreted as the total number of memmap rows loaded
+    per batch.
 
     Parameters
     ----------
     dataset : BulkSCDataset
-        Must have ``groups``, ``group_to_sc``, ``group_to_bulk`` populated
-        (i.e. a ``group_column`` was set), *or* ``groups is None`` for the
-        un-grouped case where any SC can pair with any bulk.
+        Dataset providing global ``sc_indices`` and ``bulk_indices``.
+        Group membership, if present, is ignored by this sampler.
     batch_size : int
-        Number of pseudobulk↔bulk pairs per batch.
-    n_sc_samples : int
-        SC rows per pseudobulk aggregate.
+        Total number of rows per batch.
     n_bulk_samples : int
-        Bulk rows per pair.
+        Bulk rows
     drop_last : bool
         Drop the last incomplete batch.
     shuffle : bool
@@ -181,68 +185,55 @@ class BulkSCBatchSampler(Sampler[list[int]]):
         self,
         dataset: "BulkSCDataset",
         batch_size: int,
-        n_sc_samples: int = 32,
         n_bulk_samples: int = 1,
         drop_last: bool = True,
         shuffle: bool = True,
     ):
         self.dataset = dataset
         self.batch_size = batch_size
-        self.n_sc = n_sc_samples
         self.n_bulk = n_bulk_samples
         self.drop_last = drop_last
         self.shuffle = shuffle
+        self.n_sc = self.batch_size - self.n_bulk
 
-        if dataset.groups is not None:
-            self._n_pairs = len(dataset.groups)
-        else:
-            self._n_pairs = len(dataset.bulk_indices)
+        if self.n_bulk <= 0:
+            raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")
+
+        if self.n_sc <= 0:
+            raise ValueError(
+                "batch_size must be larger than n_bulk_samples so at least one "
+                f"single-cell sample remains, got batch_size={self.batch_size}, "
+                f"n_bulk_samples={self.n_bulk}."
+            )
+
+        self._n_batches = len(dataset.bulk_indices)
 
     def __len__(self) -> int:
-        if self.drop_last:
-            return self._n_pairs // self.batch_size
-        return (self._n_pairs + self.batch_size - 1) // self.batch_size
+        return self._n_batches
 
     def __iter__(self):
         rng = np.random.default_rng()
         ds = self.dataset
 
-        if ds.groups is not None:
-            group_order = np.array(ds.groups)
-        else:
-            group_order = np.arange(self._n_pairs)
+        batch_order = np.arange(self._n_batches)
 
         if self.shuffle:
-            rng.shuffle(group_order)
+            rng.shuffle(batch_order)
 
-        for start in range(0, len(group_order), self.batch_size):
-            batch_groups = group_order[start : start + self.batch_size]
-            if self.drop_last and len(batch_groups) < self.batch_size:
-                break
-
+        for _ in batch_order:
             indices: list[int] = []
-            # We also need to tell the collator which indices belong to
-            # which pair and which modality.  We encode this in the *order*:
-            # for each pair we emit [sc_0, ..., sc_{n-1}, bulk_0, ..., bulk_{m-1}]
-            for g in batch_groups:
-                if ds.groups is not None:
-                    sc_pool = ds.group_to_sc[g]
-                    bulk_pool = ds.group_to_bulk[g]
-                else:
-                    sc_pool = ds.sc_indices
-                    bulk_pool = ds.bulk_indices
-
-                sc_idx = rng.choice(
-                    sc_pool,
-                    size=self.n_sc,
-                    replace=len(sc_pool) < self.n_sc,
-                )
-                bulk_idx = rng.choice(
-                    bulk_pool,
-                    size=self.n_bulk,
-                    replace=len(bulk_pool) < self.n_bulk,
-                )
-                indices.extend(sc_idx.tolist())
-                indices.extend(bulk_idx.tolist())
+            # Order matters for the collator: [sc_0, ..., sc_{n-1}, bulk_0, ...].
+            sc_idx = rng.choice(
+                ds.sc_indices,
+                size=self.n_sc,
+                replace=len(ds.sc_indices) < self.n_sc,
+            )
+            bulk_idx = rng.choice(
+                ds.bulk_indices,
+                size=self.n_bulk,
+                replace=len(ds.bulk_indices) < self.n_bulk,
+            )
+            indices.extend(sc_idx.tolist())
+            indices.extend(bulk_idx.tolist())
 
             yield indices
