@@ -2,7 +2,7 @@
 ## Imports
 import sys
 
-sys.path.insert(0, "./")
+sys.path.insert(0, "../")
 
 from argparse import ArgumentParser
 import h5py
@@ -125,7 +125,7 @@ def h5_to_h5ad(
             obs_chunk = metadata.iloc[start:end][obs_columns].copy()
             obs_chunk.index = obs_chunk.index.astype(str)
 
-            var = pd.DataFrame({GENE_ID: valid_gene_ids}, index=valid_gene_names)
+            var = pd.DataFrame({GENE_ID: valid_gene_ids}, index=valid_gene_names) if existing_vocab_path is not None else pd.DataFrame({GENE_ID: range(len(gene_names))}, index=gene_names)
             var[GENE_ID] = var[GENE_ID].astype(int)
 
             adata = ad.AnnData(X=X_sparse, obs=obs_chunk, var=var)
@@ -207,6 +207,7 @@ def main(args):
         h5_to_h5ad(
             bulk_dir=args.bulk_path,
             obs_columns=args.obs_columns,
+            chunk_size=args.chunk_size,
             expr_key=args.bulk_expr_key,
             existing_vocab_path=args.vocab_path,
         )
