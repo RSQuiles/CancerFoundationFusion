@@ -30,6 +30,9 @@ def h5_to_h5ad(
     ],  # Metadata columns to include in obs.parquet (must exist in metadata.csv)
     chunk_size: int = 10_000,
     expr_key: str = "expression",  # Key in the h5 file where the expression matrix is stored
+    h5ad_dir: Optional[
+        Path
+    ] = None,  # Directory to save the generated h5ad files (defaults to bulk_dir/h5ads)
     existing_vocab_path: Optional[
         Path
     ] = None,  #  path to an existing vocab.json to reuse (set to None to generate from gene_list.txt)
@@ -41,7 +44,7 @@ def h5_to_h5ad(
     METADATA_CSV = BULK_DIR / "metadata.csv"
 
     # --- OUTPUT: corresponding h5ad files ---
-    OUTPUT_DIR = BULK_DIR / "h5ads"
+    h5ad_dir = BULK_DIR / "h5ads" if h5ad_dir is None else h5ad_dir
 
     # Checks
     assert EXPRESSION_H5.is_file(), f"Expression file not found: {EXPRESSION_H5}"
@@ -87,7 +90,6 @@ def h5_to_h5ad(
         ), f"Gene count mismatch: h5 has {n_genes_h5}, gene_list.txt has {len(gene_names)}"
 
         # Convert expression file to chunked h5ad files
-        h5ad_dir = OUTPUT_DIR
         h5ad_dir.mkdir(parents=True, exist_ok=True)
 
         # Map gene names to vocab IDs; drop genes not in vocab
@@ -125,7 +127,11 @@ def h5_to_h5ad(
             obs_chunk = metadata.iloc[start:end][obs_columns].copy()
             obs_chunk.index = obs_chunk.index.astype(str)
 
-            var = pd.DataFrame({GENE_ID: valid_gene_ids}, index=valid_gene_names) if existing_vocab_path is not None else pd.DataFrame({GENE_ID: range(len(gene_names))}, index=gene_names)
+            var = (
+                pd.DataFrame({GENE_ID: valid_gene_ids}, index=valid_gene_names)
+                if existing_vocab_path is not None
+                else pd.DataFrame({GENE_ID: range(len(gene_names))}, index=gene_names)
+            )
             var[GENE_ID] = var[GENE_ID].astype(int)
 
             adata = ad.AnnData(X=X_sparse, obs=obs_chunk, var=var)
@@ -193,25 +199,32 @@ def convert_columns_to_categorical_with_mapping(df):
 
 def main(args):
     # Checks
-    if not args.from_bulk:
+    assert not (
+        args.bulk_only and args.mixed
+    ), "Cannot set both --bulk-only and --mixed"
+    if not args.bulk_only:
         assert (
             args.h5ad_path is not None
-        ), "h5ad_path is required when --from_bulk is not set"
+        ), "h5ad_path is required when --bulk-only is not set"
         h5ad_path = args.h5ad_path
 
     # Bulk preprocessing
-    if args.from_bulk:
+    if args.bulk_only or args.mixed:
         assert (
             args.bulk_path is not None
-        ), "bulk_path is required when --from_bulk is set"
+        ), "--bulk_path is required when --bulk-only or --mixed is set"
+
+        h5ad_path = (
+            args.bulk_path / "h5ads" if args.h5ad_path is None else args.h5ad_path
+        )
         h5_to_h5ad(
             bulk_dir=args.bulk_path,
             obs_columns=args.obs_columns,
             chunk_size=args.chunk_size,
             expr_key=args.bulk_expr_key,
+            h5ad_dir=h5ad_path,
             existing_vocab_path=args.vocab_path,
         )
-        h5ad_path = args.bulk_path / "h5ads"
 
     data_path = DatasetDir(args.data_path)
     data_path.mkdir()
@@ -264,11 +277,15 @@ def main(args):
 def get_args():
     parser = ArgumentParser()
     parser.add_argument(
-        "--from-bulk",
+        "--bulk-only",
         action="store_true",
-        help="Whether to run from the bulk data preprocessing pipeline",
+        help="Whether to run from the bulk data preprocessing pipeline only",
     )
-
+    parser.add_argument(
+        "--mixed",
+        action="store_true",
+        help="Whether to prepare data for mixed training (with both bulk and sc samples)",
+    )
     parser.add_argument(
         "--h5ad-path",
         type=Path,
@@ -312,5 +329,6 @@ def get_args():
 
 
 if __name__ == "__main__":
+    # Note: by default, it only runs the single-cell data preprocessing
     args = get_args()
     main(args)
