@@ -125,6 +125,8 @@ def h5_to_h5ad(
             X_sparse = sp.csr_matrix(X_dense.astype(np.float32))
 
             obs_chunk = metadata.iloc[start:end][obs_columns].copy()
+            # Define modality
+            obs_chunk["modality"] = "bulk"
             obs_chunk.index = obs_chunk.index.astype(str)
 
             var = (
@@ -164,7 +166,7 @@ def _save_vocab_to_dir(vocab: dict[str, int], data_dir: DatasetDir) -> None:
 
 
 def _add_gene_id_to_h5ads(h5ads: Path, vocab: dict[str, int], data_path: Path) -> None:
-    (data_path / "h5ads").mkdir()
+    (data_path / "h5ads").mkdir(parents=True, exist_ok=True)
     for path in h5ads.iterdir():
         if not path.name.endswith(".h5ad"):
             continue
@@ -243,9 +245,13 @@ def main(args):
 
     # Collect observations
     obs_list = []
+    obs_columns = args.obs_columns + ["modality"]  # Ensure modality is included
     for i, fname in enumerate(memmaps.fname_to_mmap.keys()):
         print(f"Processing {i + 1}/{len(memmaps.fname_to_mmap)}: {fname.name}")
         adata = sc.read_h5ad(h5ad_path / (fname.name + ".h5ad"), backed="r")
+        # Add modality column if not present
+        if "modality" not in adata.obs.columns:
+            adata.obs["modality"] = "sc"
 
         # Extract tissue name from the filename (e.g., '..._kidney' -> 'kidney')
         # tissue_name = fname.name.split("_")[1]
@@ -253,7 +259,7 @@ def main(args):
         # Create the 'tissue' column and assign the extracted name to all cells
         # adata.obs["tissue"] = tissue_name
 
-        obs_list.append(adata.obs[args.obs_columns].copy())
+        obs_list.append(adata.obs[obs_columns].copy())
 
     obs = pd.concat(obs_list)
 
