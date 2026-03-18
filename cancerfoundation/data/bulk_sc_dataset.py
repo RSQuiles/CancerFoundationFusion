@@ -159,12 +159,13 @@ class BulkSCDataset(Dataset):
 # ======================================================================
 
 
-class BulkSCBatchSampler(Sampler[list[int]]):
-    """Yields batches made of exactly ``batch_size - n_bulk_samples`` SC
-    indices plus ``n_bulk_samples`` bulk indices.
+class BulkSCSampler(Sampler[list[int]]):
+    """Yields batches made of bulk, pseudobulk and single-cell samples. The
+    pseudobulk samples are generated from single-cells different from the ones in the batch,
+    which can also be saved for later use in consistency losses.
 
-    ``batch_size`` is interpreted as the total number of memmap rows loaded
-    per batch.
+    ``batch_size`` is interpreted as the total number of samples that get fed into the model
+    to perform the autorregressive task.
 
     Parameters
     ----------
@@ -172,9 +173,13 @@ class BulkSCBatchSampler(Sampler[list[int]]):
         Dataset providing global ``sc_indices`` and ``bulk_indices``.
         Group membership, if present, is ignored by this sampler.
     batch_size : int
-        Total number of rows per batch.
-    n_bulk_samples : int
-        Bulk rows
+        Total number of samples per batch.
+    bulk_ratio : float
+        The ratio of bulk samples in each batch.
+    pb_ratio : float
+        The ratio of pseudobulk samples in each batch (relative to the total batch size).
+    n_sc_per_pb : int
+        Number of single-cell samples to aggregate into each pseudobulk. These are drawn from the same pool as the single-cell samples in the batch, but are guaranteed to be different samples.
     drop_last : bool
         Drop the last incomplete batch.
     shuffle : bool
@@ -185,26 +190,25 @@ class BulkSCBatchSampler(Sampler[list[int]]):
         self,
         dataset: "BulkSCDataset",
         batch_size: int,
-        n_bulk_samples: int = 1,
+        bulk_ratio: float = 0.3,
+        pb_ratio: float = 0.3,
+        n_sc_per_pb: int = 10,
         drop_last: bool = True,
         shuffle: bool = True,
     ):
         self.dataset = dataset
         self.batch_size = batch_size
-        self.n_bulk = n_bulk_samples
+        self.bulk_ratio = bulk_ratio
+        self.pb_ratio = pb_ratio
         self.drop_last = drop_last
         self.shuffle = shuffle
-        self.n_sc = self.batch_size - self.n_bulk
+        self.n_bulk = int(self.batch_size * self.bulk_ratio)
+        self.n_pb = int(self.batch_size * self.pb_ratio)
+        self.n_sc = self.batch_size - self.n_bulk - self.n_pb
+        self.n_sc_per_pb = n_sc_per_pb
 
         if self.n_bulk <= 0:
             raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")
-
-        if self.n_sc <= 0:
-            raise ValueError(
-                "batch_size must be larger than n_bulk_samples so at least one "
-                f"single-cell sample remains, got batch_size={self.batch_size}, "
-                f"n_bulk_samples={self.n_bulk}."
-            )
 
         self._n_batches = len(dataset.bulk_indices)
 
@@ -222,18 +226,25 @@ class BulkSCBatchSampler(Sampler[list[int]]):
 
         for _ in batch_order:
             indices: list[int] = []
-            # Order matters for the collator: [sc_0, ..., sc_{n-1}, bulk_0, ...].
+            # Order matters for the collator: [sc_0, ..., sc_{n-1}, pseudobulk_0, ...].
             sc_idx = rng.choice(
                 ds.sc_indices,
                 size=self.n_sc,
                 replace=len(ds.sc_indices) < self.n_sc,
             )
+
+            pb_idx = rng.choice(
+                ds.sc_indices,
+                size=self.n_pb * self.n_sc_per_pb,
+                replace=len(ds.sc_indices) < self.n_pb * self.n_sc_per_pb,
+            )
+
             bulk_idx = rng.choice(
                 ds.bulk_indices,
                 size=self.n_bulk,
                 replace=len(ds.bulk_indices) < self.n_bulk,
             )
             indices.extend(sc_idx.tolist())
+            indices.extend(pb_idx.tolist())
             indices.extend(bulk_idx.tolist())
-
             yield indices

@@ -44,26 +44,22 @@ class BulkSCCollator(AnnDataCollator):
     zero_percentages: Optional[List[float]] = None
 
     # New parameters for bulk/SC collation
-    batch_size: int = 64
-    n_bulk_samples: int = 1
-    n_sc_per_pseudobulk: int = 32
+    batch_size: int = 128
+    bulk_ratio: float = 0.3
+    pb_ratio: float = 0.3
+    n_sc_per_pseudobulk: int = 10
     aggregation: str = "sum"
     match_fn: Optional[Callable] = None
 
     def __post_init__(self):
         super().__post_init__()
 
-        self.n_sc_samples = self.batch_size - self.n_bulk_samples
-        if self.n_bulk_samples <= 0:
-            raise ValueError(
-                f"n_bulk_samples must be positive, got {self.n_bulk_samples}."
-            )
-        if self.n_sc_samples <= 0:
-            raise ValueError(
-                "batch_size must be larger than n_bulk_samples so at least one "
-                f"single-cell sample remains, got batch_size={self.batch_size}, "
-                f"n_bulk_samples={self.n_bulk_samples}."
-            )
+        self.n_bulk = int(self.batch_size * self.bulk_ratio)
+        self.n_pb = int(self.batch_size * self.pb_ratio)
+        self.n_sc = self.batch_size - self.n_bulk - self.n_pb
+
+        if self.n_bulk <= 0:
+            raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")
         if self.n_sc_per_pseudobulk <= 0:
             raise ValueError(
                 "n_sc_per_pseudobulk must be positive, got "
@@ -76,17 +72,26 @@ class BulkSCCollator(AnnDataCollator):
                 f"Expected {self.batch_size} samples, got {len(examples)}."
             )
 
-        sc_samples = [dict(sample) for sample in examples[: self.n_sc_samples]]
-        bulk_samples = [dict(sample) for sample in examples[self.n_sc_samples :]]
+        sc_samples = [dict(sample) for sample in examples[: self.n_sc]]
+        sc_for_pb_samples = [
+            dict(sample)
+            for sample in examples[
+                self.n_sc : self.n_sc + self.n_pb * self.n_sc_per_pseudobulk
+            ]
+        ]
+        bulk_samples = [
+            dict(sample)
+            for sample in examples[self.n_sc + self.n_pb * self.n_sc_per_pseudobulk :]
+        ]
 
         pseudobulk_samples: List[Dict[str, Any]] = []
         sc_pseudobulk_index: List[int] = []
         pseudobulk_sizes: List[int] = []
 
         for pb_idx, start in enumerate(
-            range(0, self.n_sc_samples, self.n_sc_per_pseudobulk)
+            range(0, len(sc_for_pb_samples), self.n_sc_per_pseudobulk)
         ):
-            chunk = sc_samples[start : start + self.n_sc_per_pseudobulk]
+            chunk = sc_for_pb_samples[start : start + self.n_sc_per_pseudobulk]
             pb_genes, pb_expr = self._aggregate_sc(chunk)
             pb_sample = {"genes": pb_genes, "expressions": pb_expr}
             self._fill_missing_conditions(pb_sample)
@@ -106,7 +111,7 @@ class BulkSCCollator(AnnDataCollator):
             unified_samples.append(sample)
             unified_modalities.append(0)
             unified_is_real.append(1)
-            unified_pseudobulk_index.append(sc_pseudobulk_index[sc_idx])
+            unified_pseudobulk_index.append(-1)
 
         # 1 -> pseudobulk
         for pb_idx, sample in enumerate(pseudobulk_samples):
@@ -123,13 +128,21 @@ class BulkSCCollator(AnnDataCollator):
             unified_is_real.append(1)
             unified_pseudobulk_index.append(-1)
 
-        # 3 -> matched bulk (optional)
+        # 3 -> sc for pb
+        for sc_idx, sample in enumerate(sc_for_pb_samples):
+            self._fill_missing_conditions(sample)
+            unified_samples.append(sample)
+            unified_modalities.append(3)
+            unified_is_real.append(1)
+            unified_pseudobulk_index.append(sc_pseudobulk_index[sc_idx])
+
+        # 4 -> matched bulk (optional)
         if self.match_fn is not None:
             for pb_idx, pseudobulk in enumerate(pseudobulk_samples):
                 matched = dict(self.match_fn(pseudobulk, bulk_samples))
                 self._fill_missing_conditions(matched)
                 unified_samples.append(matched)
-                unified_modalities.append(3)
+                unified_modalities.append(4)
                 unified_is_real.append(1)
                 unified_pseudobulk_index.append(pb_idx)
 

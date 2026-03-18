@@ -124,6 +124,7 @@ def main():
         normalise_bins=args.normalise_bins,
         condition_token=args.where_condition == "begin",
         num_workers=args.num_workers,
+        unified_fm=args.unified,
     )
     datamodule.setup(stage="fit")
 

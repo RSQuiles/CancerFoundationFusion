@@ -67,6 +67,7 @@ class SingleCellDataModule(pl.LightningDataModule):
         normalise_bins: bool,
         condition_token: bool,
         num_workers: int,
+        unified_fm: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -85,6 +86,7 @@ class SingleCellDataModule(pl.LightningDataModule):
         self.normalise_bins = normalise_bins
         self.condition_token = condition_token
         self.num_workers = num_workers
+        self.unified_fm = unified_fm
 
         # Setup token values based on embedding style
         if self.input_style == "category":
@@ -98,11 +100,20 @@ class SingleCellDataModule(pl.LightningDataModule):
 
     def setup(self, stage: str):
         """Initialize dataset and create train/validation splits"""
-        self.dataset = SingleCellDataset(
-            data_dir=self.data_path,
-            pad_value=self.pad_value,
-            obs_columns=self.conditions,
-        )
+        if not self.unified_fm:
+            self.dataset = SingleCellDataset(
+                data_dir=self.data_path,
+                pad_value=self.pad_value,
+                obs_columns=self.conditions,
+            )
+        else:
+            from .bulk_sc_dataset import BulkSCDataset
+
+            self.dataset = BulkSCDataset(
+                data_dir=self.data_path,
+                pad_value=self.pad_value,
+                obs_columns=self.conditions,
+            )
 
         if self.conditions:
             self.conditions_nums = {}  # condition cardinalities
@@ -121,15 +132,28 @@ class SingleCellDataModule(pl.LightningDataModule):
     def _get_dataloader(self, dataset, train: bool):
         """Create dataloader with appropriate sampler and collator"""
         # Setup sampler
-        if self.balance_primary and train:
-            sampler = get_balanced_sampler(
-                dataset,
-                primary_condition=self.balance_primary,  # to oversample underrepresented categories
-                secondary_condition=self.balance_secondary,
-                oversample=True,
-            )
+        if not self.unified_fm:
+            if self.balance_primary and train:
+                sampler = get_balanced_sampler(
+                    dataset,
+                    primary_condition=self.balance_primary,  # to oversample underrepresented categories
+                    secondary_condition=self.balance_secondary,
+                    oversample=True,
+                )
+            else:
+                sampler = (
+                    RandomSampler(dataset) if train else SequentialSampler(dataset)
+                )
         else:
-            sampler = RandomSampler(dataset) if train else SequentialSampler(dataset)
+            from .bulk_sc_dataset import BulkSCSampler
+
+            sampler = BulkSCSampler(
+                dataset=dataset,
+                batch_size=self.batch_size,
+                bulk_ratio=self.hparams.bulk_ratio,
+                pb_ratio=self.hparams.pb_ratio,
+                n_sc_per_pseudobulk=self.hparams.n_sc_per_pseudobulk,
+            )
 
         if self.trainer.world_size > 1:
             print(f"Rank: {self.trainer.global_rank} init DistributedSampler.")
@@ -141,23 +165,48 @@ class SingleCellDataModule(pl.LightningDataModule):
             )
 
         # Setup collator
-        collator = AnnDataCollator(
-            do_padding=self.max_seq_len is not None,
-            pad_token_id=self.pad_token_id,
-            pad_value=self.pad_value,
-            do_mlm=True,
-            do_binning=self.input_style == "binned",
-            normalise_bins=self.normalise_bins,
-            mask_ratio=self.mask_ratio,
-            mask_value=self.mask_value,
-            max_length=self.max_seq_len,
-            sampling=self.TRUNC_BY_SAMPLE,
-            data_style=self.training_tasks,
-            n_bins=self.n_bins if self.input_style == "binned" else None,
-            conditions=self.conditions,
-            zero_percentages=self.zero_percentages,
-            condition_token=self.condition_token,
-        )
+        if not self.unified_fm:
+            collator = AnnDataCollator(
+                do_padding=self.max_seq_len is not None,
+                pad_token_id=self.pad_token_id,
+                pad_value=self.pad_value,
+                do_mlm=True,
+                do_binning=self.input_style == "binned",
+                normalise_bins=self.normalise_bins,
+                mask_ratio=self.mask_ratio,
+                mask_value=self.mask_value,
+                max_length=self.max_seq_len,
+                sampling=self.TRUNC_BY_SAMPLE,
+                data_style=self.training_tasks,
+                n_bins=self.n_bins if self.input_style == "binned" else None,
+                conditions=self.conditions,
+                zero_percentages=self.zero_percentages,
+                condition_token=self.condition_token,
+            )
+        else:
+            from .bulk_sc_collator import BulkSCCollator
+
+            collator = BulkSCCollator(
+                do_padding=self.max_seq_len is not None,
+                pad_token_id=self.pad_token_id,
+                pad_value=self.pad_value,
+                do_mlm=True,
+                do_binning=self.input_style == "binned",
+                normalise_bins=self.normalise_bins,
+                mask_ratio=self.mask_ratio,
+                mask_value=self.mask_value,
+                max_length=self.max_seq_len,
+                sampling=self.TRUNC_BY_SAMPLE,
+                data_style=self.training_tasks,
+                n_bins=self.n_bins if self.input_style == "binned" else None,
+                conditions=self.conditions,
+                zero_percentages=self.zero_percentages,
+                condition_token=self.condition_token,
+                batch_size=self.batch_size,
+                bulk_ratio=self.hparams.bulk_ratio,
+                pb_ratio=self.hparams.pb_ratio,
+                n_sc_per_pseudobulk=self.hparams.n_sc_per_pseudobulk,
+            )
 
         batch_size = self.batch_size if train else self.batch_size
         print(f"Using {self.num_workers} workers.")

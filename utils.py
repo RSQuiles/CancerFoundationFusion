@@ -401,6 +401,34 @@ def get_args():
     )
     return parser.parse_args()
 
+    # Added by Rafa: Unified Foundation Model
+    parser.add_argument(
+        "--unified",
+        action="store_true",
+        help="Whether to use the unified foundation model that takes both single-cell and bulk data as input. Default is False, which means using the original model that only takes single-cell data as input.",
+    )
+
+    parser.add_argument(
+        "--bulk-ratio",
+        type=float,
+        default=0.3,
+        help="The ratio of bulk samples in each batch. Default is 0.3.",
+    )
+
+    parser.add_argument(
+        "--pb-ratio",
+        type=float,
+        default=0.3,
+        help="The ratio of pseudobulk samples in each batch (relative to the total batch size). Default is 0.3.",
+    )
+
+    parser.add_argument(
+        "--n-sc-per-pseudobulk",
+        type=int,
+        default=10,
+        help="Number of single-cell samples to aggregate into each pseudobulk. These are drawn from the same pool as the single-cell samples in the batch, but are guaranteed to be different samples. Default is 10.",
+    )
+
 
 class MyProgressBar(TQDMProgressBar):
     def init_validation_tqdm(self):
