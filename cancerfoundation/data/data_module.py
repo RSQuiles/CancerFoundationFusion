@@ -1,5 +1,5 @@
 import pytorch_lightning as pl
-from typing import Optional, Dict
+from typing import Optional
 from typing import Iterator
 from operator import itemgetter
 from .data_sampler import get_balanced_sampler
@@ -55,7 +55,7 @@ class SingleCellDataModule(pl.LightningDataModule):
         data_path,
         zero_percentages: list,
         batch_size: int,
-        conditions: Dict,
+        conditions: list,
         balance_primary,
         balance_secondary,
         max_seq_len: int,
@@ -73,7 +73,6 @@ class SingleCellDataModule(pl.LightningDataModule):
         self.save_hyperparameters()
         self.data_path = data_path
         self.batch_size = batch_size
-        self.conditions = conditions
         self.balance_primary = balance_primary
         self.balance_secondary = balance_secondary
         self.max_seq_len = max_seq_len
@@ -87,6 +86,9 @@ class SingleCellDataModule(pl.LightningDataModule):
         self.condition_token = condition_token
         self.num_workers = num_workers
         self.unified_fm = unified_fm
+        self.conditions = (
+            conditions + ["modality"] if unified_fm else conditions
+        )  # Ensure modality is included in the model
 
         # Setup token values based on embedding style
         if self.input_style == "category":

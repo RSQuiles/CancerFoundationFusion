@@ -65,9 +65,14 @@ class BulkSCDataset(Dataset):
         self.mapping = self._load_mapping()
         if obs_columns is not None:
             self.obs_columns = (
-                obs_columns
-                + [modality_column]
-                + ([group_column] if group_column is not None else [])
+                obs_columns + [modality_column]
+                if modality_column not in obs_columns and modality_column is not None
+                else []
+                + (
+                    [group_column]
+                    if group_column not in obs_columns and group_column is not None
+                    else []
+                )
             )
         else:
             self.obs_columns = [modality_column] + (

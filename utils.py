@@ -399,7 +399,6 @@ def get_args():
         type=int,
         help="How many workers to use for the DataLoader.",
     )
-    return parser.parse_args()
 
     # Added by Rafa: Unified Foundation Model
     parser.add_argument(
@@ -428,6 +427,8 @@ def get_args():
         default=10,
         help="Number of single-cell samples to aggregate into each pseudobulk. These are drawn from the same pool as the single-cell samples in the batch, but are guaranteed to be different samples. Default is 10.",
     )
+
+    return parser.parse_args()
 
 
 class MyProgressBar(TQDMProgressBar):
