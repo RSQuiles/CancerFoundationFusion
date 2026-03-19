@@ -131,6 +131,10 @@ class TransformerModule(nn.Module):
             self.condition_encoders = nn.ModuleDict({})
             for cond_name, cond_num in self.conditions.items():
                 self.condition_encoders[cond_name] = ConditionEncoder(cond_num, d_model)
+            # Check condition encoders
+            print("Condition Encoders Inspection:")
+            print(f"Conditions: {self.conditions}")
+            print(f"Encoders: {self.condition_encoders}")
 
             if do_dat:
                 self.grad_reverse_discriminators = nn.ModuleDict({})

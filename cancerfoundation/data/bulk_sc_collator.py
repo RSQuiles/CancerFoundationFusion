@@ -59,10 +59,19 @@ class BulkSCCollator(AnnDataCollator):
             3. Real Bulk samples
         """
         super().__post_init__()
-        self.n_bulk = int(self.batch_size * self.bulk_ratio)
-        self.n_pb = int(self.batch_size * self.pb_ratio)
+        self.n_bulk = round(self.batch_size * self.bulk_ratio)
+        self.n_pb = round(self.batch_size * self.pb_ratio)
         self.n_sc = self.batch_size - self.n_bulk - self.n_pb
         self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pseudobulk
+
+        # Confirm batch composition
+        print("\nBatch composition at the collator level")
+        print("batch_size:", self.batch_size)
+        print("n_bulk:", self.n_bulk)
+        print("n_pb:", self.n_pb)
+        print("n_sc:", self.n_sc)
+        print("raw_batch_size:", self.raw_batch_size)
+        print("sum logical:", self.n_bulk + self.n_pb + self.n_sc)
 
         if self.n_bulk <= 0:
             raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")
@@ -76,16 +85,8 @@ class BulkSCCollator(AnnDataCollator):
             )
 
         sc_samples = [dict(sample) for sample in examples[: self.n_sc]]
-        sc_for_pb_samples = [
-            dict(sample)
-            for sample in examples[
-                self.n_sc : self.n_sc + self.n_pb * self.n_sc_per_pseudobulk
-            ]
-        ]
-        bulk_samples = [
-            dict(sample)
-            for sample in examples[self.n_sc + self.n_pb * self.n_sc_per_pseudobulk :]
-        ]
+        sc_for_pb_samples = [dict(sample) for sample in examples[self.n_sc : self.n_sc + self.n_pb * self.n_sc_per_pseudobulk]]
+        bulk_samples = [dict(sample) for sample in examples[self.n_sc + self.n_pb * self.n_sc_per_pseudobulk :]]
 
         pseudobulk_samples: List[Dict[str, Any]] = []
         sc_pseudobulk_index: List[int] = []
@@ -97,7 +98,7 @@ class BulkSCCollator(AnnDataCollator):
             chunk = sc_for_pb_samples[start : start + self.n_sc_per_pseudobulk]
             pb_genes, pb_expr = self._aggregate_sc(chunk)
             pb_sample = {"genes": pb_genes, "expressions": pb_expr}
-            self._fill_missing_conditions(pb_sample)
+            self._fill_missing_conditions(pb_sample, chunk)
             pseudobulk_samples.append(pb_sample)
             pseudobulk_sizes.append(len(chunk))
             # To which pb does each sc sample belong
@@ -110,7 +111,6 @@ class BulkSCCollator(AnnDataCollator):
 
         # 0 -> real bulk
         for sample in bulk_samples:
-            self._fill_missing_conditions(sample)
             unified_samples.append(sample)
             unified_modalities.append(0)
             unified_is_real.append(1)
@@ -118,7 +118,6 @@ class BulkSCCollator(AnnDataCollator):
 
         # 1 -> sc
         for sc_idx, sample in enumerate(sc_samples):
-            self._fill_missing_conditions(sample)
             unified_samples.append(sample)
             unified_modalities.append(1)
             unified_is_real.append(1)
@@ -132,8 +131,9 @@ class BulkSCCollator(AnnDataCollator):
             unified_pseudobulk_index.append(pb_idx)
 
         # 3 (1) -> sc for pb
+        # Avoid passing this to the model for initial runs
+        """
         for sc_idx, sample in enumerate(sc_for_pb_samples):
-            self._fill_missing_conditions(sample)
             unified_samples.append(sample)
             unified_modalities.append(1)
             unified_is_real.append(1)
@@ -143,11 +143,11 @@ class BulkSCCollator(AnnDataCollator):
         if self.match_fn is not None:
             for pb_idx, pseudobulk in enumerate(pseudobulk_samples):
                 matched = dict(self.match_fn(pseudobulk, bulk_samples))
-                self._fill_missing_conditions(matched)
                 unified_samples.append(matched)
                 unified_modalities.append(4)
                 unified_is_real.append(1)
                 unified_pseudobulk_index.append(pb_idx)
+        """
 
         # Delegate objective-specific collation to AnnDataCollator
         data_dict: Dict[str, Any] = super().__call__(unified_samples)
@@ -168,12 +168,36 @@ class BulkSCCollator(AnnDataCollator):
 
         return data_dict
 
-    def _fill_missing_conditions(self, sample: Dict[str, Any]) -> None:
+    def _fill_missing_conditions(self, pb_sample: Dict[str, Any], sc_samples: List[Dict[str, Any]]) -> None:
+        """
+        Fill missing conditions from generated pseudobulk samples, borrowing from
+        underlying single-cell samples
+        """
         if not self.conditions:
             return
         for cond in self.conditions:
-            if cond not in sample:
-                sample[cond] = -1
+            if cond not in pb_sample:
+                pb_sample[cond] = self._average_condition_value(sc_samples, cond)
+
+    def _average_condition_value(self, samples: List[Dict[str, Any]], condition: str):
+        """
+        Return the "average" value for a given condition and a set of samples, preferrably related
+        """
+        values = {}
+        max_count = 0
+        max_value = 0
+        # Determine the cardinalities and choose the most prevalent value
+        for sample in samples:
+            assert condition in sample, f"{condition} not present in some of the samples"
+            if sample[condition] not in values:
+                values[sample[condition]] = 1
+            else:
+                ++values[sample[condition]]
+            # Retrieve max
+            if values[sample[condition]] > max_count and sample[condition] != max_value:
+                max_value = sample[condition]
+                max_count = values[sample[condition]]
+        return max_value
 
     def _aggregate_sc(
         self,

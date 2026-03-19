@@ -225,10 +225,20 @@ class BulkSCSampler(Sampler[list[int]]):
             2. Single-Cell samples to generate pseudobulk
             3. Real Bulk samples
         """
-        self.n_bulk = int(self.batch_size * self.bulk_ratio)
-        self.n_pb = int(self.batch_size * self.pb_ratio)
+        self.n_bulk = round(self.batch_size * self.bulk_ratio)
+        self.n_pb = round(self.batch_size * self.pb_ratio)
         self.n_sc = self.batch_size - self.n_bulk - self.n_pb
         self.n_sc_per_pb = n_sc_per_pb
+        self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pb
+
+        # Confirm batch composition
+        print("Batch composition at the sampler level:")
+        print("batch_size:", self.batch_size)
+        print("n_bulk:", self.n_bulk)
+        print("n_pb:", self.n_pb)
+        print("n_sc:", self.n_sc)
+        print("raw_batch_size:", self.raw_batch_size)
+        print("sum logical:", self.n_bulk + self.n_pb + self.n_sc)
 
         if self.n_bulk <= 0:
             raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")

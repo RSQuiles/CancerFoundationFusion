@@ -1,12 +1,11 @@
 #!/bin/bash -l
-# SBATCH --job-name=mixed_testrun
-# SBATCH --output=./outputs/%x_%j.out
-# SBATCH --time=04:00:00
-# SBATCH --partition=gpu
-# SBATCH --ntasks-per-node=1
-# SBATCH --gres=gpu:rtx4090:1
-# SBATCH --cpus-per-task=3
-# SBATCH --mem-per-cpu=16G
+#SBATCH --time=04:00:00
+#SBATCH --job-name=mixed_testrun
+#SBATCH --output=./outputs/%x_%j.out
+#SBATCH --partition=gpu
+#SBATCH --ntasks-per-node=2
+#SBATCH --gres=gpu:rtx4090:2
+#SBATCH --cpus-per-task=4
 
 set -e
 
@@ -14,15 +13,16 @@ SAVE_DIR="./save/${SLURM_JOB_NAME}_${SLURM_JOB_ID}"
 TRAIN_DIR="/cluster/work/boeva/rquiles/data/mixed_test/pipeline_ready"
 mkdir -p "$SAVE_DIR"
 
-python ../pretrain.py \
+# Improve CUDA traceback
+CUDA_LAUNCH_BLOCKING=1 python ../pretrain.py \
     --unified \
     --bulk-ratio 0.3 \
     --pb-ratio 0.3 \
     --n-sc-per-pseudobulk 10 \
     --gpus 1 \
     --save-dir "$SAVE_DIR" \
-    --max-seq-len 1200 \
-    --batch-size 128 \
+    --max-seq-len 600 \
+    --batch-size 64 \
     --nlayers 6 \
     --nheads 8 \
     --embsize 128 \
@@ -45,8 +45,8 @@ python ../pretrain.py \
     --training-tasks "both" \
     --where-condition "end" \
     --gen-method "theirs" \
-    --compile \
-    --num-workers 3
+    --num-workers 1 \
+    # --compile \
     #  --wandb "brain" \
     #  --wandb-name "${SLURM_JOB_NAME}_${SLURM_JOB_ID}" \
 
