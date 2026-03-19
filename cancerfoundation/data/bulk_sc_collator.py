@@ -52,24 +52,27 @@ class BulkSCCollator(AnnDataCollator):
     match_fn: Optional[Callable] = None
 
     def __post_init__(self):
+        """
+        We must take into account the structure of the batch, with the following structure:
+            1. Single-Cell samples
+            2. Single-Cell samples to generate pseudobulk
+            3. Real Bulk samples
+        """
         super().__post_init__()
-
         self.n_bulk = int(self.batch_size * self.bulk_ratio)
         self.n_pb = int(self.batch_size * self.pb_ratio)
         self.n_sc = self.batch_size - self.n_bulk - self.n_pb
+        self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pseudobulk
 
         if self.n_bulk <= 0:
             raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")
         if self.n_sc_per_pseudobulk <= 0:
-            raise ValueError(
-                "n_sc_per_pseudobulk must be positive, got "
-                f"{self.n_sc_per_pseudobulk}."
-            )
+            raise ValueError("n_sc_per_pseudobulk must be positive, got "f"{self.n_sc_per_pseudobulk}.")
 
     def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, Any]:
-        if len(examples) != self.batch_size:
+        if len(examples) != self.raw_batch_size:
             raise ValueError(
-                f"Expected {self.batch_size} samples, got {len(examples)}."
+                f"Expected {self.raw_batch_size} samples, got {len(examples)}."
             )
 
         sc_samples = [dict(sample) for sample in examples[: self.n_sc]]
@@ -105,34 +108,34 @@ class BulkSCCollator(AnnDataCollator):
         unified_is_real: List[int] = []
         unified_pseudobulk_index: List[int] = []
 
-        # 0 -> sc
-        for sc_idx, sample in enumerate(sc_samples):
+        # 0 -> real bulk
+        for sample in bulk_samples:
             self._fill_missing_conditions(sample)
             unified_samples.append(sample)
             unified_modalities.append(0)
             unified_is_real.append(1)
             unified_pseudobulk_index.append(-1)
 
-        # 1 -> pseudobulk
-        for pb_idx, sample in enumerate(pseudobulk_samples):
-            unified_samples.append(sample)
-            unified_modalities.append(1)
-            unified_is_real.append(0)
-            unified_pseudobulk_index.append(pb_idx)
-
-        # 2 -> real bulk
-        for sample in bulk_samples:
+        # 1 -> sc
+        for sc_idx, sample in enumerate(sc_samples):
             self._fill_missing_conditions(sample)
             unified_samples.append(sample)
-            unified_modalities.append(2)
+            unified_modalities.append(1)
             unified_is_real.append(1)
             unified_pseudobulk_index.append(-1)
 
-        # 3 -> sc for pb
+        # 2 -> pseudobulk
+        for pb_idx, sample in enumerate(pseudobulk_samples):
+            unified_samples.append(sample)
+            unified_modalities.append(2)
+            unified_is_real.append(0)
+            unified_pseudobulk_index.append(pb_idx)
+
+        # 3 (1) -> sc for pb
         for sc_idx, sample in enumerate(sc_for_pb_samples):
             self._fill_missing_conditions(sample)
             unified_samples.append(sample)
-            unified_modalities.append(3)
+            unified_modalities.append(1)
             unified_is_real.append(1)
             unified_pseudobulk_index.append(sc_pseudobulk_index[sc_idx])
 
@@ -153,16 +156,14 @@ class BulkSCCollator(AnnDataCollator):
         if not isinstance(existing_conditions, dict):
             existing_conditions = {}
         data_dict["conditions"] = {
-            "modality": torch.LongTensor(unified_modalities),
-            "is_real_sample": torch.LongTensor(unified_is_real),
-            "sample_pseudobulk_index": torch.LongTensor(unified_pseudobulk_index),
             **existing_conditions,
+            "modality": torch.LongTensor(unified_modalities),
         }
 
         # Additional structural metadata for mixed losses
-        data_dict["sc_pseudobulk_index"] = torch.LongTensor(
-            sc_pseudobulk_index
-        )  # for aggregation consistency losses
+        data_dict["is_real_sample"] = torch.LongTensor(unified_is_real)
+        data_dict["sample_pseudobulk_index"] = torch.LongTensor(unified_pseudobulk_index)
+        data_dict["sc_pseudobulk_index"] = torch.LongTensor(sc_pseudobulk_index)  # for aggregation consistency losses
         data_dict["pseudobulk_sizes"] = torch.LongTensor(pseudobulk_sizes)
 
         return data_dict

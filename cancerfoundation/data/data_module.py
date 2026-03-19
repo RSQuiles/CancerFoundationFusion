@@ -58,6 +58,9 @@ class SingleCellDataModule(pl.LightningDataModule):
         conditions: list,
         balance_primary,
         balance_secondary,
+        bulk_ratio: float,
+        pb_ratio: float,
+        n_sc_per_pseudobulk: int,
         max_seq_len: int,
         input_style: str,
         mask_ratio: float,
@@ -86,9 +89,7 @@ class SingleCellDataModule(pl.LightningDataModule):
         self.condition_token = condition_token
         self.num_workers = num_workers
         self.unified_fm = unified_fm
-        self.conditions = (
-            conditions + ["modality"] if unified_fm else conditions
-        )  # Ensure modality is included in the model
+        self.conditions = conditions
 
         # Setup token values based on embedding style
         if self.input_style == "category":
@@ -117,10 +118,14 @@ class SingleCellDataModule(pl.LightningDataModule):
                 obs_columns=self.conditions,
             )
 
+        # Set condition cardinalities
         if self.conditions:
-            self.conditions_nums = {}  # condition cardinalities
+            self.conditions_nums = {}
             for cond in self.conditions:
                 self.conditions_nums[cond] = len(self.dataset.mapping[cond].keys())
+                # Set modality cardinality
+                if "modality" in self.conditions:
+                    self.conditions_nums["modality"] = 3
 
         # Create train/validation split
         self.train_dataset, self.val_dataset = random_split(
@@ -154,7 +159,7 @@ class SingleCellDataModule(pl.LightningDataModule):
                 batch_size=self.batch_size,
                 bulk_ratio=self.hparams.bulk_ratio,
                 pb_ratio=self.hparams.pb_ratio,
-                n_sc_per_pseudobulk=self.hparams.n_sc_per_pseudobulk,
+                n_sc_per_pb=self.hparams.n_sc_per_pseudobulk,
             )
 
         if self.trainer.world_size > 1:
@@ -212,15 +217,24 @@ class SingleCellDataModule(pl.LightningDataModule):
 
         batch_size = self.batch_size if train else self.batch_size
         print(f"Using {self.num_workers} workers.")
-        return DataLoader(
-            dataset,
-            batch_size=batch_size,
-            sampler=sampler,
-            collate_fn=collator,
-            drop_last=True,
-            num_workers=self.num_workers,
-            pin_memory=True,
-        )
+        if not self.unified_fm:
+            return DataLoader(
+                dataset,
+                batch_size=batch_size,
+                sampler=sampler,
+                collate_fn=collator,
+                drop_last=True,
+                num_workers=self.num_workers,
+                pin_memory=True,
+            )
+        else:
+            return DataLoader(
+                dataset,
+                batch_sampler=sampler,
+                collate_fn=collator,
+                num_workers=self.num_workers,
+                pin_memory=True,
+            )
 
     def train_dataloader(self):
         """Create training dataloader"""

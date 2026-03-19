@@ -70,6 +70,7 @@ class CancerFoundation(pl.LightningModule):
         where_condition: str,
         gen_method: str,
         their_init_weights: bool,
+        unified_fm: bool = False,
         perturbation: bool = False,
         n_top_genes: int = 1200,
     ):

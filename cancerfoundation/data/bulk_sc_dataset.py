@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 from pathlib import Path
-from torch.utils.data import Dataset, Sampler
+from torch.utils.data import Dataset, Sampler, Subset
 
 from bionemo.scdl.io.single_cell_memmap_dataset import SingleCellMemMapDataset
 
@@ -63,21 +63,7 @@ class BulkSCDataset(Dataset):
         self.memmap = SingleCellMemMapDataset(str(self.data_dir.memmap_path))
         self.obs = pd.read_parquet(self.data_dir.obs_path)
         self.mapping = self._load_mapping()
-        if obs_columns is not None:
-            self.obs_columns = (
-                obs_columns + [modality_column]
-                if modality_column not in obs_columns and modality_column is not None
-                else []
-                + (
-                    [group_column]
-                    if group_column not in obs_columns and group_column is not None
-                    else []
-                )
-            )
-        else:
-            self.obs_columns = [modality_column] + (
-                [group_column] if group_column is not None else []
-            )
+        self.obs_columns = obs_columns
 
         self.modality_column = modality_column
         self.group_column = group_column
@@ -86,6 +72,8 @@ class BulkSCDataset(Dataset):
 
         assert self.memmap.number_of_rows() == self.obs.shape[0]
         assert modality_column in self.obs.columns
+        if group_column is not None:
+            assert group_column in self.obs_columns, f"The grouping feature {group_column} is not part of the selected {self.obs_columns}"
 
         # Pre-compute index arrays per modality
         modality_vals = self.obs[modality_column].values
@@ -139,7 +127,7 @@ class BulkSCDataset(Dataset):
 
     def __getitem__(self, index: int) -> dict:
         """Return a single sample with ``genes``, ``expressions``, and a
-        ``modality`` tag (``0`` = bulk, ``1`` = SC)."""
+        tags for the different conditions accounted for."""
         exp, genes = self.memmap.get_row_padded(
             index, return_features=True, feature_vars=[self.GENE_ID]
         )
@@ -193,7 +181,7 @@ class BulkSCSampler(Sampler[list[int]]):
 
     def __init__(
         self,
-        dataset: "BulkSCDataset",
+        dataset,
         batch_size: int,
         bulk_ratio: float = 0.3,
         pb_ratio: float = 0.3,
@@ -201,12 +189,42 @@ class BulkSCSampler(Sampler[list[int]]):
         drop_last: bool = True,
         shuffle: bool = True,
     ):
-        self.dataset = dataset
+        # Account for the Subset resulting from random_split
+        # Since the Subset uses a local set of indices, different from the original dataset
+        if isinstance(dataset, Subset):
+            self.dataset = dataset
+            subset_base_indices = dataset.indices
+            base_to_subset = {base_idx: sub_idx for sub_idx, base_idx in enumerate(subset_base_indices)}
+        
+            base_dataset = dataset.dataset
+        
+            self.bulk_indices = [
+                base_to_subset[i]
+                for i in base_dataset.bulk_indices
+                if i in base_to_subset
+            ]
+            self.sc_indices = [
+                base_to_subset[i]
+                for i in base_dataset.sc_indices
+                if i in base_to_subset
+            ]
+        else:
+            self.dataset = dataset
+            self.subset_indices = None
+            self.bulk_indices = self.dataset.bulk_indices
+            self.sc_indices = self.dataset.sc_indices
+            
         self.batch_size = batch_size
         self.bulk_ratio = bulk_ratio
         self.pb_ratio = pb_ratio
         self.drop_last = drop_last
         self.shuffle = shuffle
+        """
+        The sampling follows the following structure:
+            1. Single-Cell samples
+            2. Single-Cell samples to generate pseudobulk
+            3. Real Bulk samples
+        """
         self.n_bulk = int(self.batch_size * self.bulk_ratio)
         self.n_pb = int(self.batch_size * self.pb_ratio)
         self.n_sc = self.batch_size - self.n_bulk - self.n_pb
@@ -215,15 +233,13 @@ class BulkSCSampler(Sampler[list[int]]):
         if self.n_bulk <= 0:
             raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")
 
-        self._n_batches = len(dataset.bulk_indices)
+        self._n_batches = len(self.bulk_indices)
 
     def __len__(self) -> int:
         return self._n_batches
 
     def __iter__(self):
         rng = np.random.default_rng()
-        ds = self.dataset
-
         batch_order = np.arange(self._n_batches)
 
         if self.shuffle:
@@ -233,21 +249,21 @@ class BulkSCSampler(Sampler[list[int]]):
             indices: list[int] = []
             # Order matters for the collator: [sc_0, ..., sc_{n-1}, pseudobulk_0, ...].
             sc_idx = rng.choice(
-                ds.sc_indices,
+                self.sc_indices,
                 size=self.n_sc,
-                replace=len(ds.sc_indices) < self.n_sc,
+                replace=len(self.sc_indices) < self.n_sc,
             )
 
             pb_idx = rng.choice(
-                ds.sc_indices,
+                self.sc_indices,
                 size=self.n_pb * self.n_sc_per_pb,
-                replace=len(ds.sc_indices) < self.n_pb * self.n_sc_per_pb,
+                replace=len(self.sc_indices) < self.n_pb * self.n_sc_per_pb,
             )
 
             bulk_idx = rng.choice(
-                ds.bulk_indices,
+                self.bulk_indices,
                 size=self.n_bulk,
-                replace=len(ds.bulk_indices) < self.n_bulk,
+                replace=len(self.bulk_indices) < self.n_bulk,
             )
             indices.extend(sc_idx.tolist())
             indices.extend(pb_idx.tolist())

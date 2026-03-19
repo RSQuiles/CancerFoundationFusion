@@ -11,7 +11,7 @@
 set -e
 
 SAVE_DIR="./save/${SLURM_JOB_NAME}_${SLURM_JOB_ID}"
-TRAIN_DIR="/cluster/work/boeva/rquiles/data/dummy_test/mixed_test/pipeline_ready"
+TRAIN_DIR="/cluster/work/boeva/rquiles/data/mixed_test/pipeline_ready"
 mkdir -p "$SAVE_DIR"
 
 python ../pretrain.py \
@@ -33,7 +33,7 @@ python ../pretrain.py \
     --val-check-interval 0.5 \
     --trunc-by-sample \
     --loss mse \
-    --conditions technology \
+    --conditions tissue \
     --balance-primary technology \
     --train-path "$TRAIN_DIR" \
     --zero-percentages 0.2 0.4 0.6 \
