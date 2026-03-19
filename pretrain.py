@@ -101,7 +101,7 @@ def train_model(
     trainer.fit(model, datamodule=datamodule, ckpt_path=resume_from_checkpoint)
 
     return trainer
-    
+
 
 def main():
     args = get_args()
@@ -127,7 +127,7 @@ def main():
         normalise_bins=args.normalise_bins,
         condition_token=args.where_condition == "begin",
         num_workers=args.num_workers,
-        unified_fm=args.unified
+        unified_fm=args.unified,
     )
     datamodule.setup(stage="fit")
 
@@ -158,7 +158,9 @@ def main():
             loss_type=args.loss,
             do_dat=args.do_dat,
             no_invert_dat=args.no_invert_dat,
-            conditions=args.conditions + ["modality"] if args.unified else args.conditions,
+            conditions=args.conditions + ["modality"]
+            if args.unified
+            else args.conditions,
             conditions_nums=datamodule.conditions_nums if args.conditions else None,
             mvc_decoder_style=args.mvc_decoder_style,
             scale_zero_expression=args.scale_zero_expression,
@@ -178,7 +180,8 @@ def main():
             where_condition=args.where_condition,
             gen_method=args.gen_method,
             their_init_weights=args.their_init_weights,
-            unified_fm=args.unified
+            # Unified FM parameters
+            contrastive=args.contrastive_training,
         )
 
     if args.pretrained:

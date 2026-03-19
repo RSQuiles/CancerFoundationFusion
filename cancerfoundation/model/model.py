@@ -70,9 +70,10 @@ class CancerFoundation(pl.LightningModule):
         where_condition: str,
         gen_method: str,
         their_init_weights: bool,
-        unified_fm: bool = False,
         perturbation: bool = False,
         n_top_genes: int = 1200,
+        # Unified FM parameters
+        contrastive: bool = False,
     ):
         """Initializes the CancerFoundation LightningModule.
 
@@ -107,6 +108,7 @@ class CancerFoundation(pl.LightningModule):
             balance_primary (Optional[str], optional): The primary variable for balanced sampling. Defaults to None.
             balance_secondary (Optional[str], optional): The secondary variable for balanced sampling. Defaults to None.
             zero_percentages (Optional[List[float]], optional): Percentages for balancing zero expression. Defaults to None.
+            contrastive (bool, optional): If True, enable contrastive learning. It brings the pseudobulk and real bulk samples closer together in the embedding space. Defaults to False.
         """
         super().__init__()
         self.save_hyperparameters()
@@ -121,6 +123,7 @@ class CancerFoundation(pl.LightningModule):
         )
         self.TRUNC_BY_SAMPLE = TRUNC_BY_SAMPLE
         self.training_tasks = training_tasks
+        self.contrastive = contrastive
         self.embsize = embsize
         self.nheads = nheads
         self.d_hid = d_hid
@@ -261,6 +264,8 @@ class CancerFoundation(pl.LightningModule):
                 max_seq_len=self.max_seq_len,
                 gen_method=self.gen_method,
                 their_init_weights=self.their_init_weights,
+                # Unified FM parameters
+                contrastive=self.contrastive,
             )
         if self.compile_model:
             self.model = torch.compile(self.model)
@@ -280,7 +285,7 @@ class CancerFoundation(pl.LightningModule):
             use_cell_embedding = self.use_cell_embedding
         return self.model(data_dict, use_cell_embedding=use_cell_embedding)
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch, batch_idx):  # batch = data_dict from collator
         """Performs a single training step.
 
         Args:

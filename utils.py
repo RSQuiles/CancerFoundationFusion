@@ -428,6 +428,12 @@ def get_args():
         help="Number of single-cell samples to aggregate into each pseudobulk. These are drawn from the same pool as the single-cell samples in the batch, but are guaranteed to be different samples. Default is 10.",
     )
 
+    parser.add_argument(
+        "--contrastive_training",
+        action="store_true",
+        help="Whether to include a contrastive loss that brings the pseudobulk and real bulk samples closer together in the embedding space. Default is False.",
+    )
+
     return parser.parse_args()
 
 

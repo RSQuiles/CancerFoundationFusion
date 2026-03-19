@@ -48,6 +48,8 @@ class TransformerModule(nn.Module):
         max_seq_len: int,
         gen_method: str,
         their_init_weights: bool,
+        # Unified FM parameters
+        contrastive: bool = False,
     ):
         """Initializes the TransformerModule.
 
@@ -77,6 +79,7 @@ class TransformerModule(nn.Module):
             weight_conditionloss (float): Weight for the condition prediction loss in DAT.
             dat_scale (float): Scale factor for the gradient reversal layer in DAT.
             normalise_bins (bool): Whether to apply a sigmoid to the output of the decoders.
+            contrastive (bool): If True, enable contrastive learning. It brings the pseudobulk and real bulk samples closer together in the embedding space. Defaults to False.
         """
         super().__init__()
         self.model_type = "Transformer"
@@ -91,6 +94,7 @@ class TransformerModule(nn.Module):
         self.where_condition = where_condition
         self.max_seq_len = max_seq_len
         self.gen_method = gen_method
+        self.contrastive = contrastive
 
         self.n_input_bins = n_input_bins
         # if self.input_emb_style not in ["category", "continuous", "scaling"]:
@@ -537,7 +541,7 @@ class TransformerModule(nn.Module):
 
         return input_gene_ids, input_values, src_key_padding_mask, target_values
 
-    def forward(
+    def forward(  # tensors is the data_dict from collator
         self, tensors: dict[str, torch.Tensor], use_cell_embedding: bool = False
     ) -> Mapping[str, Tensor]:
         """Main forward pass that dispatches to generative or perceptual mode.
@@ -608,7 +612,8 @@ class TransformerModule(nn.Module):
             loss = loss + use_cell_embedding * loss_gen
             loss_dict["loss_gen"] = loss_gen
 
-        else:  # Perceptual training
+        # Perceptual training
+        else:
             input_gene_ids, input_values, src_key_padding_mask, target_values = (
                 self._prepare_perceptual_input(tensors)
             )
@@ -633,6 +638,7 @@ class TransformerModule(nn.Module):
                 loss = loss + loss_mvc
                 loss_dict["loss_mvc"] = loss_mvc
 
+        # Domain adversarial training
         if self.do_dat:
             if self.conditions:
                 for condition in self.conditions:
@@ -653,8 +659,91 @@ class TransformerModule(nn.Module):
                         self.conditions
                     )
 
+        # Contrastive loss: if enabled, it brings the pseudobulk and real bulk samples closer together in the embedding space.
+        if self.contrastive:
+            # raise NotImplementedError("Contrastive loss is not implemented yet")
+            embeddings = output_dict[
+                "transformer_output"
+            ]  # Embeddings are transformer_output regardless of the training mode
+            modalities = tensors["modality"]
+            assert len(embeddings) == len(
+                modalities
+            ), "Embeddings and modalities tensors must have the same batch size"
+
+            loss_contrastive = self.modality_contrastive_loss(embeddings, modalities)
+            loss = loss + loss_contrastive
+            loss_dict["loss_contrastive"] = loss_contrastive.detach()
+
         loss_dict["total_loss"] = loss
         return loss_dict
+
+    def modality_contrastive_loss(
+        embeddings: torch.Tensor,
+        modalities: torch.Tensor,
+        temperature: float = 0.1,
+        use_cls_token: bool = True,
+    ) -> torch.Tensor:
+        """
+        Multi-positive InfoNCE:
+        - anchors: modality == 0
+        - positives: modality == 2
+        - negatives: modality == 1
+
+        embeddings:
+            shape (B, D) or (B, L, D)
+        modalities:
+            shape (B,)
+        """
+
+        assert embeddings.size(0) == modalities.size(
+            0
+        ), "Embeddings and modalities tensors must have the same batch size"
+
+        # As transformer_output is sequence-shaped, reduce to one embedding per sample.
+        if embeddings.dim() == 3:
+            if use_cls_token:
+                embeddings = embeddings[:, 0, :]  # CLS token
+            else:
+                embeddings = embeddings.mean(dim=1)  # mean pooling
+
+        assert embeddings.dim() == 2, f"Expected (B, D), got {embeddings.shape}"
+        assert modalities.dim() == 1, f"Expected (B,), got {modalities.shape}"
+
+        # Masks
+        anchor_mask = modalities == 0
+        pos_mask = modalities == 2
+        candidate_mask = (modalities == 1) | (modalities == 2)
+
+        # Select anchor and candidate embeddings
+        anchor_emb = embeddings[anchor_mask]  # (N0, D)
+        candidate_emb = embeddings[candidate_mask]  # (N1+N2, D)
+        candidate_mods = modalities[candidate_mask]  # (N1+N2,)
+
+        if anchor_emb.size(0) == 0:
+            raise ValueError("No modality-0 samples in batch.")
+        if not (candidate_mods == 2).any():
+            raise ValueError("No modality-2 samples in batch for positives.")
+        if not (candidate_mods == 1).any():
+            raise ValueError("No modality-1 samples in batch for negatives.")
+
+        # Normalize for cosine similarity
+        anchor_emb = F.normalize(anchor_emb, dim=1)
+        candidate_emb = F.normalize(candidate_emb, dim=1)
+
+        # Similarity matrix: (N0, N1+N2)
+        logits = anchor_emb @ candidate_emb.T
+        logits = logits / temperature
+
+        # Positive mask over candidate columns
+        pos_cols = (candidate_mods == 2).unsqueeze(0).expand(anchor_emb.size(0), -1)
+
+        # Stable log-softmax form:
+        log_denom = torch.logsumexp(logits, dim=1)  # (N0,)
+        pos_logits = logits.masked_fill(~pos_cols, float("-inf"))
+        log_num = torch.logsumexp(pos_logits, dim=1)  # (N0,)
+
+        loss = -(log_num - log_denom).mean()
+        return loss
 
     def training_step(self, batch, batch_idx):
         """Performs a single training step (for PyTorch Lightning).

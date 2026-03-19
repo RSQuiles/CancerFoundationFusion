@@ -62,7 +62,9 @@ class BulkSCCollator(AnnDataCollator):
         self.n_bulk = round(self.batch_size * self.bulk_ratio)
         self.n_pb = round(self.batch_size * self.pb_ratio)
         self.n_sc = self.batch_size - self.n_bulk - self.n_pb
-        self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pseudobulk
+        self.raw_batch_size = (
+            self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pseudobulk
+        )
 
         # Confirm batch composition
         print("\nBatch composition at the collator level")
@@ -76,7 +78,10 @@ class BulkSCCollator(AnnDataCollator):
         if self.n_bulk <= 0:
             raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")
         if self.n_sc_per_pseudobulk <= 0:
-            raise ValueError("n_sc_per_pseudobulk must be positive, got "f"{self.n_sc_per_pseudobulk}.")
+            raise ValueError(
+                "n_sc_per_pseudobulk must be positive, got "
+                f"{self.n_sc_per_pseudobulk}."
+            )
 
     def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, Any]:
         if len(examples) != self.raw_batch_size:
@@ -85,8 +90,16 @@ class BulkSCCollator(AnnDataCollator):
             )
 
         sc_samples = [dict(sample) for sample in examples[: self.n_sc]]
-        sc_for_pb_samples = [dict(sample) for sample in examples[self.n_sc : self.n_sc + self.n_pb * self.n_sc_per_pseudobulk]]
-        bulk_samples = [dict(sample) for sample in examples[self.n_sc + self.n_pb * self.n_sc_per_pseudobulk :]]
+        sc_for_pb_samples = [
+            dict(sample)
+            for sample in examples[
+                self.n_sc : self.n_sc + self.n_pb * self.n_sc_per_pseudobulk
+            ]
+        ]
+        bulk_samples = [
+            dict(sample)
+            for sample in examples[self.n_sc + self.n_pb * self.n_sc_per_pseudobulk :]
+        ]
 
         pseudobulk_samples: List[Dict[str, Any]] = []
         sc_pseudobulk_index: List[int] = []
@@ -162,13 +175,19 @@ class BulkSCCollator(AnnDataCollator):
 
         # Additional structural metadata for mixed losses
         data_dict["is_real_sample"] = torch.LongTensor(unified_is_real)
-        data_dict["sample_pseudobulk_index"] = torch.LongTensor(unified_pseudobulk_index)
-        data_dict["sc_pseudobulk_index"] = torch.LongTensor(sc_pseudobulk_index)  # for aggregation consistency losses
+        data_dict["sc_pseudobulk_index"] = torch.LongTensor(
+            sc_pseudobulk_index
+        )  # for aggregation consistency losses, local for sc_for_pb_samples
+        data_dict["sample_pseudobulk_index"] = torch.LongTensor(
+            unified_pseudobulk_index
+        )  # similar to above, but for all samples in the batch
         data_dict["pseudobulk_sizes"] = torch.LongTensor(pseudobulk_sizes)
 
         return data_dict
 
-    def _fill_missing_conditions(self, pb_sample: Dict[str, Any], sc_samples: List[Dict[str, Any]]) -> None:
+    def _fill_missing_conditions(
+        self, pb_sample: Dict[str, Any], sc_samples: List[Dict[str, Any]]
+    ) -> None:
         """
         Fill missing conditions from generated pseudobulk samples, borrowing from
         underlying single-cell samples
@@ -188,7 +207,9 @@ class BulkSCCollator(AnnDataCollator):
         max_value = 0
         # Determine the cardinalities and choose the most prevalent value
         for sample in samples:
-            assert condition in sample, f"{condition} not present in some of the samples"
+            assert (
+                condition in sample
+            ), f"{condition} not present in some of the samples"
             if sample[condition] not in values:
                 values[sample[condition]] = 1
             else:
