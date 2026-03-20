@@ -50,6 +50,8 @@ class TransformerModule(nn.Module):
         their_init_weights: bool,
         # Unified FM parameters
         contrastive: bool = False,
+        aggregation: bool = False,
+        agg_fn: Optional[str] = None,
     ):
         """Initializes the TransformerModule.
 
@@ -80,6 +82,8 @@ class TransformerModule(nn.Module):
             dat_scale (float): Scale factor for the gradient reversal layer in DAT.
             normalise_bins (bool): Whether to apply a sigmoid to the output of the decoders.
             contrastive (bool): If True, enable contrastive learning. It brings the pseudobulk and real bulk samples closer together in the embedding space. Defaults to False.
+            aggregation (bool): If True, enable aggregation consistency losses. Defaults to False.
+            agg_fn (Optional[str]): The function to use for aggregating single-cell embeddings into pseudobulk embeddings. Defaults to "mean".
         """
         super().__init__()
         self.model_type = "Transformer"
@@ -95,6 +99,8 @@ class TransformerModule(nn.Module):
         self.max_seq_len = max_seq_len
         self.gen_method = gen_method
         self.contrastive = contrastive
+        self.aggregation = aggregation
+        self.agg_fn = agg_fn
 
         self.n_input_bins = n_input_bins
         # if self.input_emb_style not in ["category", "continuous", "scaling"]:
@@ -581,7 +587,17 @@ class TransformerModule(nn.Module):
             )
 
             gen_expr_preds = output_dict["gen_preds"]
-            positions_to_match = ~gen_key_padding_mask
+            # Do not take into account sc_for_pb for the reconstruction loss
+            keep_samples = (
+                tensors["is_sc_for_pb"] == 0
+                if "is_sc_for_pb" in tensors
+                else torch.ones(
+                    gen_expr_target.shape[0],
+                    dtype=torch.bool,
+                    device=gen_expr_target.device,
+                )
+            )
+            positions_to_match = (~gen_key_padding_mask) & keep_samples.unsqueeze(1)
             loss = loss_expr = self.criterion(
                 gen_expr_preds, gen_expr_target, positions_to_match
             )
@@ -625,7 +641,21 @@ class TransformerModule(nn.Module):
             )
 
             output_values = output_dict["mlm_output"]
-            positions_to_match = ~src_key_padding_mask & (target_values != -2)
+            # Do not take into account sc_for_pb for the reconstruction loss
+            keep_samples = (
+                tensors["is_sc_for_pb"] == 0
+                if "is_sc_for_pb" in tensors
+                else torch.ones(
+                    gen_expr_target.shape[0],
+                    dtype=torch.bool,
+                    device=gen_expr_target.device,
+                )
+            )
+            positions_to_match = (
+                ~src_key_padding_mask
+                & (target_values != -2)
+                & keep_samples.unsqueeze(1)
+            )
             loss = loss_expr = self.criterion(
                 output_values, target_values, positions_to_match
             )
@@ -674,6 +704,43 @@ class TransformerModule(nn.Module):
             loss = loss + loss_contrastive
             loss_dict["loss_contrastive"] = loss_contrastive.detach()
 
+        # Aggregation consistency loss: if enabled, it encourages the model to produce consistent predictions for single-cell and pseudobulk samples
+        if self.aggregation:
+            embeddings = output_dict["transformer_output"]
+            # Reconstruct assignment
+            sc_assignment = {}
+            assert len(embeddings) == len(
+                tensors["is_sc_for_pb"]
+            ), "Embeddings and input dictionaries must have the same batch size"
+            for idx in range(len(embeddings)):
+                if tensors["is_sc_for_pb"][idx] == 1:
+                    if (
+                        tensors["sample_pseudobulk_index"][idx].item()
+                        not in sc_assignment
+                    ):
+                        sc_assignment[
+                            tensors["sample_pseudobulk_index"][idx].item()
+                        ] = []
+                    sc_assignment[
+                        tensors["sample_pseudobulk_index"][idx].item()
+                    ].append(idx)
+
+            # Enforce consistency loss for each pseudobulk and its assigned single cells
+            loss_agg = 0
+            for pb_idx, sc_indices in sc_assignment.items():
+                if len(sc_indices) > 0:
+                    pb_embedding = embeddings[pb_idx]
+                    sc_embeddings = embeddings[sc_indices]
+                    if self.agg_fn == "mean":
+                        sc_embedding_agg = sc_embeddings.mean(dim=0)
+                    elif self.agg_fn == "sum":
+                        sc_embedding_agg = sc_embeddings.sum(dim=0)
+                    else:
+                        raise ValueError(f"Unknown agg_fn: {self.agg_fn}")
+                    loss_agg += F.mse_loss(pb_embedding, sc_embedding_agg)
+            loss = loss + loss_agg
+            loss_dict["loss_agg"] = loss_agg.detach()
+
         loss_dict["total_loss"] = loss
         return loss_dict
 
@@ -711,7 +778,6 @@ class TransformerModule(nn.Module):
 
         # Masks
         anchor_mask = modalities == 0
-        pos_mask = modalities == 2
         candidate_mask = (modalities == 1) | (modalities == 2)
 
         # Select anchor and candidate embeddings
