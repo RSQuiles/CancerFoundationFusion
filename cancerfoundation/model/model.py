@@ -74,6 +74,8 @@ class CancerFoundation(pl.LightningModule):
         n_top_genes: int = 1200,
         # Unified FM parameters
         contrastive: bool = False,
+        aggregation: bool = False,
+        agg_fn: Optional[str] = None,
     ):
         """Initializes the CancerFoundation LightningModule.
 
@@ -109,6 +111,8 @@ class CancerFoundation(pl.LightningModule):
             balance_secondary (Optional[str], optional): The secondary variable for balanced sampling. Defaults to None.
             zero_percentages (Optional[List[float]], optional): Percentages for balancing zero expression. Defaults to None.
             contrastive (bool, optional): If True, enable contrastive learning. It brings the pseudobulk and real bulk samples closer together in the embedding space. Defaults to False.
+            aggregation (bool, optional): If True, enable aggregation consistency losses. Defaults to False.
+            agg_fn (Optional[str], optional): The function to use for aggregating single-cell embeddings into pseudobulk embeddings. Defaults to "mean".
         """
         super().__init__()
         self.save_hyperparameters()
@@ -123,7 +127,6 @@ class CancerFoundation(pl.LightningModule):
         )
         self.TRUNC_BY_SAMPLE = TRUNC_BY_SAMPLE
         self.training_tasks = training_tasks
-        self.contrastive = contrastive
         self.embsize = embsize
         self.nheads = nheads
         self.d_hid = d_hid
@@ -144,6 +147,11 @@ class CancerFoundation(pl.LightningModule):
         self.perturbation = perturbation
         self.their_init_weights = their_init_weights
         self.n_top_genes = n_top_genes
+
+        # Unified FM parameters
+        self.contrastive = contrastive
+        self.aggregation = aggregation
+        self.agg_fn = agg_fn
 
         # Training configuration
         self.pad_token = "<pad>"
@@ -266,6 +274,8 @@ class CancerFoundation(pl.LightningModule):
                 their_init_weights=self.their_init_weights,
                 # Unified FM parameters
                 contrastive=self.contrastive,
+                aggregation=self.aggregation,
+                agg_fn=self.agg_fn,
             )
         if self.compile_model:
             self.model = torch.compile(self.model)

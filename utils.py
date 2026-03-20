@@ -434,6 +434,19 @@ def get_args():
         help="Whether to include a contrastive loss that brings the pseudobulk and real bulk samples closer together in the embedding space. Default is False.",
     )
 
+    parser.add_argument(
+        "--agg-consistency",
+        action="store_true",
+        help="Whether to include an aggregation consistency loss that encourages the pseudobulk embeddings to be similar to the aggregated embeddings of their constituent single-cell samples. Default is False.",
+    )
+
+    parser.add_argument(
+        "--agg-fn",
+        type=str,
+        choices=["mean", "sum"],
+        help="The function to use for aggregating single-cell embeddings into pseudobulk embeddings. Default is 'mean'.",
+    )
+
     return parser.parse_args()
 
 

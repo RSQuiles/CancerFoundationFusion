@@ -121,6 +121,7 @@ class BulkSCCollator(AnnDataCollator):
         unified_modalities: List[int] = []
         unified_is_real: List[int] = []
         unified_pseudobulk_index: List[int] = []
+        unified_is_sc_for_pb: List[int] = []  # mask for sc_for_pb samples
 
         # 0 -> real bulk
         for sample in bulk_samples:
@@ -128,6 +129,7 @@ class BulkSCCollator(AnnDataCollator):
             unified_modalities.append(0)
             unified_is_real.append(1)
             unified_pseudobulk_index.append(-1)
+            unified_is_sc_for_pb.append(0)
 
         # 1 -> sc
         for sc_idx, sample in enumerate(sc_samples):
@@ -135,6 +137,7 @@ class BulkSCCollator(AnnDataCollator):
             unified_modalities.append(1)
             unified_is_real.append(1)
             unified_pseudobulk_index.append(-1)
+            unified_is_sc_for_pb.append(0)
 
         # 2 -> pseudobulk
         for pb_idx, sample in enumerate(pseudobulk_samples):
@@ -142,16 +145,16 @@ class BulkSCCollator(AnnDataCollator):
             unified_modalities.append(2)
             unified_is_real.append(0)
             unified_pseudobulk_index.append(pb_idx)
-
+            unified_is_sc_for_pb.append(0)
         # 3 (1) -> sc for pb
-        # Avoid passing this to the model for initial runs
-        """
         for sc_idx, sample in enumerate(sc_for_pb_samples):
             unified_samples.append(sample)
             unified_modalities.append(1)
             unified_is_real.append(1)
             unified_pseudobulk_index.append(sc_pseudobulk_index[sc_idx])
+            unified_is_sc_for_pb.append(1)
 
+        """
         # 4 -> matched bulk (optional)
         if self.match_fn is not None:
             for pb_idx, pseudobulk in enumerate(pseudobulk_samples):
@@ -175,6 +178,7 @@ class BulkSCCollator(AnnDataCollator):
 
         # Additional structural metadata for mixed losses
         data_dict["is_real_sample"] = torch.LongTensor(unified_is_real)
+        data_dict["is_sc_for_pb"] = torch.LongTensor(unified_is_sc_for_pb)
         data_dict["sc_pseudobulk_index"] = torch.LongTensor(
             sc_pseudobulk_index
         )  # for aggregation consistency losses, local for sc_for_pb_samples

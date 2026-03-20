@@ -108,6 +108,20 @@ def main():
     if args.seed is not None:
         pl.seed_everything(args.seed, workers=True)
 
+    if args.contrastive_training and not args.unified:
+        raise ValueError("Contrastive training is only supported with unified_fm=True.")
+    if args.agg_consistency and not args.unified:
+        raise ValueError(
+            "Aggregation consistency losses are only supported with unified_fm=True."
+        )
+    if args.agg_consistency and not args.agg_fn:
+        # Fallback to sum
+        args.agg_fn = "sum"
+    if args.agg_fn not in [None, "sum", "mean"]:
+        raise ValueError(
+            "Invalid aggregation function. Supported values are None, 'sum', and 'mean'."
+        )
+
     datamodule = SingleCellDataModule(
         data_path=args.train_path,
         zero_percentages=args.zero_percentages,
@@ -182,6 +196,8 @@ def main():
             their_init_weights=args.their_init_weights,
             # Unified FM parameters
             contrastive=args.contrastive_training,
+            aggregation=args.agg_consistency,
+            agg_fn=args.agg_fn,
         )
 
     if args.pretrained:
