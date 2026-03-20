@@ -23,9 +23,9 @@ CUDA_LAUNCH_BLOCKING=1 python ../pretrain.py \
     --save-dir "$SAVE_DIR" \
     --max-seq-len 600 \
     --batch-size 64 \
-    --nlayers 6 \
-    --nheads 8 \
-    --embsize 128 \
+    --nlayers 2 \
+    --nheads 4 \
+    --embsize 64 \
     --d-hi 256 \
     --epochs 2 \
     --lr 0.0001 \
@@ -34,10 +34,9 @@ CUDA_LAUNCH_BLOCKING=1 python ../pretrain.py \
     --trunc-by-sample \
     --loss mse \
     --conditions tissue \
-    --balance-primary technology \
     --train-path "$TRAIN_DIR" \
     --zero-percentages 0.2 0.4 0.6 \
-    --strategy='ddp' \
+    --strategy='auto' \
     --seed 0 \
     --precision "bf16-mixed" \
     --do-mvc \
@@ -46,6 +45,8 @@ CUDA_LAUNCH_BLOCKING=1 python ../pretrain.py \
     --where-condition "end" \
     --gen-method "theirs" \
     --num-workers 1 \
+    --contrastive_training \
+    --agg-consistency \
     # --compile \
     #  --wandb "brain" \
     #  --wandb-name "${SLURM_JOB_NAME}_${SLURM_JOB_ID}" \

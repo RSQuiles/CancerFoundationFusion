@@ -444,6 +444,7 @@ def get_args():
         "--agg-fn",
         type=str,
         choices=["mean", "sum"],
+        default="sum",
         help="The function to use for aggregating single-cell embeddings into pseudobulk embeddings. Default is 'mean'.",
     )
 

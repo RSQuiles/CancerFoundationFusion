@@ -489,6 +489,9 @@ class TransformerModule(nn.Module):
         """
         cell_emb = self._get_cell_emb_from_layer(transformer_output)
         output["cell_emb"] = cell_emb
+        
+        # Also append with embeddings
+        output["embeddings"] = transformer_output
 
         if self.do_mvc:
             if self.conditions:
@@ -691,11 +694,11 @@ class TransformerModule(nn.Module):
 
         # Contrastive loss: if enabled, it brings the pseudobulk and real bulk samples closer together in the embedding space.
         if self.contrastive:
-            # raise NotImplementedError("Contrastive loss is not implemented yet")
+            # print("Using contrastive loss...")
             embeddings = output_dict[
-                "transformer_output"
+                "embeddings"
             ]  # Embeddings are transformer_output regardless of the training mode
-            modalities = tensors["modality"]
+            modalities = tensors["conditions"]["modality"]
             assert len(embeddings) == len(
                 modalities
             ), "Embeddings and modalities tensors must have the same batch size"
@@ -706,7 +709,8 @@ class TransformerModule(nn.Module):
 
         # Aggregation consistency loss: if enabled, it encourages the model to produce consistent predictions for single-cell and pseudobulk samples
         if self.aggregation:
-            embeddings = output_dict["transformer_output"]
+            # print("Using aggregation consistency loss...")
+            embeddings = output_dict["embeddings"]
             # Reconstruct assignment
             sc_assignment = {}
             assert len(embeddings) == len(
@@ -745,6 +749,7 @@ class TransformerModule(nn.Module):
         return loss_dict
 
     def modality_contrastive_loss(
+        self,
         embeddings: torch.Tensor,
         modalities: torch.Tensor,
         temperature: float = 0.1,
@@ -761,10 +766,7 @@ class TransformerModule(nn.Module):
         modalities:
             shape (B,)
         """
-
-        assert embeddings.size(0) == modalities.size(
-            0
-        ), "Embeddings and modalities tensors must have the same batch size"
+        assert embeddings.size(0) == modalities.size(0), "Embeddings and modalities tensors must have the same batch size"
 
         # As transformer_output is sequence-shaped, reduce to one embedding per sample.
         if embeddings.dim() == 3:
