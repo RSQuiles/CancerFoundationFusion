@@ -49,7 +49,7 @@ class DistributedSamplerWrapper(DistributedSampler):
         return iter(itemgetter(*indexes_of_indexes)(subsampler_indexes))
 
 
-class SingleCellDataModule(pl.LightningDataModule):
+class BulkSCDataModule(pl.LightningDataModule):
     def __init__(
         self,
         data_path,
@@ -110,7 +110,7 @@ class SingleCellDataModule(pl.LightningDataModule):
                 obs_columns=self.conditions,
             )
         else:
-            from .bulk_sc_dataset import BulkSCDataset
+            from .bulk_sc_data import BulkSCDataset
 
             self.dataset = BulkSCDataset(
                 data_dir=self.data_path,
@@ -152,7 +152,7 @@ class SingleCellDataModule(pl.LightningDataModule):
                     RandomSampler(dataset) if train else SequentialSampler(dataset)
                 )
         else:
-            from .bulk_sc_dataset import BulkSCSampler
+            from .bulk_sc_data import BulkSCSampler
 
             sampler = BulkSCSampler(
                 dataset=dataset,

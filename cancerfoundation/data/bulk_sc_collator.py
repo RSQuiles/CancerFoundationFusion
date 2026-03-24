@@ -217,7 +217,7 @@ class BulkSCCollator(AnnDataCollator):
             if sample[condition] not in values:
                 values[sample[condition]] = 1
             else:
-                ++values[sample[condition]]
+                values[sample[condition]] += 1
             # Retrieve max
             if values[sample[condition]] > max_count and sample[condition] != max_value:
                 max_value = sample[condition]

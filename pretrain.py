@@ -6,7 +6,7 @@ from typing import Optional
 sys.path.insert(0, "../")
 from utils import get_args, MyProgressBar
 from cancerfoundation.model.model import CancerFoundation
-from cancerfoundation.data.data_module import SingleCellDataModule
+from cancerfoundation.data.data_module import BulkSCDataModule
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
@@ -122,7 +122,7 @@ def main():
             "Invalid aggregation function. Supported values are None, 'sum', and 'mean'."
         )
 
-    datamodule = SingleCellDataModule(
+    datamodule = BulkSCDataModule(
         data_path=args.train_path,
         zero_percentages=args.zero_percentages,
         batch_size=args.batch_size,
