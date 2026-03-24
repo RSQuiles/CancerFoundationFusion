@@ -45,6 +45,10 @@ class BulkSCDataset(Dataset):
         Value placed at the CLS position.
     obs_columns : list[str] | None
         Extra metadata columns to include per sample.
+    balance : bool
+        Whether to prepare for balanced sampling based on dataset labels.
+    balance_labels : str | list[str] | None
+        Column(s) to use for balanced sampling labels. If None, defaults to all obs columns
     """
 
     GENE_ID = "_cf_gene_id"

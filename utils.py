@@ -448,6 +448,20 @@ def get_args():
         help="The function to use for aggregating single-cell embeddings into pseudobulk embeddings. Default is 'mean'.",
     )
 
+    parser.add_argument(
+        "--balanced-sampler",
+        action="store_true",
+        help="Whether to use a balanced sampler that oversamples underrepresented classes in the training data. Default is False.",
+    )
+
+    parser.add_argument(
+        "--balanced_labels",
+        type=str,
+        nargs="+",
+        default=None,
+        help="The column(s) to use for balanced sampling labels",
+    )
+
     return parser.parse_args()
 
 

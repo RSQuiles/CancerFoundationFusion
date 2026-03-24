@@ -142,6 +142,8 @@ def main():
         condition_token=args.where_condition == "begin",
         num_workers=args.num_workers,
         unified_fm=args.unified,
+        balance=args.balanced_sampler,
+        balance_labels=args.balanced_labels,
     )
     datamodule.setup(stage="fit")
 

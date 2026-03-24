@@ -1,5 +1,5 @@
 import pytorch_lightning as pl
-from typing import Optional
+from typing import List, Optional
 from typing import Iterator
 from operator import itemgetter
 from .data_sampler import get_balanced_sampler
@@ -71,6 +71,8 @@ class BulkSCDataModule(pl.LightningDataModule):
         condition_token: bool,
         num_workers: int,
         unified_fm: bool = False,
+        balance: bool = False,
+        balance_labels: Optional[List[str] | str] = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -89,6 +91,8 @@ class BulkSCDataModule(pl.LightningDataModule):
         self.condition_token = condition_token
         self.num_workers = num_workers
         self.unified_fm = unified_fm
+        self.balance = balance
+        self.balance_labels = balance_labels
         self.conditions = conditions
 
         # Setup token values based on embedding style
@@ -116,6 +120,8 @@ class BulkSCDataModule(pl.LightningDataModule):
                 data_dir=self.data_path,
                 pad_value=self.pad_value,
                 obs_columns=self.conditions,
+                balance=self.balance,
+                balance_labels=self.balance_labels,
             )
 
         # Set condition cardinalities
@@ -160,6 +166,8 @@ class BulkSCDataModule(pl.LightningDataModule):
                 bulk_ratio=self.hparams.bulk_ratio,
                 pb_ratio=self.hparams.pb_ratio,
                 n_sc_per_pb=self.hparams.n_sc_per_pseudobulk,
+                balance=self.balance,
+                num_workers=self.num_workers,
             )
 
         if self.trainer.world_size > 1:
