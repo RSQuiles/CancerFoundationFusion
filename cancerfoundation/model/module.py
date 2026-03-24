@@ -489,7 +489,7 @@ class TransformerModule(nn.Module):
         """
         cell_emb = self._get_cell_emb_from_layer(transformer_output)
         output["cell_emb"] = cell_emb
-        
+
         # Also append with embeddings
         output["embeddings"] = transformer_output
 
@@ -512,6 +512,10 @@ class TransformerModule(nn.Module):
                     discriminator,
                 ) in self.grad_reverse_discriminators.items():
                     output["condition_output"][cond_name] = discriminator(cell_emb)
+                # Inform about DAT conditions
+                print(
+                    f"Performing DAT on: {list(self.grad_reverse_discriminators.keys())}"
+                )
 
         return output
 
@@ -766,7 +770,9 @@ class TransformerModule(nn.Module):
         modalities:
             shape (B,)
         """
-        assert embeddings.size(0) == modalities.size(0), "Embeddings and modalities tensors must have the same batch size"
+        assert embeddings.size(0) == modalities.size(
+            0
+        ), "Embeddings and modalities tensors must have the same batch size"
 
         # As transformer_output is sequence-shaped, reduce to one embedding per sample.
         if embeddings.dim() == 3:

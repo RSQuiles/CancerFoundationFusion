@@ -73,7 +73,9 @@ class BulkSCDataset(Dataset):
         assert self.memmap.number_of_rows() == self.obs.shape[0]
         assert modality_column in self.obs.columns
         if group_column is not None:
-            assert group_column in self.obs_columns, f"The grouping feature {group_column} is not part of the selected {self.obs_columns}"
+            assert (
+                group_column in self.obs_columns
+            ), f"The grouping feature {group_column} is not part of the selected {self.obs_columns}"
 
         # Pre-compute index arrays per modality
         modality_vals = self.obs[modality_column].values
@@ -194,18 +196,21 @@ class BulkSCSampler(Sampler[list[int]]):
         if isinstance(dataset, Subset):
             self.dataset = dataset
             subset_base_indices = dataset.indices
-            base_to_subset = {base_idx: sub_idx for sub_idx, base_idx in enumerate(subset_base_indices)}
-        
-            base_dataset = dataset.dataset
-        
+            base_to_subset = {
+                base_idx: sub_idx
+                for sub_idx, base_idx in enumerate(subset_base_indices)
+            }
+
+            self.base_dataset = dataset.dataset
+
             self.bulk_indices = [
                 base_to_subset[i]
-                for i in base_dataset.bulk_indices
+                for i in self.base_dataset.bulk_indices
                 if i in base_to_subset
             ]
             self.sc_indices = [
                 base_to_subset[i]
-                for i in base_dataset.sc_indices
+                for i in self.base_dataset.sc_indices
                 if i in base_to_subset
             ]
         else:
@@ -213,7 +218,7 @@ class BulkSCSampler(Sampler[list[int]]):
             self.subset_indices = None
             self.bulk_indices = self.dataset.bulk_indices
             self.sc_indices = self.dataset.sc_indices
-            
+
         self.batch_size = batch_size
         self.bulk_ratio = bulk_ratio
         self.pb_ratio = pb_ratio
@@ -264,11 +269,32 @@ class BulkSCSampler(Sampler[list[int]]):
                 replace=len(self.sc_indices) < self.n_sc,
             )
 
-            pb_idx = rng.choice(
-                self.sc_indices,
-                size=self.n_pb * self.n_sc_per_pb,
-                replace=len(self.sc_indices) < self.n_pb * self.n_sc_per_pb,
-            )
+            # If group information is available, we sample pseudobulk from the same group to ensure feasibility of the synthetic samples
+            if self.base_dataset.group_column is not None:
+                # Sample groups for the pseudobulk samples
+                pb_groups = rng.choice(
+                    self.base_dataset.groups,
+                    size=self.n_pb,
+                    replace=len(self.base_dataset.groups) < self.n_pb,
+                )
+                pb_sc_indices = []
+                for g in pb_groups:
+                    sc_pool = self.base_dataset.group_to_sc[g]
+                    pb_sc_indices.extend(
+                        rng.choice(
+                            sc_pool,
+                            size=self.n_sc_per_pb,
+                            replace=len(sc_pool) < self.n_sc_per_pb,
+                        ).tolist()
+                    )
+                pb_idx = np.array(pb_sc_indices)
+            # Else, we sample pseudobulk from the same pool as the single-cell samplesº
+            else:
+                pb_idx = rng.choice(
+                    self.sc_indices,
+                    size=self.n_pb * self.n_sc_per_pb,
+                    replace=len(self.sc_indices) < self.n_pb * self.n_sc_per_pb,
+                )
 
             bulk_idx = rng.choice(
                 self.bulk_indices,
