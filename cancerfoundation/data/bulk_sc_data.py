@@ -127,6 +127,7 @@ class BulkSCDataset(Dataset):
                 balance_labels if balance_labels is not None else obs_columns
             )
             # Dictionary for the different modalities
+            print(f"Generating label arrays for: {self.balance_labels}")
             self.labels = self.get_label_cats(self.balance_labels)
 
     # ------------------------------------------------------------------
@@ -295,25 +296,29 @@ class BulkSCSampler(Sampler[list[int]]):
         # Since the Subset uses a local set of indices, different from the original dataset
         if isinstance(dataset, Subset):
             self.dataset = dataset
-            subset_base_indices = dataset.indices
+            self.subset_base_indices = dataset.indices
             base_to_subset = {
                 base_idx: sub_idx
-                for sub_idx, base_idx in enumerate(subset_base_indices)
+                for sub_idx, base_idx in enumerate(self.subset_base_indices)
             }
 
             self.base_dataset = dataset.dataset
 
             # Map previously computed indices to indices in the current dataset (Subset)
-            self.bulk_indices = [
+            self.bulk_indices = np.array(
+            [
                 base_to_subset[i]
                 for i in self.base_dataset.bulk_indices
                 if i in base_to_subset
             ]
-            self.sc_indices = [
+            )
+            self.sc_indices = np.array(
+            [
                 base_to_subset[i]
                 for i in self.base_dataset.sc_indices
                 if i in base_to_subset
             ]
+            )
         else:
             self.dataset = dataset
             self.base_dataset = dataset
@@ -352,6 +357,7 @@ class BulkSCSampler(Sampler[list[int]]):
         self.balance = balance
         self.sample_balanced = balance is not None
         if balance is not None:
+            print("Setting up balanced sampler...")
             self.curiculum = curiculum
             self.element_weights = (
                 None  # Placeholder for potential future use of per-sample weights
@@ -364,25 +370,21 @@ class BulkSCSampler(Sampler[list[int]]):
                 raise ValueError("Dataset does not have labels for balanced sampling.")
             # Map labels to the current Subset if necessary
             if isinstance(dataset, Subset):
+                print("1. Mapping labels back to current Subset")
                 labels = {}
+                subset_base_indices = np.asarray(self.subset_base_indices)
+                
                 labels["all"] = self.base_dataset.labels["all"][subset_base_indices]
-                labels["sc"] = np.array(
-                    [
-                        self.base_dataset.labels["sc"][i]
-                        for i in self.sc_indices
-                        if self.base_dataset.sc_indices[i] in subset_base_indices
-                    ]
-                )
-                labels["bulk"] = np.array(
-                    [
-                        self.base_dataset.labels["bulk"][i]
-                        for i in self.bulk_indices
-                        if self.base_dataset.bulk_indices[i] in subset_base_indices
-                    ]
-                )
+            
+                sc_mask = np.isin(self.base_dataset.sc_indices, subset_base_indices)
+                labels["sc"] = self.base_dataset.labels["sc"][sc_mask]
+            
+                bulk_mask = np.isin(self.base_dataset.bulk_indices, subset_base_indices)
+                labels["bulk"] = self.base_dataset.labels["bulk"][bulk_mask]
             else:
                 labels = self.base_dataset.labels
 
+            print("2. Computing label weights...")
             counts = {key: np.bincount(labels[key]) for key in labels}
             label_weights = {
                 key: (weight_scaler * counts[key]) / (counts[key] + weight_scaler)
@@ -395,6 +397,7 @@ class BulkSCSampler(Sampler[list[int]]):
                 for key in label_weights
             }
             # Build class indices for weighted sampling
+            print("3. Building class indices")
             print(f"Building class indices with {num_workers} workers...")
             klass_indices = {
                 key: self._build_class_indices(
@@ -409,18 +412,25 @@ class BulkSCSampler(Sampler[list[int]]):
             current_offset = {key: 0 for key in klass_indices}
 
             # Sort keys to ensure consistent ordering
-            keys = sorted(klass_indices["all"].keys())
+            keys = klass_indices["all"].keys()
 
             # Build concatenated tensor and track offsets
+            print("Concatenating...")
             for modality in klass_indices.keys():
+                print(modality)
                 for i in range(max(keys) + 1):
-                    offsets[modality].append(current_offset[modality])
-                    if i in keys:
-                        indices = klass_indices[modality][i]
-                        all_indices[modality].append(indices)
-                        current_offset[modality] += len(indices)
+                    try:
+                        offsets[modality].append(current_offset[modality])
+                        if i in keys:
+                            indices = klass_indices[modality][i]
+                            all_indices[modality].append(indices)
+                            current_offset[modality] += len(indices)
+                    except Exception as e:
+                        print(e)
+                        print(f"Encountered problem with key {i} in modality {modality}") 
 
             # Convert to tensors
+            print("4. Converting to tensors")
             self.klass_indices = {
                 modality: torch.cat(all_indices[modality])
                 .to(torch.int32)
@@ -455,16 +465,16 @@ class BulkSCSampler(Sampler[list[int]]):
         assert modality in ["sc", "bulk", "all"], f"Invalid modality: {modality}"
         if modality == "sc":
             assert n == len(
-                self.base_dataset.sc_indices
+                self.sc_indices
             ), "Label length does not match number of SC samples"
         if modality == "bulk":
             assert n == len(
-                self.base_dataset.bulk_indices
+                self.bulk_indices
             ), "Label length does not match number of bulk samples"
         if modality == "all":
-            assert n == len(
-                self.base_dataset
-            ), "Label length does not match number of total samples"
+            assert n == len(self.subset_base_indices), "Label length does not match number of total samples"
+        
+        print(f"For {modality}:")
 
         results = []
         # Create chunks of the labels array with proper sizing
@@ -582,12 +592,12 @@ class BulkSCSampler(Sampler[list[int]]):
         return self._n_batches
 
     def __iter__(self):
-        self.count += 1
-        print(f"Sampling a new batch of size {self.batch_size}")
         rng = np.random.default_rng()
         batch_order = np.arange(self._n_batches)
 
         for _ in batch_order:
+            self.count += 1
+            print(f"Sampling a new batch ({self.count}) of size {self.batch_size}: ", end="")
             indices: list[int] = []
             # Order matters for the collator: [sc_0, ..., sc_{n-1}, pseudobulk_0, ...].
             sc_idx = self.sample(
@@ -633,9 +643,9 @@ class BulkSCSampler(Sampler[list[int]]):
                 balanced=self.sample_balanced,
             )
 
-            indices.extend(sc_idx.tolist())
-            indices.extend(pb_idx.tolist())
-            indices.extend(bulk_idx.tolist())
+            indices.extend(sc_idx)
+            indices.extend(pb_idx)
+            indices.extend(bulk_idx)
             yield indices
 
     def sample(
@@ -661,12 +671,15 @@ class BulkSCSampler(Sampler[list[int]]):
             "bulk",
             "pb",
         ], "Modality must be one of 'sc', 'bulk', or 'pb' for balanced sampling"
+        
+        print(f"{modality} samples, ", end="") if modality != "bulk" else print(f"{modality} samples.")
         if modality == "sc":
             sample_modality = "sc"
         if modality == "bulk":
             sample_modality = "bulk"
         if modality == "pb":
             sample_modality = "sc"  # Must be later improved to account for sensible pseudobulk generation
+            
         sample_labels = torch.multinomial(
             (
                 self.label_weights[sample_modality]
@@ -684,13 +697,9 @@ class BulkSCSampler(Sampler[list[int]]):
         result_indices_list = []  # Changed name to avoid conflict if you had result_indices elsewhere
 
         # Process only the classes that were actually sampled
-        for i, (label, count) in tqdm(
-            enumerate(zip(unique_samples.tolist(), sample_counts.tolist())),
-            total=len(unique_samples),
-            desc="Processing classes in sampler",
-        ):
-            klass_index = self.klass_indices[
-                self.klass_offsets[label] : self.klass_offsets[label + 1]
+        for i, (label, count) in enumerate(zip(unique_samples.tolist(), sample_counts.tolist())):
+            klass_index = self.klass_indices[sample_modality][
+                self.klass_offsets[sample_modality][label] : self.klass_offsets[sample_modality][label + 1]
             ]
 
             if klass_index.numel() == 0:
@@ -741,5 +750,9 @@ class BulkSCSampler(Sampler[list[int]]):
             ]
 
             # Map back to original indices
+            if sample_modality == "sc":
+                true_indices = self.sc_indices[shuffled_indices]
+            elif sample_modality == "bulk":
+                true_indices = self.bulk_indices[shuffled_indices]
 
-            return shuffled_indices.tolist()
+            return true_indices.tolist()

@@ -14,7 +14,7 @@ TRAIN_DIR="/cluster/work/boeva/rquiles/data/mixed_test/pipeline_ready"
 mkdir -p "$SAVE_DIR"
 
 # Improve CUDA traceback
-CUDA_LAUNCH_BLOCKING=1 python ../pretrain.py \
+CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py \
     --unified \
     --bulk-ratio 0.3 \
     --pb-ratio 0.3 \
@@ -47,6 +47,8 @@ CUDA_LAUNCH_BLOCKING=1 python ../pretrain.py \
     --num-workers 1 \
     --contrastive_training \
     --agg-consistency \
+    --balanced-sampler separate \
+    --balanced_labels tissue \
     # --compile \
     #  --wandb "brain" \
     #  --wandb-name "${SLURM_JOB_NAME}_${SLURM_JOB_ID}" \
