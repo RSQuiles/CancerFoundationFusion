@@ -450,8 +450,9 @@ def get_args():
 
     parser.add_argument(
         "--balanced-sampler",
-        action="store_true",
-        help="Whether to use a balanced sampler that oversamples underrepresented classes in the training data. Default is False.",
+        choices=[None, "joint", "separate"],
+        default=None,
+        help="Whether to use a balanced sampler that oversamples underrepresented classes in the training data. It can treat single-cell and bulk samples separately. Default is None.",
     )
 
     parser.add_argument(

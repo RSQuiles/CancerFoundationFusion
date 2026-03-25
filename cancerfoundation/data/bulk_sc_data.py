@@ -6,7 +6,7 @@ import pandas as pd
 import torch
 from pathlib import Path
 from torch.utils.data import Dataset, Sampler, Subset
-from typing import Union, List
+from typing import Union, List, Dict
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
@@ -122,10 +122,11 @@ class BulkSCDataset(Dataset):
         # Label categories for balanced sampling
         self.balance = balance
         self.labels = None
-        if balance:
+        if balance is not None:
             self.balance_labels = (
                 balance_labels if balance_labels is not None else obs_columns
             )
+            # Dictionary for the different modalities
             self.labels = self.get_label_cats(self.balance_labels)
 
     # ------------------------------------------------------------------
@@ -171,7 +172,7 @@ class BulkSCDataset(Dataset):
     def get_label_cats(
         self,
         obs_keys: Union[str, List[str]],
-    ) -> np.ndarray:
+    ) -> Dict[str, np.ndarray]:
         """
         Get combined categorical codes for one or more label columns.
 
@@ -179,12 +180,15 @@ class BulkSCDataset(Dataset):
         categorical encoding. Useful for creating compound class labels for
         stratified sampling.
 
+        Given the virtual separation between bulk and SC samples in relation to
+        sampling, this method deals with these two different set indices independently
+
         Args:
             obs_keys (str | List[str]): Column name(s) to retrieve and combine.
 
         Returns:
-            np.ndarray: Integer codes representing the (combined) categories.
-                Shape: (n_samples,).
+            Dict[str, np.ndarray]: Dictionary mapping modality groups to arrays of integer codes representing the combined categories.
+                Each array has shape (n_samples,) and contains integer codes corresponding to the unique combinations of the specified label columns for that modality group.
         """
         if isinstance(obs_keys, str):
             obs_keys = [obs_keys]
@@ -194,25 +198,36 @@ class BulkSCDataset(Dataset):
             if labels is None:
                 labels = labels_to_str
             else:
-                labels = concat_categorical_codes([labels, labels_to_str])
-        return np.array(labels.codes)
+                labels = {
+                    key: concat_categorical_codes([labels[key], labels_to_str[key]])
+                    for key in labels
+                }
+        return {key: np.array(label.codes) for key, label in labels.items()}
 
-    def get_merged_labels(self, label_key: str) -> pd.Categorical:
+    def get_merged_labels(self, label_key: str) -> Dict[str, pd.Categorical]:
         """
         Get categorical labels for a given key, with categories mapped to their string values.
+
+        Given the virtual separation between bulk and SC samples in relation to
+        sampling, this method deals with these two different set indices independently
 
         Args:
             label_key (str): Column name in the obs DataFrame to retrieve.
         Returns:
-            pd.Categorical: Categorical labels with string categories.
+            Dict[str, pd.Categorical]: Categorical labels with string categories for each group.
         """
         if label_key not in self.obs.columns:
             raise ValueError(f"Label key '{label_key}' not found in obs columns.")
         if label_key not in self.mapping:
             raise ValueError(f"Label key '{label_key}' not found in mapping.")
         code_to_str = {v: k for k, v in self.mapping[label_key].items()}
-        codes = self.obs[label_key].values
-        str_labels = pd.Categorical([code_to_str[code] for code in codes])
+        all_codes = self.obs[label_key].values
+        sc_codes = self.obs[label_key].values[self.sc_indices]
+        bulk_codes = self.obs[label_key].values[self.bulk_indices]
+        all_labels = pd.Categorical([code_to_str[code] for code in all_codes])
+        sc_labels = pd.Categorical([code_to_str[code] for code in sc_codes])
+        bulk_labels = pd.Categorical([code_to_str[code] for code in bulk_codes])
+        str_labels = {"all": all_labels, "sc": sc_labels, "bulk": bulk_labels}
         return str_labels
 
 
@@ -288,6 +303,7 @@ class BulkSCSampler(Sampler[list[int]]):
 
             self.base_dataset = dataset.dataset
 
+            # Map previously computed indices to indices in the current dataset (Subset)
             self.bulk_indices = [
                 base_to_subset[i]
                 for i in self.base_dataset.bulk_indices
@@ -334,7 +350,8 @@ class BulkSCSampler(Sampler[list[int]]):
 
         # Balanced sampling setup
         self.balance = balance
-        if balance:
+        self.sample_balanced = balance is not None
+        if balance is not None:
             self.curiculum = curiculum
             self.element_weights = (
                 None  # Placeholder for potential future use of per-sample weights
@@ -345,45 +362,89 @@ class BulkSCSampler(Sampler[list[int]]):
 
             if self.base_dataset.labels is None:
                 raise ValueError("Dataset does not have labels for balanced sampling.")
-            labels = self.base_dataset.labels
-            counts = np.bincount(labels)
-            label_weights = (weight_scaler * counts) / (counts + weight_scaler)
-            self.label_weights = torch.as_tensor(
-                label_weights, dtype=torch.float32
-            ).share_memory_()
+            # Map labels to the current Subset if necessary
+            if isinstance(dataset, Subset):
+                labels = {}
+                labels["all"] = self.base_dataset.labels["all"][subset_base_indices]
+                labels["sc"] = np.array(
+                    [
+                        self.base_dataset.labels["sc"][i]
+                        for i in self.sc_indices
+                        if self.base_dataset.sc_indices[i] in subset_base_indices
+                    ]
+                )
+                labels["bulk"] = np.array(
+                    [
+                        self.base_dataset.labels["bulk"][i]
+                        for i in self.bulk_indices
+                        if self.base_dataset.bulk_indices[i] in subset_base_indices
+                    ]
+                )
+            else:
+                labels = self.base_dataset.labels
 
+            counts = {key: np.bincount(labels[key]) for key in labels}
+            label_weights = {
+                key: (weight_scaler * counts[key]) / (counts[key] + weight_scaler)
+                for key in counts
+            }
+            self.label_weights = {
+                key: torch.as_tensor(
+                    label_weights[key], dtype=torch.float32
+                ).share_memory_()
+                for key in label_weights
+            }
             # Build class indices for weighted sampling
             print(f"Building class indices with {num_workers} workers...")
-            klass_indices = self._build_class_indices(labels, chunk_size, num_workers)
+            klass_indices = {
+                key: self._build_class_indices(
+                    labels[key], key, chunk_size, num_workers
+                )
+                for key in labels
+            }
 
             # Convert klass_indices to a single tensor and offset vector
-            all_indices = []
-            offsets = []
-            current_offset = 0
+            all_indices = {key: [] for key in klass_indices}
+            offsets = {key: [] for key in klass_indices}
+            current_offset = {key: 0 for key in klass_indices}
 
             # Sort keys to ensure consistent ordering
-            keys = sorted(klass_indices.keys())
+            keys = sorted(klass_indices["all"].keys())
 
             # Build concatenated tensor and track offsets
-            for i in range(max(keys) + 1):
-                offsets.append(current_offset)
-                if i in keys:
-                    indices = klass_indices[i]
-                    all_indices.append(indices)
-                    current_offset += len(indices)
+            for modality in klass_indices.keys():
+                for i in range(max(keys) + 1):
+                    offsets[modality].append(current_offset[modality])
+                    if i in keys:
+                        indices = klass_indices[modality][i]
+                        all_indices[modality].append(indices)
+                        current_offset[modality] += len(indices)
 
             # Convert to tensors
-            self.klass_indices = torch.cat(all_indices).to(torch.int32).share_memory_()
-            self.klass_offsets = torch.tensor(offsets, dtype=torch.long).share_memory_()
+            self.klass_indices = {
+                modality: torch.cat(all_indices[modality])
+                .to(torch.int32)
+                .share_memory_()
+                for modality in all_indices
+            }
+            self.klass_offsets = {
+                modality: torch.tensor(
+                    offsets[modality], dtype=torch.long
+                ).share_memory_()
+                for modality in offsets
+            }
             print(
-                f"Done initializing balanced sampler with {len(self.klass_offsets)} classes"
+                f"Done initializing balanced sampler for {len(self.klass_offsets)} modalities with {len(self.klass_offsets["all"])} classes"
             )
 
-    def _build_class_indices(self, labels: np.ndarray, chunk_size: int, n_workers: int):
+    def _build_class_indices(
+        self, labels: np.ndarray, modality: str, chunk_size: int, n_workers: int
+    ):
         """Build class indices in parallel across multiple workers.
 
         Args:
             labels: array of class labels
+            modality: the modality group to which the labels belong ("sc", "bulk", or "all")
             n_workers: number of parallel workers
             chunk_size: size of chunks to process
 
@@ -391,6 +452,20 @@ class BulkSCSampler(Sampler[list[int]]):
             dictionary mapping class labels to tensors of indices
         """
         n = len(labels)
+        assert modality in ["sc", "bulk", "all"], f"Invalid modality: {modality}"
+        if modality == "sc":
+            assert n == len(
+                self.base_dataset.sc_indices
+            ), "Label length does not match number of SC samples"
+        if modality == "bulk":
+            assert n == len(
+                self.base_dataset.bulk_indices
+            ), "Label length does not match number of bulk samples"
+        if modality == "all":
+            assert n == len(
+                self.base_dataset
+            ), "Label length does not match number of total samples"
+
         results = []
         # Create chunks of the labels array with proper sizing
         n_chunks = (n + chunk_size - 1) // chunk_size  # Ceiling division
@@ -515,7 +590,12 @@ class BulkSCSampler(Sampler[list[int]]):
         for _ in batch_order:
             indices: list[int] = []
             # Order matters for the collator: [sc_0, ..., sc_{n-1}, pseudobulk_0, ...].
-            sc_idx = self.sample(self.sc_indices, size=self.n_sc, balanced=self.balance)
+            sc_idx = self.sample(
+                self.sc_indices,
+                size=self.n_sc,
+                modality="sc",
+                balanced=self.sample_balanced,
+            )
 
             # If group information is available, we sample pseudobulk from the same group to ensure feasibility of the synthetic samples
             if self.base_dataset.group_column is not None:
@@ -530,7 +610,10 @@ class BulkSCSampler(Sampler[list[int]]):
                     sc_pool = self.base_dataset.group_to_sc[g]
                     pb_sc_indices.extend(
                         self.sample(
-                            sc_pool, size=self.n_sc_per_pb, balanced=self.balance
+                            sc_pool,
+                            size=self.n_sc_per_pb,
+                            modality="pb",
+                            balanced=self.sample_balanced,
                         )
                     )
                 pb_idx = np.array(pb_sc_indices)
@@ -539,11 +622,15 @@ class BulkSCSampler(Sampler[list[int]]):
                 pb_idx = self.sample(
                     self.sc_indices,
                     size=self.n_pb * self.n_sc_per_pb,
-                    balanced=self.balance,
+                    modality="pb",
+                    balanced=self.sample_balanced,
                 )
 
             bulk_idx = self.sample(
-                self.bulk_indices, size=self.n_bulk, balanced=self.balance
+                self.bulk_indices,
+                size=self.n_bulk,
+                modality="bulk",
+                balanced=self.sample_balanced,
             )
 
             indices.extend(sc_idx.tolist())
@@ -555,6 +642,7 @@ class BulkSCSampler(Sampler[list[int]]):
         self,
         indices: Union[List[int], List[int]],
         size: int,
+        modality: Optional[str] = None,
         balanced: bool = False,
     ):
         """Sample a batch of single-cell or real bulkindices with optional balancing."""
@@ -568,13 +656,25 @@ class BulkSCSampler(Sampler[list[int]]):
             )
 
         # Balanced sampling logic
+        assert modality in [
+            "sc",
+            "bulk",
+            "pb",
+        ], "Modality must be one of 'sc', 'bulk', or 'pb' for balanced sampling"
+        if modality == "sc":
+            sample_modality = "sc"
+        if modality == "bulk":
+            sample_modality = "bulk"
+        if modality == "pb":
+            sample_modality = "sc"  # Must be later improved to account for sensible pseudobulk generation
         sample_labels = torch.multinomial(
             (
-                self.label_weights ** min(1, ((self.count + 5) / self.curiculum))
+                self.label_weights[sample_modality]
+                ** min(1, ((self.count + 5) / self.curiculum))
                 if self.curiculum
-                else self.label_weights
+                else self.label_weights[sample_modality]
             ),
-            num_samples=self.num_samples,
+            num_samples=size,
             replacement=True,
         )
         # Get counts of each class in sample_labels
@@ -639,4 +739,7 @@ class BulkSCSampler(Sampler[list[int]]):
             shuffled_indices = final_result_indices[
                 torch.randperm(len(final_result_indices))
             ]
+
+            # Map back to original indices
+
             return shuffled_indices.tolist()
