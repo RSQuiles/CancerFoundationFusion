@@ -49,9 +49,10 @@ CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py \
     --agg-consistency \
     --balanced-sampler separate \
     --balanced_labels tissue \
+    --wandb "setup_trial" \
+    --wandb-entity "rquiles" \
+    --wandb-name "${SLURM_JOB_NAME}_${SLURM_JOB_ID}" \
     # --compile \
-    #  --wandb "brain" \
-    #  --wandb-name "${SLURM_JOB_NAME}_${SLURM_JOB_ID}" \
 
 if [ -d "./lightning_logs/version_${SLURM_JOB_ID}" ]; then
     mv "./lightning_logs/version_${SLURM_JOB_ID}" "$SAVE_DIR/lightning_log"

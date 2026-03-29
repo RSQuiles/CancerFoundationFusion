@@ -1,0 +1,9 @@
+Genes: 67186
+Traceback (most recent call last):
+  File "/cluster/work/boeva/rquiles/CancerFoundation/data_preprocess/bulk_sc_data_preprocessing.py", line 510, in <module>
+    main(args)
+  File "/cluster/work/boeva/rquiles/CancerFoundation/data_preprocess/bulk_sc_data_preprocessing.py", line 386, in main
+    h5_to_h5ad(
+  File "/cluster/work/boeva/rquiles/CancerFoundation/data_preprocess/bulk_sc_data_preprocessing.py", line 232, in h5_to_h5ad
+    col_name in metadata_columns
+NameError: name 'metadata_columns' is not defined

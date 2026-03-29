@@ -49,7 +49,6 @@ def train_model(
         val_check_interval: Validation frequency
         pretrained_model_path: Path to pretrained model weights
     """
-
     # Setup callbacks
     callbacks = []
     callbacks.append(MyProgressBar(refresh_rate=log_interval))
@@ -71,6 +70,7 @@ def train_model(
     # logger = None
     global_rank = int(os.environ.get("GLOBAL_RANK", "0"))
     if wandb_project and global_rank == 0:
+        print("\n\nSetting up WANDB logger...\n\n")
         logger = WandbLogger(
             entity=wandb_entity,
             project=wandb_project,

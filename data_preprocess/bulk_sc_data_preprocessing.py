@@ -26,6 +26,16 @@ GENE_ID = "_cf_gene_id"
 CLS_TOKEN = "<cls>"
 PAD_TOKEN = "<pad>"
 
+def read_anndata(file_path):
+    # Make anndata readable
+    with h5py.File(file_path, "r+") as f:
+        if "uns" in f and "log1p" in f["uns"] and "base" in f["uns"]["log1p"]:
+            del f["uns"]["log1p"]["base"]
+            # print("Deleted /uns/log1p/base")
+    
+    adata = sc.read_h5ad(file_path)
+    return adata
+
 
 def normalize_bulk_tissues(bulk_metadata_path: Path, sc_path: Path) -> pd.DataFrame:
     print("Normalizing bulk tissue names...")
@@ -33,7 +43,7 @@ def normalize_bulk_tissues(bulk_metadata_path: Path, sc_path: Path) -> pd.DataFr
     # Retrieve at most 5 files from the sc_path directory
     sc_files = list(sc_path.glob("*.h5ad"))[:5]
     bulk_obs = pd.read_csv(bulk_metadata_path)
-    adata_list = [sc.read_h5ad(f, backed="r") for f in sc_files]
+    adata_list = [read_anndata(f) for f in sc_files]
 
     # Match bulk tissue names to sc categories, and cluster unmatched one
     tissue_match = build_tissue_match(adata_list, bulk_obs)
@@ -197,11 +207,6 @@ def h5_to_h5ad(
         assert (
             existing_vocab_path.is_file()
         ), f"Existing vocab file not found: {existing_vocab_path}"
-    metadata_columns = pd.read_csv(METADATA_CSV).columns
-    for col_name in obs_columns:
-        assert (
-            col_name in metadata_columns
-        ), f"{col_name} not found in metadata columns: {metadata_columns}"
 
     # Load gene list
     with open(GENE_LIST_TXT) as f:
@@ -215,6 +220,19 @@ def h5_to_h5ad(
         metadata = normalize_bulk_tissues(METADATA_CSV, h5ad_dir)
     else:
         metadata = pd.read_csv(METADATA_CSV)
+
+    # Ad-hoc column renaming to match single-cell OBS columns
+    metadata = metadata.rename(columns={
+        "tissue": "tissue_general",
+        "instrument": "assay"
+    })
+    metadata_columns = list(metadata.columns)
+
+    for col_name in obs_columns:
+        assert (
+            col_name in metadata_columns
+        ), f"{col_name} not found in metadata columns: {metadata_columns}"
+    
     print(f"Samples in metadata: {len(metadata)}")
     print(f"Columns: {list(metadata.columns)}")
 
@@ -301,7 +319,7 @@ def _generate_vocab_from_h5ads(
     for path in h5ads.iterdir():
         if not path.name.endswith(".h5ad"):
             continue
-        var_names = sc.read_h5ad(path, backed="r").var_names
+        var_names = read_anndata(path).var_names
         genes.update(var_names)
     vocab = {gene: i for i, gene in enumerate([cls_token, pad_token] + list(genes))}
     return vocab
@@ -317,7 +335,7 @@ def _add_gene_id_to_h5ads(h5ads: Path, vocab: dict[str, int], data_path: Path) -
     for path in h5ads.iterdir():
         if not path.name.endswith(".h5ad"):
             continue
-        adata = sc.read_h5ad(path)
+        adata = read_anndata(path)
         adata.var[GENE_ID] = adata.var_names.map(vocab)
         adata = adata[:, ~adata.var[GENE_ID].isna()].copy()
         adata.var[GENE_ID] = adata.var[GENE_ID].astype(int)
@@ -369,6 +387,7 @@ def main(args):
         h5_to_h5ad(
             bulk_dir=args.bulk_path,
             obs_columns=args.obs_columns,
+            normalize_tissues=args.normalize_bulk_tissues,
             chunk_size=args.chunk_size,
             expr_key=args.bulk_expr_key,
             h5ad_dir=h5ad_path,
@@ -379,23 +398,28 @@ def main(args):
     data_path.mkdir()
     # Generate and save vocabulary
     if args.vocab_path is None:
+        print("Generating gene_vocabulary...")
         vocab = _generate_vocab_from_h5ads(h5ad_path, CLS_TOKEN, PAD_TOKEN)
     else:
+        print("Reading gene vocabulary")
         vocab = json.load(args.vocab_path.open())
     _save_vocab_to_dir(vocab, data_path)
     # Add gene IDs to h5ad files
+    print("Adding gene ids...")
     _add_gene_id_to_h5ads(h5ad_path, vocab, args.data_path)
 
     # Create and process memmap files
+    print("Creating memmap files...")
     memmaps = SingleCellCollection(data_path.data_dir / "tmp")
     memmaps.load_h5ad_multi(args.data_path / "h5ads", max_workers=12)
 
     # Collect observations
+    print("Collecting observations...")
     obs_list = []
     obs_columns = args.obs_columns + ["modality"]  # Ensure modality is included
     for i, fname in enumerate(memmaps.fname_to_mmap.keys()):
         print(f"Processing {i + 1}/{len(memmaps.fname_to_mmap)}: {fname.name}")
-        adata = sc.read_h5ad(h5ad_path / (fname.name + ".h5ad"), backed="r")
+        adata = read_anndata(h5ad_path / (fname.name + ".h5ad"))
         # Add modality column if not present
         if "modality" not in adata.obs.columns:
             adata.obs["modality"] = "sc"
@@ -412,6 +436,7 @@ def main(args):
 
     obs, mapping = convert_columns_to_categorical_with_mapping(obs)
 
+    print("Exporting files...")
     obs.to_parquet(data_path.obs_path)
 
     with data_path.mapping_path.open("w") as f:

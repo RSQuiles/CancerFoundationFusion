@@ -1,0 +1,60 @@
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Deleted /uns/log1p/base
+Traceback (most recent call last):
+  File "/cluster/work/boeva/rquiles/CancerFoundation/data_preprocess/bulk_sc_data_preprocessing.py", line 511, in <module>
+    main(args)
+  File "/cluster/work/boeva/rquiles/CancerFoundation/data_preprocess/bulk_sc_data_preprocessing.py", line 406, in main
+    _add_gene_id_to_h5ads(h5ad_path, vocab, args.data_path)
+  File "/cluster/work/boeva/rquiles/CancerFoundation/data_preprocess/bulk_sc_data_preprocessing.py", line 340, in _add_gene_id_to_h5ads
+    adata = adata[:, ~adata.var[GENE_ID].isna()].copy()
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_core/anndata.py", line 1450, in copy
+    raise ValueError(msg)
+ValueError: To copy an AnnData object in backed mode, pass a filename: `.copy(filename='myfilename.h5ad')`. To load the object into memory, use `.to_memory()`.

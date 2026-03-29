@@ -1,0 +1,179 @@
+15:4: not a valid test operator:  
+15:4: not a valid test operator: 12.9
+21:4: not a valid test operator: (
+21:4: not a valid test operator: 580.126.09
+15:4: not a valid test operator:  
+15:4: not a valid test operator: 12.9
+21:4: not a valid test operator: (
+21:4: not a valid test operator: 580.126.09
+
+=============
+== PyTorch ==
+=============
+
+NVIDIA Release 25.04 (build 159049541)
+PyTorch Version 2.7.0a0+79aa174
+Container image Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+=============
+== PyTorch ==
+=============
+
+NVIDIA Release 25.04 (build 159049541)
+PyTorch Version 2.7.0a0+79aa174
+Container image Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+
+[rank: 0] Seed set to 0
+[rank: 1] Seed set to 0
+Generating label arrays for: ['tissue_general', 'assay']
+Generating label arrays for: ['tissue_general', 'assay']
+Condition Encoders Inspection:
+Conditions: {'tissue_general': 76, 'modality': 3, 'assay': 36}
+Encoders: ModuleDict(
+  (tissue_general): ConditionEncoder(
+    (embedding): Embedding(76, 128)
+    (enc_norm): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+  )
+  (modality): ConditionEncoder(
+    (embedding): Embedding(3, 128)
+    (enc_norm): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+  )
+  (assay): ConditionEncoder(
+    (embedding): Embedding(36, 128)
+    (enc_norm): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+  )
+)
+Condition Encoders Inspection:
+Conditions: {'tissue_general': 76, 'modality': 3, 'assay': 36}
+Encoders: ModuleDict(
+  (tissue_general): ConditionEncoder(
+    (embedding): Embedding(76, 128)
+    (enc_norm): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+  )
+  (modality): ConditionEncoder(
+    (embedding): Embedding(3, 128)
+    (enc_norm): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+  )
+  (assay): ConditionEncoder(
+    (embedding): Embedding(36, 128)
+    (enc_norm): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+  )
+)
+
+
+Setting up WANDB logger...
+
+
+Initializing distributed: GLOBAL_RANK: 1, MEMBER: 2/2
+[W329 05:32:27.764567123 socket.cpp:755] [c10d] The client socket cannot be initialized to connect to [gpu-biomed-17]:53394 (errno: 97 - Address family not supported by protocol).
+
+
+Setting up WANDB logger...
+
+
+Using bfloat16 Automatic Mixed Precision (AMP)
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+HPU available: False, using: 0 HPUs
+Initializing distributed: GLOBAL_RANK: 0, MEMBER: 1/2
+[W329 05:32:28.123496353 socket.cpp:755] [c10d] The client socket cannot be initialized to connect to [gpu-biomed-17]:53394 (errno: 97 - Address family not supported by protocol).
+----------------------------------------------------------------------------------------------------
+distributed_backend=nccl
+All distributed processes registered. Starting with 2 processes
+----------------------------------------------------------------------------------------------------
+
+wandb: Currently logged in as: rquiles to http://ctr-biomed-15.leomed.ethz.ch:8080. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.20.0
+wandb: Run data is saved locally in ./save/small_8656990/wandb/run-20260329_053232-xfnvkzsx
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run small_8656990
+wandb: ⭐️ View project at http://ctr-biomed-15.leomed.ethz.ch:8080/rquiles/small_partition
+wandb: 🚀 View run at http://ctr-biomed-15.leomed.ethz.ch:8080/rquiles/small_partition/runs/xfnvkzsx
+Generating label arrays for: ['tissue_general', 'assay']
+Generating label arrays for: ['tissue_general', 'assay']
+/usr/local/lib/python3.12/dist-packages/pytorch_lightning/callbacks/model_checkpoint.py:654: Checkpoint directory /cluster/work/boeva/rquiles/CancerFoundation/submits_biomed/save/small_8656990 exists and is not empty.
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0,1]
+LOCAL_RANK: 1 - CUDA_VISIBLE_DEVICES: [0,1]
+Loading `train_dataloader` to estimate number of stepping batches.
+Batch composition at the sampler level:
+batch_size: 64
+n_bulk: 19
+n_pb: 19
+n_sc: 26
+raw_batch_size: 235
+sum logical: 64
+Setting up balanced sampler...
+1. Mapping labels back to current Subset
+2. Computing label weights...
+Batch composition at the sampler level:
+batch_size: 64
+n_bulk: 19
+n_pb: 19
+n_sc: 26
+raw_batch_size: 235
+sum logical: 64
+Setting up balanced sampler...
+1. Mapping labels back to current Subset
+3. Building class indices
+Building class indices with 4 workers...
+For all:
+Processing 10,130,217 elements in 10131 chunks...
+2. Computing label weights...
+3. Building class indices
+Building class indices with 4 workers...
+For all:
+Processing 10,130,217 elements in 10131 chunks...
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/usr/lib/python3.12/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/spawn.py", line 130, in _main
+    preparation_data = reduction.pickle.load(from_parent)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+EOFError: Ran out of input
+slurmstepd-gpu-biomed-17: error: Detected 1 oom-kill event(s) in step 8656990.0 cgroup. Some of your processes may have been killed by the cgroup out-of-memory handler.
+srun: error: gpu-biomed-17: task 1: Out Of Memory
+srun: Job step aborted: Waiting up to 92 seconds for job step to finish.
+slurmstepd-gpu-biomed-17: error: *** JOB 8656990 ON gpu-biomed-17 CANCELLED AT 2026-03-29T05:43:32 ***
+slurmstepd-gpu-biomed-17: error: *** STEP 8656990.0 ON gpu-biomed-17 CANCELLED AT 2026-03-29T05:43:32 ***
+slurmstepd-gpu-biomed-17: error: Detected 1 oom-kill event(s) in step 8656990.batch cgroup. Some of your processes may have been killed by the cgroup out-of-memory handler.

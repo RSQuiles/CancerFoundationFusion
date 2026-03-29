@@ -1,0 +1,39 @@
+Traceback (most recent call last):
+  File "/cluster/work/boeva/rquiles/CancerFoundation/data_preprocess/bulk_sc_data_preprocessing.py", line 511, in <module>
+    main(args)
+  File "/cluster/work/boeva/rquiles/CancerFoundation/data_preprocess/bulk_sc_data_preprocessing.py", line 401, in main
+    vocab = _generate_vocab_from_h5ads(h5ad_path, CLS_TOKEN, PAD_TOKEN)
+  File "/cluster/work/boeva/rquiles/CancerFoundation/data_preprocess/bulk_sc_data_preprocessing.py", line 322, in _generate_vocab_from_h5ads
+    var_names = sc.read_h5ad(path, backed="r").var_names
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_io/h5ad.py", line 219, in read_h5ad
+    return read_h5ad_backed(filename, mode)
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_io/h5ad.py", line 162, in read_h5ad_backed
+    d.update({k: read_elem(f[k]) for k in attributes if k in f})
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_io/h5ad.py", line 162, in <dictcomp>
+    d.update({k: read_elem(f[k]) for k in attributes if k in f})
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_io/specs/registry.py", line 377, in read_elem
+    return Reader(_REGISTRY).read_elem(elem)
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_io/utils.py", line 215, in func_wrapper
+    return func(*args, **kwargs)
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_io/specs/registry.py", line 280, in read_elem
+    return read_func(elem)
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_io/specs/methods.py", line 337, in read_mapping
+    return {k: _reader.read_elem(v) for k, v in elem.items()}
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_io/specs/methods.py", line 337, in <dictcomp>
+    return {k: _reader.read_elem(v) for k, v in elem.items()}
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_io/utils.py", line 215, in func_wrapper
+    return func(*args, **kwargs)
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_io/specs/registry.py", line 280, in read_elem
+    return read_func(elem)
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_io/specs/methods.py", line 337, in read_mapping
+    return {k: _reader.read_elem(v) for k, v in elem.items()}
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_io/specs/methods.py", line 337, in <dictcomp>
+    return {k: _reader.read_elem(v) for k, v in elem.items()}
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_io/utils.py", line 215, in func_wrapper
+    return func(*args, **kwargs)
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_io/specs/registry.py", line 276, in read_elem
+    read_func: Read = self.registry.get_read(
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/anndata/_io/specs/registry.py", line 171, in get_read
+    raise IORegistryError._from_read_parts("read", self.read, src_type, spec)  # noqa: EM101
+anndata._io.specs.registry.IORegistryError: No read method registered for IOSpec(encoding_type='null', encoding_version='0.1.0') from <class 'h5py._hl.dataset.Dataset'>. You may need to update your installation of anndata.
+Error raised while reading key 'base' of <class 'h5py._hl.dataset.Dataset'> from /uns/log1p

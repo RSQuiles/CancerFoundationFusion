@@ -417,7 +417,8 @@ class BulkSCSampler(Sampler[list[int]]):
                 print(modality)
                 # Sort keys to ensure consistent ordering
                 keys = klass_indices[modality].keys()
-                for i in range(max(keys) + 1):
+                print(f"{modality}: {keys}")
+                for i in range(max(keys) + 2):
                     try:
                         offsets[modality].append(current_offset[modality])
                         if i in keys:

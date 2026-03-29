@@ -1,0 +1,34 @@
+Generating gene_vocabulary...
+Adding gene ids...
+Creating memmap files...
+Traceback (most recent call last):
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/bionemo/scdl/util/async_worker_queue.py", line 103, in get_task_results
+    results.append(task.result())
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/concurrent/futures/_base.py", line 451, in result
+    return self.__get_result()
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/concurrent/futures/_base.py", line 403, in __get_result
+    raise self._exception
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/bionemo/scdl/util/async_worker_queue.py", line 121, in wait
+    results.append(task.result())
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/concurrent/futures/_base.py", line 451, in result
+    return self.__get_result()
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/concurrent/futures/_base.py", line 403, in __get_result
+    raise self._exception
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/bionemo/scdl/io/single_cell_collection.py", line 53, in _create_single_cell_memmap_dataset_from_h5ad
+    obj = SingleCellMemMapDataset(data_path=Path(base_directory_path) / fname, h5ad_path=h5ad_path)
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/bionemo/scdl/io/single_cell_memmap_dataset.py", line 242, in __init__
+    raise FileExistsError(
+FileExistsError: Invalid input; both an existing SCMMAP and an h5ad file were passed. Please pass either an existing SCMMAP or an h5ad file.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/cluster/work/boeva/rquiles/CancerFoundation/data_preprocess/bulk_sc_data_preprocessing.py", line 517, in <module>
+    main(args)
+  File "/cluster/work/boeva/rquiles/CancerFoundation/data_preprocess/bulk_sc_data_preprocessing.py", line 414, in main
+    memmaps.load_h5ad_multi(args.data_path / "h5ads", max_workers=12)
+  File "/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.10/site-packages/bionemo/scdl/io/single_cell_collection.py", line 153, in load_h5ad_multi
+    raise RuntimeError(f"Error in processing file {ann}: {result}") from result
+RuntimeError: Error in processing file /cluster/work/boeva/rquiles/data/small_partition/pipeline_ready/h5ads/partition_9.h5ad: Invalid input; both an existing SCMMAP and an h5ad file were passed. Please pass either an existing SCMMAP or an h5ad file.
