@@ -2,6 +2,8 @@ import pytorch_lightning as pl
 from typing import List, Optional
 from typing import Iterator
 from operator import itemgetter
+import math
+import itertools
 from .data_sampler import get_balanced_sampler
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, random_split
 
@@ -47,6 +49,73 @@ class DistributedSamplerWrapper(DistributedSampler):
         indexes_of_indexes = super().__iter__()
         subsampler_indexes = self.dataset
         return iter(itemgetter(*indexes_of_indexes)(subsampler_indexes))
+
+
+class DistributedBatchSamplerWrapper(Sampler[list[int]]):
+    """Shard a *batch sampler* across distributed ranks without materializing it.
+
+    Notes
+    -----
+    - This wrapper is meant for `DataLoader(..., batch_sampler=...)` where the
+      underlying sampler yields already-batched indices (e.g. `list[int]`).
+    - We must ensure each rank yields the same number of batches to avoid DDP
+      hangs; we therefore pad (repeat) a small number of initial batches when
+      `len(batch_sampler)` is not divisible by `num_replicas`.
+    - Padding needs at most `num_replicas - 1` batches, so memory stays bounded.
+    """
+
+    def __init__(
+        self,
+        batch_sampler: Sampler[list[int]],
+        num_replicas: int,
+        rank: int,
+        drop_last: bool = True,
+    ):
+        self.batch_sampler = batch_sampler
+        self.num_replicas = int(num_replicas)
+        self.rank = int(rank)
+        self.drop_last = bool(drop_last)
+
+        if self.num_replicas <= 0:
+            raise ValueError(f"num_replicas must be > 0, got {self.num_replicas}")
+        if not (0 <= self.rank < self.num_replicas):
+            raise ValueError(
+                f"rank must be in [0, {self.num_replicas}), got {self.rank}"
+            )
+
+    def __len__(self) -> int:
+        n_batches = len(self.batch_sampler)
+        if self.drop_last:
+            return n_batches // self.num_replicas
+        return int(math.ceil(n_batches / self.num_replicas))
+
+    def set_epoch(self, epoch: int) -> None:
+        if hasattr(self.batch_sampler, "set_epoch"):
+            self.batch_sampler.set_epoch(epoch)
+
+    def __iter__(self) -> Iterator[list[int]]:
+        n_batches = len(self.batch_sampler)
+
+        if self.drop_last:
+            total_size = (n_batches // self.num_replicas) * self.num_replicas
+        else:
+            total_size = int(math.ceil(n_batches / self.num_replicas)) * self.num_replicas
+
+        pad_size = total_size - n_batches
+        pad_buffer: list[list[int]] = []
+
+        # Yield from the underlying sampler, sharding by rank.
+        for i, batch in enumerate(itertools.islice(iter(self.batch_sampler), n_batches)):
+            if i < pad_size:
+                pad_buffer.append(batch)
+            if i % self.num_replicas == self.rank and i < total_size:
+                yield batch
+
+        # Pad by repeating the first `pad_size` batches.
+        for j in range(pad_size):
+            padded_index = n_batches + j
+            if padded_index % self.num_replicas == self.rank:
+                yield pad_buffer[j % len(pad_buffer)]
 
 
 class BulkSCDataModule(pl.LightningDataModule):
@@ -167,17 +236,24 @@ class BulkSCDataModule(pl.LightningDataModule):
                 pb_ratio=self.hparams.pb_ratio,
                 n_sc_per_pb=self.hparams.n_sc_per_pseudobulk,
                 balance=self.balance,
-                num_workers=self.num_workers,
             )
 
         if self.trainer.world_size > 1:
             print(f"Rank: {self.trainer.global_rank} init DistributedSampler.")
-            sampler = DistributedSamplerWrapper(
-                sampler,
-                num_replicas=self.trainer.world_size,
-                rank=self.trainer.global_rank,
-                shuffle=train,
-            )
+            if not self.unified_fm:
+                sampler = DistributedSamplerWrapper(
+                    sampler,
+                    num_replicas=self.trainer.world_size,
+                    rank=self.trainer.global_rank,
+                    shuffle=train,
+                )
+            else:
+                sampler = DistributedBatchSamplerWrapper(
+                    sampler,
+                    num_replicas=self.trainer.world_size,
+                    rank=self.trainer.global_rank,
+                    drop_last=True,
+                )
 
         # Setup collator
         if not self.unified_fm:

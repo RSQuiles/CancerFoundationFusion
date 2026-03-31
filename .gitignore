@@ -48,4 +48,4 @@ tutorials/archs4_test
 .devcontainer/
 
 # Outputs
-submits_biomed/outputs
+slurm_outputs/

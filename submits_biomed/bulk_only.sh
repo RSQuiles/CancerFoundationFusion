@@ -1,7 +1,7 @@
 #!/bin/bash -l
 #SBATCH --job-name=bulk_only
 #SBATCH --output=./slurm_outputs/%x_%j.out
-#SBATCH --time=10:00:00
+#SBATCH --time=24:00:00
 #SBATCH --partition=gpu
 #SBATCH --ntasks-per-node=2
 #SBATCH --gres=gpu:rtx4090:2
@@ -31,7 +31,7 @@ srun singularity run \
         --nheads 8 \
         --embsize 128 \
         --d-hi 256 \
-        --epochs 50 \
+        --epochs 10 \
         --lr 0.0001 \
         --warmup-ratio-or-step 10000 \
         --val-check-interval 0.5 \
@@ -52,7 +52,8 @@ srun singularity run \
         --training-tasks "both" \
         --where-condition "end" \
         --gen-method "theirs" \
-        --compile
+        --compile \
+    	--resume-from-checkpoint "/cluster/work/boeva/rquiles/CancerFoundation/submits_biomed/save/bulk_only_8656983/epoch_epoch=00.ckpt" 
         "
 
 if [ -d "./lightning_logs/version_${SLURM_JOB_ID}" ]; then

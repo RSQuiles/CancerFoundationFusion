@@ -162,3 +162,24 @@ Setting up balanced sampler...
 Building class indices with 4 workers...
 For all:
 Processing 10,130,217 elements in 10131 chunks...
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/usr/lib/python3.12/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/spawn.py", line 130, in _main
+    preparation_data = reduction.pickle.load(from_parent)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+EOFError: Ran out of input
+slurmstepd-gpu-biomed-17: error: Detected 1 oom-kill event(s) in step 8656991.0 cgroup. Some of your processes may have been killed by the cgroup out-of-memory handler.
+srun: error: gpu-biomed-17: task 1: Out Of Memory
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/usr/lib/python3.12/multiprocessing/spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/spawn.py", line 130, in _main
+    preparation_data = reduction.pickle.load(from_parent)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+EOFError: Ran out of input
+slurmstepd-gpu-biomed-17: error: Detected 2 oom-kill event(s) in step 8656991.batch cgroup. Some of your processes may have been killed by the cgroup out-of-memory handler.

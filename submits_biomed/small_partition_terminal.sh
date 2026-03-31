@@ -1,21 +1,19 @@
 #!/bin/bash -l
-#SBATCH --time=04:00:00
-#SBATCH --job-name=mixed_testrun
-#SBATCH --output=./outputs/%x_%j.out
+#SBATCH --time=24:00:00
+#SBATCH --job-name=small
+#SBATCH --output=./slurm_outputs/%x_%j.out
 #SBATCH --partition=gpu
 #SBATCH --ntasks-per-node=2
 #SBATCH --gres=gpu:rtx4090:2
 #SBATCH --cpus-per-task=4
+#SBATCH --mem-per-cpu=16G
 
 set -e
 
 SAVE_DIR="./save/${SLURM_JOB_NAME}_${SLURM_JOB_ID}"
-TRAIN_DIR="/cluster/work/boeva/rquiles/data/mixed_test/pipeline_ready"
+TRAIN_DIR="/cluster/work/boeva/rquiles/data/small_partition/pipeline_ready"
 mkdir -p "$SAVE_DIR"
 
-export MASTER_ADDR=$(hostname -I | awk '{print $1}')
-export MASTER_PORT=12910
-export NCCL_SOCKET_FAMILY=AF_INET
 # Improve CUDA traceback
 CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py \
     --unified \
@@ -25,22 +23,22 @@ CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py \
     --pb-ratio 0.3 \
     --n-sc-per-pseudobulk 10 \
     --save-dir "$SAVE_DIR" \
-    --max-seq-len 600 \
+    --max-seq-len 1200 \
     --batch-size 64 \
-    --nlayers 2 \
-    --nheads 4 \
-    --embsize 64 \
+    --nlayers 6 \
+    --nheads 8 \
+    --embsize 128 \
     --d-hi 256 \
-    --epochs 2 \
+    --epochs 10 \
     --lr 0.0001 \
     --warmup-ratio-or-step 10000 \
     --val-check-interval 0.5 \
     --trunc-by-sample \
     --loss mse \
-    --conditions tissue \
+    --conditions tissue_general assay \
     --train-path "$TRAIN_DIR" \
     --zero-percentages 0.2 0.4 0.6 \
-    --strategy='auto' \
+    --strategy='ddp' \
     --seed 0 \
     --precision "bf16-mixed" \
     --do-mvc \
@@ -48,14 +46,12 @@ CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py \
     --training-tasks "both" \
     --where-condition "end" \
     --gen-method "theirs" \
-    --contrastive_training \
-    --agg-consistency \
     --balanced-sampler separate \
-    --balanced_labels tissue \
-    # --wandb "setup_trial" \
-    # --wandb-entity "rquiles" \
-    # --wandb-name "${SLURM_JOB_NAME}_${SLURM_JOB_ID}" \
-    # --compile \
+    --balanced_labels tissue_general assay \
+    --wandb-entity "rquiles" \
+    --wandb "small_partition" \
+    --wandb-name "${SLURM_JOB_NAME}_${SLURM_JOB_ID}" \
+    --compile \
 
 if [ -d "./lightning_logs/version_${SLURM_JOB_ID}" ]; then
     mv "./lightning_logs/version_${SLURM_JOB_ID}" "$SAVE_DIR/lightning_log"

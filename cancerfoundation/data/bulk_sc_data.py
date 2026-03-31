@@ -601,10 +601,7 @@ class BulkSCSampler(Sampler[list[int]]):
 
         for _ in batch_order:
             self.count += 1
-            print(
-                f"Sampling a new batch ({self.count}) of size {self.batch_size}: ",
-                end="",
-            )
+            # print(f"Sampling a new batch ({self.count}) of size {self.batch_size}: ", end="")
             indices: list[int] = []
             # Order matters for the collator: [sc_0, ..., sc_{n-1}, pseudobulk_0, ...].
             sc_idx = self.sample(
@@ -679,9 +676,7 @@ class BulkSCSampler(Sampler[list[int]]):
             "pb",
         ], "Modality must be one of 'sc', 'bulk', or 'pb' for balanced sampling"
 
-        print(f"{modality} samples, ", end="") if modality != "bulk" else print(
-            f"{modality} samples."
-        )
+        # print(f"{modality} samples, ", end="") if modality != "bulk" else print(f"{modality} samples.")
         if modality == "sc":
             sample_modality = "sc"
         if modality == "bulk":
