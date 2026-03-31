@@ -661,6 +661,9 @@ class BulkSCSampler(Sampler[list[int]]):
     ):
         """Sample a batch of single-cell or real bulkindices with optional balancing."""
 
+        if size == 0:
+            return []
+
         if not balanced:
             rng = np.random.default_rng()
             return rng.choice(
