@@ -429,7 +429,7 @@ class CancerFoundation(pl.LightningModule):
         return load_pretrained(self.model, tensors, gene_mapping, verbose=verbose)
 
     @torch.no_grad()
-    def embed(self, adata, batch_size: int = 64):
+    def embed(self, adata, flavor="seurat", batch_size: int = 64):
         """Embeds an AnnData object into cell embeddings.
 
         Handles all preprocessing: gene intersection with vocab, HVG selection,
@@ -456,7 +456,7 @@ class CancerFoundation(pl.LightningModule):
         data = data[:, common_genes].copy()
 
         # Select highly variable genes
-        sc.pp.highly_variable_genes(data, n_top_genes=self.n_top_genes, layer=None)
+        sc.pp.highly_variable_genes(data, n_top_genes=self.n_top_genes, layer=None, flavor=flavor)
         data = data[:, data.var["highly_variable"]].copy()
 
         # Bin expression values

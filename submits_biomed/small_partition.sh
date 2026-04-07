@@ -26,12 +26,12 @@ srun singularity run \
         --unified \
         --gpus 2 \
         --num-workers 4 \
-        --bulk-ratio 0.3 \
-        --pb-ratio 0.3 \
+        --bulk-ratio 0.5 \
+        --pb-ratio 0.0 \
         --n-sc-per-pseudobulk 10 \
         --save-dir "$SAVE_DIR" \
         --max-seq-len 1200 \
-        --batch-size 64 \
+        --batch-size 32 \
         --nlayers 6 \
         --nheads 8 \
         --embsize 128 \

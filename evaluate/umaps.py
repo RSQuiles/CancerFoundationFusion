@@ -2,7 +2,7 @@
 
 CLI usage (example):
 
-	python -m evaluate.umaps \
+	python umaps.py \
 		--run-name experiment_name \
 		--adata ./my_query.h5ad \
 		--out-dir ./umap_outputs
@@ -28,6 +28,8 @@ import pandas as pd
 import scanpy as sc
 import torch
 
+import sys
+sys.path.insert(0, "../")
 from cancerfoundation.model.model import CancerFoundation
 
 
@@ -124,7 +126,7 @@ def embed_adata(
     obsm_key: str = "X_cf",
 ) -> sc.AnnData:
     """Compute embeddings and store them in `adata.obsm[obsm_key]`."""
-    emb_df: pd.DataFrame = model.embed(adata, batch_size=batch_size)
+    emb_df: pd.DataFrame = model.embed(adata, flavor=args.flavor, batch_size=batch_size)
     adata.obsm[obsm_key] = emb_df.to_numpy(dtype=np.float32)
     return adata
 
@@ -174,12 +176,72 @@ def _parse_color_list(values: list[str] | None) -> list[str] | None:
     return out
 
 
+def main(argv: Iterable[str] | None = None) -> int:
+    args = build_argparser().parse_args(list(argv) if argv is not None else None)
+
+    paths = resolve_run_checkpoint(
+        run_name=args.run_name,
+        save_root=args.save_root,
+        ckpt=args.ckpt,
+    )
+    out_dir = _as_path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    prefix = args.out_prefix or args.run_name
+    out_png = out_dir / f"{prefix}.umap.png"
+    out_h5ad = out_dir / f"{prefix}.umap.h5ad"
+
+    vocab = None
+    if args.vocab_json is not None:
+        vocab = load_vocab_from_json(args.vocab_json)
+
+    try:
+        print("Loading model...")
+        model = load_model_for_inference(
+            paths.ckpt_path, vocab=vocab, device=args.device
+        )
+    except TypeError as e:
+        # Common failure mode: checkpoint does not contain vocab and user didn't pass --vocab-json.
+        raise RuntimeError(
+            "Failed to load model from checkpoint. If this checkpoint was saved without vocab in hparams, "
+            "pass --vocab-json pointing to the training data vocab.json."
+        ) from e
+
+    adata_path = _as_path(args.adata)
+    if not adata_path.exists():
+        raise FileNotFoundError(f"AnnData file not found: {adata_path}")
+    print("Loading AnnData...")
+    adata = sc.read_h5ad(adata_path)
+
+    print("Embedding...")
+    embed_adata(model, adata, batch_size=args.embed_batch_size, obsm_key="X_cf")
+    
+    print("Computing UMAP...")
+    compute_umap(
+        adata,
+        use_rep="X_cf",
+        n_neighbors=args.neighbors,
+        min_dist=args.min_dist,
+        random_state=args.seed,
+    )
+
+    color = _parse_color_list(args.color)
+    title = prefix
+    save_umap_plot(adata, out_png=out_png, color=color, title=title)
+
+    adata.write_h5ad(out_h5ad)
+    print(f"Checkpoint: {paths.ckpt_path}")
+    print(f"Saved plot:  {out_png}")
+    print(f"Saved h5ad:  {out_h5ad}")
+    return 0
+
+
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Embed AnnData and save UMAP plot.")
     p.add_argument("--run-name", required=True, help="Run name under --save-root")
     p.add_argument(
         "--save-root",
-        default="./save",
+        default="../submits_biomed/save",
         help="Root folder containing run directories (default: ./save)",
     )
     p.add_argument(
@@ -238,62 +300,13 @@ def build_argparser() -> argparse.ArgumentParser:
         default=None,
         help="Obs column(s) to color by (space-separated or comma-separated)",
     )
+    p.add_argument(
+        "--flavor",
+        type=str,
+        default="seurat",
+        help="Flavor used for HVG selection",
+    )
     return p
-
-
-def main(argv: Iterable[str] | None = None) -> int:
-    args = build_argparser().parse_args(list(argv) if argv is not None else None)
-
-    paths = resolve_run_checkpoint(
-        run_name=args.run_name,
-        save_root=args.save_root,
-        ckpt=args.ckpt,
-    )
-    out_dir = _as_path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    prefix = args.out_prefix or args.run_name
-    out_png = out_dir / f"{prefix}.umap.png"
-    out_h5ad = out_dir / f"{prefix}.umap.h5ad"
-
-    vocab = None
-    if args.vocab_json is not None:
-        vocab = load_vocab_from_json(args.vocab_json)
-
-    try:
-        model = load_model_for_inference(
-            paths.ckpt_path, vocab=vocab, device=args.device
-        )
-    except TypeError as e:
-        # Common failure mode: checkpoint does not contain vocab and user didn't pass --vocab-json.
-        raise RuntimeError(
-            "Failed to load model from checkpoint. If this checkpoint was saved without vocab in hparams, "
-            "pass --vocab-json pointing to the training data vocab.json."
-        ) from e
-
-    adata_path = _as_path(args.adata)
-    if not adata_path.exists():
-        raise FileNotFoundError(f"AnnData file not found: {adata_path}")
-    adata = sc.read_h5ad(adata_path)
-
-    embed_adata(model, adata, batch_size=args.embed_batch_size, obsm_key="X_cf")
-    compute_umap(
-        adata,
-        use_rep="X_cf",
-        n_neighbors=args.neighbors,
-        min_dist=args.min_dist,
-        random_state=args.seed,
-    )
-
-    color = _parse_color_list(args.color)
-    title = prefix
-    save_umap_plot(adata, out_png=out_png, color=color, title=title)
-
-    adata.write_h5ad(out_h5ad)
-    print(f"Checkpoint: {paths.ckpt_path}")
-    print(f"Saved plot:  {out_png}")
-    print(f"Saved h5ad:  {out_h5ad}")
-    return 0
 
 
 if __name__ == "__main__":

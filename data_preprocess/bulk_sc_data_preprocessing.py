@@ -2,6 +2,7 @@
 ## Imports
 import re
 import sys
+from utils import walk_tissue_names
 
 sys.path.insert(0, "../")
 
@@ -21,6 +22,7 @@ from typing import Optional
 from collections import Counter, defaultdict
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.feature_extraction.text import TfidfVectorizer
+import tqdm
 
 GENE_ID = "_cf_gene_id"
 CLS_TOKEN = "<cls>"
@@ -174,13 +176,47 @@ def build_tissue_match(
 
     return tissue_invert_match
 
+def get_normalized_metadata_bulk(bulk_metadata_path: Path, meta_fields=["characteristics", "extract_protocol", "source_name", "title"]):
+    """
+    Generate a metadata pd.Dataframe with a normalized tissue column from other specified fields.
+
+    Args:
+        metadata (str): The pd.Dataframe containing the metadata.
+        meta_fields (list, optional): The list of metadata fields to search within.
+            Defaults to ["geo_accession", "series_id", "characteristics_ch1", "extract_protocol_ch1", "source_name_ch1", "title"].
+
+    Returns:
+        pd.DataFrame: DataFrame containing the updated metadata.
+    """
+    print("Normalizing bulk tissue names...")
+
+    bulk_obs = pd.read_csv(bulk_metadata_path)
+    
+    def check_name(name, index, meta, meta_fields):
+        for col, item in meta.loc[index, meta_fields].items():
+            try:
+                if re.search(name, item, re.IGNORECASE):
+                    return True
+            except Exception as e:
+                print(f"Error checking index {index}")
+        return False
+
+    tissues = []
+    for i in tqdm.tqdm(range(bulk_obs.shape[0])):
+        tissues.append(walk_tissue_names(check_name, i, bulk_obs, meta_fields))
+
+    # Include tissues in bulk_obs
+    bulk_obs["tissue"] = tissues
+
+    return bulk_obs
+
 
 def h5_to_h5ad(
     bulk_dir: Path | str,
     obs_columns: list[
         str
     ],  # Metadata columns to include in obs.parquet (must exist in metadata.csv)
-    normalize_tissues: bool = False,  # Whether to normalize bulk tissue names using sc categories
+    normalize_tissues: bool = False,  # Whether to normalize bulk tissue names
     chunk_size: int = 10_000,
     expr_key: str = "expression",  # Key in the h5 file where the expression matrix is stored
     h5ad_dir: Optional[
@@ -217,7 +253,8 @@ def h5_to_h5ad(
     # Load metadata
     # Normalize bulk tissue names if requested
     if normalize_tissues:
-        metadata = normalize_bulk_tissues(METADATA_CSV, h5ad_dir)
+        metadata = get_normalized_metadata_bulk(METADATA_CSV)
+        #metadata = normalize_bulk_tissues(METADATA_CSV, h5ad_dir)
     else:
         metadata = pd.read_csv(METADATA_CSV)
 
@@ -227,7 +264,7 @@ def h5_to_h5ad(
         "instrument": "assay"
     })
     metadata_columns = list(metadata.columns)
-
+        
     for col_name in obs_columns:
         assert (
             col_name in metadata_columns
@@ -502,7 +539,7 @@ def get_args():
         "--obs-columns",
         type=str,
         nargs="+",
-        default=["sample_id", "tissue"],
+        default=None,
         help="Metadata columns to include in obs.parquet (must exist in metadata.csv)",
     )
     parser.add_argument(

@@ -1,8 +1,0 @@
-Traceback (most recent call last):
-  File "/cluster/work/boeva/rquiles/CancerFoundation/data_preprocess/bulk_sc_data_preprocessing.py", line 19, in <module>
-    from cancerfoundation.data.dataset import DatasetDir
-  File "/cluster/work/boeva/rquiles/CancerFoundation/data_preprocess/../cancerfoundation/__init__.py", line 8, in <module>
-    from .gene_tokenizer import GeneVocab
-  File "/cluster/work/boeva/rquiles/CancerFoundation/data_preprocess/../cancerfoundation/gene_tokenizer.py", line 1, in <module>
-    from tokenizers import Tokenizer, models, pre_tokenizers, trainers
-ModuleNotFoundError: No module named 'tokenizers'

@@ -1,6 +1,6 @@
 #!/bin/bash -l
 #SBATCH --job-name=preprocess
-#SBATCH --output=outputs/preprocess_%j.out
+#SBATCH --output=slurm_outputs/preprocess_%j.out
 #SBATCH --time=10:00:00
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
@@ -10,6 +10,9 @@ source ~/.bashrc
 conda activate bulkFM
 
 python -u bulk_sc_data_preprocessing.py \
+    --mixed \
+    --bulk-path /cluster/work/boeva/rquiles/bulkFM-data/data/processed/archs4 \
+    --normalize-bulk-tissues \
 	--h5ad-path /cluster/work/boeva/rquiles/data/small_partition \
-        --data-path /cluster/work/boeva/rquiles/data/small_partition/pipeline_ready \
-	--obs-columns tissue_general assay
+    --data-path /cluster/work/boeva/rquiles/data/small_partition/pipeline_ready \
+	--obs-columns tissue_general assay \
