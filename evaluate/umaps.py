@@ -123,10 +123,11 @@ def embed_adata(
     model: CancerFoundation,
     adata: sc.AnnData,
     batch_size: int = 64,
+    flavor: str = "seurat",
     obsm_key: str = "X_cf",
 ) -> sc.AnnData:
     """Compute embeddings and store them in `adata.obsm[obsm_key]`."""
-    emb_df: pd.DataFrame = model.embed(adata, flavor=args.flavor, batch_size=batch_size)
+    emb_df: pd.DataFrame = model.embed(adata, flavor=flavor, batch_size=batch_size)
     adata.obsm[obsm_key] = emb_df.to_numpy(dtype=np.float32)
     return adata
 
@@ -214,7 +215,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     adata = sc.read_h5ad(adata_path)
 
     print("Embedding...")
-    embed_adata(model, adata, batch_size=args.embed_batch_size, obsm_key="X_cf")
+    embed_adata(model, adata, batch_size=args.embed_batch_size, flavor=args.flavor, obsm_key="X_cf")
     
     print("Computing UMAP...")
     compute_umap(
