@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 #SBATCH --job-name=small_contrast
 #SBATCH --output=./slurm_outputs/%x_%j.out
 #SBATCH --partition=gpu

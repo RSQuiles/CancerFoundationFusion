@@ -350,7 +350,7 @@ class BulkSCSampler(Sampler[list[int]]):
         if self.n_bulk <= 0:
             raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")
 
-        self._n_batches = len(self.bulk_indices)
+        self._n_batches = len(self.bulk_indices) // 5
         self.count = 0
 
         # Balanced sampling setup
