@@ -26,7 +26,9 @@ from typing import Iterable, Sequence
 import numpy as np
 import pandas as pd
 import scanpy as sc
+from anndata import AnnData
 import torch
+from utils import sample_h5ad_subset_from_prefix, subsample_adata
 
 import sys
 sys.path.insert(0, "../")
@@ -180,6 +182,12 @@ def _parse_color_list(values: list[str] | None) -> list[str] | None:
 def main(argv: Iterable[str] | None = None) -> int:
     args = build_argparser().parse_args(list(argv) if argv is not None else None)
 
+    # Checks
+    assert args.adata_dir is not None or args.adata is not None, "Path to an AnnData or to a directory must be provided"
+    if args.adata_dir is not None:
+        assert args.adata is None, "Only a path to an AnnData or to a directory must be provided"
+        assert args.adata_prefix is not None, "An AnnData directory must be provided along with a file prefix for virtual concatenation"
+
     paths = resolve_run_checkpoint(
         run_name=args.run_name,
         save_root=args.save_root,
@@ -208,13 +216,24 @@ def main(argv: Iterable[str] | None = None) -> int:
             "pass --vocab-json pointing to the training data vocab.json."
         ) from e
 
-    adata_path = _as_path(args.adata)
-    if not adata_path.exists():
-        raise FileNotFoundError(f"AnnData file not found: {adata_path}")
-    print("Loading AnnData...")
-    adata = sc.read_h5ad(adata_path)
+    adata: AnnData
+    sample_size = args.sample_size 
+    if args.adata is not None:
+        adata_path = _as_path(args.adata)
+        if not adata_path.exists():
+            raise FileNotFoundError(f"AnnData file not found: {adata_path}")
+        print(f"Loading {sample_size} from {adata_path}...")
+        adata = sc.read_h5ad(adata_path)
+        # Subsample
+        adata = subsample_adata(adata, sample_size)
+    else:
+        prefix = args.adata_prefix
+        adata_dir = args.adata_dir
+        print(f"Loading {sample_size} from .h5ad files with prefix '{prefix}' in {adata_dir}")
+        adata = sample_h5ad_subset_from_prefix(prefix, adata_dir, sample_size)
 
     print("Embedding...")
+    print(adata)
     embed_adata(model, adata, batch_size=args.embed_batch_size, flavor=args.flavor, obsm_key="X_cf")
     
     print("Computing UMAP...")
@@ -239,7 +258,10 @@ def main(argv: Iterable[str] | None = None) -> int:
 
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Embed AnnData and save UMAP plot.")
-    p.add_argument("--run-name", required=True, help="Run name under --save-root")
+    p.add_argument("--run-name", 
+        required=True, 
+        help="Run name under --save-root"
+    )
     p.add_argument(
         "--save-root",
         default="../submits_biomed/save",
@@ -250,7 +272,22 @@ def build_argparser() -> argparse.ArgumentParser:
         default=None,
         help="Optional explicit checkpoint path (overrides run-name resolution)",
     )
-    p.add_argument("--adata", required=True, help="Path to input .h5ad")
+    # Either provide the full path to the AnnData or a directory and a prefix
+    p.add_argument("--adata", 
+        help="Path to input .h5ad"
+    )
+    p.add_argument("--adata-dir",
+        help="Path to directory with the .h5ads that will be concatenated"
+    )
+    p.add_argument("--adata-prefix",
+        type=str,
+        help="Prefix of the .h5ad that will be concatenated"
+    )
+    p.add_argument("--sample-size",
+    type=int,
+    default=50_000,
+    help="Number of samples in the input Anndata for the UMAP generation"
+    )
     p.add_argument(
         "--out-dir",
         default="./umap",

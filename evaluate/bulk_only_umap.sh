@@ -20,4 +20,3 @@ srun singularity run \
     --out-dir ./umap_plots \
     --out-prefix bulk_chunk_0 \
     --adata /cluster/work/boeva/rquiles/data/bulk_only/bulk_chunk_0000.h5ad \
-    # --adata /cluster/work/boeva/rquiles/data/bulk_only/combined_bulk_reduced.h5ad \
