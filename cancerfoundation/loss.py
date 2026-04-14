@@ -10,8 +10,10 @@ class LossType(Enum):
     ORDINALCROSSENTROPY = "ordinal_cross_entropy"
     CORN = "corn"
     MSE = "mse"
+    ZINB = "zinb"
 
 
+# Creates per-class/per-threshold (bin) weights 
 def compute_weights(num_classes: int, scale_zero_expr: Optional[float]):
     if scale_zero_expr and num_classes is not None:
         down_scale_pos_expr = (num_classes - num_classes * scale_zero_expr) / (
@@ -39,7 +41,7 @@ class AbstractGeneExpressionLoss(nn.Module, ABC):
 
     def __init__(
         self,
-        num_classes: Optional[int] = None,
+        num_classes: Optional[int] = None, # when expression is modeled as discrete bins, determines how many logits the model must emit
         scale_zero_expression: Optional[float] = None,
     ):
         super().__init__()
@@ -53,7 +55,7 @@ class AbstractGeneExpressionLoss(nn.Module, ABC):
         self.num_classes = num_classes
 
     @abstractmethod
-    def get_in_dim(self) -> int:
+    def get_in_dim(self) -> int: # defines the out_dim of the model
         pass
 
     @abstractmethod
@@ -253,10 +255,76 @@ class CORN(AbstractGeneExpressionLoss):
         return self.num_classes - 1
 
 
+class ZINB(AbstractGeneExpressionLoss):
+    def __init__(
+        self,
+        num_classes: Optional[int] = None,
+        scale_zero_expression: Optional[float] = None,
+    ):
+        super().__init__(num_classes, scale_zero_expression)
+        assert not scale_zero_expression, "Scaling zero expression is not defined for MSE loss. Change the loss function or set scale_zero_expression to None"
+
+    def forward(
+        self,
+        target: torch.Tensor,
+        mu: torch.Tensor,
+        theta: torch.Tensor,
+        pi: Tensor,
+        mask: torch.Tensor,
+        eps=1e-4,
+    ) -> Tensor:
+        """
+        Computes zero-inflated negative binomial (ZINB) loss.
+
+        This function was modified from scvi-tools.
+
+        Args:
+            target (Tensor): Torch Tensor of ground truth data.
+            mu (Tensor): Torch Tensor of means of the negative binomial (must have positive support).
+            theta (Tensor): Torch Tensor of inverse dispersion parameter (must have positive support).
+            pi (Tensor): Torch Tensor of logits of the dropout parameter (real support).
+            eps (float, optional): Numerical stability constant. Defaults to 1e-4.
+            mask (torch.Tensor): A tensor of shape (batch_size, seq_length) containing
+                the mask for ignoring certain elements in the loss computation.
+
+        Returns:
+            Tensor: ZINB loss value.
+        """
+        #  uses log(sigmoid(x)) = -softplus(-x)
+        softplus_pi = F.softplus(-pi)
+        # eps to make it positive support and taking the log
+        log_theta_mu_eps = torch.log(theta + mu + eps)
+        pi_theta_log = -pi + theta * (torch.log(theta + eps) - log_theta_mu_eps)
+
+        case_zero = F.softplus(pi_theta_log) - softplus_pi
+        mul_case_zero = torch.mul((target < eps).type(torch.float32), case_zero)
+
+        case_non_zero = (
+            -softplus_pi
+            + pi_theta_log
+            + target * (torch.log(mu + eps) - log_theta_mu_eps)
+            + torch.lgamma(target + theta)
+            - torch.lgamma(theta)
+            - torch.lgamma(target + 1)
+        )
+        mul_case_non_zero = torch.mul((target > eps).type(torch.float32), case_non_zero)
+
+        res = mul_case_zero + mul_case_non_zero
+        # we want to minize the loss but maximize the log likelyhood
+        if mask is not None:
+            res = res * mask
+            return -res.sum() / mask.sum()
+        return -res.mean()
+
+    def get_in_dim(self) -> int:
+        return 3 # mu, theta and logits
+
+
 loss_dict = {
     LossType.ORDINALCROSSENTROPY: OrdinalCrossEntropy,
     LossType.CORN: CORN,
     LossType.MSE: MSE,
+    LossType.ZINB: ZINB,
 }
 
 

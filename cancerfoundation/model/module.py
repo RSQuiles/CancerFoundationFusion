@@ -1186,7 +1186,7 @@ class ConditionEncoder(nn.Module):
         x = self.enc_norm(x)
         return x
 
-# Could also include dropout?
+# Could also include dropout and layer normalization?
 class ExprDecoder(nn.Module):
     """Decodes contextual gene embeddings to predict gene expression values.
 
@@ -1235,68 +1235,6 @@ class ExprDecoder(nn.Module):
         if self.normalise_bins:
             pred_value = torch.sigmoid(pred_value)
         return dict(pred=pred_value)
-
-# Expression decoder for ZINB-related losses (from scPRINT2)
-class ExprDecoder(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        nfirst_tokens_to_skip: int = 0,
-        dropout: float = 0.1,
-        zinb: bool = True,
-        use_depth: bool = False,
-    ):
-        """
-        adopted from scPRINT2
-
-        ExprDecoder Decoder for the gene expression prediction.
-
-        Will output the mean, variance and zero logits, parameters of a zero inflated negative binomial distribution (for each gene, for each cell in the batch).
-
-        Args:
-            d_model (int): The dimension of the model. This is the size of the input feature vector.
-            nfirst_tokens_to_skip (int, optional): The number of initial labels to skip in the sequence. Defaults to 0.
-            dropout (float, optional): The dropout rate applied during training to prevent overfitting. Defaults to 0.1.
-            zinb (bool, optional): Whether to use a zero inflated negative binomial distribution. Defaults to True.
-            use_depth (bool, optional): Whether to use depth as an additional feature. Defaults to False.
-        """
-        super(ExprDecoder, self).__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(d_model if not use_depth else d_model + 1, d_model),
-            nn.LayerNorm(d_model),
-            nn.LeakyReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model, d_model),
-            nn.LayerNorm(d_model),
-            nn.LeakyReLU(),
-        )
-        self.pred_var_zero = nn.Linear(d_model, 3 if zinb else 1)
-        self.zinb = zinb
-
-    def forward(
-        self, x: Tensor, req_depth: Optional[Tensor] = None
-    ) -> Dict[str, Tensor]:
-        """x is the output of the transformer, (batch, seq_len, d_model)"""
-        # we don't do it on the labels
-        if req_depth is not None:
-            x = torch.cat(
-                [x, req_depth.unsqueeze(1).unsqueeze(-1).expand(-1, x.shape[1], -1)],
-                dim=-1,
-            )
-        x = self.fc(x)
-        if self.zinb:
-            pred_value, var_value, zero_logits = self.pred_var_zero(x).split(
-                1, dim=-1
-            )  # (batch, seq_len)
-            # The sigmoid function is used to map the zero_logits to a probability between 0 and 1.
-            return dict(
-                mean=F.softmax(pred_value.squeeze(-1), dim=-1),
-                disp=torch.exp(torch.clamp(var_value.squeeze(-1), max=15)),
-                zero_logits=zero_logits.squeeze(-1),
-            )
-        else:
-            pred_value = self.pred_var_zero(x)
-            return dict(mean=F.softmax(pred_value.squeeze(-1), dim=-1))
 
 class MVCDecoder(nn.Module):
     """Decoder for the Masked Value Prediction for Cell embeddings (MVC) task."""
