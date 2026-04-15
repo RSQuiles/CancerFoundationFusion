@@ -266,10 +266,8 @@ class ZINB(AbstractGeneExpressionLoss):
 
     def forward(
         self,
+        input: torch.Tensor,
         target: torch.Tensor,
-        mu: torch.Tensor,
-        theta: torch.Tensor,
-        pi: Tensor,
         mask: torch.Tensor,
         eps=1e-4,
     ) -> torch.Tensor:
@@ -279,17 +277,25 @@ class ZINB(AbstractGeneExpressionLoss):
         This function was modified from scvi-tools.
 
         Args:
-            target (Tensor): Torch Tensor of ground truth data.
-            mu (Tensor): Torch Tensor of means of the negative binomial (must have positive support).
-            theta (Tensor): Torch Tensor of inverse dispersion parameter (must have positive support).
-            pi (Tensor): Torch Tensor of logits of the dropout parameter (real support).
+            input: Torch Tensor that will be split into:
+                mu (Tensor): Torch Tensor of means of the negative binomial (must have positive support).
+                theta (Tensor): Torch Tensor of inverse dispersion parameter (must have positive support).
+                pi (Tensor): Torch Tensor of logits of the dropout parameter (real support).
             eps (float, optional): Numerical stability constant. Defaults to 1e-4.
+            target (Tensor): Torch Tensor of ground truth data.
             mask (torch.Tensor): A tensor of shape (batch_size, seq_length) containing
                 the mask for ignoring certain elements in the loss computation.
 
         Returns:
             Tensor: ZINB loss value.
         """
+        # Split and process input tensor
+        pred_value, var_value, zero_logits = input.split(1, dim=-1)
+        
+        mu=F.softmax(pred_value.squeeze(-1), dim=-1)
+        theta=torch.exp(torch.clamp(var_value.squeeze(-1), max=15))
+        pi=zero_logits.squeeze(-1)
+
         #  uses log(sigmoid(x)) = -softplus(-x)
         softplus_pi = F.softplus(-pi)
         # eps to make it positive support and taking the log

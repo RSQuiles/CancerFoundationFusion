@@ -479,7 +479,7 @@ def get_args():
     )
     parser.add_argument(
         "--noise",
-        type=int,
+        type=float,
         nargs="+",
         help="Whether to perform denoising task. Indicates the noise levels to iterate through"
     )

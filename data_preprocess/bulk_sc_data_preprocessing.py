@@ -374,6 +374,9 @@ def _set_h5ad_index(h5ads: Path, var_field: str = "feature_id") -> None:
         if var_field in adata.var.columns:
             adata.var_names = adata.var[var_field].astype(str)
             adata.write_h5ad(path)
+            print(f"Updated {path.name} index to {var_field}")
+        else:
+            print(f"Skipped {path.name}")
 
 def _generate_vocab_from_h5ads(
     h5ads: Path, cls_token: str, pad_token: str
@@ -462,7 +465,7 @@ def main(args):
     # Generate and save vocabularyº
     if args.vocab_path is None:
         print("Setting h5ad index to gene names...")
-        _set_h5ad_index(h5ad_path, var_field="gene_name")
+        _set_h5ad_index(h5ad_path, var_field="feature_id")
         
         print("Generating gene_vocabulary...")
         vocab = _generate_vocab_from_h5ads(h5ad_path, CLS_TOKEN, PAD_TOKEN)

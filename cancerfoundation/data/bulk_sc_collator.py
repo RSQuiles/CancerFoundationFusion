@@ -28,7 +28,8 @@ class BulkSCCollator(AnnDataCollator):
     pad_token_id: Optional[int] = None
     pad_value: int = 0
     do_mlm: bool = True
-    do_binning: bool = True
+    n_bins: Optional[int] = None
+    do_binning: bool = False
     probabilistic_augmentation: bool = False
     mask_ratio: float = 0.15
     mask_value: int = -1
@@ -37,7 +38,6 @@ class BulkSCCollator(AnnDataCollator):
     reserve_keys: List[str] = field(default_factory=lambda: [])
     keep_first_n_tokens: int = 1
     data_style: str = "pcpt"
-    n_bins: int = None
     # Must be defined to account for data modality
     conditions: List[str] = None
     cls_predictions: List[str] = None
@@ -58,6 +58,9 @@ class BulkSCCollator(AnnDataCollator):
             2. Single-Cell samples to generate pseudobulk
             3. Real Bulk samples
         """
+        # Determine binning
+        self.do_binning = self.n_bins is not None
+
         super().__post_init__()
         self.n_bulk = round(self.batch_size * self.bulk_ratio)
         self.n_pb = round(self.batch_size * self.pb_ratio)

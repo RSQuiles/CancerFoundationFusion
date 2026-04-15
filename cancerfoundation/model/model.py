@@ -325,6 +325,7 @@ class CancerFoundation(pl.LightningModule):
         if self.denoise:
             loss_dict["loss_noise"] = 0
             for i in self.noise:
+                # print(f"Running with noise level {i}")
                 loss_noise = self.model(data_dict, use_cell_embedding=use_cell_embedding, noise=i)
                 loss_dict["loss_noise"] += loss_noise
                 loss_dict["total_loss"] += loss_noise

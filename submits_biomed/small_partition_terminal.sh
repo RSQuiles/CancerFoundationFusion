@@ -34,7 +34,7 @@ CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py \
     --warmup-ratio-or-step 10000 \
     --val-check-interval 0.5 \
     --trunc-by-sample \
-    --loss mse \
+    --loss zinb \
     --conditions tissue_general assay \
     --train-path "$TRAIN_DIR" \
     --zero-percentages 0.2 0.4 0.6 \
@@ -46,8 +46,6 @@ CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py \
     --training-tasks "both" \
     --where-condition "end" \
     --gen-method "theirs" \
-    --balanced-sampler separate \
-    --balanced_labels tissue_general assay \
     --wandb-entity "rquiles" \
     --wandb "small_partition" \
     --wandb-name "${SLURM_JOB_NAME}_${SLURM_JOB_ID}" \

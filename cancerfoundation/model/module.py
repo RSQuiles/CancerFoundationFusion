@@ -12,6 +12,7 @@ from .layers import RefactoredCFGenerator, QuickCFGenerator, CFLayer, CFGenerato
 
 from .grad_reverse import grad_reverse
 
+from . import utils as utils_model
 
 class TransformerModule(nn.Module):
     """The main Transformer model for gene expression modeling.
@@ -571,7 +572,8 @@ class TransformerModule(nn.Module):
 
         # Apply noising schedule
         if noise is not None:
-            pcpt_expr = utils.downsample_profile(pcpt_expr)
+            print("Noising (check masking)...")
+            pcpt_expr = utils_model.noise_log1p_profile(pcpt_expr, noise, valid_mask=pcpt_key_padding_mask)
 
         src_key_padding_mask = torch.cat(
             [pcpt_key_padding_mask, gen_key_padding_mask], dim=1
@@ -595,7 +597,8 @@ class TransformerModule(nn.Module):
 
         # Apply noising schedule
         if noise is not None:
-            input_values = utils.downsample_profile(input_values)
+            print("Check Masking for this noising!...")
+            input_values = utils.noise_log1p_profile(input_values, noise)
 
         src_key_padding_mask = tensors["gene_key_padding_mask"]
         target_values = tensors["expr"]
@@ -632,7 +635,7 @@ class TransformerModule(nn.Module):
                 gen_key_padding_mask,
                 src_key_padding_mask,
                 attn_mask,
-            ) = self._prepare_generative_input(tensors)
+            ) = self._prepare_generative_input(tensors, noise=noise)
             output_dict = self.generative_forward(
                 pcpt_gene,
                 pcpt_expr,
@@ -656,6 +659,8 @@ class TransformerModule(nn.Module):
                 )
             )
             positions_to_match = (~gen_key_padding_mask) & keep_samples.unsqueeze(1)
+
+            # print(f"Gene expression output dimensions: {gen_expr_preds.shape}")
             loss = loss_expr = self.criterion(
                 gen_expr_preds, gen_expr_target, positions_to_match
             )
@@ -689,7 +694,7 @@ class TransformerModule(nn.Module):
         # Perceptual training
         else:
             input_gene_ids, input_values, src_key_padding_mask, target_values = (
-                self._prepare_perceptual_input(tensors)
+                self._prepare_perceptual_input(tensors, noise=noise)
             )
             output_dict = self.perceptual_forward(
                 input_gene_ids,
@@ -1072,6 +1077,7 @@ class GeneEncoder(nn.Module):
         )
 
         if pretrained_weights is not None:
+            print("Using pretained weights!")
             self.embedding = nn.Embedding.from_pretrained(
                 pretrained_weights,
                 freeze=freeze,
