@@ -121,6 +121,10 @@ def main():
         raise ValueError(
             "Invalid aggregation function. Supported values are None, 'sum', and 'mean'."
         )
+    if args.esm_emb and args.esm_emb_path is None:
+        raise ValueError(
+            "--esm-emb requires --esm-emb-path to point to the pretrained gene embedding parquet file."
+        )
 
     datamodule = BulkSCDataModule(
         data_path=args.train_path,
@@ -200,7 +204,10 @@ def main():
             contrastive=args.contrastive_training,
             aggregation=args.agg_consistency,
             agg_fn=args.agg_fn,
-            noise=args.noise
+            noise=args.noise,
+            esm_emb=args.esm_emb,
+            esm_emb_path=args.esm_emb_path,
+            esm_emb_finetune=args.esm_finetune,
         )
 
     if args.pretrained:

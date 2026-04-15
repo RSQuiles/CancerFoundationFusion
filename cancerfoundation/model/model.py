@@ -77,6 +77,9 @@ class CancerFoundation(pl.LightningModule):
         aggregation: bool = False,
         agg_fn: Optional[str] = None,
         noise: Optional[List[int]] = None,
+        esm_emb: bool = False,
+        esm_emb_path: Optional[Union[str, os.PathLike]] = None,
+        esm_emb_finetune: bool = False,
     ):
         """Initializes the CancerFoundation LightningModule.
 
@@ -115,6 +118,9 @@ class CancerFoundation(pl.LightningModule):
             aggregation (bool, optional): If True, enable aggregation consistency losses. Defaults to False.
             agg_fn (Optional[str], optional): The function to use for aggregating single-cell embeddings into pseudobulk embeddings. Defaults to "mean".
             noise (Optional[List[int]], optional): If present, enable denoising task. For it, binning must have been disabled
+            esm_emb (bool, optional): If True, load pretrained ESM gene embeddings instead of a learned lookup table.
+            esm_emb_path (Optional[str | os.PathLike], optional): Path to the parquet file containing pretrained gene embeddings.
+            esm_emb_finetune (bool, optional): If True, allow the pretrained gene embeddings to be fine-tuned.
         """
         super().__init__()
         self.save_hyperparameters()
@@ -154,8 +160,11 @@ class CancerFoundation(pl.LightningModule):
         self.contrastive = contrastive
         self.aggregation = aggregation
         self.agg_fn = agg_fn
-        self.denoise = noise is not None
-        self.noise = noise
+        self.noise = noise or []
+        self.denoise = len(self.noise) > 0
+        self.esm_emb = esm_emb
+        self.esm_emb_path = esm_emb_path
+        self.esm_emb_finetune = esm_emb_finetune
 
         # Training configuration
         self.pad_token = "<pad>"
@@ -200,6 +209,11 @@ class CancerFoundation(pl.LightningModule):
         self.pad_token_id = self.vocab["<pad>"]
         self.cls_token_id = self.vocab["<cls>"]
 
+        if self.esm_emb and self.esm_emb_path is None:
+            raise ValueError(
+                "esm_emb=True requires esm_emb_path to point to a parquet file with pretrained gene embeddings."
+            )
+
         # Initialize dataset and model
         self._setup_model(mvc_decoder_style)
 
@@ -243,6 +257,9 @@ class CancerFoundation(pl.LightningModule):
                 gen_method=self.gen_method,
                 pert_pad_id=2,
                 their_init_weights=self.their_init_weights,
+                vocab=self.vocab,
+                gene_embeddings_path=self.esm_emb_path if self.esm_emb else None,
+                gene_embeddings_freeze=not self.esm_emb_finetune,
             )
 
         else:
@@ -280,6 +297,9 @@ class CancerFoundation(pl.LightningModule):
                 contrastive=self.contrastive,
                 aggregation=self.aggregation,
                 agg_fn=self.agg_fn,
+                vocab=self.vocab,
+                gene_embeddings_path=self.esm_emb_path if self.esm_emb else None,
+                gene_embeddings_freeze=not self.esm_emb_finetune,
             )
         if self.compile_model:
             self.model = torch.compile(self.model)

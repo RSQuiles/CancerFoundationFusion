@@ -1,0 +1,19 @@
+{
+  "trainer": {
+    "epochs": 20,
+    "batch_size": 64,
+    "learning_rate": 0.0001
+  },
+  "model": {
+    "embsize": 512,
+    "nheads": 8,
+    "nlayers": 8,
+    "do_mvc": true,
+    "do_dat": true,
+    "contrastive": true,
+    "aggregation": true
+  },
+  "data": {
+    "train_path": "DATA/brain/processed_data/train"
+  }
+}

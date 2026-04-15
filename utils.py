@@ -467,6 +467,17 @@ def get_args():
         help="Whether to use esm-derived embeddings"
     )
     parser.add_argument(
+        "--esm-emb-path",
+        type=str,
+        default=None,
+        help="Path to a parquet file containing pretrained ESM gene embeddings.",
+    )
+    parser.add_argument(
+        "--esm-finetune",
+        action="store_true",
+        help="Whether to fine-tune the pretrained ESM gene embeddings instead of freezing them.",
+    )
+    parser.add_argument(
         "--noise",
         type=int,
         nargs="+",

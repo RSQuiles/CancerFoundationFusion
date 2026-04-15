@@ -1,0 +1,59 @@
+{
+  "experiment_name": "cf_feature_ablation_v1",
+  "model_config_path": "cancerfoundation/ablate/example_model_config.json",
+  "train_entrypoint": "cancerfoundation.ablate.train_stub:train_from_config",
+  "base_overrides": {
+    "trainer": {
+      "epochs": 10,
+      "batch_size": 32
+    },
+    "model": {
+      "do_mvc": true,
+      "do_dat": true,
+      "contrastive": true,
+      "aggregation": true
+    }
+  },
+  "ablations": [
+    {
+      "name": "full_model",
+      "overrides": {}
+    },
+    {
+      "name": "no_mvc",
+      "overrides": {
+        "model": {
+          "do_mvc": false
+        }
+      }
+    },
+    {
+      "name": "no_dat",
+      "overrides": {
+        "model": {
+          "do_dat": false
+        }
+      }
+    },
+    {
+      "name": "no_contrastive",
+      "overrides": {
+        "model": {
+          "contrastive": false
+        }
+      }
+    }
+  ],
+  "downstream_tasks": [
+    {
+      "name": "dummy_celltype_cls",
+      "entrypoint": "evaluate.dummy_downstream_task:run_dummy_downstream",
+      "config": {
+        "seed": 7,
+        "task_weight": 1.0
+      }
+    }
+  ],
+  "output_dir": "ablation_runs/cf_feature_ablation_v1",
+  "dry_run": true
+}

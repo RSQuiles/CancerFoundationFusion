@@ -348,7 +348,8 @@ def h5_to_h5ad(
             var = (
                 pd.DataFrame({GENE_ID: valid_gene_ids}, index=valid_gene_names)
                 if existing_vocab_path is not None
-                else pd.DataFrame({GENE_ID: range(len(gene_names))}, index=gene_names)
+                else pd.DataFrame(index=gene_names)
+                # else pd.DataFrame({GENE_ID: range(len(gene_names))}, index=gene_names)
             )
             var[GENE_ID] = var[GENE_ID].astype(int)
 
@@ -362,6 +363,17 @@ def h5_to_h5ad(
 
     print(f"\nCreated {n_chunks} h5ad files in {h5ad_dir}")
 
+def _set_h5ad_index(h5ads: Path, var_field: str = "feature_id") -> None:
+    """
+    Set the index of an h5ad file to a given field in adata.var
+    """
+    for path in h5ads.iterdir():
+        if not path.name.endswith(".h5ad"):
+            continue
+        adata = read_anndata(path)
+        if var_field in adata.var.columns:
+            adata.var_names = adata.var[var_field].astype(str)
+            adata.write_h5ad(path)
 
 def _generate_vocab_from_h5ads(
     h5ads: Path, cls_token: str, pad_token: str
@@ -447,8 +459,11 @@ def main(args):
 
     data_path = DatasetDir(args.data_path)
     data_path.mkdir()
-    # Generate and save vocabulary
+    # Generate and save vocabularyº
     if args.vocab_path is None:
+        print("Setting h5ad index to gene names...")
+        _set_h5ad_index(h5ad_path, var_field="gene_name")
+        
         print("Generating gene_vocabulary...")
         vocab = _generate_vocab_from_h5ads(h5ad_path, CLS_TOKEN, PAD_TOKEN)
     else:

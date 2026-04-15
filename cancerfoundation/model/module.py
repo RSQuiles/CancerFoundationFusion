@@ -1,9 +1,13 @@
+from pathlib import Path
+import os
 from typing import Dict, Mapping, Optional, Union, Type, Callable, Tuple
 
 import torch
 from torch import nn, Tensor
 import torch.nn.functional as F
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
+import numpy as np
+import pandas as pd
 from .layers import RefactoredCFGenerator, QuickCFGenerator, CFLayer, CFGenerator
 
 from .grad_reverse import grad_reverse
@@ -31,12 +35,12 @@ class TransformerModule(nn.Module):
         activation: Callable[[Tensor], Tensor],
         do_mvc: bool,
         dropout: float,
-        conditions: Dict,
+        conditions: Optional[Dict],
         input_emb_style: str,
         n_input_bins: Optional[int],
         cell_emb_style: str,
         mvc_decoder_style: str,
-        explicit_zero_prob: bool,
+        explicit_zero_prob: Optional[bool],
         use_generative_training: bool,
         norm_first: bool,
         do_dat: bool,
@@ -52,6 +56,9 @@ class TransformerModule(nn.Module):
         contrastive: bool = False,
         aggregation: bool = False,
         agg_fn: Optional[str] = None,
+        vocab: Optional[Dict[str, int]] = None,
+        gene_embeddings_path: Optional[Union[str, os.PathLike, Path]] = None,
+        gene_embeddings_freeze: bool = True,
     ):
         """Initializes the TransformerModule.
 
@@ -68,12 +75,12 @@ class TransformerModule(nn.Module):
             activation (Callable[[Tensor], Tensor]): The activation function for the transformer encoder layers.
             do_mvc (bool): Whether to include the MVC decoder.
             dropout (float): The dropout rate.
-            conditions (Dict): A dictionary defining conditional variables, mapping condition names to the number of categories.
+            conditions (Optional[Dict]): A dictionary defining conditional variables, mapping condition names to the number of categories.
             input_emb_style (str): The style of input value embedding ("continuous", "category", "scaling").
             n_input_bins (Optional[int]): The number of bins for categorical value embedding. Required if `input_emb_style` is "category".
             cell_emb_style (str): The method to obtain cell embeddings ("cls", "avg-pool", "w-pool").
             mvc_decoder_style (str): The architecture for the MVC decoder.
-            explicit_zero_prob (bool): Whether to explicitly predict zero-expression probability.
+            explicit_zero_prob (Optional[bool]): Whether to explicitly predict zero-expression probability.
             use_generative_training (bool): Whether to use the generative training setup.
             norm_first (bool): Whether to use pre-layer normalization in the transformer.
             do_dat (bool): Whether to include Domain Adversarial Training.
@@ -101,6 +108,9 @@ class TransformerModule(nn.Module):
         self.contrastive = contrastive
         self.aggregation = aggregation
         self.agg_fn = agg_fn
+        self.vocab = vocab
+        self.gene_embeddings_path = gene_embeddings_path
+        self.gene_embeddings_freeze = gene_embeddings_freeze
 
         self.n_input_bins = n_input_bins
         # if self.input_emb_style not in ["category", "continuous", "scaling"]:
@@ -171,7 +181,11 @@ class TransformerModule(nn.Module):
                     encoder_layer=encoder_layers, num_layers=nlayers
                 )
                 self.flag_encoder = nn.Embedding(2, d_model)
-                self.encoder = GeneEncoder(ntoken, d_model, padding_idx=pad_token_id)
+                self.encoder = self._build_gene_encoder(
+                    ntoken=ntoken,
+                    d_model=d_model,
+                    padding_idx=pad_token_id,
+                )
             elif gen_method == "theirs":
                 encoder_layers = CFLayer(
                     d_model,
@@ -185,8 +199,10 @@ class TransformerModule(nn.Module):
                     encoder_layer=encoder_layers, num_layers=nlayers
                 )
                 self.generative_flag = nn.Parameter(torch.randn(d_model))
-                self.gene_encoder = GeneEncoder(
-                    ntoken, d_model, padding_idx=pad_token_id
+                self.gene_encoder = self._build_gene_encoder(
+                    ntoken=ntoken,
+                    d_model=d_model,
+                    padding_idx=pad_token_id,
                 )
             elif gen_method == "mine":
                 self.transformer_encoder = RefactoredCFGenerator(
@@ -198,8 +214,10 @@ class TransformerModule(nn.Module):
                     num_layers=nlayers,
                 )
                 self.generative_flag = nn.Parameter(torch.randn(d_model))
-                self.gene_encoder = GeneEncoder(
-                    ntoken, d_model, padding_idx=pad_token_id
+                self.gene_encoder = self._build_gene_encoder(
+                    ntoken=ntoken,
+                    d_model=d_model,
+                    padding_idx=pad_token_id,
                 )
 
             elif gen_method == "quick":
@@ -212,8 +230,10 @@ class TransformerModule(nn.Module):
                     num_layers=nlayers,
                 )
                 self.generative_flag = nn.Parameter(torch.randn(d_model))
-                self.gene_encoder = GeneEncoder(
-                    ntoken, d_model, padding_idx=pad_token_id
+                self.gene_encoder = self._build_gene_encoder(
+                    ntoken=ntoken,
+                    d_model=d_model,
+                    padding_idx=pad_token_id,
                 )
         else:
             encoder_layers = TransformerEncoderLayer(
@@ -226,7 +246,11 @@ class TransformerModule(nn.Module):
                 activation=activation,
             )
             self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
-            self.gene_encoder = GeneEncoder(ntoken, d_model, padding_idx=pad_token_id)
+            self.gene_encoder = self._build_gene_encoder(
+                ntoken=ntoken,
+                d_model=d_model,
+                padding_idx=pad_token_id,
+            )
 
         self.decoder = ExprDecoder(
             d_in=expr_decoder_d_in,
@@ -247,6 +271,7 @@ class TransformerModule(nn.Module):
         # if their_init_weights:
         #     self.init_weights()
 
+    @staticmethod
     def reset_all_weights(model):
         """Recursively reset all parameters in the model"""
 
@@ -256,6 +281,21 @@ class TransformerModule(nn.Module):
                 m.reset_parameters()
 
         model.apply(init_weights)
+
+    def _build_gene_encoder(
+        self,
+        ntoken: int,
+        d_model: int,
+        padding_idx: Optional[int] = None,
+    ) -> nn.Module:
+        return GeneEncoder(
+            num_embeddings=ntoken,
+            embedding_dim=d_model,
+            padding_idx=padding_idx,
+            vocab=self.vocab,
+            weights_file=self.gene_embeddings_path,
+            freeze=self.gene_embeddings_freeze,
+        )
 
     # def init_weights(self) -> None:
     #     """Initializes the weights of the gene embedding layer."""
@@ -995,13 +1035,22 @@ class TransformerModule(nn.Module):
 
 
 class GeneEncoder(nn.Module):
-    """Embeds integer gene IDs. Allows the model to learn a distinct representation for each gene."""
+    """Embeds integer gene IDs, optionally using pretrained ESM-based weights.
+
+    When ``weights_file`` or ``weights`` is provided, the encoder loads a gene
+    embedding table, aligns it to the model vocabulary if available, and
+    projects it to ``embedding_dim`` when the imported width differs.
+    """
 
     def __init__(
         self,
         num_embeddings: int,
         embedding_dim: int,
         padding_idx: Optional[int] = None,
+        vocab: Optional[Dict[str, int]] = None,
+        weights: Optional[Tensor] = None,
+        weights_file: Optional[Union[str, os.PathLike, Path]] = None,
+        freeze: bool = False,
     ):
         """Initializes the gene encoder.
 
@@ -1011,10 +1060,92 @@ class GeneEncoder(nn.Module):
             padding_idx (Optional[int], optional): The index of the padding token. Defaults to None.
         """
         super().__init__()
-        self.embedding = nn.Embedding(
-            num_embeddings, embedding_dim, padding_idx=padding_idx
-        )
+        self.embedding_dim = embedding_dim
+        self.padding_idx = padding_idx
         self.enc_norm = nn.LayerNorm(embedding_dim)
+
+        pretrained_weights = self._load_pretrained_weights(
+            num_embeddings=num_embeddings,
+            vocab=vocab,
+            weights=weights,
+            weights_file=weights_file,
+        )
+
+        if pretrained_weights is not None:
+            self.embedding = nn.Embedding.from_pretrained(
+                pretrained_weights,
+                freeze=freeze,
+                padding_idx=padding_idx,
+            )
+        else:
+            self.embedding = nn.Embedding(
+                num_embeddings, embedding_dim, padding_idx=padding_idx
+            )
+
+        source_dim = self.embedding.weight.shape[1]
+
+        # Project down to embedding_dim required by the model
+        self.projection = (
+            nn.Identity()
+            if source_dim == embedding_dim
+            else nn.Linear(source_dim, embedding_dim, bias=False)
+        )
+
+    def _load_pretrained_weights(
+        self,
+        num_embeddings: int,
+        vocab: Optional[Dict[str, int]],
+        weights: Optional[Tensor],
+        weights_file: Optional[Union[str, os.PathLike, Path]],
+    ) -> Optional[Tensor]:
+        if weights is None and weights_file is None:
+            return None
+
+        if weights is not None:
+            weight_tensor = torch.as_tensor(weights, dtype=torch.float32)
+        else:
+            if weights_file is None:
+                raise ValueError("weights_file cannot be None when no weights tensor is provided.")
+            weights_path = Path(weights_file)
+            weight_frame = pd.read_parquet(weights_path)
+            if vocab is not None and len(vocab) > 0:
+                ordered_tokens: list[Optional[str]] = [None] * num_embeddings
+                # Example vocab: {"<cls>": 0, "<pad>": 1, "geneA": 2}
+                for token, idx in vocab.items():
+                    if 0 <= idx < num_embeddings:
+                        ordered_tokens[idx] = token
+
+                source_dim = weight_frame.shape[1]
+                weight_tensor = torch.zeros(
+                    (num_embeddings, source_dim), dtype=torch.float32
+                )
+                # Compute mean vector for tokens in the weight frame to use for <cls> token
+                mean_vector = torch.tensor(
+                    weight_frame.to_numpy(dtype=np.float32).mean(axis=0),
+                    dtype=torch.float32,
+                )
+                for idx, token in enumerate(ordered_tokens):
+                    if token is None:
+                        continue
+                    if token in weight_frame.index:
+                        row = np.asarray(weight_frame.loc[token], dtype=np.float32)
+                        weight_tensor[idx] = torch.tensor(row, dtype=torch.float32)
+                    elif token == "<cls>":
+                        weight_tensor[idx] = mean_vector
+                    elif token == "<pad>":
+                        weight_tensor[idx] = torch.zeros(source_dim, dtype=torch.float32)
+            else:
+                weight_tensor = torch.tensor(
+                    weight_frame.to_numpy(dtype=np.float32), dtype=torch.float32
+                )
+
+        if weight_tensor.shape[0] != num_embeddings:
+            raise ValueError(
+                f"Pretrained gene embedding table has {weight_tensor.shape[0]} rows, "
+                f"but model vocabulary expects {num_embeddings}."
+            )
+
+        return weight_tensor
 
     def forward(self, x: Tensor) -> Tensor:
         """Encodes a batch of gene IDs.
@@ -1025,7 +1156,8 @@ class GeneEncoder(nn.Module):
         Returns:
             Tensor: The resulting embeddings of shape (batch, seq_len, embsize).
         """
-        x = self.embedding(x)  # (batch, seq_len, embsize)
+        x = self.embedding(x)
+        x = self.projection(x)
         x = self.enc_norm(x)
         return x
 
