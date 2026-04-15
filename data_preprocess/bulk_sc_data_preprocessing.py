@@ -464,8 +464,9 @@ def main(args):
     data_path.mkdir()
     # Generate and save vocabularyº
     if args.vocab_path is None:
+        if args.update_index is not None:
         print("Setting h5ad index to gene names...")
-        _set_h5ad_index(h5ad_path, var_field="feature_id")
+        _set_h5ad_index(h5ad_path, var_field=args.update_index)
         
         print("Generating gene_vocabulary...")
         vocab = _generate_vocab_from_h5ads(h5ad_path, CLS_TOKEN, PAD_TOKEN)
@@ -573,6 +574,12 @@ def get_args():
         nargs="+",
         default=None,
         help="Metadata columns to include in obs.parquet (must exist in metadata.csv)",
+    )
+    parser.add_argument(
+        "--update-index",
+        type=str,
+        default=None,
+        help="var column to use to replace the AnnDatas' index"
     )
     parser.add_argument(
         "--vocab-path", type=Path, required=False, help="Path to existing vocab file"
