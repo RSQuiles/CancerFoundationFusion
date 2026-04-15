@@ -552,7 +552,7 @@ class TransformerModule(nn.Module):
         """Prepares tensors for the perceptual forward pass."""
         input_gene_ids = tensors["gene"]
         input_values = tensors["masked_expr"]
-        
+
         # Apply noising schedule
         if noise is not None:
             input_values = utils.downsample_profile(input_values)
@@ -685,6 +685,10 @@ class TransformerModule(nn.Module):
                 )
                 loss = loss + loss_mvc
                 loss_dict["loss_mvc"] = loss_mvc
+
+        # Return directly if denoising task
+        if noise is not None:
+            return loss_dict["loss_expr"]
 
         # Domain adversarial training
         if self.do_dat:
