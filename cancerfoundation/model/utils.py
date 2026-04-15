@@ -1,6 +1,132 @@
-def downsample_profile(mat: Tensor, dropout: float, method="new", randsamp=False) -> Tensor:
+def noise_log1p_profile(
+    mat: Tensor,
+    noise_level: float,
+    mode: str = "mask",
+    clamp_min: float = 0.0,
+    valid_mask: Optional[Tensor] = None,
+) -> Tensor:
+    """Corrupt a log1p-normalized profile with one of two noise options.
+
+    Supported modes:
+    - "mask": multiplies values by a Bernoulli 0-1 mask with keep prob 1-noise_level
+    - "gaussian": adds isotropic Gaussian noise N(0, noise_level^2 I)
+
+    Args:
+        mat: Input log1p-normalized tensor.
+        noise_level: Scalar in [0, 1]. For "mask" it is drop probability,
+            for "gaussian" it is the standard deviation.
+        mode: "mask" or "gaussian".
+        clamp_min: Lower bound after corruption. Keep at 0.0 for log1p values.
+        valid_mask: Optional boolean mask selecting positions to corrupt. If None,
+            all positions are eligible.
+
+    Returns:
+        Tensor with same shape and dtype as ``mat``.
     """
-    adopted from scPRINT2
+    if not 0.0 <= noise_level <= 1.0:
+        raise ValueError(f"noise_level must be in [0, 1], got {noise_level}")
+
+    x = mat.float()
+    vm: Optional[Tensor] = valid_mask
+    if vm is not None:
+        vm_bool = vm.bool()
+        if vm_bool.shape != x.shape:
+            raise ValueError(
+                f"valid_mask shape {vm_bool.shape} must match input shape {x.shape}"
+            )
+        vm = vm_bool
+
+    if mode == "mask":
+        keep_prob = 1.0 - noise_level
+        keep = (torch.rand_like(x) < keep_prob).to(x.dtype)
+        out = x * keep
+    elif mode == "gaussian":
+        out = x + torch.randn_like(x) * noise_level
+    else:
+        raise ValueError(
+            f"Unsupported mode '{mode}'. Expected one of: 'mask', 'gaussian'."
+        )
+
+    if vm is not None:
+        out = torch.where(vm, out, x)
+
+    out = torch.clamp(out, min=clamp_min)
+    return out.to(dtype=mat.dtype)
+
+
+def apply_log1p_noise_to_branch_inputs(
+    tensors: dict[str, Tensor],
+    branch: str,
+    noise_level: float,
+    mode: str = "mask",
+    keep_first_n_tokens: int = 1,
+    clamp_min: float = 0.0,
+    clone: bool = True,
+) -> dict[str, Tensor]:
+    """Apply log1p noise to collator outputs with branch-aware semantics.
+
+    Branch behavior:
+    - "pcpt": noise only the model input `masked_expr` using `gene_key_padding_mask`.
+    - "both" or "gen": noise only context input `pcpt_expr` using
+      `pcpt_key_padding_mask`; do not touch `gen_expr_target`.
+
+    Protected tokens:
+    - The first ``keep_first_n_tokens`` tokens are never noised.
+
+    Args:
+        tensors: Data dictionary produced by the collator.
+        branch: One of "pcpt", "both", or "gen".
+        noise_level: Scalar in [0, 1].
+        mode: "mask" or "gaussian".
+        keep_first_n_tokens: Number of leading tokens to keep unchanged.
+        clamp_min: Lower clamp passed to ``noise_log1p_profile``.
+        clone: If True, returns a shallow-copied dict with a cloned noised tensor.
+
+    Returns:
+        Updated dict with noised input tensor for the selected branch.
+    """
+    if branch not in {"pcpt", "both", "gen"}:
+        raise ValueError("branch must be one of: 'pcpt', 'both', 'gen'")
+
+    out = dict(tensors) if clone else tensors
+
+    if branch == "pcpt":
+        if "masked_expr" not in out or "gene_key_padding_mask" not in out:
+            raise KeyError(
+                "Perceptual branch expects keys 'masked_expr' and 'gene_key_padding_mask'."
+            )
+        input_key = "masked_expr"
+        pad_key = "gene_key_padding_mask"
+    else:
+        if "pcpt_expr" not in out or "pcpt_key_padding_mask" not in out:
+            raise KeyError(
+                "Both/gen branch expects keys 'pcpt_expr' and 'pcpt_key_padding_mask'."
+            )
+        input_key = "pcpt_expr"
+        pad_key = "pcpt_key_padding_mask"
+
+    x = out[input_key]
+    key_padding_mask = out[pad_key]
+    valid_mask = ~key_padding_mask
+
+    if keep_first_n_tokens > 0:
+        valid_mask = valid_mask.clone()
+        valid_mask[:, :keep_first_n_tokens] = False
+
+    noised = noise_log1p_profile(
+        x,
+        noise_level=noise_level,
+        mode=mode,
+        clamp_min=clamp_min,
+        valid_mask=valid_mask,
+    )
+    out[input_key] = noised
+    return out
+
+
+def noise_count_profile(mat: Tensor, dropout: float, method="new", randsamp=False) -> Tensor:
+    """
+    adopted from scPRINT2 downsample_profile
     
     This function downsamples the expression profile of a given single cell RNA matrix.
 

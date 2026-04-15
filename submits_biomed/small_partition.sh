@@ -54,7 +54,7 @@ srun singularity run \
         --where-condition "end" \
         --gen-method "theirs" \
         --balanced-sampler separate \
-        --balanced_labels tissue_general assay \
+        --balanced-labels tissue_general assay \
         --wandb-entity "rquiles" \
         --wandb "small_partition" \
         --wandb-name "${SLURM_JOB_NAME}_${SLURM_JOB_ID}" \

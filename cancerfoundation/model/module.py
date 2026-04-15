@@ -519,7 +519,7 @@ class TransformerModule(nn.Module):
 
         return output
 
-    def _prepare_generative_input(self, tensors: dict[str, torch.Tensor]):
+    def _prepare_generative_input(self, tensors: dict[str, torch.Tensor], noise:float=None):
         """Prepares tensors for the generative forward pass."""
         pcpt_gene = tensors["pcpt_gene"]
         pcpt_expr = tensors["pcpt_expr"]
@@ -528,6 +528,10 @@ class TransformerModule(nn.Module):
         gen_expr_target = tensors["gen_expr_target"]
         gen_key_padding_mask = tensors["gen_key_padding_mask"]
         attn_mask = tensors["attn_mask"]
+
+        # Apply noising schedule
+        if noise is not None:
+            pcpt_expr = utils.downsample_profile(pcpt_expr)
 
         src_key_padding_mask = torch.cat(
             [pcpt_key_padding_mask, gen_key_padding_mask], dim=1
@@ -548,6 +552,10 @@ class TransformerModule(nn.Module):
         """Prepares tensors for the perceptual forward pass."""
         input_gene_ids = tensors["gene"]
         input_values = tensors["masked_expr"]
+        
+        # Apply noising schedule
+        if noise is not None:
+            input_values = utils.downsample_profile(input_values)
 
         src_key_padding_mask = tensors["gene_key_padding_mask"]
         target_values = tensors["expr"]
@@ -555,7 +563,10 @@ class TransformerModule(nn.Module):
         return input_gene_ids, input_values, src_key_padding_mask, target_values
 
     def forward(  # tensors is the data_dict from collator
-        self, tensors: dict[str, torch.Tensor], use_cell_embedding: bool = False
+        self, 
+        tensors: dict[str, torch.Tensor], 
+        use_cell_embedding: bool = False,
+        noise: float = None
     ) -> Mapping[str, Tensor]:
         """Main forward pass that dispatches to generative or perceptual mode.
 
@@ -653,9 +664,9 @@ class TransformerModule(nn.Module):
                 tensors["is_sc_for_pb"] == 0
                 if "is_sc_for_pb" in tensors
                 else torch.ones(
-                    gen_expr_target.shape[0],
+                    target_values.shape[0],
                     dtype=torch.bool,
-                    device=gen_expr_target.device,
+                    device=target_values.device,
                 )
             )
             positions_to_match = (

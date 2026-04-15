@@ -97,8 +97,7 @@ def get_args():
     parser.add_argument(
         "--n-bins",
         type=int,
-        default=51,
-        help="The number of bins to use for the binned input style. Default is 51.",
+        help="The number of bins to use for the binned input style. Recommended is 51.",
     )
     parser.add_argument(
         "--max-seq-len",
@@ -429,7 +428,7 @@ def get_args():
     )
 
     parser.add_argument(
-        "--contrastive_training",
+        "--contrastive-training",
         action="store_true",
         help="Whether to include a contrastive loss that brings the pseudobulk and real bulk samples closer together in the embedding space. Default is False.",
     )
@@ -456,11 +455,22 @@ def get_args():
     )
 
     parser.add_argument(
-        "--balanced_labels",
+        "--balanced-labels",
         type=str,
         nargs="+",
         default=None,
         help="The column(s) to use for balanced sampling labels",
+    )
+    parser.add_argument(
+        "--esm-emb",
+        action="store_true",
+        help="Whether to use esm-derived embeddings"
+    )
+    parser.add_argument(
+        "--noise",
+        type=int,
+        nargs="+",
+        help="Whether to perform denoising task. Indicates the noise levels to iterate through"
     )
 
     return parser.parse_args()

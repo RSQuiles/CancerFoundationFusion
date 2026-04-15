@@ -226,6 +226,10 @@ def h5_to_h5ad(
         Path
     ] = None,  #  path to an existing vocab.json to reuse (set to None to generate from gene_list.txt)
 ):
+    """
+    Transform original .h5 file with counts in h5ad chunks.
+    Applies CP10K and log1p normalization
+    """
     # --- INPUT: bulk data files (in the same directory) ---
     BULK_DIR = Path(bulk_dir)
     EXPRESSION_H5 = BULK_DIR / "expression.h5"
@@ -324,6 +328,16 @@ def h5_to_h5ad(
                 if existing_vocab_path is not None
                 else expr_ds[start:end, :]
             )
+
+            # Store raw counts
+            X_counts = X_dense.copy()
+
+            # Library-size normalize (CP10K) to target_sum=1e4, then log1p
+            library_size = X_dense.sum(axis=1, keepdims=True)
+            library_size[library_size == 0] = 1.0
+            X_dense = X_dense / library_size * 1e4
+            X_dense = np.log1p(X_dense)
+
             X_sparse = sp.csr_matrix(X_dense.astype(np.float32))
 
             obs_chunk = metadata.iloc[start:end][obs_columns].copy()

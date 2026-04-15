@@ -200,6 +200,7 @@ def main():
             contrastive=args.contrastive_training,
             aggregation=args.agg_consistency,
             agg_fn=args.agg_fn,
+            noise=args.noise
         )
 
     if args.pretrained:

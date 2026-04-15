@@ -272,7 +272,7 @@ class ZINB(AbstractGeneExpressionLoss):
         pi: Tensor,
         mask: torch.Tensor,
         eps=1e-4,
-    ) -> Tensor:
+    ) -> torch.Tensor:
         """
         Computes zero-inflated negative binomial (ZINB) loss.
 

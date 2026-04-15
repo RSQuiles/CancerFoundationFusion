@@ -76,6 +76,7 @@ class CancerFoundation(pl.LightningModule):
         contrastive: bool = False,
         aggregation: bool = False,
         agg_fn: Optional[str] = None,
+        noise: Optional[List[int]] = None,
     ):
         """Initializes the CancerFoundation LightningModule.
 
@@ -113,6 +114,7 @@ class CancerFoundation(pl.LightningModule):
             contrastive (bool, optional): If True, enable contrastive learning. It brings the pseudobulk and real bulk samples closer together in the embedding space. Defaults to False.
             aggregation (bool, optional): If True, enable aggregation consistency losses. Defaults to False.
             agg_fn (Optional[str], optional): The function to use for aggregating single-cell embeddings into pseudobulk embeddings. Defaults to "mean".
+            noise (Optional[List[int]], optional): If present, enable denoising task. For it, binning must have been disabled
         """
         super().__init__()
         self.save_hyperparameters()
@@ -152,6 +154,8 @@ class CancerFoundation(pl.LightningModule):
         self.contrastive = contrastive
         self.aggregation = aggregation
         self.agg_fn = agg_fn
+        self.denoise = noise is not None
+        self.noise = noise
 
         # Training configuration
         self.pad_token = "<pad>"
@@ -293,7 +297,19 @@ class CancerFoundation(pl.LightningModule):
         """
         if use_cell_embedding is None:
             use_cell_embedding = self.use_cell_embedding
-        return self.model(data_dict, use_cell_embedding=use_cell_embedding)
+
+        # First pass without noising
+        loss_dict = self.model(data_dict, use_cell_embedding=use_cell_embedding)
+
+        # DENOISING TASK
+        if self.denoise:
+            loss_dict["loss_noise"] = 0
+            for i in self.noise:
+                loss_noise = self.model(data_dict, use_cell_embedding=use_cell_embedding, noise=i)
+                loss_dict["loss_noise"] += loss_noise
+                loss_dict["total_loss"] += loss_noise
+        
+        return loss_dict
 
     def training_step(self, batch, batch_idx):  # batch = data_dict from collator
         """Performs a single training step.
