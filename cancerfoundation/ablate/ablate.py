@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
+import subprocess
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -12,6 +15,7 @@ from .runtime import (
 	run_downstream_tasks,
 	run_training_from_config,
 	stable_run_id,
+	write_model_config,
 )
 
 
@@ -40,31 +44,21 @@ def parse_args() -> argparse.Namespace:
 		action="store_true",
 		help="Do not launch real training; create placeholder checkpoint per run",
 	)
+	parser.add_argument(
+		"--slurm",
+		action="store_true",
+		help="Submit each ablation run as an independent SBATCH job",
+	)
 	return parser.parse_args()
 
 
-def _load_model_base_config(model_config_path: Path) -> dict[str, Any]:
-	"""Read model config file to serve as baseline for all ablations.
-
-	The training code is expected to consume this config file in a future
-	config-driven pipeline.
-	"""
-	if not model_config_path.exists():
-		raise FileNotFoundError(
-			f"Base model config not found at {model_config_path}. "
-			"Create it first or point model_config_path to a valid file."
-		)
-
-	if model_config_path.suffix.lower() != ".json":
-		raise ValueError(
-			"Only JSON model config is supported in this scaffold. "
-			"Use a .json model config file."
-		)
-	return json.loads(model_config_path.read_text(encoding="utf-8"))
+def _load_base_config(cfg: AblationExperimentConfig) -> dict[str, Any]:
+	"""Return a deep copy of the baseline config used for every ablation."""
+	return deepcopy(cfg.base_config)
 
 
 def _prepare_runs(cfg: AblationExperimentConfig) -> list[tuple[str, dict[str, Any]]]:
-	base_model_cfg = _load_model_base_config(cfg.model_config_path)
+	base_model_cfg = _load_base_config(cfg)
 	base_model_cfg = deep_merge_dict(base_model_cfg, cfg.base_overrides)
 
 	runs: list[tuple[str, dict[str, Any]]] = []
@@ -75,11 +69,120 @@ def _prepare_runs(cfg: AblationExperimentConfig) -> list[tuple[str, dict[str, An
 	return runs
 
 
+def _submit_runs_to_slurm(
+	cfg: AblationExperimentConfig,
+	runs: list[tuple[str, dict[str, Any]]],
+	output_dir: Path,
+	task_specs: list[dict[str, Any]],
+	dry_run: bool,
+) -> dict[str, Any]:
+	run_outputs: list[dict[str, Any]] = []
+
+	for run_name, run_model_cfg in runs:
+		run_id = stable_run_id(cfg.experiment_name, run_name)
+		run_dir = output_dir / f"{run_name}_{run_id}"
+		run_dir.mkdir(parents=True, exist_ok=True)
+
+		model_cfg_path = run_dir / "model_config.json"
+		run_result_path = run_dir / "run_result.json"
+		run_model_cfg = deepcopy(run_model_cfg)
+		run_model_cfg["run_name"] = run_name
+		write_model_config(run_model_cfg, model_cfg_path)
+
+		payload = {
+			"experiment_name": cfg.experiment_name,
+			"run_name": run_name,
+			"run_id": run_id,
+			"model_config": run_model_cfg,
+			"model_config_path": str(model_cfg_path),
+			"train_entrypoint": cfg.train_entrypoint,
+			"downstream_tasks": task_specs,
+			"dry_run": dry_run,
+			"result_path": str(run_result_path),
+		}
+		payload_path = run_dir / "job_payload.json"
+		payload_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+		python_executable = cfg.slurm.python_executable or "python"
+		wrapped_cmd = shlex.join(
+			[
+				python_executable,
+				"-m",
+				"cancerfoundation.ablate.slurm_worker",
+				"--payload",
+				str(payload_path),
+			]
+		)
+
+		job_name_prefix = cfg.slurm.job_name_prefix or cfg.experiment_name
+		job_name = f"{job_name_prefix}_{run_name}"[:128]
+
+		sbatch_cmd = ["sbatch", "--parsable"]
+		sbatch_cmd.extend(cfg.slurm.sbatch_args)
+		sbatch_cmd.extend(
+			[
+				"--job-name",
+				job_name,
+				"--output",
+				str(run_dir / "slurm-%j.out"),
+				"--error",
+				str(run_dir / "slurm-%j.err"),
+				"--wrap",
+				wrapped_cmd,
+			]
+		)
+
+		env = os.environ.copy()
+		env.update(cfg.slurm.environment)
+		try:
+			# Submit SBATCH job using the interface in slurm_worker.py
+			completed = subprocess.run(
+				sbatch_cmd,
+				capture_output=True,
+				text=True,
+				check=True,
+				env=env,
+			)
+		except subprocess.CalledProcessError as exc:
+			raise RuntimeError(
+				f"Failed to submit run '{run_name}' with sbatch. "
+				f"stderr: {exc.stderr.strip() or '<empty>'}"
+			) from exc
+
+		raw_sbatch_output = completed.stdout.strip()
+		job_id = raw_sbatch_output.split(";", maxsplit=1)[0].strip()
+		run_outputs.append(
+			{
+				"run_name": run_name,
+				"run_id": run_id,
+				"job_id": job_id,
+				"payload_path": str(payload_path),
+				"result_path": str(run_result_path),
+				"model_config_path": str(model_cfg_path),
+				"status": "submitted",
+			}
+		)
+
+	summary = {
+		"experiment_name": cfg.experiment_name,
+		"execution_mode": "slurm",
+		"output_dir": str(output_dir),
+		"num_runs": len(run_outputs),
+		"runs": run_outputs,
+	}
+	(output_dir / "summary.json").write_text(
+		json.dumps(summary, indent=2),
+		encoding="utf-8",
+	)
+	return summary
+
+
 def run_ablation_experiment(
 	cfg: AblationExperimentConfig,
 	output_dir_override: Path | None = None,
 	max_runs: int | None = None,
 	cli_dry_run: bool = False,
+	force_slurm: bool = False,
 ) -> dict[str, Any]:
 	output_dir = output_dir_override if output_dir_override is not None else cfg.output_dir
 	output_dir.mkdir(parents=True, exist_ok=True)
@@ -93,8 +196,18 @@ def run_ablation_experiment(
 	if max_runs is not None:
 		runs = runs[: max(0, max_runs)]
 
-	run_outputs: list[dict[str, Any]] = []
 	dry_run = cfg.dry_run or cli_dry_run
+	execution_mode = "slurm" if (force_slurm or cfg.slurm.enabled) else "local"
+	if execution_mode == "slurm":
+		return _submit_runs_to_slurm(
+			cfg=cfg,
+			runs=runs,
+			output_dir=output_dir,
+			task_specs=task_specs,
+			dry_run=dry_run,
+		)
+
+	run_outputs: list[dict[str, Any]] = []
 
 	for run_name, run_model_cfg in runs:
 		run_id = stable_run_id(cfg.experiment_name, run_name)
@@ -129,6 +242,7 @@ def run_ablation_experiment(
 
 	summary = {
 		"experiment_name": cfg.experiment_name,
+		"execution_mode": "local",
 		"output_dir": str(output_dir),
 		"num_runs": len(run_outputs),
 		"runs": run_outputs,
@@ -148,6 +262,7 @@ def main() -> None:
 		output_dir_override=args.output_dir,
 		max_runs=args.max_runs,
 		cli_dry_run=args.dry_run,
+		force_slurm=args.slurm,
 	)
 	print(json.dumps(summary, indent=2))
 

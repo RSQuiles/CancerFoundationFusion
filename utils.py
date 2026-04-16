@@ -1,4 +1,7 @@
 import argparse
+import json
+import os
+import os
 import sys
 
 sys.path.insert(0, "../")
@@ -14,8 +17,15 @@ class Precision(str, Enum):
     BFLOAT = "bf16-mixed"
 
 
-def get_args():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to a JSON config file specifying all training details"
+    )
     parser.add_argument(
         "-s",
         "--save-dir",
@@ -484,7 +494,109 @@ def get_args():
         help="Whether to perform denoising task. Indicates the noise levels to iterate through"
     )
 
-    return parser.parse_args()
+    return parser
+
+
+CONFIG_SECTIONS = {"trainer", "model", "features", "data"}
+
+def _load_json_config(config_path: Path) -> dict:
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    with config_path.open("r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    if not isinstance(config, dict):
+        raise ValueError("Top-level JSON config must be an object/dict.")
+
+    return config
+
+
+def _flatten_sectioned_config(config: dict) -> dict:
+    flat = {}
+    unexpected_top_level = set(config) - CONFIG_SECTIONS
+    if unexpected_top_level:
+        raise ValueError(
+            f"Unexpected top-level config sections: {sorted(unexpected_top_level)}. "
+            f"Expected only: {sorted(CONFIG_SECTIONS)}"
+        )
+
+    for section_name, section_values in config.items():
+        if section_values is None:
+            continue
+        if not isinstance(section_values, dict):
+            raise ValueError(
+                f"Section '{section_name}' must contain a JSON object, got {type(section_values).__name__}."
+            )
+
+        for key, value in section_values.items():
+            if key in flat:
+                raise ValueError(
+                    f"Duplicate config key '{key}' found across sections."
+                )
+            flat[key] = value
+
+    return flat
+
+
+def _parser_dest_names(parser: argparse.ArgumentParser) -> set[str]:
+    return {action.dest for action in parser._actions if action.dest != "help"}
+
+
+def _filter_known_config_keys(parser: argparse.ArgumentParser, config: dict) -> dict:
+    valid_keys = _parser_dest_names(parser)
+    unknown_keys = sorted(set(config) - valid_keys)
+    if unknown_keys:
+        raise ValueError(
+            f"Unknown config key(s) in JSON file: {unknown_keys}"
+        )
+    return config
+    
+# Resolve env vars in config values that are strings
+def expand_env_vars(args):
+    for key, value in vars(args).items():
+        if isinstance(value, str):
+            setattr(args, key, os.path.expandvars(value))
+    return args
+
+
+def get_args():
+    parser = build_parser()
+
+    # First pass: only read --config
+    initial_args, remaining_argv = parser.parse_known_args()
+
+    if initial_args.config is not None:
+        nested_config = _load_json_config(initial_args.config)
+        flat_config = _flatten_sectioned_config(nested_config)
+        flat_config = _filter_known_config_keys(parser, flat_config)
+        parser.set_defaults(**flat_config)
+
+    # Second pass: full parse, with CLI overriding config defaults
+    args = parser.parse_args()
+    args = expand_env_vars(args)
+
+    print(args)
+    if args.save_dir is not None:
+        save_resolved_config(args, Path(args.save_dir) / "config.resolved.json")
+
+    return args
+
+def save_resolved_config(args, output_path: str | Path) -> None:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    serializable = {}
+    for key, value in vars(args).items():
+        if isinstance(value, Enum):
+            serializable[key] = value.value
+        elif isinstance(value, Path):
+            serializable[key] = str(value)
+        else:
+            serializable[key] = value
+
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(serializable, f, indent=2, sort_keys=True)
 
 
 class MyProgressBar(TQDMProgressBar):
