@@ -1,9 +1,8 @@
 {
   "experiment_name": "cf_feature_ablation_v1",
-  "output_dir": "ablation_runs/cf_feature_ablation_v1",
-  "dry_run": false,
-  "train_entrypoint": "pretrain:main",
-  "base_config": {
+  "run_name": "no_contrastive",
+  "run_id": "8ddcc8e3c86a",
+  "model_config": {
     "trainer": {
       "gpus": 1,
       "num_workers": 1,
@@ -18,8 +17,14 @@
     },
     "data": {
       "train_path": "/cluster/work/boeva/rquiles/data/mixed_test/pipeline_ready",
-      "conditions": ["tissue"],
-      "zero_percentages": [0.2, 0.4, 0.6],
+      "conditions": [
+        "tissue"
+      ],
+      "zero_percentages": [
+        0.2,
+        0.4,
+        0.6
+      ],
       "bulk_ratio": 0.3,
       "pb_ratio": 0.3,
       "n_sc_per_pseudobulk": 5,
@@ -42,22 +47,17 @@
     "features": {
       "unified": true,
       "do_mvc": true,
-      "noise": [0.6],
-      "contrastive_training": true,
+      "noise": [
+        0.6
+      ],
+      "contrastive_training": false,
       "agg_consistency": true
-    }
+    },
+    "ablation_name": "no_contrastive",
+    "run_name": "no_contrastive"
   },
-  "base_overrides": {},
-  "ablations": [
-    {
-      "name": "no_contrastive",
-      "overrides": {
-        "features": {
-          "contrastive_training": false
-        }
-      }
-    }
-  ],
+  "model_config_path": "ablation_runs/cf_feature_ablation_v1/no_contrastive_8ddcc8e3c86a/model_config.json",
+  "train_entrypoint": "pretrain:main",
   "downstream_tasks": [
     {
       "name": "dummy_celltype_cls",
@@ -68,16 +68,6 @@
       }
     }
   ],
-  "slurm": {
-    "enabled": true,
-    "python_executable": "python",
-    "sbatch_args": [
-      "--partition=gpu",
-      "--gres=gpu:rtx4090:1",
-      "--cpus-per-task=1",
-      "--time=00:00:10"
-    ],
-    "environment": {},
-    "job_name_prefix": "cf_ablate"
-  }
+  "dry_run": false,
+  "result_path": "ablation_runs/cf_feature_ablation_v1/no_contrastive_8ddcc8e3c86a/run_result.json"
 }

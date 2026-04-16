@@ -5,13 +5,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-
-class LossType(Enum):
-    ORDINALCROSSENTROPY = "ordinal_cross_entropy"
-    CORN = "corn"
-    MSE = "mse"
-    ZINB = "zinb"
-
+from utils_config import LossType
 
 # Creates per-class/per-threshold (bin) weights 
 def compute_weights(num_classes: int, scale_zero_expr: Optional[float]):

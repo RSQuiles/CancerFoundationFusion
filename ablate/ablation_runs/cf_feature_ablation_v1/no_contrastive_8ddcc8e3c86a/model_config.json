@@ -46,7 +46,7 @@
     "noise": [
       0.6
     ],
-    "contrastive_training": true,
+    "contrastive_training": false,
     "agg_consistency": true
   },
   "ablation_name": "no_contrastive",

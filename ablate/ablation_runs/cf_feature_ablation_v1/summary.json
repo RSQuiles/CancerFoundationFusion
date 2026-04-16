@@ -1,30 +1,17 @@
 {
   "experiment_name": "cf_feature_ablation_v1",
-  "execution_mode": "local",
+  "execution_mode": "slurm",
   "output_dir": "ablation_runs/cf_feature_ablation_v1",
-  "num_runs": 2,
+  "num_runs": 1,
   "runs": [
-    {
-      "run_name": "full_model",
-      "run_id": "a3d73c3db24a",
-      "checkpoint_path": "/cluster/work/boeva/rquiles/CancerFoundation/ablate/save/${SLURM_JOB_NAME}_${SLURM_JOB_ID}/epoch_epoch=00-v2.ckpt",
-      "metrics": {
-        "dummy_celltype_cls": {
-          "auc": 0.8987705781936577,
-          "accuracy": 0.5576330995321351
-        }
-      }
-    },
     {
       "run_name": "no_contrastive",
       "run_id": "8ddcc8e3c86a",
-      "checkpoint_path": "/cluster/work/boeva/rquiles/CancerFoundation/ablate/save/${SLURM_JOB_NAME}_${SLURM_JOB_ID}/epoch_epoch=00-v3.ckpt",
-      "metrics": {
-        "dummy_celltype_cls": {
-          "auc": 0.8192671114274457,
-          "accuracy": 0.6470744996441236
-        }
-      }
+      "job_id": "8810693",
+      "payload_path": "ablation_runs/cf_feature_ablation_v1/no_contrastive_8ddcc8e3c86a/job_payload.json",
+      "result_path": "ablation_runs/cf_feature_ablation_v1/no_contrastive_8ddcc8e3c86a/run_result.json",
+      "model_config_path": "ablation_runs/cf_feature_ablation_v1/no_contrastive_8ddcc8e3c86a/model_config.json",
+      "status": "submitted"
     }
   ]
 }

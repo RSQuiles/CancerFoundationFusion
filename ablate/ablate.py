@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import argparse
 import json
 import os
 import shlex
 import subprocess
 from copy import deepcopy
-from pathlib import Path
 from typing import Any
 
 from config import AblationExperimentConfig, load_experiment_config
@@ -104,20 +109,47 @@ def _submit_runs_to_slurm(
 		payload_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 		python_executable = cfg.slurm.python_executable or "python"
-		wrapped_cmd = shlex.join(
+
+		# Generate command to run inside SLURM job
+		project_root = Path("/cluster/work/boeva/rquiles/CancerFoundation")
+		current_dir = project_root / "ablate"
+		train_dir = Path(run_model_cfg["data"]["train_path"])
+		singularity_image = "/cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif"
+
+		worker_inner_cmd = shlex.join(
 			[
+				"CUDA_LAUNCH_BLOCKING=1",
 				python_executable,
-				"-m",
-				"cancerfoundation.ablate.slurm_worker",
+				"-u",
+				str(project_root / "ablate" / "slurm_worker.py"),
 				"--payload",
 				str(payload_path),
+			]
+		)
+
+		wrapped_cmd = shlex.join(
+			[
+				"srun",
+				"singularity",
+				"run",
+				"--pwd",
+				str(current_dir),
+				"--bind",
+				f"{project_root}:{project_root}",
+				"--bind",
+				f"{train_dir}:{train_dir}",
+				"--nv",
+				singularity_image,
+				"bash",
+				"-c",
+				f"export PATH=/usr/bin:/bin && {worker_inner_cmd}",
 			]
 		)
 
 		job_name_prefix = cfg.slurm.job_name_prefix or cfg.experiment_name
 		job_name = f"{job_name_prefix}_{run_name}"[:128]
 
-		sbatch_cmd = ["sbatch", "--parsable"]
+		sbatch_cmd = ["sbatch", "--parsable"] # makes sbatch output only the job ID
 		sbatch_cmd.extend(cfg.slurm.sbatch_args)
 		sbatch_cmd.extend(
 			[
@@ -125,9 +157,9 @@ def _submit_runs_to_slurm(
 				job_name,
 				"--output",
 				str(run_dir / "slurm-%j.out"),
-				"--error",
-				str(run_dir / "slurm-%j.err"),
-				"--wrap",
+				# "--error",
+				# str(run_dir / "slurm-%j.err"),
+				"--wrap", # directly pass a command string
 				wrapped_cmd,
 			]
 		)
@@ -228,7 +260,6 @@ def run_ablation_experiment(
 			dry_run=dry_run,
 		)
 
-		print(f"Running downstream tasks:\n {task_specs}")
 		metrics = run_downstream_tasks(
 			checkpoint_path=train_result.checkpoint_path,
 			task_specs=task_specs,

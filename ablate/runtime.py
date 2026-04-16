@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import sys
 from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -9,13 +10,13 @@ import hashlib
 import importlib
 import json
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Callable, Union, Dict, Any
 
-from utils import build_parser, _load_json_config, _flatten_sectioned_config, _filter_known_config_keys, pretty_print_args
+from utils_config import build_parser, _load_json_config, _flatten_sectioned_config, _filter_known_config_keys, expand_env_vars, pretty_print_args
 from argparse import Namespace
 
-TrainFn = Callable[[Path], str | Path]
-EvalFn = Callable[[str | Path, dict[str, Any]], dict[str, float]]
+TrainFn = Callable[[Path], Union[str, Path]]
+EvalFn = Callable[[Union[str, Path], Dict[str, Any]], Dict[str, float]]
 
 @dataclass
 class TrainResult:
@@ -85,6 +86,7 @@ def run_training_from_config(
 
     parser.set_defaults(**filtered_config)
     model_args = parser.parse_args([])
+    model_args = expand_env_vars(model_args)
 
     pretty_print_args(model_args)
 
@@ -98,6 +100,9 @@ def run_downstream_tasks(
     task_specs: list[dict[str, Any]],
 ) -> dict[str, dict[str, float]]:
     """Evaluate one checkpoint on all configured downstream tasks."""
+
+    print(f"Running downstream tasks:\n {task_specs}")
+
     results: dict[str, dict[str, float]] = {}
     for task in task_specs:
         eval_fn: EvalFn = resolve_entrypoint(task["entrypoint"])
