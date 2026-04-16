@@ -1,13 +1,16 @@
 {
   "experiment_name": "cf_feature_ablation_v1",
-  "train_entrypoint": "cancerfoundation.ablate.train_stub:train_from_config",
+  "output_dir": "ablation_runs/cf_feature_ablation_v1",
+  "dry_run": false,
+  "train_entrypoint": "pretrain:main",
   "base_config": {
     "trainer": {
       "gpus": 1,
-      "num_workers": 4,
+      "num_workers": 1,
       "precision": "bf16-mixed",
-      "strategy": "ddp",
-      "epochs": 10,
+      "strategy": "auto",
+      "epochs": 1,
+      "epoch_size": 1,
       "seed": 0,
       "val_check_interval": 0.5,
       "log_interval": 50,
@@ -22,7 +25,9 @@
       "n_sc_per_pseudobulk": 5,
       "trunc_by_sample": true,
       "loss": "mse",
-      "training_tasks": "pcpt"
+      "training_tasks": "pcpt",
+      "where_condition": "end",
+      "gen_method": "theirs"
     },
     "model": {
       "nlayers": 3,
@@ -32,18 +37,14 @@
       "lr": 0.0001,
       "warmup_ratio_or_step": 10000,
       "max_seq_len": 600,
-      "batch_size": 32,
-      "do_mvc": true,
-      "do_dat": true,
-      "contrastive": true,
-      "aggregation": true
+      "batch_size": 32
     },
     "features": {
       "unified": true,
       "do_mvc": true,
-      "where_condition": "end",
-      "gen_method": "theirs",
-      "noise": [0.6]
+      "noise": [0.6],
+      "contrastive_training": true,
+      "agg_consistency": true
     }
   },
   "base_overrides": {},
@@ -53,26 +54,10 @@
       "overrides": {}
     },
     {
-      "name": "no_mvc",
-      "overrides": {
-        "model": {
-          "do_mvc": false
-        }
-      }
-    },
-    {
-      "name": "no_dat",
-      "overrides": {
-        "model": {
-          "do_dat": false
-        }
-      }
-    },
-    {
       "name": "no_contrastive",
-      "overrides": {
+      "features": {
         "model": {
-          "contrastive": false
+          "contrastive_training": false
         }
       }
     }
@@ -99,7 +84,5 @@
     ],
     "environment": {},
     "job_name_prefix": "cf_ablate"
-  },
-  "output_dir": "ablation_runs/cf_feature_ablation_v1",
-  "dry_run": true
+  }
 }

@@ -18,6 +18,7 @@ mkdir -p "$SAVE_DIR"
 CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py \
     --config ./config_test.json \
     --where-condition "begin" \
+    --epoch-size 1 \
 
 if [ -d "./lightning_logs/version_${SLURM_JOB_ID}" ]; then
     mv "./lightning_logs/version_${SLURM_JOB_ID}" "$SAVE_DIR/lightning_log"

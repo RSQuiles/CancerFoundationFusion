@@ -1,16 +1,21 @@
 from __future__ import annotations
+import sys
+from pathlib import Path
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import hashlib
 import importlib
 import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Callable
 
+from utils import build_parser, _load_json_config, _flatten_sectioned_config, _filter_known_config_keys, pretty_print_args
+from argparse import Namespace
 
 TrainFn = Callable[[Path], str | Path]
 EvalFn = Callable[[str | Path, dict[str, Any]], dict[str, float]]
-
 
 @dataclass
 class TrainResult:
@@ -71,8 +76,20 @@ def run_training_from_config(
         fake_ckpt.write_text("dry-run checkpoint placeholder\n", encoding="utf-8")
         return TrainResult(run_name=run_name, checkpoint_path=fake_ckpt)
 
+    # Generate args Namespace compatible with model input
+    parser = build_parser()
+
+    nested_config = _load_json_config(model_config_path)
+    flat_config = _flatten_sectioned_config(nested_config, ignore_unexpected=True)
+    filtered_config = _filter_known_config_keys(parser, flat_config)
+
+    parser.set_defaults(**filtered_config)
+    model_args = parser.parse_args([])
+
+    pretty_print_args(model_args)
+
     train_fn = resolve_entrypoint(train_entrypoint)
-    ckpt_path = train_fn(model_config_path)
+    ckpt_path = train_fn(model_args)
     return TrainResult(run_name=run_name, checkpoint_path=Path(ckpt_path))
 
 

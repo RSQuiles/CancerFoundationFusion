@@ -142,6 +142,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         unified_fm: bool = False,
         balance: bool = False,
         balance_labels: Optional[List[str] | str] = None,
+        epoch_size: Optional[int] = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -163,6 +164,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         self.balance = balance
         self.balance_labels = balance_labels
         self.conditions = conditions
+        self.epoch_size = epoch_size
 
         # Setup token values based on embedding style
         if self.input_style == "category":
@@ -236,6 +238,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                 pb_ratio=self.hparams.pb_ratio,
                 n_sc_per_pb=self.hparams.n_sc_per_pseudobulk,
                 balance=self.balance,
+                epoch_size=self.epoch_size
             )
 
         if self.trainer.world_size > 1:

@@ -9,8 +9,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from .config import AblationExperimentConfig, load_experiment_config
-from .runtime import (
+from config import AblationExperimentConfig, load_experiment_config
+from runtime import (
 	deep_merge_dict,
 	run_downstream_tasks,
 	run_training_from_config,
@@ -210,6 +210,7 @@ def run_ablation_experiment(
 	run_outputs: list[dict[str, Any]] = []
 
 	for run_name, run_model_cfg in runs:
+		print(f"Running {run_name}!")
 		run_id = stable_run_id(cfg.experiment_name, run_name)
 		run_dir = output_dir / f"{run_name}_{run_id}"
 		run_dir.mkdir(parents=True, exist_ok=True)
@@ -218,6 +219,7 @@ def run_ablation_experiment(
 		run_model_cfg = deepcopy(run_model_cfg)
 		run_model_cfg["run_name"] = run_name
 
+		print("Training...")
 		train_result = run_training_from_config(
 			run_name=run_name,
 			model_config=run_model_cfg,
@@ -226,6 +228,7 @@ def run_ablation_experiment(
 			dry_run=dry_run,
 		)
 
+		print(f"Running downstream tasks:\n {task_specs}")
 		metrics = run_downstream_tasks(
 			checkpoint_path=train_result.checkpoint_path,
 			task_specs=task_specs,

@@ -103,8 +103,31 @@ def train_model(
     return trainer
 
 
-def main():
-    args = get_args()
+def _get_last_checkpoint_path(trainer: pl.Trainer, save_dir: str) -> Optional[str]:
+    """Return the most recently saved checkpoint path, if any."""
+    for callback in trainer.callbacks:
+        if isinstance(callback, ModelCheckpoint):
+            # If configured, Lightning tracks the latest file explicitly.
+            if callback.last_model_path:
+                return callback.last_model_path
+            # Fallback for setups that do not use save_last.
+            if callback.best_model_path:
+                return callback.best_model_path
+
+    checkpoint_dir = Path(save_dir)
+    candidates = list(checkpoint_dir.glob("*.ckpt"))
+    if not candidates:
+        return None
+    latest = max(candidates, key=lambda p: p.stat().st_mtime)
+    return str(latest)
+
+
+def main(input_args=None):
+    if input_args is None:
+        args = get_args()
+    else:
+        args = input_args
+
     if args.seed is not None:
         pl.seed_everything(args.seed, workers=True)
 
@@ -130,6 +153,7 @@ def main():
         data_path=args.train_path,
         zero_percentages=args.zero_percentages,
         batch_size=args.batch_size,
+        epoch_size=args.epoch_size,
         conditions=args.conditions + ["modality"] if args.unified else args.conditions,
         balance_primary=args.balance_primary,
         balance_secondary=args.balance_secondary,
@@ -221,7 +245,7 @@ def main():
             args.pretrained / "best_model.pt", gene_mapping=gene_mapping
         )
 
-    train_model(
+    trainer = train_model(
         model=model,
         datamodule=datamodule,
         max_epochs=args.epochs,
@@ -240,6 +264,9 @@ def main():
         log_interval=args.log_interval,
         save_every=args.save_every,
     )
+
+    # Return latest model checkpoint
+    return _get_last_checkpoint_path(trainer, args.save_dir)
 
 
 if __name__ == "__main__":

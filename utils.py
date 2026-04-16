@@ -438,6 +438,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--epoch-size",
+        type=int,
+        help="Number of batches to evaluate in each epoch"
+    )
+
+    parser.add_argument(
         "--contrastive-training",
         action="store_true",
         help="Whether to include a contrastive loss that brings the pseudobulk and real bulk samples closer together in the embedding space. Default is False.",
@@ -510,16 +516,18 @@ def _load_json_config(config_path: Path) -> dict:
 
     return config
 
-def _flatten_sectioned_config(config: dict) -> dict:
+def _flatten_sectioned_config(config: dict, ignore_unexpected: bool = False) -> dict:
     flat = {}
     unexpected_top_level = set(config) - CONFIG_SECTIONS
-    if unexpected_top_level:
+    if unexpected_top_level and not ignore_unexpected:
         raise ValueError(
             f"Unexpected top-level config sections: {sorted(unexpected_top_level)}. "
             f"Expected only: {sorted(CONFIG_SECTIONS)}"
         )
 
     for section_name, section_values in config.items():
+        if section_name not in CONFIG_SECTIONS:
+            continue
         if section_values is None:
             continue
         if not isinstance(section_values, dict):

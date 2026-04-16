@@ -1,0 +1,54 @@
+{
+  "trainer": {
+    "gpus": 1,
+    "num_workers": 1,
+    "precision": "bf16-mixed",
+    "strategy": "auto",
+    "epochs": 1,
+    "epoch_size": 1,
+    "seed": 0,
+    "val_check_interval": 0.5,
+    "log_interval": 50,
+    "save_dir": "./save/${SLURM_JOB_NAME}_${SLURM_JOB_ID}"
+  },
+  "data": {
+    "train_path": "/cluster/work/boeva/rquiles/data/mixed_test/pipeline_ready",
+    "conditions": [
+      "tissue"
+    ],
+    "zero_percentages": [
+      0.2,
+      0.4,
+      0.6
+    ],
+    "bulk_ratio": 0.3,
+    "pb_ratio": 0.3,
+    "n_sc_per_pseudobulk": 5,
+    "trunc_by_sample": true,
+    "loss": "mse",
+    "training_tasks": "pcpt",
+    "where_condition": "end",
+    "gen_method": "theirs"
+  },
+  "model": {
+    "nlayers": 3,
+    "nheads": 4,
+    "embsize": 64,
+    "d_hid": 256,
+    "lr": 0.0001,
+    "warmup_ratio_or_step": 10000,
+    "max_seq_len": 600,
+    "batch_size": 32
+  },
+  "features": {
+    "unified": true,
+    "do_mvc": true,
+    "noise": [
+      0.6
+    ],
+    "contrastive_training": true,
+    "agg_consistency": true
+  },
+  "ablation_name": "no_contrastive",
+  "run_name": "no_contrastive"
+}

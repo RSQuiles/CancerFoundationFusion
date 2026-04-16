@@ -291,6 +291,7 @@ class BulkSCSampler(Sampler[list[int]]):
         chunk_size: int = 1000,
         curiculum: int = 0,
         replacement: bool = True,
+        epoch_size: Optional[int] = None,
     ):
         # Account for the Subset resulting from random_split
         # Since the Subset uses a local set of indices, different from the original dataset
@@ -327,6 +328,7 @@ class BulkSCSampler(Sampler[list[int]]):
             self.sc_indices = self.dataset.sc_indices
 
         self.batch_size = batch_size
+        self.epoch_size = epoch_size
         self.bulk_ratio = bulk_ratio
         self.pb_ratio = pb_ratio
         self.drop_last = drop_last
@@ -350,7 +352,11 @@ class BulkSCSampler(Sampler[list[int]]):
         if self.n_bulk <= 0:
             raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")
 
-        self._n_batches = len(self.bulk_indices) // 5
+        self._n_batches = (
+            len(self.bulk_indices) // 5
+            if self.epoch_size is None
+            else self.epoch_size
+        )
         self.count = 0
 
         # Balanced sampling setup

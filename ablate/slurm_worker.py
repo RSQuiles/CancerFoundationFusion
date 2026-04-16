@@ -6,7 +6,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from .runtime import run_downstream_tasks, run_training_from_config
+from runtime import run_downstream_tasks, run_training_from_config
 
 
 def parse_args() -> argparse.Namespace:
