@@ -496,7 +496,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     return parser
 
-
 CONFIG_SECTIONS = {"trainer", "model", "features", "data"}
 
 def _load_json_config(config_path: Path) -> dict:
@@ -510,7 +509,6 @@ def _load_json_config(config_path: Path) -> dict:
         raise ValueError("Top-level JSON config must be an object/dict.")
 
     return config
-
 
 def _flatten_sectioned_config(config: dict) -> dict:
     flat = {}
@@ -538,10 +536,8 @@ def _flatten_sectioned_config(config: dict) -> dict:
 
     return flat
 
-
 def _parser_dest_names(parser: argparse.ArgumentParser) -> set[str]:
     return {action.dest for action in parser._actions if action.dest != "help"}
-
 
 def _filter_known_config_keys(parser: argparse.ArgumentParser, config: dict) -> dict:
     valid_keys = _parser_dest_names(parser)
@@ -559,6 +555,11 @@ def expand_env_vars(args):
             setattr(args, key, os.path.expandvars(value))
     return args
 
+def pretty_print_args(args):
+    print("\n===== CONFIG =====")
+    for key, value in sorted(vars(args).items()):
+        print(f"{key:30} : {value}")
+    print("==================\n")
 
 def get_args():
     parser = build_parser()
@@ -576,7 +577,7 @@ def get_args():
     args = parser.parse_args()
     args = expand_env_vars(args)
 
-    print(args)
+    pretty_print_args(args)
     if args.save_dir is not None:
         save_resolved_config(args, Path(args.save_dir) / "config.resolved.json")
 

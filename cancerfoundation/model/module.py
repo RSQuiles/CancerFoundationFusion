@@ -330,13 +330,13 @@ class TransformerModule(nn.Module):
         if conditions is not None and self.where_condition == "begin":
             # RAFA: generalized condition embedding
             # cond_embs = self.condition_encoders["technology"](conditions)
-            condition_emb = torch.cat(
+            condition_emb = torch.stack(
                 [
                     self.condition_encoders[cond_name](cond_values)
                     for cond_name, cond_values in conditions.items()
                 ],
                 dim=1,
-            )
+            ).sum(dim=1)
             cond_embs = cond_embs.unsqueeze(1)  # (batch, 1, embsize), to append condition embeddings as a single token
             total_embs = torch.cat([cond_embs, gene_embs], dim=1)
             padded_value_embs = torch.nn.functional.pad(
@@ -394,13 +394,14 @@ class TransformerModule(nn.Module):
 
         # RAFA: Match generative begin-conditioning behavior
         if self.where_condition == "begin" and conditions is not None:
-            condition_emb = torch.cat(
+            # We sum the condition embeddings along the first dimension to generate a unified condition token
+            condition_emb = torch.stack(
                 [
                     self.condition_encoders[cond_name](cond_values)
                     for cond_name, cond_values in conditions.items()
                 ],
-                dim=0,
-            )
+                dim=1,
+            ).sum(dim=1)
             # Adapt padding mask (pads one position in the left, as CLS is assumed non-padding)
             src_key_padding_mask = torch.nn.functional.pad(
                 src_key_padding_mask, (1, 0), "constant", False
@@ -456,13 +457,14 @@ class TransformerModule(nn.Module):
         pcpt_total_embs = pcpt_token_embs + pcpt_values_embs
 
         if self.where_condition == "begin" and self.conditions:
-            condition_emb = torch.cat(
+            # We sum the condition embeddings along the first dimension to generate a unified condition token
+            condition_emb = torch.stack(
                 [
                     self.condition_encoders[cond_name](cond_values)
                     for cond_name, cond_values in conditions.items()
                 ],
-                dim=0,
-            )
+                dim=1,
+            ).sum(dim=1)
             pcpt_key_padding_mask = torch.nn.functional.pad(
                 pcpt_key_padding_mask, (1, 0), "constant", False
             )
@@ -499,6 +501,30 @@ class TransformerModule(nn.Module):
         if input_cell_emb is not None:
             pcpt_total_embs[:, 0, :] = input_cell_emb
 
+        # Modify masks in case condition token is being fed into the model
+        if self.where_condition == "begin" and self.conditions:
+            assert gen_total_embs is not None
+            src_key_padding_mask = torch.cat(
+                [
+                    pcpt_key_padding_mask,
+                    gen_key_padding_mask,
+                ],
+                dim=1,
+            )
+
+            if attn_mask is not None:
+                total_len = pcpt_total_embs.shape[1] + gen_key_padding_mask.shape[1]
+                gen_len = gen_key_padding_mask.shape[1]
+                if attn_mask.shape != (total_len, total_len):
+                    attn_mask = torch.zeros(
+                        (total_len, total_len),
+                        dtype=torch.bool,
+                        device=pcpt_total_embs.device,
+                    )
+                    attn_mask[:, -gen_len:] = True
+                    attn_mask.diagonal().fill_(False)
+
+        # Transformer Encoder forward pass
         pcpt_output, gen_output = self.transformer_encoder(
             pcpt_total_embs=pcpt_total_embs,
             gen_total_embs=gen_total_embs,
@@ -519,6 +545,26 @@ class TransformerModule(nn.Module):
         Returns:
             Tensor: The extracted cell embeddings of shape (batch, embsize).
         """
+        # Remove condition token if present (assumed at position 1)
+        if self.where_condition == "begin" and self.conditions:
+            layer_output = torch.cat(
+                [
+                    layer_output[:, :1, :],   # CLS
+                    layer_output[:, 2:, :],   # skip condition token
+                ],
+                dim=1,
+            )
+            if weights is not None:
+                weights = torch.cat(
+                    [
+                        weights[:, :1],
+                        weights[:, 2:],
+                    ],
+                    dim=1,
+                )
+        else:
+            layer_output = layer_output
+
         if self.cell_emb_style == "cls":
             cell_emb = layer_output[:, 0, :]  # (batch, embsize)
         elif self.cell_emb_style == "avg-pool":
@@ -960,8 +1006,21 @@ class TransformerModule(nn.Module):
             conditions,
             input_cell_emb=input_cell_emb,
         )
+
+        if self.where_condition == "begin" and self.conditions:
+            # Condition token was inserted after CLS in the perceptual stream.
+            pcpt_output_for_decoder = torch.cat(
+                [
+                    pcpt_output[:, :1, :],   # CLS
+                    pcpt_output[:, 2:, :],   # drop condition token
+                ],
+                dim=1,
+            )
+        else:
+            pcpt_output_for_decoder = pcpt_output
+            
         transformer_output = (
-            pcpt_output
+            pcpt_output_for_decoder
             if gen_output is None
             else torch.cat([pcpt_output, gen_output], dim=1)
         )
@@ -1038,7 +1097,18 @@ class TransformerModule(nn.Module):
         transformer_output = self.encode(src, values, src_key_padding_mask, conditions)
 
         if self.where_condition == "begin":
-            decoder_input = transformer_output
+            # RAFA: Get rid of the condition token once the it has been encoded through self-attention
+            if self.conditions and condition_emb is not None:
+                # num_conditions = condition_emb.shape[1]
+                decoder_input = torch.cat(
+                    [
+                        transformer_output[:, :1, :],                    # keep CLS
+                        transformer_output[:, 2 :, :], # skip condition tokens
+                    ],
+                    dim=1,
+                )
+            else:
+                decoder_input = transformer_output
 
         elif self.where_condition == "end":
             if self.conditions:

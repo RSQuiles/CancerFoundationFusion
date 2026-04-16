@@ -16,39 +16,8 @@ mkdir -p "$SAVE_DIR"
 
 # Improve CUDA traceback
 CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py \
-    --unified \
-    --gpus 1 \
-    --num-workers 4 \
-    --bulk-ratio 0.3 \
-    --pb-ratio 0.3 \
-    --n-sc-per-pseudobulk 5 \
-    --save-dir "$SAVE_DIR" \
-    --max-seq-len 600 \
-    --batch-size 32 \
-    --nlayers 3 \
-    --nheads 4 \
-    --embsize 64 \
-    --d-hi 256 \
-    --epochs 1 \
-    --lr 0.0001 \
-    --warmup-ratio-or-step 10000 \
-    --val-check-interval 0.5 \
-    --trunc-by-sample \
-    --loss mse \
-    --conditions tissue \
-    --train-path "$TRAIN_DIR" \
-    --zero-percentages 0.2 0.4 0.6 \
-    --strategy='ddp' \
-    --seed 0 \
-    --precision "bf16-mixed" \
-    --do-mvc \
-    --log-interval 50 \
-    --training-tasks "pcpt" \
-    --where-condition "end" \
-    --gen-method "theirs" \
-    --noise 0.6 \
-    # --esm-emb \
-    # --esm-emb-path "/cluster/work/boeva/rquiles/data/esm3_homo_emb.parquet" \
+    --config ./config_test.json \
+    --where-condition "begin" \
 
 if [ -d "./lightning_logs/version_${SLURM_JOB_ID}" ]; then
     mv "./lightning_logs/version_${SLURM_JOB_ID}" "$SAVE_DIR/lightning_log"
