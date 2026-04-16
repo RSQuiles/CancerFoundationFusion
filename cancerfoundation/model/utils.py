@@ -125,7 +125,11 @@ def apply_log1p_noise_to_branch_inputs(
 
     x = out[input_key]
     key_padding_mask = out[pad_key]
-    valid_mask = ~key_padding_mask
+    valid_mask = (
+        ~key_padding_mask
+        if branch != "pcpt"
+        else (~key_padding_mask) & (x >= 0) # The masking sentinel value is -1
+    )
 
     if keep_first_n_tokens > 0:
         valid_mask = valid_mask.clone()

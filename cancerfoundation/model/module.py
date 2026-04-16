@@ -12,7 +12,7 @@ from .layers import RefactoredCFGenerator, QuickCFGenerator, CFLayer, CFGenerato
 
 from .grad_reverse import grad_reverse
 
-from . import utils as utils_model
+from . import utils
 
 class TransformerModule(nn.Module):
     """The main Transformer model for gene expression modeling.
@@ -328,8 +328,16 @@ class TransformerModule(nn.Module):
         value_embs = self.value_encoder(values)
 
         if conditions is not None and self.where_condition == "begin":
-            cond_embs = self.condition_encoders["technology"](conditions)
-            cond_embs = cond_embs.unsqueeze(1)  # (batch, 1, embsize)
+            # RAFA: generalized condition embedding
+            # cond_embs = self.condition_encoders["technology"](conditions)
+            condition_emb = torch.cat(
+                [
+                    self.condition_encoders[cond_name](cond_values)
+                    for cond_name, cond_values in conditions.items()
+                ],
+                dim=1,
+            )
+            cond_embs = cond_embs.unsqueeze(1)  # (batch, 1, embsize), to append condition embeddings as a single token
             total_embs = torch.cat([cond_embs, gene_embs], dim=1)
             padded_value_embs = torch.nn.functional.pad(
                 value_embs, (0, 0, 0, 1), "constant", 0
@@ -370,19 +378,41 @@ class TransformerModule(nn.Module):
         """
         self._check_condition_labels(conditions)
 
-        src_embs = self.encoder(src)
+        if hasattr(self, "gene_encoder"):
+            src_embs = self.gene_encoder(src)
+        elif hasattr(self, "encoder"):
+            src_embs = self.encoder(src)
         self.cur_gene_token_embs = src_embs
 
         values = self.value_encoder(values)
-        if conditions:
-            cond_emb = self.condition_encoders["technology"](conditions["technology"])
-            values[:, 1, :] = cond_emb
 
         if self.input_emb_style == "scaling":
             values = values.unsqueeze(2)
             total_embs = src_embs * values
         else:
             total_embs = src_embs + values
+
+        # RAFA: Match generative begin-conditioning behavior
+        if self.where_condition == "begin" and conditions is not None:
+            condition_emb = torch.cat(
+                [
+                    self.condition_encoders[cond_name](cond_values)
+                    for cond_name, cond_values in conditions.items()
+                ],
+                dim=0,
+            )
+            # Adapt padding mask (pads one position in the left, as CLS is assumed non-padding)
+            src_key_padding_mask = torch.nn.functional.pad(
+                src_key_padding_mask, (1, 0), "constant", False
+            )
+            total_embs = torch.cat(
+                [
+                    total_embs[:, 0, :].unsqueeze(1),
+                    condition_emb.unsqueeze(1),
+                    total_embs[:, 1:, :],
+                ],
+                dim=1,
+            )
 
         output = self.transformer_encoder(
             total_embs, src_key_padding_mask=src_key_padding_mask
@@ -562,6 +592,11 @@ class TransformerModule(nn.Module):
 
     def _prepare_generative_input(self, tensors: dict[str, torch.Tensor], noise:float=None):
         """Prepares tensors for the generative forward pass."""
+        # Apply noising schedule
+        if noise is not None:
+            print("Noising generative...")
+            tensors = utils.apply_log1p_noise_to_branch_inputs(tensors, "gen", noise)
+
         pcpt_gene = tensors["pcpt_gene"]
         pcpt_expr = tensors["pcpt_expr"]
         pcpt_key_padding_mask = tensors["pcpt_key_padding_mask"]
@@ -569,11 +604,6 @@ class TransformerModule(nn.Module):
         gen_expr_target = tensors["gen_expr_target"]
         gen_key_padding_mask = tensors["gen_key_padding_mask"]
         attn_mask = tensors["attn_mask"]
-
-        # Apply noising schedule
-        if noise is not None:
-            print("Noising (check masking)...")
-            pcpt_expr = utils_model.noise_log1p_profile(pcpt_expr, noise, valid_mask=pcpt_key_padding_mask)
 
         src_key_padding_mask = torch.cat(
             [pcpt_key_padding_mask, gen_key_padding_mask], dim=1
@@ -590,16 +620,15 @@ class TransformerModule(nn.Module):
             attn_mask,
         )
 
-    def _prepare_perceptual_input(self, tensors: dict[str, torch.Tensor]):
+    def _prepare_perceptual_input(self, tensors: dict[str, torch.Tensor], noise:float=None):
         """Prepares tensors for the perceptual forward pass."""
-        input_gene_ids = tensors["gene"]
-        input_values = tensors["masked_expr"]
-
         # Apply noising schedule
         if noise is not None:
-            print("Check Masking for this noising!...")
-            input_values = utils.noise_log1p_profile(input_values, noise)
+            print("Noising perceptual...")
+            tensors = utils.apply_log1p_noise_to_branch_inputs(tensors, "pcpt", noise)
 
+        input_gene_ids = tensors["gene"]
+        input_values = tensors["masked_expr"]
         src_key_padding_mask = tensors["gene_key_padding_mask"]
         target_values = tensors["expr"]
 

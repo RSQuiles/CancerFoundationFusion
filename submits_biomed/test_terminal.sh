@@ -43,12 +43,12 @@ CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py \
     --precision "bf16-mixed" \
     --do-mvc \
     --log-interval 50 \
-    --training-tasks "both" \
+    --training-tasks "pcpt" \
     --where-condition "end" \
     --gen-method "theirs" \
     --noise 0.6 \
-    --esm-emb \
-    --esm-emb-path "/cluster/work/boeva/rquiles/data/esm3_homo_emb.parquet" \
+    # --esm-emb \
+    # --esm-emb-path "/cluster/work/boeva/rquiles/data/esm3_homo_emb.parquet" \
 
 if [ -d "./lightning_logs/version_${SLURM_JOB_ID}" ]; then
     mv "./lightning_logs/version_${SLURM_JOB_ID}" "$SAVE_DIR/lightning_log"

@@ -465,8 +465,8 @@ def main(args):
     # Generate and save vocabularyº
     if args.vocab_path is None:
         if args.update_index is not None:
-        print("Setting h5ad index to gene names...")
-        _set_h5ad_index(h5ad_path, var_field=args.update_index)
+            print("Setting h5ad index to gene names...")
+            _set_h5ad_index(h5ad_path, var_field=args.update_index)
         
         print("Generating gene_vocabulary...")
         vocab = _generate_vocab_from_h5ads(h5ad_path, CLS_TOKEN, PAD_TOKEN)
