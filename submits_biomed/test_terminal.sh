@@ -16,7 +16,7 @@ mkdir -p "$SAVE_DIR"
 
 # Improve CUDA traceback
 CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py \
-    --config ./config_test.json \
+    --config ./config_bulk_test.json \
     --where-condition "begin" \
     --epoch-size 1 \
 

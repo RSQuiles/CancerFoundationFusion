@@ -95,7 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--input-style",
         type=str,
         choices=["normed_raw", "log1p", "binned"],
-        default="binned",
+        default="log1p",
         help="The style of the input data. Default is binned.",
     )
     parser.add_argument(

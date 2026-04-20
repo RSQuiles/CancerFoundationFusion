@@ -12,12 +12,9 @@
 
   },
   "data": {
-    "train_path": "/cluster/work/boeva/rquiles/data/small_partition/pipeline_ready",
+    "train_path": "/cluster/work/boeva/rquiles/data/bulk_only/pipeline_ready",
     "conditions": ["tissue_general", "assay"],
     "zero_percentages": [0.2, 0.4, 0.6],
-    "bulk_ratio": 0.5,
-    "pb_ratio": 0.5,
-    "n_sc_per_pseudobulk": 5,
     "trunc_by_sample": true,
     "loss": "mse",
     "training_tasks": "pcpt"
@@ -35,7 +32,6 @@
   },
   
   "features": {
-    "unified": true,
     "do_mvc": true,
     "where_condition": "end",
     "gen_method": "theirs",

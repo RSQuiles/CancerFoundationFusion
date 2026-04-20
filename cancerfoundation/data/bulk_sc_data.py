@@ -341,6 +341,7 @@ class BulkSCSampler(Sampler[list[int]]):
         self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pb
 
         # Confirm batch composition
+        """
         print("Batch composition at the sampler level:")
         print("batch_size:", self.batch_size)
         print("n_bulk:", self.n_bulk)
@@ -348,6 +349,7 @@ class BulkSCSampler(Sampler[list[int]]):
         print("n_sc:", self.n_sc)
         print("raw_batch_size:", self.raw_batch_size)
         print("sum logical:", self.n_bulk + self.n_pb + self.n_sc)
+        """
 
         if self.n_bulk <= 0:
             raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")

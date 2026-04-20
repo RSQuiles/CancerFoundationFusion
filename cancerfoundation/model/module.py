@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
 import numpy as np
 import pandas as pd
+import math
 from .layers import RefactoredCFGenerator, QuickCFGenerator, CFLayer, CFGenerator
 
 from .grad_reverse import grad_reverse
@@ -153,9 +154,11 @@ class TransformerModule(nn.Module):
             for cond_name, cond_num in self.conditions.items():
                 self.condition_encoders[cond_name] = ConditionEncoder(cond_num, d_model)
             # Check condition encoders
+            """
             print("Condition Encoders Inspection:")
             print(f"Conditions: {self.conditions}")
             print(f"Encoders: {self.condition_encoders}")
+            """
 
             if do_dat:
                 self.grad_reverse_discriminators = nn.ModuleDict({})
@@ -1211,7 +1214,6 @@ class GeneEncoder(nn.Module):
         )
 
         if pretrained_weights is not None:
-            print("Using pretained weights!")
             self.embedding = nn.Embedding.from_pretrained(
                 pretrained_weights,
                 freeze=freeze,
@@ -1241,11 +1243,14 @@ class GeneEncoder(nn.Module):
         if weights is None and weights_file is None:
             return None
 
+        print("Using pretrained embeddings!")
         if weights is not None:
             weight_tensor = torch.as_tensor(weights, dtype=torch.float32)
         else:
             if weights_file is None:
                 raise ValueError("weights_file cannot be None when no weights tensor is provided.")
+            print(f"Weight file: {weights_file}")
+
             weights_path = Path(weights_file)
             weight_frame = pd.read_parquet(weights_path)
             if vocab is not None and len(vocab) > 0:
@@ -1264,16 +1269,27 @@ class GeneEncoder(nn.Module):
                     weight_frame.to_numpy(dtype=np.float32).mean(axis=0),
                     dtype=torch.float32,
                 )
+                # Keep track of genes not present in pretrained (non-protein-coding genes)
+                non_encoded_counter = 0
+                scale = 1.0 / math.sqrt(source_dim)
                 for idx, token in enumerate(ordered_tokens):
                     if token is None:
                         continue
                     if token in weight_frame.index:
+                        # print(f"{token} in pretrained weights!")
                         row = np.asarray(weight_frame.loc[token], dtype=np.float32)
                         weight_tensor[idx] = torch.tensor(row, dtype=torch.float32)
                     elif token == "<cls>":
                         weight_tensor[idx] = mean_vector
+                    # The <pad> token embedding is hardcoded to zero
                     elif token == "<pad>":
                         weight_tensor[idx] = torch.zeros(source_dim, dtype=torch.float32)
+                    else:
+                        # random init for unsuported genes
+                        weight_tensor[idx] = torch.empty(source_dim).uniform_(-scale, scale)
+                        non_encoded_counter += 1
+                print(f"Missing tokens initialized randomly: {non_encoded_counter} / {num_embeddings}\n\n")
+                    
             else:
                 weight_tensor = torch.tensor(
                     weight_frame.to_numpy(dtype=np.float32), dtype=torch.float32

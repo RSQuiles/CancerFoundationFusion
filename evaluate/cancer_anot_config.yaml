@@ -1,10 +1,10 @@
 finetune:
   canc_type_class:
-    pretrained_model_path: /absolute/path/to/pretrained_model.ckpt
-    tcga_data_dir: /absolute/path/to/tcga_data.h5ad
+    pretrained_model_path: /cluster/work/boeva/rquiles/CancerFoundation/submits_biomed/save/bulk_only_8657635/epoch_epoch=03.ckpt
+    tcga_data_dir: /cluster/work/boeva/eheiss/datasets/TCGA/tcga.h5ad
 
     # optional
-    gene_list_path: /absolute/path/to/gene_list.txt
+    # gene_list_path: /absolute/path/to/gene_list.txt
 
     cohorts: [BRCA, BLCA, GBM, LGG, LUAD, UCEC]
     merge_gbm_lgg: true
@@ -17,7 +17,7 @@ finetune:
     random_seed: 42
 
     batch_size: 32
-    epochs: 10
+    epochs: 1
     hidden_dim: 128
     dropout: 0.0
 
