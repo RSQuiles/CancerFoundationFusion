@@ -310,7 +310,7 @@ class TransformerModule(nn.Module):
         src_key_padding_mask: Tensor,
         conditions: Optional[Tensor] = None,
     ) -> Tensor:
-        """Embeds gene IDs into dense vectors.
+        """Embeds gene IDs into dense vectors. Used if self.use_generative_training
 
         Args:
             src (Tensor): Input gene token IDs of shape (batch, seq_len).
@@ -326,10 +326,11 @@ class TransformerModule(nn.Module):
         elif hasattr(self, "encoder"):
             gene_embs = self.encoder(src)
         value_embs = self.value_encoder(values)
+        # RAFA: modified handling of the where_condition == "begin"
+        total_embs = gene_embs + value_embs
 
-        if conditions is not None and self.where_condition == "begin":
-            # RAFA: generalized condition embedding
-            # cond_embs = self.condition_encoders["technology"](conditions)
+        if self.where_condition == "begin" and conditions:
+            # We sum the condition embeddings along the first dimension to generate a unified condition token
             condition_emb = torch.stack(
                 [
                     self.condition_encoders[cond_name](cond_values)
@@ -337,17 +338,29 @@ class TransformerModule(nn.Module):
                 ],
                 dim=1,
             ).sum(dim=1)
-            cond_embs = cond_embs.unsqueeze(1)  # (batch, 1, embsize), to append condition embeddings as a single token
-            total_embs = torch.cat([cond_embs, gene_embs], dim=1)
-            padded_value_embs = torch.nn.functional.pad(
-                value_embs, (0, 0, 0, 1), "constant", 0
-            )  # (batch, seq_len+1, embsize)
-            total_embs = total_embs + padded_value_embs  # (batch, seq_len+1, embsize)
-            src_key_padding_mask = torch.nn.functional.pad(
-                src_key_padding_mask, (0, 1), "constant", False
-            )  # (batch, seq_len+1)
-        else:
-            total_embs = gene_embs + value_embs
+            # Adapt padding mask
+            src_key_padding_mask = torch.cat(
+                [
+                    src_key_padding_mask[:, :1],
+                    torch.zeros(
+                        src_key_padding_mask.size(0),
+                        1,
+                        dtype=src_key_padding_mask.dtype,
+                        device=src_key_padding_mask.device,
+                    ),
+                    src_key_padding_mask[:, 1:],
+                ],
+                dim=1,
+            )
+            # Insert condition embedding after CLS token (assumed at position 0) and before the rest of the gene embeddings
+            total_embs = torch.cat(
+                [
+                    total_embs[:, 0, :].unsqueeze(1),
+                    condition_emb.unsqueeze(1),
+                    total_embs[:, 1:, :],
+                ],
+                dim=1,
+            )
 
         output = self.transformer_encoder(
             pcpt_total_embs=total_embs,
@@ -403,8 +416,18 @@ class TransformerModule(nn.Module):
                 dim=1,
             ).sum(dim=1)
             # Adapt padding mask (pads one position in the left, as CLS is assumed non-padding)
-            src_key_padding_mask = torch.nn.functional.pad(
-                src_key_padding_mask, (1, 0), "constant", False
+            src_key_padding_mask = torch.cat(
+                [
+                    src_key_padding_mask[:, :1],
+                    torch.zeros(
+                        src_key_padding_mask.size(0),
+                        1,
+                        dtype=src_key_padding_mask.dtype,
+                        device=src_key_padding_mask.device,
+                    ),
+                    src_key_padding_mask[:, 1:],
+                ],
+                dim=1,
             )
             total_embs = torch.cat(
                 [
@@ -465,9 +488,21 @@ class TransformerModule(nn.Module):
                 ],
                 dim=1,
             ).sum(dim=1)
-            pcpt_key_padding_mask = torch.nn.functional.pad(
-                pcpt_key_padding_mask, (1, 0), "constant", False
+            # Adapt padding mask (pads one position in the left, as CLS is assumed non-padding)
+            pcpt_key_padding_mask = torch.cat(
+                [
+                    pcpt_key_padding_mask[:, :1],
+                    torch.zeros(
+                        pcpt_key_padding_mask.size(0),
+                        1,
+                        dtype=pcpt_key_padding_mask.dtype,
+                        device=pcpt_key_padding_mask.device,
+                    ),
+                    pcpt_key_padding_mask[:, 1:],
+                ],
+                dim=1,
             )
+            # Insert condition embedding after CLS token (assumed at position 0) and before the rest of the gene embeddings
             pcpt_total_embs = torch.cat(
                 [
                     pcpt_total_embs[:, 0, :].unsqueeze(1),

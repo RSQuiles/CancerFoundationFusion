@@ -1,0 +1,35 @@
+finetune:
+  canc_type_class:
+    pretrained_model_path: /absolute/path/to/pretrained_model.ckpt
+    tcga_data_dir: /absolute/path/to/tcga_data.h5ad
+
+    # optional
+    gene_list_path: /absolute/path/to/gene_list.txt
+
+    cohorts: [BRCA, BLCA, GBM, LGG, LUAD, UCEC]
+    merge_gbm_lgg: true
+
+    normalized: true
+    min_genes: 200
+
+    test_size: 0.2
+    train_test_split_version: 1
+    random_seed: 42
+
+    batch_size: 32
+    epochs: 10
+    hidden_dim: 128
+    dropout: 0.0
+
+    head_learning_rate: 0.001
+    min_lr: 0.000001
+    # optional alternative:
+    # min_lr_ratio: 0.001
+
+    first_cycle_steps: 15
+    cycle_mult: 2.0
+    warmup_steps: 5
+    gamma: 0.9
+
+    grad_accumulation_steps: 1
+    max_grad_norm: 1000000.0
