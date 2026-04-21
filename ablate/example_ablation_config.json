@@ -62,10 +62,7 @@
     {
       "name": "dummy_celltype_cls",
       "entrypoint": "evaluate.dummy_downstream_task:run_dummy_downstream",
-      "config": {
-        "seed": 7,
-        "task_weight": 1.0
-      }
+      "config": "path/to/config.yaml"
     }
   ],
   "slurm": {

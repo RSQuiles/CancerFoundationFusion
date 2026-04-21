@@ -26,7 +26,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-def load_runner_config(config_path: str | Path) -> DictConfig:
+def load_runner_config(config_path: str | Path, checkpoint_path: str | Path | None) -> DictConfig:
     """
     Load YAML config into OmegaConf DictConfig.
 
@@ -34,6 +34,8 @@ def load_runner_config(config_path: str | Path) -> DictConfig:
     ----------
     config_path : str or Path
         Path to YAML config file.
+    checkpoint_path : str or Path or None
+        Path to checkpoint file.
 
     Returns
     -------
@@ -51,11 +53,17 @@ def load_runner_config(config_path: str | Path) -> DictConfig:
 
     if "finetune" not in cfg or cfg.finetune is None:
         raise ValueError("Config must contain 'finetune' section")
+    
+    if checkpoint_path is not None:
+        checkpoint_path = Path(checkpoint_path).expanduser().resolve()
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+        cfg.finetune.pretrained_model_path = str(checkpoint_path)
 
     return cfg
 
 
-def main(config_path: str, task_name: str | None = None) -> dict:
+def main(config_path: str, checkpoint_path: str | Path | None = None, task_name: str | None = None) -> dict:
     """
     Main entry point for running a downstream task.
 
@@ -63,6 +71,8 @@ def main(config_path: str, task_name: str | None = None) -> dict:
     ----------
     config_path : str
         Path to YAML config file.
+    checkpoint_path : str or Path or None
+        Path to checkpoint file.
     task_name : str, optional
         Task name to run. If None, will infer from config or list available tasks.
 
@@ -72,7 +82,7 @@ def main(config_path: str, task_name: str | None = None) -> dict:
         Final evaluation metrics from the task.
     """
     # Load config
-    cfg = load_runner_config(config_path)
+    cfg = load_runner_config(config_path, checkpoint_path)
     log.info(f"Loaded config from {config_path}")
 
     # Determine task

@@ -106,7 +106,7 @@ def run_downstream_tasks(
     results: dict[str, dict[str, float]] = {}
     for task in task_specs:
         eval_fn: EvalFn = resolve_entrypoint(task["entrypoint"])
-        metrics = eval_fn(checkpoint_path, task.get("config", {}))
+        metrics = eval_fn(task.get("config", ""), checkpoint_path=checkpoint_path)
         results[task["name"]] = {k: float(v) for k, v in metrics.items()}
     return results
 
