@@ -5,10 +5,10 @@ finetune:
   canc_type_class:
     # ===== REQUIRED =====
     # Path to pretrained model checkpoint
-    pretrained_model_path: /path/to/pretrained_model.ckpt
+    pretrained_model_path: /cluster/work/boeva/rquiles/CancerFoundation/submits_biomed/save/bulk_only_8657635/epoch_epoch=03.ckpt
     
     # Path to TCGA data (H5AD format)
-    tcga_data_dir: /path/to/tcga.h5ad
+    tcga_data_dir: /cluster/work/boeva/eheiss/datasets/TCGA/tcga.h5ad
     
     # Learning rate for the head
     head_learning_rate: 0.001

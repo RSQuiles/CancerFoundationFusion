@@ -63,14 +63,14 @@ class DownstreamTask(ABC):
     @abstractmethod
     def load_data(
         self, task_cfg: DictConfig, embedder: Any
-    ) -> tuple[ad.AnnData | None, ad.AnnData | None, np.ndarray | Any, np.ndarray | Any]:
+    ) -> tuple[int, ad.AnnData | None, ad.AnnData | None, np.ndarray | Any, np.ndarray | Any]:
         """
         Load training and test data.
 
         Returns
         -------
         tuple
-            (train_adata, test_adata, train_targets, test_targets)
+            (num_classes, train_adata, test_adata, train_targets, test_targets)
             where targets can be labels (1D) or values (2D) depending on task type.
         """
         pass

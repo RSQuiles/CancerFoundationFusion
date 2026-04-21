@@ -34,7 +34,7 @@ def protein_embeddings_generator(
     https: bool = False,
     fasta_path: str = "/tmp/data/fasta/",
     embedding_size: int = 512,
-    embedder: str = "esm3",
+    embedders: str = ["esm3", "rnafm"],
     cuda: bool = True,
 ):
     """
@@ -64,6 +64,7 @@ def protein_embeddings_generator(
             species=organism, output_path=fasta_path, load=["pep", "ncrna"], cache=cache
        )
 
+    # PROTEIN EMBEDDINGS
     # subset the fasta
     fasta_name = fasta_path_pep.split("/")[-1]
     run_command(["gunzip", fasta_path_pep])
@@ -72,11 +73,11 @@ def protein_embeddings_generator(
     )
     found, naming_df = subset_fasta(
         protgenedf.index.tolist() if protgenedf is not None else None,
-        subfasta_path=fasta_path + "subset.fa",
+        subfasta_path=fasta_path_pep + "subset.fa",
         fasta_path=fasta_path + fasta_name[:-3],
         drop_unknown_seq=True,
     )
-    if embedder == "esm3":
+    if "esm3" in embedders:
         from esm.models.esmc import ESMC
         from esm.sdk.api import ESMProtein, LogitsConfig
 
@@ -84,7 +85,7 @@ def protein_embeddings_generator(
         names = []
         client = ESMC.from_pretrained("esmc_600m").to("cuda" if cuda else "cpu")
         conf = LogitsConfig(sequence=True, return_embeddings=True)
-        with (open(fasta_path + "subset.fa", "r") as fasta,):
+        with (open(fasta_path_pep + "subset.fa", "r") as fasta,):
             for record in tqdm(SeqIO.parse(fasta, "fasta")):
                 protein = ESMProtein(sequence=str(record.seq))
                 protein_tensor = client.encode(protein)
@@ -94,37 +95,70 @@ def protein_embeddings_generator(
                 )
                 names.append(record.id)
     else:
-        raise ValueError(f"Embedder {embedder} not supported")
-    # load the data and erase / zip the rest
-    # utils.utils.run_command(["gzip", fasta_path + fasta_name[:-3]])
-    # return the embedding and gene file
-    # TODO: to redebug
-    # do the same for RNA
-    # rnagenedf = genedf[genedf["biotype"] != "protein_coding"]
-    # fasta_file = next(
-    #    file for file in os.listdir(fasta_path) if file.endswith(".ncrna.fa.gz")
-    # )
-    # utils.utils.run_command(["gunzip", fasta_path + fasta_file])
-    # utils.subset_fasta(
-    #    rnagenedf["ensembl_gene_id"].tolist(),
-    #    subfasta_path=fasta_path + "subset.ncrna.fa",
-    #    fasta_path=fasta_path + fasta_file[:-3],
-    #    drop_unknown_seq=True,
-    # )
-    # rna_embedder = RNABERT()
-    # rna_embeddings = rna_embedder(fasta_path + "subset.ncrna.fa")
-    ## Check if the sizes of the cembeddings are not the same
-    # utils.utils.run_command(["gzip", fasta_path + fasta_file[:-3]])
-    #
+        raise ValueError(f"Protein embedder not supported")
+
+    # NCRNA EMBEDDINGS
+    fasta_name_ncrna = fasta_path_ncrna.split("/")[-1]
+    run_command(["gunzip", fasta_path_ncrna])
+    rnagenedf = (
+        genedf[genedf["biotype"] != "protein_coding"] if genedf is not None else None
+    )
+    found_ncrna, naming_df_ncrna = subset_fasta(
+        rnagenedf.index.tolist() if rnagenedf is not None else None,
+        subfasta_path=fasta_path_ncrna + "subset.ncrna.fa",
+        fasta_path=fasta_path + fasta_name_ncrna[:-3],
+        drop_unknown_seq=True,
+    )
+
+    if "rnafm" in embedders:
+        import torch
+        import fm
+
+        ncrna_embeddings = []
+        ncrna_names = []
+
+        model, alphabet = fm.pretrained.rna_fm_t12()
+        model = model.to("cuda" if cuda and torch.cuda.is_available() else "cpu")
+        model.eval()
+        batch_converter = alphabet.get_batch_converter()
+
+        with open(fasta_path + "subset.ncrna.fa", "r") as fasta:
+            for record in tqdm(SeqIO.parse(fasta, "fasta")):
+                rna_seq = str(record.seq).upper()
+
+                # optional cleanup if needed
+                rna_seq = rna_seq.replace("T", "U")
+
+                data = [(record.id, rna_seq)]
+                batch_labels, batch_strs, batch_tokens = batch_converter(data)
+                batch_tokens = batch_tokens.to("cuda" if cuda and torch.cuda.is_available() else "cpu")
+
+                with torch.no_grad():
+                    results = model(batch_tokens, repr_layers=[12])
+
+                token_embeddings = results["representations"][12]   # [batch, tokens, 640]
+
+                # remove BOS/EOS if present
+                seq_len = len(rna_seq)
+                seq_embedding = token_embeddings[0, 1:seq_len+1].mean(0).cpu().numpy()
+
+                ncrna_embeddings.append(seq_embedding.tolist())
+                ncrna_names.append(record.id)
+    else:
+        raise ValueError(f"RNA embedder {embedder} not supported")
+
     m = AdaptiveAvgPool1d(embedding_size)
     prot_embeddings = pd.DataFrame(
         data=m(torch.tensor(np.array(prot_embeddings))), index=names
     )
-    # rna_embeddings = pd.DataFrame(
-    #    data=m(torch.tensor(rna_embeddings.values)), index=rna_embeddings.index
-    # )
+    ncrna_embeddings = pd.DataFrame(
+        data=m(torch.tensor(np.array(ncrna_embeddings))), index=ncrna_names
+    )
+
     # Concatenate the embeddings
-    return prot_embeddings, naming_df  # pd.concat([prot_embeddings, rna_embeddings])
+    return pd.concat([prot_embeddings, ncrna_embeddings]), pd.concat(
+        [naming_df, naming_df_ncrna]
+    )
 
 def run_command(command: str, **kwargs) -> int:
     """

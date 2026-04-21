@@ -117,8 +117,8 @@ class CancTypeClassTask(DownstreamTask):
 
     def load_data(
         self, task_cfg: DictConfig, embedder: Any
-    ) -> tuple[ad.AnnData, ad.AnnData, np.ndarray, np.ndarray]:
-        """Load TCGA data and split into train/test."""
+    ) -> tuple[int, ad.AnnData, ad.AnnData, np.ndarray, np.ndarray]:
+        """Load TCGA data and split into train/test. Determine output dimension"""
         import scanpy as sc
 
         # Load TCGA data
@@ -178,7 +178,10 @@ class CancTypeClassTask(DownstreamTask):
             random_state=split_seed,
         )
 
-        return adata[train_idx].copy(), adata[test_idx].copy(), labels.iloc[train_idx].to_numpy(), labels.iloc[test_idx].to_numpy()
+        # Number of classes
+        num_classes = labels.nunique()
+
+        return num_classes, adata[train_idx].copy(), adata[test_idx].copy(), labels.iloc[train_idx].to_numpy(), labels.iloc[test_idx].to_numpy()
 
     def _preprocess_adata(self, adata: ad.AnnData, task_cfg: DictConfig) -> ad.AnnData:
         """Preprocess and normalize data."""
@@ -324,7 +327,7 @@ class DeconvTask(DownstreamTask):
 
     def load_data(
         self, task_cfg: DictConfig, embedder: Any
-    ) -> tuple[ad.AnnData, ad.AnnData, np.ndarray, np.ndarray]:
+    ) -> tuple[int, ad.AnnData, ad.AnnData, np.ndarray, np.ndarray]:
         """Load pseudobulk data and cell type proportions."""
         # Load data
         pb_path = getattr(task_cfg, "pseudo_bulk_data_path", None)
@@ -375,7 +378,11 @@ class DeconvTask(DownstreamTask):
                 random_state=split_seed,
             )
 
+        # Number of classes
+        num_classes = None
+
         return (
+            num_classes,
             adata[train_idx].copy(),
             adata[test_idx].copy(),
             targets[train_idx],
@@ -394,6 +401,7 @@ class DeconvTask(DownstreamTask):
             # Try to infer or use custom mapping
             mapping = getattr(task_cfg, "cell_type_mapping", None)
             if mapping is None:
+                log.info("Inferring cell type proportions!")
                 mapping = self._infer_proportion_mapping_from_obs(adata.obs.columns)
 
         self.cell_types = sorted(mapping)

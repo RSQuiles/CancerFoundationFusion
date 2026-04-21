@@ -261,9 +261,13 @@ class BaseDownstreamRunner:
         then to task.prepare_datasets() for dataset creation.
         """
         # Load task-specific data
-        train_adata, test_adata, train_targets, test_targets = self.task.load_data(
+        num_classes, train_adata, test_adata, train_targets, test_targets = self.task.load_data(
             self.task_cfg, self.embedder
         )
+
+        # Set number of classes
+        if num_classes is not None:
+            self.task_state["output_dim"] = num_classes
 
         # Get datasets (task creates embeddings internally)
         train_dataset, test_dataset, embedding_dim = self.task.prepare_datasets(

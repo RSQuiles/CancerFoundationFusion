@@ -9,6 +9,9 @@ Usage:
 import argparse
 import logging
 import sys
+sys.path.insert(0, "../../")
+sys.path.insert(0, "./")
+
 from pathlib import Path
 
 from omegaconf import OmegaConf, DictConfig

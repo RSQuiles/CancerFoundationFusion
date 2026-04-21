@@ -5,11 +5,11 @@ finetune:
   deconv:
     # ===== REQUIRED =====
     # Path to pretrained model checkpoint
-    pretrained_model_path: /path/to/pretrained_model.ckpt
+    pretrained_model_path: /cluster/work/boeva/rquiles/CancerFoundation/submits_biomed/save/bulk_only_8657635/epoch_epoch=03.ckpt
     
     # Path to pseudobulk/bulk data (H5AD format)
     # Should contain cell type proportions in obs columns
-    pseudo_bulk_data_path: /path/to/pseudobulk.h5ad
+    pseudo_bulk_data_path: /cluster/work/boeva/eheiss/datasets/preprocessed_pseudo_bulk/pseudo_bulk_binned.h5ad
     
     # Learning rate for the head
     head_learning_rate: 0.001

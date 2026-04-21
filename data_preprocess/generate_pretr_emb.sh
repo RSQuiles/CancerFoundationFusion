@@ -13,4 +13,4 @@ conda activate bulkFM
 
 python -u protein_embeddings.py \
     --https \
-    --save-path /cluster/work/boeva/rquiles/data/esm3_homo_emb.parquet \
+    --save-path /cluster/work/boeva/rquiles/data/pretrained_homo_emb.parquet \
