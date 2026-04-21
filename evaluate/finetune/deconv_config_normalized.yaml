@@ -1,0 +1,79 @@
+# Normalized Configuration for Deconvolution Task
+# This follows the standardized downstream task configuration structure
+
+finetune:
+  deconv:
+    # ===== REQUIRED =====
+    # Path to pretrained model checkpoint
+    pretrained_model_path: /path/to/pretrained_model.ckpt
+    
+    # Path to pseudobulk/bulk data (H5AD format)
+    # Should contain cell type proportions in obs columns
+    pseudo_bulk_data_path: /path/to/pseudobulk.h5ad
+    
+    # Learning rate for the head
+    head_learning_rate: 0.001
+    
+    # ===== DATA CONFIGURATION =====
+    # Cell type mapping: maps cell type names to obs columns containing proportions
+    # Format: {cell_type_name: obs_column}
+    # If not specified, will try to infer from adata.uns or obs columns
+    # cell_type_mapping:
+    #   B_cells: B_cell_prop
+    #   T_cells: T_cell_prop
+    #   Fibroblasts: fibroblast_prop
+    
+    # Column name for splitting context (e.g., study/batch for stratified split)
+    context_col: context
+    
+    # Whether to split by context variable rather than random split
+    split_by_context: true
+    
+    # Train/test split ratio
+    test_size: 0.2
+    
+    # Random seed for reproducible splits
+    random_seed: 42
+    
+    # Version string for deterministic train/test split
+    train_test_split_version: 1
+    
+    # ===== MODEL ARCHITECTURE =====
+    # Hidden dimension of the head
+    head_hidden_dim: 128
+    
+    # Dropout for the head
+    head_dropout: 0.0
+    
+    # ===== TRAINING HYPERPARAMETERS =====
+    # Number of training epochs
+    epochs: 10
+    
+    # Batch size for training and evaluation
+    batch_size: 64
+    
+    # Loss function: 'kl', 'mse', 'mae' (l1)
+    # KL divergence expects softmax-normalized outputs
+    loss: kl
+    
+    # Minimum learning rate
+    min_lr: 0.000001
+    
+    # Alternative to min_lr: ratio of min_lr to max_lr
+    # min_lr_ratio: 0.001
+    
+    # Learning rate scheduler configuration (cosine annealing with warmup)
+    first_cycle_steps: 15
+    cycle_mult: 2.0
+    warmup_steps: 5
+    gamma: 0.9
+    
+    # Gradient accumulation steps
+    grad_accumulation_steps: 1
+    
+    # Max gradient norm for clipping
+    max_grad_norm: 1000000.0
+    
+    # ===== OUTPUT =====
+    # Directory to save checkpoints
+    save_dir: ./checkpoints/deconvolution

@@ -1,0 +1,73 @@
+# Normalized Configuration for Cancer Type Classification
+# This follows the standardized downstream task configuration structure
+
+finetune:
+  canc_type_class:
+    # ===== REQUIRED =====
+    # Path to pretrained model checkpoint
+    pretrained_model_path: /path/to/pretrained_model.ckpt
+    
+    # Path to TCGA data (H5AD format)
+    tcga_data_dir: /path/to/tcga.h5ad
+    
+    # Learning rate for the head
+    head_learning_rate: 0.001
+    
+    # ===== DATA CONFIGURATION =====
+    # TCGA cohorts to include
+    cohorts: [BRCA, BLCA, GBM, LGG, LUAD, UCEC]
+    
+    # Whether to merge GBM and LGG into single class
+    merge_gbm_lgg: true
+    
+    # Whether data is already normalized (log-scaled)
+    normalized: true
+    
+    # Minimum number of genes per cell (filtering)
+    min_genes: 200
+    
+    # Train/test split ratio
+    test_size: 0.2
+    
+    # Random seed for reproducible splits
+    random_seed: 42
+    
+    # Version string for deterministic train/test split
+    # (alternative to random_seed for versioning splits)
+    train_test_split_version: 1
+    
+    # ===== MODEL ARCHITECTURE =====
+    # Hidden dimension of the head
+    hidden_dim: 128
+    
+    # Dropout for the head
+    dropout: 0.0
+    
+    # ===== TRAINING HYPERPARAMETERS =====
+    # Number of training epochs
+    epochs: 10
+    
+    # Batch size for training and evaluation
+    batch_size: 32
+    
+    # Minimum learning rate
+    min_lr: 0.000001
+    
+    # Alternative to min_lr: ratio of min_lr to max_lr
+    # min_lr_ratio: 0.001
+    
+    # Learning rate scheduler configuration (cosine annealing with warmup)
+    first_cycle_steps: 15
+    cycle_mult: 2.0
+    warmup_steps: 5
+    gamma: 0.9
+    
+    # Gradient accumulation steps
+    grad_accumulation_steps: 1
+    
+    # Max gradient norm for clipping
+    max_grad_norm: 1000000.0
+    
+    # ===== OUTPUT =====
+    # Directory to save checkpoints
+    save_dir: ./checkpoints/cancer_classification
