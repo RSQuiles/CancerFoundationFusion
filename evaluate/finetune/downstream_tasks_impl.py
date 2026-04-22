@@ -312,8 +312,8 @@ class DeconvEmbeddingDataset(Dataset):
 
         targets = np.asarray(targets, dtype=np.float32)
         target_sums = targets.sum(axis=1, keepdims=True)
-        if np.any(target_sums <= 0):
-            raise ValueError("Every deconvolution target row must have a positive sum.")
+        if np.any(target_sums != 1):
+            raise ValueError("Every deconvolution target row must have a sum of 1.")
         self.targets = targets / target_sums
 
     def __len__(self) -> int:
@@ -606,7 +606,7 @@ class CoxPHLoss(nn.Module):
             return risk.sum() * 0.0
 
         # Sort by descending event time so that a prefix sum gives the risk set.
-        order       = torch.argsort(time, descending=True)
+        order = torch.argsort(time, descending=True)
         risk_sorted = risk[order]
         event_sorted = event[order]
 
@@ -718,6 +718,17 @@ class SurvivalTask(DownstreamTask):
                 f"Expected at {self.config_key}."
             )
 
+    @staticmethod
+    def _strip_ensembl_versions(gene_names: list[str]) -> list[str]:
+        """Strip version suffixes from Ensembl gene IDs (e.g. ENSG00000000003.10 → ENSG00000000003).
+
+        Non-Ensembl names (HGNC symbols, lncRNA names like RP11-554J4.1) are
+        returned unchanged because their dots are part of the name, not a version.
+        """
+        import re
+        pattern = re.compile(r"^(ENSG\d+)\.\d+$")
+        return [pattern.sub(r"\1", g) for g in gene_names]
+
     def load_data(
         self, task_cfg: DictConfig, embedder: Any
     ) -> tuple[int, ad.AnnData, ad.AnnData, np.ndarray, np.ndarray]:
@@ -783,6 +794,7 @@ class SurvivalTask(DownstreamTask):
         targets = np.stack([times, events], axis=1)
 
         adata = parquet_to_adata(df_all, gene_cols)
+        adata.var_names = self._strip_ensembl_versions(adata.var_names.tolist())
         adata.obs["cancer_type"] = df_all["_cancer_type"].values
         adata.obs["cohort"]      = df_all["_cohort"].values
         adata.obs["OS_days"]     = times
@@ -826,7 +838,7 @@ class SurvivalTask(DownstreamTask):
         stratified random split by cancer type over the whole dataset.
         """
         splits_dir = getattr(task_cfg, "splits_dir", None)
-        fold_index = int(getattr(task_cfg, "fold_index", 0))
+        fold_index = int(getattr(task_cfg, "fold_index", 0)) # Use first split by default
 
         if splits_dir is not None:
             splits_base   = Path(hydra.utils.to_absolute_path(str(splits_dir)))
