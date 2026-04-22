@@ -1,0 +1,59 @@
+# Configuration for Survival Prediction Task (SurvBoard)
+#
+# Task: Predict a scalar risk score from bulk RNA-seq. Trained with Cox PH loss;
+# evaluated with Harrell's C-index.
+#
+# Data source: bulkFM-data/data/processed/survboard/
+# Run preparation: python bulkFM-data/scripts/prepare_survboard.py
+
+finetune:
+  survival:
+    # ===== REQUIRED =====
+    pretrained_model_path: /path/to/pretrained_model.ckpt
+
+    # Directory containing {CANCER}.parquet files and optionally a splits/ subdirectory.
+    survboard_data_dir: /path/to/data/processed/survboard
+
+    # Cancer types to include. Can be a single type (e.g. ["BRCA"]) or multiple
+    # for a pan-cancer model. Available: BRCA, BLCA, COAD, GBM, KIRC, LAML, LGG,
+    # LIHC, LUAD, LUSC, OV, PAAD, SARC, SKCM, STAD, UCEC (+ ICGC and METABRIC cohorts).
+    cancer_types: [BRCA, LUAD, UCEC]
+
+    head_learning_rate: 0.001
+
+    # ===== PRE-MADE SPLITS (optional) =====
+    # If set, the pre-made SurvBoard CV splits are used instead of a random split.
+    # Only active when a single cancer type is requested (pan-cancer runs fall back
+    # to stratified random split automatically).
+    # Expected file format: {splits_dir}/{CANCER}_splits.csv
+    #   Row index = sample ID matching the parquet file.
+    #   'fold' column = integer (0 .. K-1) denoting fold membership.
+    # splits_dir: /path/to/data/processed/survboard/splits
+    # fold_index: 0    # which fold to use as the test set (0-indexed)
+
+    # ===== DATA CONFIGURATION =====
+    test_size: 0.2
+    random_seed: 42
+    train_test_split_version: 1
+
+    # ===== MODEL ARCHITECTURE =====
+    # The head outputs a single scalar risk score (output_dim is fixed to 1).
+    hidden_dim: 128
+    dropout: 0.1
+
+    # ===== TRAINING HYPERPARAMETERS =====
+    epochs: 20
+    batch_size: 64
+
+    # Note: Cox loss batches should be large enough to contain multiple observed
+    # events — very small batches may produce degenerate gradients.
+    min_lr: 0.000001
+    first_cycle_steps: 20
+    cycle_mult: 2.0
+    warmup_steps: 5
+    gamma: 0.9
+    grad_accumulation_steps: 1
+    max_grad_norm: 10.0
+
+    # ===== OUTPUT =====
+    save_dir: ./checkpoints/survival

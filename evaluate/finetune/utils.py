@@ -105,3 +105,59 @@ def get_reduced(tensor, current_device, dest_device, world_size):
     torch.distributed.reduce(tensor, dst=dest_device)
     tensor_mean = tensor.item() / world_size
     return tensor_mean
+
+# Implemented by RAFA
+
+# ============================================================================
+# Shared Utilities for Bulk RNA-seq Downstream Tasks
+# (used by SurvivalTask, ProteomePredTask, DrugSensitivityTask)
+# ============================================================================
+
+
+def parquet_to_adata(df: pd.DataFrame, gene_cols: list[str]) -> ad.AnnData:
+    """
+    Wrap a bulk RNA-seq Parquet DataFrame (samples × genes) into an AnnData
+    object so it can be passed directly to CancerFoundation.embed().
+
+    The three bulk downstream tasks (SurvBoard, CPTAC, BeatAML) all store
+    expression data as Parquet files with sample IDs as the DataFrame index and
+    HGNC gene symbols as column names. This utility creates a minimal AnnData
+    without copying the data matrix.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Rows = samples (index = sample IDs), columns include gene symbols.
+        Non-gene columns (e.g. OS_days, OS_event, cancer_type) must be excluded
+        from gene_cols before calling; they are ignored here.
+    gene_cols : list[str]
+        Subset of df.columns to use as the expression feature matrix.
+
+    Returns
+    -------
+    ad.AnnData
+        X = float32 expression matrix, obs_names = sample IDs, var_names = genes.
+    """
+    X = df[gene_cols].to_numpy(dtype=np.float32)
+    adata = ad.AnnData(X=X)
+    adata.obs_names = df.index.astype(str).tolist()
+    adata.var_names = [str(g) for g in gene_cols]
+    return adata
+
+
+def _translate_gene_symbols(gene_symbols: list[str]) -> list[str]:
+    """
+    Translate HGNC gene symbols to the naming convention used by the
+    CancerFoundation vocabulary.
+
+    The model vocab is mostly HGNC but contains older Ensembl-style lncRNA
+    names (e.g. RP11-554J4.1, AC020910.4) that have since been retired or
+    renamed. CPTAC uses current HGNC symbols throughout.
+
+    Currently a pass-through — genes not in the vocab are silently dropped
+    by CancerFoundation.embed() during its internal gene intersection, so
+    the model still runs correctly at the cost of reduced gene coverage.
+    Replace this with a mygene.info lookup or a pre-built alias table to
+    recover renamed symbols.
+    """
+    return gene_symbols

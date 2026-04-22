@@ -1,0 +1,54 @@
+# Configuration for Drug Sensitivity Prediction Task (BeatAML)
+#
+# Task: Predict drug AUC response (0–1) from bulk RNA-seq embeddings of AML specimens.
+# Multi-output regression with sparse targets; trained with MaskedMSELoss;
+# evaluated with per-drug Pearson R and RMSE.
+#
+# Data source: bulkFM-data/data/processed/beataml/
+# Run preparation: python bulkFM-data/scripts/prepare_beataml.py
+
+finetune:
+  drug_sensitivity:
+    # ===== REQUIRED =====
+    pretrained_model_path: /path/to/pretrained_model.ckpt
+
+    expression_path:    /path/to/data/processed/beataml/expression.parquet
+    drug_response_path: /path/to/data/processed/beataml/drug_response.parquet
+    metadata_path:      /path/to/data/processed/beataml/metadata.csv
+
+    head_learning_rate: 0.001
+
+    # ===== DATA CONFIGURATION =====
+    # Minimum number of specimens on which a drug must have been tested to be
+    # included. Drugs below this threshold are excluded from training and metrics.
+    # Lower values include more drugs but introduce noisier gradient estimates
+    # for sparsely tested drugs.
+    min_drug_samples: 20
+
+    # Split is by patient (not specimen) to prevent leakage — see metadata.csv.
+    test_size: 0.2
+    random_seed: 42
+    train_test_split_version: 1
+
+    # ===== MODEL ARCHITECTURE =====
+    # output_dim is set automatically to the number of filtered drugs.
+    hidden_dim: 256
+    dropout: 0.1
+
+    # ===== TRAINING HYPERPARAMETERS =====
+    epochs: 30
+    batch_size: 64
+
+    # Larger batches are beneficial here: a batch with mostly NaN entries for a
+    # given drug produces a near-zero gradient for that drug's output neuron.
+    # Larger batches average over more real observations per drug per step.
+    min_lr: 0.000001
+    first_cycle_steps: 20
+    cycle_mult: 2.0
+    warmup_steps: 5
+    gamma: 0.9
+    grad_accumulation_steps: 1
+    max_grad_norm: 1000000.0
+
+    # ===== OUTPUT =====
+    save_dir: ./checkpoints/drug_sensitivity

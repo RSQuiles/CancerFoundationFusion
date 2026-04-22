@@ -2,7 +2,7 @@
 
 A Transformer foundation model for single-cell RNA-seq gene expression prediction, built with PyTorch Lightning. Supports masked language modeling (MLM) and generative pretraining on single-cell data across multiple cancer types and tissues.
 
-Large parts of this codebase are based on [scGPT](https://github.com/bowang-lab/scGPT). If you want to implement new functionality, check whether it already exists in scGPT first -- it can often be adapted with minor modifications.
+This repository was developed as part of the **master thesis of Rafael Quiles** in the [Boeva Lab](https://boevalab.inf.ethz.ch/), D-INFK, ETH Zürich. It is a fork of an earlier codebase developed by **Alexander Theus**. Large parts of the codebase are based on [scGPT](https://github.com/bowang-lab/scGPT). If you want to implement new functionality, check whether it already exists in scGPT first — it can often be adapted with minor modifications.
 
 ## Installation
 
@@ -47,7 +47,7 @@ All dependencies are provided by the devcontainer (NVIDIA BioNeMo 2.7 base image
 
 ## Data Preparation
 
-Training data must be preprocessed into a memory-mapped format. Starting from raw `.h5ad` files, use `data_processing.ipynb` to produce the expected directory structure:
+Training data must be preprocessed into a memory-mapped format. Starting from raw `.h5ad` files, use `data_preprocess/data_processing.ipynb` to produce the expected directory structure:
 
 ```
 DATA/{tissue}/processed_data/train/
@@ -56,6 +56,8 @@ DATA/{tissue}/processed_data/train/
 ├── obs.parquet     # Cell metadata (categorical-encoded)
 └── mem.map/        # Memory-mapped expression data
 ```
+
+For bulk RNA-seq data (used in Unified FM mode), see `data_preprocess/bulk_preprocessing.ipynb`.
 
 ## Training
 
@@ -80,6 +82,7 @@ Key parameters:
 - `--conditions`: Metadata column(s) to condition on (e.g., `technology`)
 - `--gen-method`: `"theirs"`, `"mine"`, `"orig"`, or `"quick"` (generative training strategy)
 - `--compile`: Enable `torch.compile` for the model
+- `--unified`: Enable Unified FM mode — adds bulk data, contrastive loss (pseudobulk vs bulk), and aggregation consistency loss
 
 Optionally, run the training script inside a tmux session for long runs.
 
@@ -97,10 +100,45 @@ Use `embed.ipynb` to generate cell embeddings from a trained model checkpoint.
 
 Alternatively, the `CancerFoundation.embed(adata)` method can produce embeddings directly from an AnnData object — it handles gene intersection, HVG selection, binning, and batched inference internally.
 
+## Downstream Evaluation
+
+The `evaluate/finetune/` directory provides a plugin-based framework for evaluating pretrained embeddings on downstream tasks.
+
+### Available Tasks
+
+| Task | Config | Description |
+|------|--------|-------------|
+| `cancer_annot` | `cancer_annot_config_normalized.yaml` | Cancer type classification from TCGA bulk RNA-seq |
+| `deconv` | `deconv_config_normalized.yaml` | Cell type proportion deconvolution |
+
+### Running a Task
+
+```bash
+python evaluate/finetune/run_downstream_task.py \
+    --config evaluate/finetune/cancer_annot_config_normalized.yaml
+```
+
+### Adding a New Task
+
+Subclass `DownstreamTask` (see `evaluate/finetune/task_template.py` for the full interface). The `BaseDownstreamRunner` handles the training loop, DDP, checkpointing, and evaluation automatically.
+
+## Ablation Studies
+
+The `ablate/` directory provides a config-driven framework for running systematic feature ablations.
+
+```bash
+python ablate/ablate.py --config ablate/example_ablation_config.json
+python ablate/ablate.py --config ablate/example_ablation_config.json --dry-run  # validate only
+```
+
+An ablation config specifies a base pretraining config and a list of ablations (each as a dict of parameter overrides). Each ablation is run as an independent training job, with optional SLURM submission via `slurm_worker.py`.
+
 ## Data Processing
 
-- `data_processing.ipynb` — interactive notebook for converting raw `.h5ad` files to the memory-mapped format
+- `data_preprocess/data_processing.ipynb` — interactive notebook for converting raw `.h5ad` files to the memory-mapped format
+- `data_preprocess/bulk_preprocessing.ipynb` — preprocessing pipeline for bulk RNA-seq data
 - `scripts/h5ads_to_sc.py` — CLI script for batch-converting a directory of `.h5ad` files (uses BioNeMo's `SingleCellCollection`)
+- `data_preprocess/protein_embeddings.py` — generate gene-level embeddings using ESM3 or RNABert
 
 ## Tutorials
 

@@ -4,7 +4,13 @@
       "WebSearch",
       "Bash(ls:*)",
       "Bash(git log:*)",
-      "Bash(git:*)"
+      "Bash(git status:*)",
+      "Bash(git diff:*)"
+    ],
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(git reset:*)",
+      "Bash(git rebase:*)"
     ]
   }
 }

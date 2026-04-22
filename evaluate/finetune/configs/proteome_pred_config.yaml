@@ -1,0 +1,46 @@
+# Configuration for Proteome Prediction Task (CPTAC)
+#
+# Task: Predict protein abundance (log2-ratio TMT) from bulk RNA-seq embeddings.
+# Multi-output regression; evaluated with per-protein Pearson R and RMSE.
+#
+# Data source: bulkFM-data/data/processed/cptac/
+# Run preparation: python bulkFM-data/scripts/prepare_cptac.py
+
+finetune:
+  proteome_pred:
+    # ===== REQUIRED =====
+    pretrained_model_path: /path/to/pretrained_model.ckpt
+
+    rna_path:              /path/to/data/processed/cptac/rna_expression.parquet
+    protein_path:          /path/to/data/processed/cptac/protein_expression.parquet
+    gene_protein_map_path: /path/to/data/processed/cptac/gene_protein_mapping.csv
+
+    head_learning_rate: 0.001
+
+    # ===== DATA CONFIGURATION =====
+    # Subset of cancer types. Leave empty ([]) to use all available types.
+    # Available: BRCA, CCRCC, COAD, GBM, HNSCC, LUAD, LSCC, OV, PDAC, UCEC
+    cancer_types: []
+
+    test_size: 0.2
+    random_seed: 42
+    train_test_split_version: 1
+
+    # ===== MODEL ARCHITECTURE =====
+    # output_dim is set automatically to n_proteins from the gene_protein_mapping.
+    hidden_dim: 256
+    dropout: 0.1
+
+    # ===== TRAINING HYPERPARAMETERS =====
+    epochs: 30
+    batch_size: 64
+    min_lr: 0.000001
+    first_cycle_steps: 20
+    cycle_mult: 2.0
+    warmup_steps: 5
+    gamma: 0.9
+    grad_accumulation_steps: 1
+    max_grad_norm: 1000000.0
+
+    # ===== OUTPUT =====
+    save_dir: ./checkpoints/proteome_pred
