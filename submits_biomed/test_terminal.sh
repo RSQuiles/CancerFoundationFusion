@@ -16,8 +16,7 @@ mkdir -p "$SAVE_DIR"
 
 # Improve CUDA traceback
 CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py \
-    --config ./config_bulk_test.json \
-    --where-condition "begin" \
+    --config ./config_test.json \
     --epoch-size 1 \
 
 if [ -d "./lightning_logs/version_${SLURM_JOB_ID}" ]; then

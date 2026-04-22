@@ -29,7 +29,7 @@ from torch import nn
 from torch.utils.data import Dataset
 
 from evaluate.finetune.downstream_task import DownstreamTask, TaskRegistry
-from evaluate.finetune.utils import parquet_to_adata, CoxPHLoss, MaskedMSELoss
+from evaluate.finetune.utils import parquet_to_adata
 
 log = logging.getLogger(__name__)
 
@@ -309,12 +309,18 @@ class DeconvEmbeddingDataset(Dataset):
 
     def __init__(self, embeddings: np.ndarray, targets: np.ndarray) -> None:
         self.embeddings = np.asarray(embeddings, dtype=np.float32)
-
         targets = np.asarray(targets, dtype=np.float32)
-        target_sums = targets.sum(axis=1, keepdims=True)
-        if np.any(target_sums != 1):
-            raise ValueError("Every deconvolution target row must have a sum of 1.")
-        self.targets = targets / target_sums
+
+        target_sums = targets.sum(axis=1)
+        valid_mask = target_sums > 0
+        n_dropped = (~valid_mask).sum()
+        if n_dropped > 0:
+            log.warning(f"Dropping {n_dropped} samples with non-positive target sums.")
+            self.embeddings = self.embeddings[valid_mask]
+            targets = targets[valid_mask]
+            target_sums = target_sums[valid_mask]
+
+        self.targets = targets / target_sums[:, np.newaxis]
 
     def __len__(self) -> int:
         return self.embeddings.shape[0]
@@ -424,8 +430,17 @@ class DeconvTask(DownstreamTask):
 
     def _load_targets(self, adata: ad.AnnData, task_cfg: DictConfig) -> np.ndarray:
         """Load cell type proportions from adata.obs."""
+
+        def recurse_prop_value(value):
+            if isinstance(value, dict):
+                value_rec = list(value.keys())[0]
+                return recurse_prop_value(value[value_rec])
+            return value
+
         # Get cell type mapping (cell type → obs column)
         mapping = adata.uns.get("cell_type_proportion_columns")
+        for key, value in mapping.items():
+            mapping[key] = recurse_prop_value(value)
 
         if mapping is not None:
             log.info("Using cell type mapping from adata.uns['cell_type_proportion_columns']")
@@ -439,7 +454,7 @@ class DeconvTask(DownstreamTask):
         self.cell_types = sorted(mapping)
         target_columns = [mapping[cell_type] for cell_type in self.cell_types]
 
-        missing = [col for col in target_columns if col not in adata.obs]
+        missing = [col for col in target_columns if col not in adata.obs.columns]
         if missing:
             raise ValueError(f"Missing target columns in adata.obs: {missing}")
 
@@ -766,8 +781,9 @@ class SurvivalTask(DownstreamTask):
             for ct in cancer_types:
                 parquet_path = data_dir / f"{cohort}_{ct}.parquet"
                 if not parquet_path.exists():
-                    log.warning(f"SurvBoard parquet not found, skipping: {parquet_path}")
+                    # log.warning(f"SurvBoard parquet not found, skipping: {parquet_path}")
                     continue
+                log.info(f"Loaded {parquet_path}")
                 df = pd.read_parquet(parquet_path)
                 df["_cohort"]      = cohort
                 df["_cancer_type"] = ct
@@ -794,7 +810,24 @@ class SurvivalTask(DownstreamTask):
         targets = np.stack([times, events], axis=1)
 
         adata = parquet_to_adata(df_all, gene_cols)
+        # Fill NaNs from cohort gene-set mismatches
+        if hasattr(adata.X, "toarray"):  # sparse
+            adata.X = np.nan_to_num(adata.X.toarray(), nan=0.0)
+        else:
+            adata.X = np.nan_to_num(adata.X, nan=0.0)
+
+        # Make gene names compatible with vocabulary
         adata.var_names = self._strip_ensembl_versions(adata.var_names.tolist())
+        # Manage the generated duplicated column names
+        if not adata.var_names.is_unique:
+            df_expr = pd.DataFrame(adata.X, columns=adata.var_names)
+            # Keep the duplicate column with highest variance
+            df_expr = df_expr.loc[:, ~df_expr.columns.duplicated(keep='first')]
+            adata = ad.AnnData(
+                X=df_expr.values,
+                obs=adata.obs,
+                var=pd.DataFrame(index=df_expr.columns)
+            )
         adata.obs["cancer_type"] = df_all["_cancer_type"].values
         adata.obs["cohort"]      = df_all["_cohort"].values
         adata.obs["OS_days"]     = times
@@ -932,7 +965,7 @@ class SurvivalTask(DownstreamTask):
     def _embed_adata(self, embedder: Any, adata: ad.AnnData, batch_size: int = 64) -> np.ndarray:
         embedder.eval()
         embedder.cuda()
-        df_emb = embedder.embed(adata, batch_size=batch_size, flavor="seurat_v3")
+        df_emb = embedder.embed(adata, batch_size=batch_size, flavor="seurat")
         return df_emb.to_numpy()
 
     def compute_metrics(

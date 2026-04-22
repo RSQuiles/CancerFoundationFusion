@@ -355,7 +355,7 @@ class BulkSCSampler(Sampler[list[int]]):
             raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")
 
         self._n_batches = (
-            len(self.bulk_indices) // 5
+            len(self.bulk_indices) // 10
             if self.epoch_size is None
             else self.epoch_size
         )

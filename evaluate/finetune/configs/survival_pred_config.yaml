@@ -9,15 +9,16 @@
 finetune:
   survival:
     # ===== REQUIRED =====
-    pretrained_model_path: /path/to/pretrained_model.ckpt
+    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/dummy_test/epoch_epoch=00.ckpt
 
     # Directory containing {CANCER}.parquet files and optionally a splits/ subdirectory.
-    survboard_data_dir: /path/to/data/processed/survboard
+    survboard_data_dir: /cluster/work/boeva/bulkFM/data/processed/survboard
 
     # Cancer types to include. Can be a single type (e.g. ["BRCA"]) or multiple
     # for a pan-cancer model. Available: BRCA, BLCA, COAD, GBM, KIRC, LAML, LGG,
     # LIHC, LUAD, LUSC, OV, PAAD, SARC, SKCM, STAD, UCEC (+ ICGC and METABRIC cohorts).
-    cancer_types: [BRCA, LUAD, UCEC]
+    cohorts: [ICGC, TCGA]
+    cancer_types: [CLLE-ES]
 
     head_learning_rate: 0.001
 
@@ -42,7 +43,7 @@ finetune:
     dropout: 0.1
 
     # ===== TRAINING HYPERPARAMETERS =====
-    epochs: 20
+    epochs: 10
     batch_size: 64
 
     # Note: Cox loss batches should be large enough to contain multiple observed

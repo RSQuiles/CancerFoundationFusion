@@ -24,7 +24,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from evaluate.finetune.downstream_task import DownstreamTask
-from utils import (
+from evaluate.finetune.utils import (
     SequentialDistributedSampler,
     distributed_concat,
     get_reduced,

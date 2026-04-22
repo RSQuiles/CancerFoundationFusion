@@ -380,6 +380,7 @@ class TransformerModule(nn.Module):
         values: Tensor,
         src_key_padding_mask: Tensor,
         conditions: Optional[Dict] = None,
+        check_conditions: bool = True
     ) -> Tensor:
         """Encodes gene IDs and expression values into contextual embeddings. This method is used during perceptual (non-generative) training.
 
@@ -388,11 +389,13 @@ class TransformerModule(nn.Module):
             values (Tensor): Input expression values of shape (batch, seq_len).
             src_key_padding_mask (Tensor): Padding mask of shape (batch, seq_len).
             conditions (Optional[Dict], optional): Dictionary of condition tensors. Defaults to None.
+            check_conditions (bool): Whether to use function _check_condition_labels
 
         Returns:
             Tensor: The output of the Transformer encoder, of shape (batch, seq_len, embsize).
         """
-        self._check_condition_labels(conditions)
+        if check_conditions:
+            self._check_condition_labels(conditions)
 
         if hasattr(self, "gene_encoder"):
             src_embs = self.gene_encoder(src)
@@ -678,7 +681,7 @@ class TransformerModule(nn.Module):
         """Prepares tensors for the generative forward pass."""
         # Apply noising schedule
         if noise is not None:
-            print("Noising generative...")
+            # print("Noising generative...")
             tensors = utils.apply_log1p_noise_to_branch_inputs(tensors, "gen", noise)
 
         pcpt_gene = tensors["pcpt_gene"]
@@ -708,7 +711,7 @@ class TransformerModule(nn.Module):
         """Prepares tensors for the perceptual forward pass."""
         # Apply noising schedule
         if noise is not None:
-            print("Noising perceptual...")
+            # print("Noising perceptual...")
             tensors = utils.apply_log1p_noise_to_branch_inputs(tensors, "pcpt", noise)
 
         input_gene_ids = tensors["gene"]

@@ -5,10 +5,11 @@
     "precision": "bf16-mixed",
     "strategy": "auto",
     "epochs": 1,
+    "epoch_size": 1,
     "seed": 0,
     "val_check_interval": 0.5,
     "log_interval": 50,
-    "save_dir": "./save/${SLURM_JOB_NAME}_${SLURM_JOB_ID}"
+    "save_dir": "${work}/outputs/save_CFF/dummy_test"
 
   },
   "data": {

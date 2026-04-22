@@ -8,17 +8,24 @@ Usage:
 
 import argparse
 import logging
+import json
 import sys
-sys.path.insert(0, "../../")
-sys.path.insert(0, "./")
-
 from pathlib import Path
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from omegaconf import OmegaConf, DictConfig
 import hydra
 
 # Import task implementations to register them
-from evaluate.finetune.downstream_tasks_impl import CancTypeClassTask, DeconvTask
+from evaluate.finetune.downstream_tasks_impl import (
+    CancTypeClassTask,
+    DeconvTask,
+    SurvivalTask,
+    ProteomePredTask,
+    DrugSensitivityTask,
+)
 from evaluate.finetune.downstream_task import TaskRegistry
 from base_downstream_runner import BaseDownstreamRunner
 
@@ -129,6 +136,13 @@ def main(config_path: str, checkpoint_path: str | Path | None = None, task_name:
         log.info(f"Task '{task_name}' completed successfully")
         log.info(f"Final metrics: {results}")
         log.info("=" * 60)
+
+        save_dir = Path(cfg.finetune[task_name].pretrained_model_path).parent / "metrics"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        results_path = save_dir / f"results_{task_name}.json"
+        with open(results_path, "w") as f:
+            json.dump(results, f, indent=2)
+        log.info(f"Results saved to {results_path}")
 
     return results
 

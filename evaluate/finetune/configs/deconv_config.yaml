@@ -1,30 +1,33 @@
-# Normalized Configuration for Cancer Type Classification
+# Normalized Configuration for Deconvolution Task
 # This follows the standardized downstream task configuration structure
 
 finetune:
-  canc_type_class:
+  deconv:
     # ===== REQUIRED =====
     # Path to pretrained model checkpoint
-    pretrained_model_path: /cluster/work/boeva/rquiles/CancerFoundation/submits_biomed/save/bulk_only_8657635/epoch_epoch=03.ckpt
+    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/dummy_test/epoch_epoch=00.ckpt
     
-    # Path to TCGA data (H5AD format)
-    tcga_data_dir: /cluster/work/boeva/eheiss/datasets/TCGA/tcga.h5ad
+    # Path to pseudobulk/bulk data (H5AD format)
+    # Should contain cell type proportions in obs columns
+    pseudo_bulk_data_path: /cluster/work/boeva/eheiss/datasets/preprocessed_pseudo_bulk/pseudo_bulk_binned.h5ad
     
     # Learning rate for the head
     head_learning_rate: 0.001
     
     # ===== DATA CONFIGURATION =====
-    # TCGA cohorts to include
-    cohorts: [BRCA, BLCA, GBM, LGG, LUAD, UCEC]
+    # Cell type mapping: maps cell type names to obs columns containing proportions
+    # Format: {cell_type_name: obs_column}
+    # If not specified, will try to infer from adata.uns or obs columns
+    # cell_type_mapping:
+    #   B_cells: B_cell_prop
+    #   T_cells: T_cell_prop
+    #   Fibroblasts: fibroblast_prop
     
-    # Whether to merge GBM and LGG into single class
-    merge_gbm_lgg: true
+    # Column name for splitting context (e.g., study/batch for stratified split)
+    context_col: context
     
-    # Whether data is already normalized (log-scaled)
-    normalized: true
-    
-    # Minimum number of genes per cell (filtering)
-    min_genes: 200
+    # Whether to split by context variable rather than random split
+    split_by_context: true
     
     # Train/test split ratio
     test_size: 0.2
@@ -33,22 +36,25 @@ finetune:
     random_seed: 42
     
     # Version string for deterministic train/test split
-    # (alternative to random_seed for versioning splits)
     train_test_split_version: 1
     
     # ===== MODEL ARCHITECTURE =====
     # Hidden dimension of the head
-    hidden_dim: 128
+    head_hidden_dim: 128
     
     # Dropout for the head
-    dropout: 0.0
+    head_dropout: 0.0
     
     # ===== TRAINING HYPERPARAMETERS =====
     # Number of training epochs
     epochs: 10
     
     # Batch size for training and evaluation
-    batch_size: 32
+    batch_size: 64
+    
+    # Loss function: 'kl', 'mse', 'mae' (l1)
+    # KL divergence expects softmax-normalized outputs
+    loss: kl
     
     # Minimum learning rate
     min_lr: 0.000001
@@ -70,4 +76,4 @@ finetune:
     
     # ===== OUTPUT =====
     # Directory to save checkpoints
-    save_dir: ./checkpoints/cancer_classification
+    save_dir: ./checkpoints/deconvolution

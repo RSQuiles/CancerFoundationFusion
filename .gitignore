@@ -20,6 +20,9 @@ example/
 training_data/pretraining_data/
 wandb/
 debug_data/
+checkpoints/
+core
+
 # DATA/
 lightning_logs/
 

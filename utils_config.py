@@ -108,6 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--n-bins",
         type=int,
+        default=51,
         help="The number of bins to use for the binned input style. Recommended is 51.",
     )
     parser.add_argument(

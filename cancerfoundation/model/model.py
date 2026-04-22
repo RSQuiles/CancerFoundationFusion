@@ -122,6 +122,10 @@ class CancerFoundation(pl.LightningModule):
             esm_emb_path (Optional[str | os.PathLike], optional): Path to the parquet file containing pretrained gene embeddings.
             esm_emb_finetune (bool, optional): If True, allow the pretrained gene embeddings to be fine-tuned.
         """
+        # Checks
+        if input_style == "binned":
+            assert n_bins is not None, "When performing binning, n_bins must be provided"
+
         super().__init__()
         self.save_hyperparameters()
         self.vocab = vocab
@@ -496,12 +500,13 @@ class CancerFoundation(pl.LightningModule):
         sc.pp.highly_variable_genes(data, n_top_genes=self.n_top_genes, layer=None, flavor=flavor)
         data = data[:, data.var["highly_variable"]].copy()
 
-        # Bin expression values
-        normalise = self.model.decoder.normalise_bins
-        for idx in range(data.n_obs):
-            data.X[idx] = binning(data.X[idx], self.n_bins)
-            if normalise:
-                data.X[idx] = data.X[idx] / self.n_bins
+        # Bin expression values if required
+        if self.input_style == "binned":
+            normalise = self.model.decoder.normalise_bins
+            for idx in range(data.n_obs):
+                data.X[idx] = binning(data.X[idx], self.n_bins)
+                if normalise:
+                    data.X[idx] = data.X[idx] / self.n_bins
 
         # Build gene ID tensor
         gene_ids = torch.LongTensor([self.vocab[g] for g in data.var.index])
@@ -562,6 +567,7 @@ class CancerFoundation(pl.LightningModule):
                     src=batch_genes,
                     values=batch_expr,
                     src_key_padding_mask=padding_mask,
+                    check_conditions=False
                 )
 
             cell_emb = transformer_output[:, 0, :]  # CLS token
