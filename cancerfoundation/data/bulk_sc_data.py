@@ -27,8 +27,8 @@ class BulkSCDataset(Dataset):
     is handled by ``BulkSCBatchSampler`` + ``BulkSCCollator``.
 
     The ``obs.parquet`` must contain a ``modality_column`` (values
-    ``bulk_label`` / ``sc_label``).  An optional ``group_column``
-    (e.g. ``"tissue"``) defines matching pools.
+    ``bulk_label`` / ``sc_label``).  An optional ``pb_group_column``
+    (e.g. ``"tissue_general"``) groups SC cells for tissue-aware pseudobulk sampling.
 
     Parameters
     ----------
@@ -39,8 +39,10 @@ class BulkSCDataset(Dataset):
         Column distinguishing bulk from SC rows.
     bulk_label, sc_label : str
         Values in ``modality_column``.
-    group_column : str | None
-        Column for matching bulk ↔ SC (e.g. tissue).
+    pb_group_column : str | None
+        obs column used to group SC cells for tissue-aware pseudobulk sampling.
+        Cells aggregated into a single pseudobulk are drawn exclusively from
+        one group (e.g. one tissue). Bulk and SC tissue labels need not match.
     pad_value : float
         Value placed at the CLS position.
     obs_columns : list[str] | None
@@ -61,7 +63,7 @@ class BulkSCDataset(Dataset):
         modality_column: str = "modality",
         bulk_label: str = "bulk",
         sc_label: str = "sc",
-        group_column: Optional[str] = None,
+        pb_group_column: Optional[str] = None,
         pad_value: float = -1.0,
         obs_columns: Optional[list[str]] = None,
         balance: Optional[bool] = False,
@@ -77,16 +79,10 @@ class BulkSCDataset(Dataset):
         self.obs_columns = obs_columns
 
         self.modality_column = modality_column
-        self.group_column = group_column
-        self.group_to_bulk: Optional[dict[int, np.ndarray]] = None
-        self.group_to_sc: Optional[dict[int, np.ndarray]] = None
+        self.pb_group_column = pb_group_column
 
         assert self.memmap.number_of_rows() == self.obs.shape[0]
         assert modality_column in self.obs.columns
-        if group_column is not None:
-            assert (
-                group_column in self.obs_columns
-            ), f"The grouping feature {group_column} is not part of the selected {self.obs_columns}"
 
         # Pre-compute index arrays per modality
         modality_vals = self.obs[modality_column].values
@@ -99,25 +95,20 @@ class BulkSCDataset(Dataset):
         assert len(self.bulk_indices) > 0, "No bulk samples found"
         assert len(self.sc_indices) > 0, "No SC samples found"
 
-        # Per-group index pools
-        if group_column is not None:
-            assert group_column in self.obs.columns
-            group_vals = np.asarray(self.obs[group_column].values)
-
-            self.group_to_bulk = {}
-            self.group_to_sc = {}
-            for g in np.unique(group_vals):
-                g_mask = group_vals == g
-                b = np.where(g_mask & (modality_vals == bulk_code))[0]
-                s = np.where(g_mask & (modality_vals == sc_code))[0]
-                if len(b) > 0 and len(s) > 0:
-                    self.group_to_bulk[g] = b
-                    self.group_to_sc[g] = s
-
-            self.groups = sorted(self.group_to_bulk.keys())
-            assert len(self.groups) > 0, "No groups with both bulk and SC"
+        # SC-only group index pools for tissue-aware pseudobulk sampling
+        if pb_group_column is not None:
+            assert pb_group_column in self.obs.columns, (
+                f"pb_group_column '{pb_group_column}' not found in obs"
+            )
+            group_vals = np.asarray(self.obs[pb_group_column].values)
+            sc_group_vals = group_vals[self.sc_indices]
+            self.sc_group_to_indices: Optional[dict] = {
+                g: self.sc_indices[sc_group_vals == g]
+                for g in np.unique(sc_group_vals)
+            }
+            assert len(self.sc_group_to_indices) > 0, "No SC groups found"
         else:
-            self.groups = None
+            self.sc_group_to_indices = None
 
         # Label categories for balanced sampling
         self.balance = balance
@@ -320,12 +311,32 @@ class BulkSCSampler(Sampler[list[int]]):
                     if i in base_to_subset
                 ]
             )
+
+            # Remap SC group pools to subset-local indices
+            if self.base_dataset.sc_group_to_indices is not None:
+                self.sc_group_to_indices = {
+                    g: np.array([base_to_subset[i] for i in idxs if i in base_to_subset])
+                    for g, idxs in self.base_dataset.sc_group_to_indices.items()
+                }
+            else:
+                self.sc_group_to_indices = None
         else:
             self.dataset = dataset
             self.base_dataset = dataset
             self.subset_indices = None
             self.bulk_indices = self.dataset.bulk_indices
             self.sc_indices = self.dataset.sc_indices
+
+            # SC group pools are already in global index space
+            self.sc_group_to_indices = self.base_dataset.sc_group_to_indices
+
+        # Pre-compute sorted group keys (drop any group that became empty after Subset)
+        if self.sc_group_to_indices is not None:
+            self.sc_groups = sorted(
+                g for g, idxs in self.sc_group_to_indices.items() if len(idxs) > 0
+            )
+        else:
+            self.sc_groups = None
 
         self.batch_size = batch_size
         self.epoch_size = epoch_size
@@ -619,27 +630,25 @@ class BulkSCSampler(Sampler[list[int]]):
                 balanced=self.sample_balanced,
             )
 
-            # If group information is available, we sample pseudobulk from the same group to ensure feasibility of the synthetic samples
-            if self.base_dataset.group_column is not None:
-                # Sample groups for the pseudobulk samples
-                pb_groups = rng.choice(
-                    self.base_dataset.groups,
-                    size=self.n_pb,
-                    replace=True,
-                )
+            # If a PB group column is set, each pseudobulk is built from cells
+            # of a single randomly chosen tissue group
+            if self.sc_group_to_indices is not None:
+                pb_groups = rng.choice(self.sc_groups, size=self.n_pb, replace=True)
                 pb_sc_indices = []
                 for g in pb_groups:
-                    sc_pool = self.base_dataset.group_to_sc[g]
+                    sc_pool = self.sc_group_to_indices[g]
+                    # Tissue-group selection already defines the sampling strategy
+                    # for PB; balanced class sampling would ignore the pool, so
+                    # we always sample uniformly within the group here.
                     pb_sc_indices.extend(
                         self.sample(
                             sc_pool,
                             size=self.n_sc_per_pb,
                             modality="pb",
-                            balanced=self.sample_balanced,
+                            balanced=False,
                         )
                     )
                 pb_idx = np.array(pb_sc_indices)
-            # Else, we sample pseudobulk from the same pool as the single-cell samplesº
             else:
                 pb_idx = self.sample(
                     self.sc_indices,
@@ -693,7 +702,7 @@ class BulkSCSampler(Sampler[list[int]]):
         if modality == "bulk":
             sample_modality = "bulk"
         if modality == "pb":
-            sample_modality = "sc"  # Must be later improved to account for sensible pseudobulk generation
+            sample_modality = "sc"
 
         sample_labels = torch.multinomial(
             (

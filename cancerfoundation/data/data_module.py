@@ -143,6 +143,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         balance: bool = False,
         balance_labels: Optional[List[str] | str] = None,
         epoch_size: Optional[int] = None,
+        pb_group_column: Optional[str] = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -165,6 +166,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         self.balance_labels = balance_labels
         self.conditions = conditions
         self.epoch_size = epoch_size
+        self.pb_group_column = pb_group_column
 
         # Setup token values based on embedding style
         if self.input_style == "category":
@@ -193,6 +195,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                 obs_columns=self.conditions,
                 balance=self.balance,
                 balance_labels=self.balance_labels,
+                pb_group_column=self.pb_group_column,
             )
 
         # Set condition cardinalities

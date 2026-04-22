@@ -172,6 +172,7 @@ def main(input_args=None):
         unified_fm=args.unified,
         balance=args.balanced_sampler,
         balance_labels=args.balanced_labels,
+        pb_group_column=args.pb_group_column,
     )
     datamodule.setup(stage="fit")
 

@@ -446,6 +446,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--pb-group-column",
+        type=str,
+        default=None,
+        help="obs column for tissue-aware pseudobulk sampling (e.g. tissue_general). All cells aggregated into one pseudobulk are drawn from the same group.",
+    )
+
+    parser.add_argument(
         "--contrastive-training",
         action="store_true",
         help="Whether to include a contrastive loss that brings the pseudobulk and real bulk samples closer together in the embedding space. Default is False.",
