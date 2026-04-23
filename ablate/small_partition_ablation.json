@@ -1,6 +1,6 @@
 {
-  "experiment_name": "cf_feature_ablation_v1",
-  "output_dir": "ablation_runs/test",
+  "experiment_name": "small_partition_ablation",
+  "output_dir": "ablation_runs/small_partition",
   "dry_run": false,
   "train_entrypoint": "pretrain:main",
   "base_config": {
@@ -14,20 +14,17 @@
       "seed": 0,
       "val_check_interval": 0.5,
       "log_interval": 50,
-      "save_dir": "${work}/outputs/save_CFF/ablation_test"
+      "save_dir": "${work}/outputs/save_CFF/ablation_partition"
     },
     "data": {
-      "train_path": "/cluster/work/boeva/rquiles/data/mixed_test/pipeline_ready",
-      "conditions": ["tissue"],
+      "train_path": "/cluster/work/boeva/rquiles/data/small_partition/pipeline_ready",
+      "conditions": ["tissue_general", "assay"],
       "zero_percentages": [0.2, 0.4, 0.6],
-      "bulk_ratio": 0.3,
-      "pb_ratio": 0.3,
+      "bulk_ratio": 0.5,
+      "pb_ratio": 0.5,
       "n_sc_per_pseudobulk": 5,
-      "trunc_by_sample": true,
-      "loss": "mse",
-      "training_tasks": "pcpt",
-      "where_condition": "end",
-      "gen_method": "theirs"
+      "pb_group_column": "tissue_general",
+      "trunc_by_sample": true
     },
     "model": {
       "nlayers": 3,
@@ -37,14 +34,23 @@
       "lr": 0.0001,
       "warmup_ratio_or_step": 10000,
       "max_seq_len": 600,
-      "batch_size": 32
+      "batch_size": 32,
+      "input_style": "log1p",
+      "loss": "zinb",
+      "training_tasks": "both",
+      "do_mvc": true,
+      "where_condition": "end",
+      "gen_method": "theirs"
     },
     "features": {
       "unified": true,
-      "do_mvc": true,
-      "noise": [0.6],
       "contrastive_training": true,
-      "agg_consistency": true
+      "agg_consistency": true,
+      "balanced_sampler": "separate",
+      "balanced_labels": ["tissue_general", "assay"],
+      "noise": [0.6],
+      "esm_emb": true,
+      "esm_emb_path": "/cluster/work/boeva/rquiles/data/esm3_homo_emb.parquet"
     }
   },
   "base_overrides": {},
@@ -53,7 +59,7 @@
       "name": "full_model",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/full"
+          "save_dir": "${work}/outputs/save_CFF/ablation_partition/full"
         },
         "data": {},
         "model": {},
@@ -61,30 +67,58 @@
       }
     },
     {
-      "name": "no_contrastive",
+      "name": "1",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/contrastive"
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/..."
         },
         "data": {},
         "model": {},
-        "features": {
-          "contrastive_training": false
-        }
+        "features": {}
       }
     },
     {
-      "name": "no_contrastive_noise",
+      "name": "2",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/contrastive_noise "
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/..."
         },
         "data": {},
         "model": {},
-        "features": {
-          "contrastive_training": false,
-          "noise": []
-        }
+        "features": {}
+      }
+    },
+    {
+      "name": "3",
+      "overrides": {
+        "trainer": {
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/..."
+        },
+        "data": {},
+        "model": {},
+        "features": {}
+      }
+    },
+    {
+      "name": "4",
+      "overrides": {
+        "trainer": {
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/..."
+        },
+        "data": {},
+        "model": {},
+        "features": {}
+      }
+    },
+    {
+      "name": "5",
+      "overrides": {
+        "trainer": {
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/..."
+        },
+        "data": {},
+        "model": {},
+        "features": {}
       }
     }
   ],
@@ -109,12 +143,14 @@
     "enabled": false,
     "python_executable": "python",
     "sbatch_args": [
+      "--time=24:00:00",
       "--partition=gpu",
-      "--gres=gpu:rtx4090:1",
-      "--cpus-per-task=1",
-      "--time=00:00:10"
+      "--ntasks-per-node=2",
+      "--gres=gpu:rtx4090:2",
+      "--cpus-per-task=4",
+      "--mem-per-cpu=16G"
     ],
     "environment": {},
-    "job_name_prefix": "cf_ablate"
+    "job_name_prefix": "ab_small_part"
   }
 }

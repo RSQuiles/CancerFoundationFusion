@@ -11,7 +11,7 @@
 set -e
 
 SAVE_DIR="./save/${SLURM_JOB_NAME}_${SLURM_JOB_ID}"
-TRAIN_DIR="/cluster/work/boeva/rquiles/data/mixed_test/pipeline_ready"
+TRAIN_DIR="/cluster/work/boeva/rquiles/data/small_partition/pipeline_ready"
 mkdir -p "$SAVE_DIR"
 
 # Improve CUDA traceback

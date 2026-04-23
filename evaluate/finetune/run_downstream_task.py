@@ -27,7 +27,7 @@ from evaluate.finetune.downstream_tasks_impl import (
     DrugSensitivityTask,
 )
 from evaluate.finetune.downstream_task import TaskRegistry
-from base_downstream_runner import BaseDownstreamRunner
+from evaluate.finetune.base_downstream_runner import BaseDownstreamRunner
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,7 +68,25 @@ def load_runner_config(config_path: str | Path, checkpoint_path: str | Path | No
         checkpoint_path = Path(checkpoint_path).expanduser().resolve()
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
-        cfg.finetune.pretrained_model_path = str(checkpoint_path)
+        # Infer task from config keys and modify model path
+        available_in_config = [
+            key for key in cfg.finetune.keys()
+            if cfg.finetune[key] is not None
+        ]
+
+        if len(available_in_config) == 0:
+            log.error("No tasks configured in finetune section")
+            log.info(f"Available tasks: {', '.join(TaskRegistry.list_tasks())}")
+            raise ValueError("Please specify --task or configure a task in 'finetune' section")
+
+        if len(available_in_config) > 1 and not task_name:
+            log.error(
+                f"Multiple tasks found in config: {available_in_config}. "
+                "Please specify which one to run with --task"
+            )
+            raise ValueError(f"Ambiguous config: specify --task from {available_in_config}")
+        task = available_in_config[0]
+        cfg.finetune[task]["pretrained_model_path"] = str(checkpoint_path)
 
     return cfg
 

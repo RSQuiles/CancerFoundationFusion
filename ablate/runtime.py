@@ -14,6 +14,7 @@ from typing import Callable, Union, Dict, Any
 
 from utils_config import build_parser, _load_json_config, _flatten_sectioned_config, _filter_known_config_keys, expand_env_vars, pretty_print_args
 from argparse import Namespace
+import torch.multiprocessing as mp
 
 TrainFn = Callable[[Path], Union[str, Path]]
 EvalFn = Callable[[Union[str, Path], Dict[str, Any]], Dict[str, float]]

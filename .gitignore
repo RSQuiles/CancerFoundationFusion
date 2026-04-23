@@ -22,6 +22,7 @@ wandb/
 debug_data/
 checkpoints/
 core
+ablation_runs/
 
 # DATA/
 lightning_logs/

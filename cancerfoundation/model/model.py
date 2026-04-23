@@ -496,9 +496,15 @@ class CancerFoundation(pl.LightningModule):
         common_genes = list(set(self.vocab.keys()).intersection(set(data.var.index)))
         data = data[:, common_genes].copy()
 
-        # Select highly variable genes
-        sc.pp.highly_variable_genes(data, n_top_genes=self.n_top_genes, layer=None, flavor=flavor)
-        data = data[:, data.var["highly_variable"]].copy()
+        # Select highly variable genes (RAFA removed, HVG libraries gave many problems)
+        # sc.pp.highly_variable_genes(data, n_top_genes=self.n_top_genes, layer=None, flavor=flavor)
+        # data = data[:, data.var["highly_variable"]].copy()
+
+        # RAFA: just take top n_top_genes by variance
+        if data.n_vars > self.n_top_genes:
+            gene_vars = np.asarray(data.X.var(axis=0)).flatten()
+            top_idx = np.argpartition(gene_vars, -self.n_top_genes)[-self.n_top_genes:]
+            data = data[:, top_idx].copy()
 
         # Bin expression values if required
         if self.input_style == "binned":

@@ -1,7 +1,7 @@
 {
   "trainer": {
     "gpus": 1,
-    "num_workers": 4,
+    "num_workers": 1,
     "precision": "bf16-mixed",
     "strategy": "auto",
     "epochs": 1,
@@ -19,9 +19,8 @@
     "bulk_ratio": 0.5,
     "pb_ratio": 0.5,
     "n_sc_per_pseudobulk": 5,
-    "trunc_by_sample": true,
-    "loss": "mse",
-    "training_tasks": "pcpt"
+    "pb_group_column": "tissue_general",
+    "trunc_by_sample": true
   },
 
   "model": {
@@ -32,14 +31,21 @@
     "lr": 0.0001,
     "warmup_ratio_or_step": 10000,
     "max_seq_len": 600,
-    "batch_size": 32
+    "batch_size": 32,
+    "input_style": "log1p",
+    "loss": "zinb",
+    "training_tasks": "both",
+    "do_mvc": true,
+    "where_condition": "end",
+    "gen_method": "theirs"
   },
   
   "features": {
     "unified": true,
-    "do_mvc": true,
-    "where_condition": "end",
-    "gen_method": "theirs",
+    "contrastive_training": true,
+    "agg_consistency": true,
+    "balanced_sampler": "separate",
+    "balanced_labels": ["tissue_general", "assay"],
     "noise": [0.6],
     "esm_emb": true,
     "esm_emb_path": "/cluster/work/boeva/rquiles/data/esm3_homo_emb.parquet"

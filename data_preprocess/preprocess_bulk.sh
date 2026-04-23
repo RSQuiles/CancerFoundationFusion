@@ -14,6 +14,6 @@ python -u bulk_sc_data_preprocessing.py \
     --chunk-size 50_000 \
     --normalize-bulk-tissues \
     --bulk-path /cluster/work/boeva/rquiles/bulkFM-data/data/processed/archs4 \
-    --h5ad-path /cluster/work/boeva/rquiles/data/bulk_only \
-    --data-path /cluster/work/boeva/rquiles/data/bulk_only/pipeline_ready \
+    --h5ad-path /cluster/work/boeva/rquiles/data/bulk_full \
+    --data-path /cluster/work/boeva/rquiles/data/bulk_full/pipeline_ready \
     --obs-columns tissue_general assay \

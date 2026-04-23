@@ -197,7 +197,13 @@ class CancTypeClassTask(DownstreamTask):
         # Number of classes
         num_classes = labels.nunique()
 
-        return num_classes, adata[train_idx].copy(), adata[test_idx].copy(), labels.iloc[train_idx].to_numpy(), labels.iloc[test_idx].to_numpy()
+        return (
+            num_classes, 
+            adata[train_idx].copy(), 
+            adata[test_idx].copy(), 
+            labels.iloc[train_idx].to_numpy(), 
+            labels.iloc[test_idx].to_numpy()
+        )
 
     def _preprocess_adata(self, adata: ad.AnnData, task_cfg: DictConfig) -> ad.AnnData:
         """Preprocess and normalize data."""
@@ -252,7 +258,7 @@ class CancTypeClassTask(DownstreamTask):
         batch_size = 64
         embedder.eval()
         embedder.cuda()
-        df_emb = embedder.embed(adata, batch_size=batch_size, flavor="seurat_v3")
+        df_emb = embedder.embed(adata, batch_size=batch_size, flavor="seurat")
         return df_emb.to_numpy()
 
     def compute_metrics(
