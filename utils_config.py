@@ -251,11 +251,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--train-path", type=str, default=None, help="Path to the training data."
     )
     parser.add_argument(
-        "--do-dat",
-        action="store_true",
-        help="Whether or not to do domain adversarial training on the conditions.",
-    )
-    parser.add_argument(
         "--vocab",
         type=str,
         help="Path to the list of genes.",
@@ -368,22 +363,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "--dat-scale",
-        type=float,
-        default=1.0,
-        help="Scale for the gradient reversal layer in DAT",
-    )
-
-    parser.add_argument(
         "--where-condition",
         type=str,
         choices=["begin", "end"],
-    )
-
-    parser.add_argument(
-        "--no-invert-dat",
-        action="store_true",
-        help="If doing domain adversarial training, whether to invert the gradients.",
     )
 
     parser.add_argument(
@@ -507,6 +489,29 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         nargs="+",
         help="Whether to perform denoising task. Indicates the noise levels to iterate through"
+    )
+    parser.add_argument(
+        "--do-dat",
+        action="store_true",
+        help="Whether or not to do domain adversarial training on the conditions.",
+    )
+    parser.add_argument(
+        "--dat-columns",
+        type=str,
+        nargs="+",
+        default=["modality"],
+        help="Whether or not to do domain adversarial training on the conditions.",
+    )
+    parser.add_argument(
+        "--dat-scale",
+        type=float,
+        default=1.0,
+        help="Scale for the gradient reversal layer in DAT",
+    )
+    parser.add_argument(
+        "--no-invert-dat",
+        action="store_true",
+        help="If doing domain adversarial training, whether to invert the gradients.",
     )
 
     return parser

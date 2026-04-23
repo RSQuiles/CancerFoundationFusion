@@ -42,12 +42,7 @@
   
   "features": {
     "unified": true,
-    "contrastive_training": true,
-    "agg_consistency": true,
-    "balanced_sampler": "separate",
-    "balanced_labels": ["tissue_general", "assay"],
-    "noise": [0.6],
-    "esm_emb": true,
-    "esm_emb_path": "/cluster/work/boeva/rquiles/data/esm3_homo_emb.parquet"
+    "do_dat": true,
+    "dat_columns": ["modality", "assay"]
   }
 }

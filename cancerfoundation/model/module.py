@@ -61,6 +61,7 @@ class TransformerModule(nn.Module):
         vocab: Optional[Dict[str, int]] = None,
         gene_embeddings_path: Optional[Union[str, os.PathLike, Path]] = None,
         gene_embeddings_freeze: bool = True,
+        dat_columns: Optional[list[str]] = [],
     ):
         """Initializes the TransformerModule.
 
@@ -135,6 +136,7 @@ class TransformerModule(nn.Module):
             self.value_encoder = TheirContinuousValueEncoder(d_model, dropout)
 
         self.do_dat = do_dat
+        self.dat_columns = dat_columns,
         self.no_invert_dat = no_invert_dat
         self.do_mvc = do_mvc
         self.criterion_conditions = nn.CrossEntropyLoss()
@@ -163,6 +165,9 @@ class TransformerModule(nn.Module):
             if do_dat:
                 self.grad_reverse_discriminators = nn.ModuleDict({})
                 for cond_name, cond_num in self.conditions.items():
+                    if dat_columns and cond_name not in dat_columns:
+                        continue
+                    print(f"Using {cond_name} for DAT!")
                     self.grad_reverse_discriminators[cond_name] = (
                         AdversarialDiscriminator(
                             d_model,
@@ -170,6 +175,11 @@ class TransformerModule(nn.Module):
                             scale=dat_scale,
                             no_invert_dat=no_invert_dat,
                         )
+                    )
+                if len(self.grad_reverse_discriminators) == 0:
+                    raise ValueError(
+                        f"do_dat=True but no discriminators were created. "
+                        f"dat_columns={dat_columns}, available conditions={list(self.conditions.keys())}"
                     )
         if use_generative_training:
             if gen_method == "orig":
@@ -671,9 +681,7 @@ class TransformerModule(nn.Module):
                 ) in self.grad_reverse_discriminators.items():
                     output["condition_output"][cond_name] = discriminator(cell_emb)
                 # Inform about DAT conditions
-                print(
-                    f"Performing DAT on: {list(self.grad_reverse_discriminators.keys())}"
-                )
+                # print(f"Performing DAT on: {list(self.grad_reverse_discriminators.keys())}")
 
         return output
 
@@ -854,7 +862,7 @@ class TransformerModule(nn.Module):
         # Domain adversarial training
         if self.do_dat:
             if self.conditions:
-                for condition in self.conditions:
+                for condition in self.grad_reverse_discriminators:
                     condition_loss = self.criterion_conditions(
                         output_dict["condition_output"][condition],
                         conditions_batch[condition].squeeze(),
@@ -867,7 +875,7 @@ class TransformerModule(nn.Module):
                         .float()
                         .mean()
                     )
-                    loss += condition_loss / len(self.conditions)
+                    loss += condition_loss / len(self.grad_reverse_discriminators)
                     loss_dict["condition_" + condition] = condition_loss.detach() / len(
                         self.conditions
                     )

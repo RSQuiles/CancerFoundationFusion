@@ -202,6 +202,7 @@ def main(input_args=None):
             scheduler_factor=args.scheduler_factor,
             loss_type=args.loss,
             do_dat=args.do_dat,
+            dat_columns=list(args.dat_columns),
             no_invert_dat=args.no_invert_dat,
             conditions=args.conditions + ["modality"]
             if args.unified

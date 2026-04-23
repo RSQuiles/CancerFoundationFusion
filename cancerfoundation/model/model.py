@@ -71,7 +71,7 @@ class CancerFoundation(pl.LightningModule):
         gen_method: str,
         their_init_weights: bool,
         perturbation: bool = False,
-        n_top_genes: int = 1200,
+        n_top_genes: int = 5000,
         # Unified FM parameters
         contrastive: bool = False,
         aggregation: bool = False,
@@ -80,6 +80,7 @@ class CancerFoundation(pl.LightningModule):
         esm_emb: bool = False,
         esm_emb_path: Optional[Union[str, os.PathLike]] = None,
         esm_emb_finetune: bool = False,
+        dat_columns: Optional[List[str]] = [],
     ):
         """Initializes the CancerFoundation LightningModule.
 
@@ -181,6 +182,7 @@ class CancerFoundation(pl.LightningModule):
         self.domain_nums = None
         self.explicit_zero_prob = explicit_zero_prob
         self.do_dat = do_dat
+        self.dat_columns = dat_columns
         self.no_invert_dat = no_invert_dat
         self.conditions = conditions
         self.conditions_nums = conditions_nums
@@ -285,6 +287,7 @@ class CancerFoundation(pl.LightningModule):
                 n_input_bins=self.n_input_bins,
                 use_generative_training=self.USE_GENERATIVE_TRAINING,
                 do_dat=self.do_dat,
+                dat_columns=self.dat_columns,
                 no_invert_dat=self.no_invert_dat,
                 explicit_zero_prob=self.explicit_zero_prob,
                 activation=self.activation,
