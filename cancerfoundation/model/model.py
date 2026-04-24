@@ -360,6 +360,9 @@ class CancerFoundation(pl.LightningModule):
         for key, value in loss_dict.items():
             self.log(f"train/{key}", value, on_step=True, on_epoch=False, prog_bar=True)
 
+        # Print loss dict
+        # print(loss_dict)
+
         return loss_dict["total_loss"]
 
     def validation_step(self, batch, batch_idx):

@@ -97,41 +97,33 @@
       }
     },
     {
-      "name": "contrastive_denoise_zinb",
+      "name": "contrastive",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/contrastive_denoise_zinb",
-          "wandb_name": "contrastive_denoise_zinb"
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/contrastive",
+          "wandb_name": "contrastive"
         },
         "data": {},
-        "model": {
-          "input_style": "log1p",
-          "loss": "zinb"
-        },
+        "model": {},
         "features": {
           "unified": true,
-          "contrastive_training": true,
-          "noise": [0.4, 0.6]
+          "contrastive_training": true
         }
       }
     },
     {
-      "name": "agg_contrastive_denoise_zinb",
+      "name": "agg_contrastive",
       "overrides": {
         "trainer": {
           "save_dir": "${work}/outputs/save_CFF/ablation_test/agg_contrastive_denoise_zinb",
-          "wandb_name": "agg_contrastive_denoise_zinb"
+          "wandb_name": "agg_contrastive"
         },
         "data": {},
-        "model": {
-          "input_style": "log1p",
-          "loss": "zinb"
-        },
+        "model": {},
         "features": {
           "unified": true,
           "contrastive_training": true,
-          "agg_consistency": true,
-          "noise": [0.4, 0.6]
+          "agg_consistency": true
         }
       }
     },

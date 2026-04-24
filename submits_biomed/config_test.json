@@ -5,19 +5,20 @@
     "precision": "bf16-mixed",
     "strategy": "auto",
     "epochs": 1,
-    "epoch_size": 1,
     "seed": 0,
     "val_check_interval": 0.5,
-    "log_interval": 50,
-    "save_dir": "${work}/outputs/save_CFF/dummy_test"
-
+    "log_interval": 3,
+    "save_dir": "${work}/outputs/save_CFF/dummy_test",
+    "wandb_entity": "rquiles",
+    "wandb": "test",
+    "wandb_name": "zinb"
   },
   "data": {
     "train_path": "/cluster/work/boeva/rquiles/data/small_partition/pipeline_ready",
     "conditions": ["tissue_general", "assay"],
     "zero_percentages": [0.2, 0.4, 0.6],
-    "bulk_ratio": 0.5,
-    "pb_ratio": 0.5,
+    "bulk_ratio": 0.3,
+    "pb_ratio": 0.3,
     "n_sc_per_pseudobulk": 5,
     "pb_group_column": "tissue_general",
     "trunc_by_sample": true
@@ -41,8 +42,6 @@
   },
   
   "features": {
-    "unified": true,
-    "do_dat": true,
-    "dat_columns": ["modality", "assay"]
+    "noise": [0.4, 0.6]
   }
 }

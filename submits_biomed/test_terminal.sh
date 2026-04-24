@@ -16,12 +16,8 @@ mkdir -p "$SAVE_DIR"
 
 # Improve CUDA traceback
 CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py \
+    --loss zinb \
     --config ./config_test.json \
-    --do-dat \
-        --wandb-entity "rquiles" \
-        --wandb "test" \
-        --wandb-name "test_run" \
-        --compile \
 
 if [ -d "./lightning_logs/version_${SLURM_JOB_ID}" ]; then
     mv "./lightning_logs/version_${SLURM_JOB_ID}" "$SAVE_DIR/lightning_log"

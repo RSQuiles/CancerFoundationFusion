@@ -286,6 +286,7 @@ class ZINB(AbstractGeneExpressionLoss):
         # Split and process input tensor
         pred_value, var_value, zero_logits = input.split(1, dim=-1)
         
+        # mu=F.softplus(pred_value.squeeze(-1)) # used softplus instead of softmax to avoid gradient explosion
         mu=F.softmax(pred_value.squeeze(-1), dim=-1)
         theta=torch.exp(torch.clamp(var_value.squeeze(-1), max=15))
         pi=zero_logits.squeeze(-1)
@@ -299,13 +300,15 @@ class ZINB(AbstractGeneExpressionLoss):
         case_zero = F.softplus(pi_theta_log) - softplus_pi
         mul_case_zero = torch.mul((target < eps).type(torch.float32), case_zero)
 
+        # Added to avoid NaN due to paddind with (-2)
+        safe_target = target.clamp(min=0)
         case_non_zero = (
             -softplus_pi
             + pi_theta_log
-            + target * (torch.log(mu + eps) - log_theta_mu_eps)
-            + torch.lgamma(target + theta)
+            + safe_target * (torch.log(mu + eps) - log_theta_mu_eps)
+            + torch.lgamma(safe_target + theta)
             - torch.lgamma(theta)
-            - torch.lgamma(target + 1)
+            - torch.lgamma(safe_target + 1)
         )
         mul_case_non_zero = torch.mul((target > eps).type(torch.float32), case_non_zero)
 
