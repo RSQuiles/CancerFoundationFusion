@@ -35,22 +35,22 @@ from torch.nn.modules.loss import _WeightedLoss
 
 
 def sample_h5ad_subset_from_prefix(
-    prefix: str,
+    prefix: str | None,
     directory: Union[str, Path],
     n_subset: int,
     seed: int | None = None,
 ) -> AnnData:
     """
-    Load all .h5ad files in a directory whose filenames start with `prefix`,
-    combine their observations virtually, and return a random subset of
-    `n_subset` observations as a single AnnData object.
+    Load .h5ad files in a directory, combine their observations virtually, and
+    return a random subset of `n_subset` observations as a single AnnData object.
 
     This function avoids concatenating all cells into memory first. It samples
     row indices across the union of all matching files, then reads only the
     selected observations from each file.
 
     Args:
-        prefix: Filename prefix to match.
+        prefix: Filename prefix to match. If None or empty, all .h5ad files
+                in the directory are used.
         directory: Directory containing .h5ad files.
         n_subset: Number of observations (cells/rows) to sample.
         seed: Optional random seed for reproducibility.
@@ -63,7 +63,8 @@ def sample_h5ad_subset_from_prefix(
         ValueError: If n_subset is invalid or larger than total observations.
     """
     directory = Path(directory)
-    files = sorted(directory.glob(f"{prefix}*.h5ad"))
+    pattern = f"{prefix}*.h5ad" if prefix else "*.h5ad"
+    files = sorted(directory.glob(pattern))
 
     if not files:
         raise FileNotFoundError(
@@ -169,79 +170,6 @@ def subsample_adata(adata, n_subset, seed=None, copy=True):
     idx = rng.choice(adata.n_obs, size=n_subset, replace=False)
 
     return adata[idx].copy() if copy else adata[idx]
-
-## From Enrico's implementation:
-
-def seed_all(seed_value, cuda_deterministic=False):
-    """
-    set all random seeds
-    """
-    random.seed(seed_value)
-    os.environ['PYTHONHASHSEED'] = str(seed_value)
-    np.random.seed(seed_value)
-    torch.manual_seed(seed_value)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed_value)
-        torch.cuda.manual_seed_all(seed_value)
-    # Speed-reproducibility tradeoff https://pytorch.org/docs/stable/notes/randomness.html
-    if cuda_deterministic:  # slower, more reproducible
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-    else:  # faster, less reproducible
-        torch.backends.cudnn.deterministic = False
-        torch.backends.cudnn.benchmark = True
-
-class SequentialDistributedSampler(torch.utils.data.sampler.Sampler):
-    """
-    Distributed Sampler that subsamples indicies sequentially,
-    making it easier to collate all results at the end.
-    Even though we only use this sampler for eval and predict (no training),
-    which means that the model params won't have to be synced (i.e. will not hang
-    for synchronization even if varied number of forward passes), we still add extra
-    samples to the sampler to make it evenly divisible (like in `DistributedSampler`)
-    to make it easy to `gather` or `reduce` resulting tensors at the end of the loop.
-    """
-
-    def __init__(self, dataset, batch_size, world_size, rank=None, num_replicas=None):
-        if num_replicas is None:
-            if not torch.distributed.is_available():
-                raise RuntimeError("Requires distributed package to be available")
-            num_replicas = world_size
-        if rank is None:
-            if not torch.distributed.is_available():
-                raise RuntimeError("Requires distributed package to be available")
-            rank = torch.distributed.get_rank()
-        self.dataset = dataset
-        self.num_replicas = num_replicas
-        self.rank = rank
-        self.batch_size = batch_size
-        self.num_samples = int(math.ceil(len(self.dataset) * 1.0 / self.batch_size / self.num_replicas)) * self.batch_size
-        self.total_size = self.num_samples * self.num_replicas
-
-    def __iter__(self):
-        indices = list(range(len(self.dataset)))
-        # add extra samples to make it evenly divisible
-        indices += [indices[-1]] * (self.total_size - len(indices))
-        # subsample
-        indices = indices[self.rank * self.num_samples : (self.rank + 1) * self.num_samples]
-        return iter(indices)
-
-    def __len__(self):
-        return self.num_samples
-    
-def distributed_concat(tensor, num_total_examples, world_size):
-    output_tensors = [tensor.clone() for _ in range(world_size)]
-    torch.distributed.all_gather(output_tensors, tensor)
-    concat = torch.cat(output_tensors, dim=0)
-    # truncate the dummy elements added by SequentialDistributedSampler
-    return concat[:num_total_examples]
-
-def get_reduced(tensor, current_device, dest_device, world_size):
-    tensor = tensor.clone().detach() if torch.is_tensor(tensor) else torch.tensor(tensor)
-    tensor = tensor.to(current_device)
-    torch.distributed.reduce(tensor, dst=dest_device)
-    tensor_mean = tensor.item() / world_size
-    return tensor_mean
 
 
 
