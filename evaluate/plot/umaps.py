@@ -45,7 +45,10 @@ import torch
 from utils import sample_h5ad_subset_from_prefix, subsample_adata
 
 import sys
-sys.path.insert(0, "../")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from cancerfoundation.model.model import CancerFoundation
 
 
@@ -165,9 +168,10 @@ def embed_adata(
     batch_size: int = 64,
     flavor: str = "seurat",
     obsm_key: str = "X_cf",
+    normalized: bool = True,
 ) -> sc.AnnData:
     """Compute embeddings and store them in `adata.obsm[obsm_key]`."""
-    emb_df: pd.DataFrame = model.embed(adata, flavor=flavor, batch_size=batch_size)
+    emb_df: pd.DataFrame = model.embed(adata, flavor=flavor, batch_size=batch_size, normalized=normalized)
     adata.obsm[obsm_key] = emb_df.to_numpy(dtype=np.float32)
     return adata
 

@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # Default: use singularity
-USE_LOCAL=0
+USE_LOCAL=1
 
 # Parse args
 for arg in "$@"; do
@@ -22,14 +22,9 @@ for arg in "$@"; do
 done
 
 SCRIPT_ARGS=(
-    --run-name small_contrast_8725461
-    --flavor seurat_v3
-    --color tissue_general assay
-    --out-dir ./umap_plots
-    --out-prefix small_contrast
-    --adata-dir /cluster/work/boeva/rquiles/data/small_partition
-    --adata-prefix partition_1
-    --sample-size 10_000
+    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_test
+    --adata-dir /cluster/work/boeva/rquiles/data/mixed_test/pipeline_ready/h5ads
+    --color tissue modality
 )
 
 if [[ "$USE_LOCAL" -eq 1 ]]; then

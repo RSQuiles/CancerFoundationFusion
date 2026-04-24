@@ -13,7 +13,10 @@
       "seed": 0,
       "val_check_interval": 0.5,
       "log_interval": 50,
-      "save_dir": "${work}/outputs/save_CFF/ablation_partition"
+      "save_dir": "${work}/outputs/save_CFF/ablation_partition",
+      "wandb_entity": "rquiles",
+      "wandb": "ablation_small_partition",
+      "compile": true
     },
     "data": {
       "train_path": "/cluster/work/boeva/rquiles/data/small_partition/pipeline_ready",
@@ -50,10 +53,11 @@
   "base_overrides": {},
   "ablations": [
     {
-      "name": "full_model",
+      "name": "base_model",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_partition/full"
+          "save_dir": "${work}/outputs/save_CFF/ablation_partition/base",
+          "wandb_name": "base_model"
         },
         "data": {},
         "model": {},
@@ -64,7 +68,8 @@
       "name": "zinb_reconstruction",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/zinb_rec"
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/zinb_rec",
+          "wandb_name": "zinb"
         },
         "data": {},
         "model": {
@@ -77,7 +82,8 @@
       "name": "denoise_zinb",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/denoise_zinb"
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/denoise_zinb",
+          "wandb_name": "denoise_zinb"
         },
         "data": {},
         "model": {
@@ -94,7 +100,8 @@
       "name": "contrastive_denoise_zinb",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/contrastive_denoise_zinb"
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/contrastive_denoise_zinb",
+          "wandb_name": "contrastive_denoise_zinb"
         },
         "data": {},
         "model": {
@@ -112,7 +119,8 @@
       "name": "agg_contrastive_denoise_zinb",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/agg_contrastive_denoise_zinb"
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/agg_contrastive_denoise_zinb",
+          "wandb_name": "agg_contrastive_denoise_zinb"
         },
         "data": {},
         "model": {
@@ -131,7 +139,8 @@
       "name": "dat_agg_contrastive_denoise_zinb",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/dat_agg_contrastive_denoise_zinb"
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/dat_agg_contrastive_denoise_zinb",
+          "wandb_name": "dat_agg_contrastive_denoise_zinb"
         },
         "data": {},
         "model": {
