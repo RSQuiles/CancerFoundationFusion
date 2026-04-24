@@ -11,17 +11,20 @@ Given an ablation experiment directory structured as:
         {model_name}/
             ...
 
-Collects all available task metrics, selects a primary metric per task, and
-generates a grouped barplot comparing every model across every task found.
+For each task, every numeric metric gets its own subplot.  Within each
+subplot all models are compared as bars.  The primary metric per task is
+highlighted with a coloured background and a star in the title.
+
+Layout:  rows = tasks,  columns = metrics within that task.
 
 Usage
 -----
     python evaluate/plot/ablation_benchmark.py --ablation-dir path/to/ablation
 
-    # Override which metric to display per task:
+    # Override which metric is "primary" for one or more tasks:
     python evaluate/plot/ablation_benchmark.py \\
         --ablation-dir path/to/ablation \\
-        --metrics canc_type_class=f1_weighted deconv=rmse
+        --primary canc_type_class=f1_weighted deconv=rmse
 
     # Save without showing:
     python evaluate/plot/ablation_benchmark.py \\
@@ -48,20 +51,27 @@ import numpy as np
 # Defaults
 # --------------------------------------------------------------------------- #
 
-# Primary metric selected for each task when not overridden on the CLI.
-# For "lower is better" metrics the bar label will show "(↓ lower is better)".
+# Default primary metric per task (highlighted in the plot).
 TASK_PRIMARY_METRIC: dict[str, str] = {
-    "canc_type_class": "accuracy",
-    "deconv":          "mae",
-    "survival":        "c_index",
-    "proteome_pred":   "mean_pearson_r",
+    "canc_type_class":  "accuracy",
+    "deconv":           "mae",
+    "survival":         "c_index",
+    "proteome_pred":    "mean_pearson_r",
     "drug_sensitivity": "mean_pearson_r",
 }
 
-# Tasks where a lower value is better (used only for axis annotation).
-LOWER_IS_BETTER: set[str] = {"deconv", "mae", "mse", "rmse"}
+# Metrics where lower is better — shown with a ↓ indicator.
+LOWER_IS_BETTER: set[str] = {"mae", "mse", "rmse"}
 
-# Human-readable labels for known tasks and metrics.
+# Informational / count metrics that are not meaningful to plot as bars.
+SKIP_METRICS: set[str] = {
+    "n_events",
+    "n_drugs_evaluated",
+    "n_proteins_evaluated",
+    "event_rate",
+}
+
+# Human-readable labels.
 TASK_LABELS: dict[str, str] = {
     "canc_type_class":  "Cancer Type\nClassification",
     "deconv":           "Cell-Type\nDeconvolution",
@@ -71,15 +81,21 @@ TASK_LABELS: dict[str, str] = {
 }
 
 METRIC_LABELS: dict[str, str] = {
-    "accuracy":        "Accuracy",
-    "f1_weighted":     "F1 (weighted)",
-    "mae":             "MAE",
-    "mse":             "MSE",
-    "rmse":            "RMSE",
-    "c_index":         "C-index",
-    "mean_pearson_r":  "Mean Pearson r",
-    "median_pearson_r": "Median Pearson r",
+    "accuracy":          "Accuracy",
+    "f1_weighted":       "F1 (weighted)",
+    "precision_macro":   "Precision (macro)",
+    "recall_macro":      "Recall (macro)",
+    "mae":               "MAE",
+    "mse":               "MSE",
+    "rmse":              "RMSE",
+    "c_index":           "C-index",
+    "mean_pearson_r":    "Mean Pearson r",
+    "median_pearson_r":  "Median Pearson r",
 }
+
+# Background colour for the primary-metric subplot.
+_PRIMARY_BG   ="#FFFDE7"   # very light yellow
+_PRIMARY_EDGE = "#F9A825"   # amber border
 
 
 # --------------------------------------------------------------------------- #
@@ -88,11 +104,11 @@ METRIC_LABELS: dict[str, str] = {
 
 def collect_metrics(ablation_dir: Path) -> dict[str, dict[str, dict[str, float]]]:
     """
-    Walk ablation_dir and return a nested dict:
+    Walk ablation_dir and return:
         results[model_name][task_name] = {metric: value, ...}
 
-    A model subdirectory is recognised by the presence of a ``metrics/``
-    subfolder containing at least one ``results_*.json`` file.
+    A model directory is recognised by having a ``metrics/`` subfolder
+    containing at least one ``results_*.json`` file.
     """
     results: dict[str, dict[str, dict[str, float]]] = {}
 
@@ -112,12 +128,10 @@ def collect_metrics(ablation_dir: Path) -> dict[str, dict[str, dict[str, float]]
         results[model_name] = {}
 
         for jf in json_files:
-            # filename: results_{task_name}.json
             task_name = jf.stem[len("results_"):]
             try:
                 with open(jf) as fh:
-                    task_metrics = json.load(fh)
-                results[model_name][task_name] = task_metrics
+                    results[model_name][task_name] = json.load(fh)
             except Exception as exc:
                 print(f"[warning] Could not read {jf}: {exc}", file=sys.stderr)
 
@@ -125,128 +139,168 @@ def collect_metrics(ablation_dir: Path) -> dict[str, dict[str, dict[str, float]]
 
 
 # --------------------------------------------------------------------------- #
+# Layout helpers
+# --------------------------------------------------------------------------- #
+
+def _build_task_metrics(
+    results: dict[str, dict[str, dict[str, float]]],
+    primary_overrides: dict[str, str],
+) -> tuple[list[str], dict[str, list[str]], dict[str, str]]:
+    """
+    Derive the set of plottable metrics for each task.
+
+    Returns
+    -------
+    all_tasks : sorted list of task names found in results.
+    task_metrics : task → sorted list of metrics to plot
+                   (numeric, not in SKIP_METRICS, union across all models).
+    primary : task → name of the primary (highlighted) metric.
+    """
+    all_tasks = sorted({t for m in results.values() for t in m})
+
+    task_metrics: dict[str, list[str]] = {}
+    for task in all_tasks:
+        seen: set[str] = set()
+        for model_data in results.values():
+            for k, v in model_data.get(task, {}).items():
+                if k not in SKIP_METRICS and isinstance(v, (int, float)):
+                    seen.add(k)
+        task_metrics[task] = sorted(seen)
+
+    primary: dict[str, str] = {}
+    for task in all_tasks:
+        override = primary_overrides.get(task)
+        default  = TASK_PRIMARY_METRIC.get(task)
+        metrics  = task_metrics.get(task, [])
+
+        if override and override in metrics:
+            primary[task] = override
+        elif default and default in metrics:
+            primary[task] = default
+        elif metrics:
+            primary[task] = metrics[0]
+
+    return all_tasks, task_metrics, primary
+
+
+# --------------------------------------------------------------------------- #
 # Plot
 # --------------------------------------------------------------------------- #
 
-def _pick_primary(task: str, metrics: dict[str, float], override: str | None) -> tuple[str, float] | None:
-    """Return (metric_name, value) for the primary metric of a task."""
-    metric_name = override or TASK_PRIMARY_METRIC.get(task)
-    if metric_name is None:
-        # Task not in defaults: fall back to the first numeric key.
-        for k, v in metrics.items():
-            if isinstance(v, (int, float)):
-                metric_name = k
-                break
-
-    if metric_name is None:
-        return None
-
-    value = metrics.get(metric_name)
-    if value is None or not isinstance(value, (int, float)):
-        return None
-
-    return metric_name, float(value)
-
-
 def plot_benchmark(
     results: dict[str, dict[str, dict[str, float]]],
-    metric_overrides: dict[str, str],
+    primary_overrides: dict[str, str],
     output: Path | None,
     show: bool,
     figsize: tuple[float, float] | None,
 ) -> None:
     """
-    Generate the benchmark barplot.
+    Generate the benchmark grid.
 
-    Layout: one subplot per task, bars grouped by model.
-    All models share the same color palette (consistent across subplots).
+    Grid layout:  rows = tasks,  columns = metrics within each task.
+    Within every subplot, one bar per model.
+    The primary metric column is highlighted with a coloured background and ★.
     """
     if not results:
         print("No results found — nothing to plot.", file=sys.stderr)
         sys.exit(1)
 
-    # Collect all tasks that appear in at least one model's metrics.
-    all_tasks: list[str] = []
-    for model_metrics in results.values():
-        for task in model_metrics:
-            if task not in all_tasks:
-                all_tasks.append(task)
-    all_tasks.sort()
-
+    all_tasks, task_metrics, primary = _build_task_metrics(results, primary_overrides)
     model_names = list(results.keys())
-    n_tasks  = len(all_tasks)
-    n_models = len(model_names)
+    n_models    = len(model_names)
+    n_tasks     = len(all_tasks)
+    n_cols      = max((len(task_metrics[t]) for t in all_tasks), default=1)
 
     if n_tasks == 0:
         print("No tasks found — nothing to plot.", file=sys.stderr)
         sys.exit(1)
 
-    # Colour palette — one colour per model.
-    cmap = plt.get_cmap("tab10") if n_models <= 10 else plt.get_cmap("tab20")
+    # Colour palette — one fixed colour per model, shared across all subplots.
+    cmap   = plt.get_cmap("tab10") if n_models <= 10 else plt.get_cmap("tab20")
     colors = [cmap(i % cmap.N) for i in range(n_models)]
 
-    fig_w, fig_h = figsize or (max(5 * n_tasks, 8), 5)
+    col_w, row_h = 2.6, 3.2
+    fig_w = figsize[0] if figsize else max(n_cols * col_w + 1.5, 6.0)
+    fig_h = figsize[1] if figsize else max(n_tasks * row_h + 1.2, 4.0)
+
     fig, axes = plt.subplots(
-        1, n_tasks,
+        n_tasks, n_cols,
         figsize=(fig_w, fig_h),
-        sharey=False,
         squeeze=False,
     )
-    axes = axes[0]  # shape (n_tasks,)
 
-    bar_width  = 0.7 / max(n_models, 1)
-    group_offsets = np.arange(n_models) * bar_width - (n_models - 1) * bar_width / 2
+    x_positions = np.arange(n_models, dtype=float)
+    bar_width   = 0.75
 
-    for ax_idx, task in enumerate(all_tasks):
-        ax = axes[ax_idx]
-        override = metric_overrides.get(task)
+    for row, task in enumerate(all_tasks):
+        metrics_for_task = task_metrics[task]
+        primary_metric   = primary.get(task)
 
-        plotted_metric_name: str | None = None
-        any_bar = False
+        for col in range(n_cols):
+            ax = axes[row][col]
 
-        for model_idx, model_name in enumerate(model_names):
-            task_metrics = results.get(model_name, {}).get(task)
-            if task_metrics is None:
+            # Hide unused columns for tasks with fewer metrics.
+            if col >= len(metrics_for_task):
+                ax.set_visible(False)
                 continue
 
-            picked = _pick_primary(task, task_metrics, override)
-            if picked is None:
-                continue
+            metric     = metrics_for_task[col]
+            is_primary = metric == primary_metric
 
-            metric_name, value = picked
-            plotted_metric_name = metric_name
+            # Highlight primary metric subplot.
+            if is_primary:
+                ax.set_facecolor(_PRIMARY_BG)
+                for spine in ax.spines.values():
+                    spine.set_edgecolor(_PRIMARY_EDGE)
+                    spine.set_linewidth(1.8)
 
-            x = group_offsets[model_idx]
-            bar = ax.bar(
-                x, value,
-                width=bar_width * 0.9,
-                color=colors[model_idx],
-                label=model_name,
-                zorder=3,
+            any_bar = False
+            for model_idx, model_name in enumerate(model_names):
+                value = results.get(model_name, {}).get(task, {}).get(metric)
+                if value is None or not isinstance(value, (int, float)):
+                    continue
+
+                bar = ax.bar(
+                    x_positions[model_idx], float(value),
+                    width=bar_width,
+                    color=colors[model_idx],
+                    zorder=3,
+                    edgecolor="white",
+                    linewidth=0.5,
+                )
+                ax.bar_label(bar, fmt="%.3f", padding=3, fontsize=7)
+                any_bar = True
+
+            # Subplot title: metric name + direction + star for primary.
+            direction    = " ↓" if metric in LOWER_IS_BETTER else " ↑"
+            star         = " ★" if is_primary else ""
+            metric_label = METRIC_LABELS.get(metric, metric)
+            ax.set_title(
+                metric_label + direction + star,
+                fontsize=9,
+                fontweight="bold" if is_primary else "normal",
+                color=_PRIMARY_EDGE if is_primary else "black",
+                pad=4,
             )
-            ax.bar_label(bar, fmt="%.3f", padding=3, fontsize=8)
-            any_bar = True
 
-        # Axis decoration
-        task_lower_is_better = (
-            task in LOWER_IS_BETTER
-            or (plotted_metric_name is not None and plotted_metric_name in LOWER_IS_BETTER)
+            ax.set_xticks([])
+            ax.grid(axis="y", linestyle="--", alpha=0.4, zorder=0)
+            ax.set_axisbelow(True)
+
+            if not any_bar:
+                ax.text(
+                    0.5, 0.5, "No data",
+                    ha="center", va="center", transform=ax.transAxes,
+                    color="grey", fontsize=9,
+                )
+
+        # Task label as the y-axis label of the first (leftmost) subplot.
+        axes[row][0].set_ylabel(
+            TASK_LABELS.get(task, task),
+            fontsize=10,
+            fontweight="bold",
+            labelpad=8,
         )
-        direction_note = " (↓)" if task_lower_is_better else " (↑)"
-
-        metric_label = METRIC_LABELS.get(plotted_metric_name or "", plotted_metric_name or "value")
-        ax.set_title(TASK_LABELS.get(task, task), fontsize=11, fontweight="bold", pad=8)
-        ax.set_ylabel(metric_label + direction_note, fontsize=9)
-        ax.set_xticks([])
-        ax.grid(axis="y", linestyle="--", alpha=0.5, zorder=0)
-        ax.set_axisbelow(True)
-
-        if not any_bar:
-            ax.text(
-                0.5, 0.5, "No data",
-                ha="center", va="center", transform=ax.transAxes,
-                color="grey", fontsize=10,
-            )
 
     # Shared legend below the figure.
     legend_handles = [
@@ -261,11 +315,18 @@ def plot_benchmark(
         fontsize=9,
         title="Model",
         title_fontsize=9,
-        bbox_to_anchor=(0.5, -0.02),
+        bbox_to_anchor=(0.5, 0.0),
     )
 
-    fig.suptitle("Ablation Benchmark", fontsize=14, fontweight="bold", y=1.01)
-    plt.tight_layout()
+    fig.text(
+        0.99, 0.005,
+        "★ = primary metric",
+        ha="right", va="bottom", fontsize=8,
+        color=_PRIMARY_EDGE, style="italic",
+    )
+
+    fig.suptitle("Ablation Benchmark", fontsize=13, fontweight="bold", y=1.01)
+    plt.tight_layout(rect=[0, 0.06, 1, 1])
 
     if output is not None:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -282,7 +343,7 @@ def plot_benchmark(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Plot ablation benchmark barplot from downstream task metrics.",
+        description="Plot ablation benchmark: one subplot per (task, metric), models as bars.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -293,20 +354,20 @@ def parse_args() -> argparse.Namespace:
         help="Path to the ablation experiment directory.",
     )
     parser.add_argument(
-        "--metrics", "-m",
+        "--primary", "-p",
         nargs="*",
         default=[],
         metavar="TASK=METRIC",
         help=(
-            "Override the primary metric for one or more tasks. "
-            "Format: task_name=metric_name, e.g. deconv=rmse canc_type_class=f1_weighted."
+            "Override the highlighted primary metric for one or more tasks. "
+            "Format: task_name=metric_name  (e.g. deconv=rmse canc_type_class=f1_weighted)."
         ),
     )
     parser.add_argument(
         "--output", "-o",
         type=Path,
         default=None,
-        help="Path to save the figure (e.g. benchmark.pdf or benchmark.png). "
+        help="Save path for the figure (e.g. benchmark.pdf). "
              "Defaults to {ablation_dir}/benchmark.png.",
     )
     parser.add_argument(
@@ -320,7 +381,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         metavar=("W", "H"),
         default=None,
-        help="Figure width and height in inches. Auto-determined if omitted.",
+        help="Figure width and height in inches (auto if omitted).",
     )
     return parser.parse_args()
 
@@ -333,18 +394,15 @@ def main() -> None:
         print(f"ERROR: --ablation-dir does not exist: {ablation_dir}", file=sys.stderr)
         sys.exit(1)
 
-    # Parse metric overrides: ["task=metric", ...] → {"task": "metric"}
-    metric_overrides: dict[str, str] = {}
-    for item in args.metrics or []:
+    primary_overrides: dict[str, str] = {}
+    for item in args.primary or []:
         if "=" not in item:
-            print(f"WARNING: ignoring malformed --metrics entry '{item}' (expected task=metric)")
+            print(f"WARNING: ignoring malformed --primary entry '{item}' (expected task=metric)")
             continue
         task, metric = item.split("=", 1)
-        metric_overrides[task.strip()] = metric.strip()
+        primary_overrides[task.strip()] = metric.strip()
 
-    output: Path | None = args.output
-    if output is None:
-        output = ablation_dir / "benchmark.png"
+    output: Path | None = args.output or (ablation_dir / "benchmark.png")
 
     print(f"Scanning {ablation_dir} ...")
     results = collect_metrics(ablation_dir)
@@ -363,7 +421,7 @@ def main() -> None:
     figsize = tuple(args.figsize) if args.figsize else None
     plot_benchmark(
         results=results,
-        metric_overrides=metric_overrides,
+        primary_overrides=primary_overrides,
         output=output,
         show=not args.no_show,
         figsize=figsize,
