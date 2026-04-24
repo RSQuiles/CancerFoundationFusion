@@ -258,7 +258,7 @@ class CancTypeClassTask(DownstreamTask):
         batch_size = 64
         embedder.eval()
         embedder.cuda()
-        df_emb = embedder.embed(adata, batch_size=batch_size, flavor="seurat")
+        df_emb = embedder.embed(adata, batch_size=batch_size, normalized=True)
         return df_emb.to_numpy()
 
     def compute_metrics(
@@ -519,7 +519,7 @@ class DeconvTask(DownstreamTask):
         batch_size = 64
         embedder.eval()
         embedder.cuda()
-        df_emb = embedder.embed(adata, batch_size=batch_size, flavor="seurat_v3")
+        df_emb = embedder.embed(adata, batch_size=batch_size, normalized=True)
         return df_emb.to_numpy()
 
     def compute_metrics(
@@ -971,7 +971,7 @@ class SurvivalTask(DownstreamTask):
     def _embed_adata(self, embedder: Any, adata: ad.AnnData, batch_size: int = 64) -> np.ndarray:
         embedder.eval()
         embedder.cuda()
-        df_emb = embedder.embed(adata, batch_size=batch_size, flavor="seurat")
+        df_emb = embedder.embed(adata, batch_size=batch_size, normalized=True)
         return df_emb.to_numpy()
 
     def compute_metrics(
@@ -1245,7 +1245,7 @@ class ProteomePredTask(DownstreamTask):
     def _embed_adata(self, embedder: Any, adata: ad.AnnData, batch_size: int = 64) -> np.ndarray:
         embedder.eval()
         embedder.cuda()
-        df_emb = embedder.embed(adata, batch_size=batch_size, flavor="seurat_v3")
+        df_emb = embedder.embed(adata, batch_size=batch_size, log1p_only=True)
         return df_emb.to_numpy()
 
     def compute_metrics(
@@ -1581,7 +1581,7 @@ class DrugSensitivityTask(DownstreamTask):
     def _embed_adata(self, embedder: Any, adata: ad.AnnData, batch_size: int = 64) -> np.ndarray:
         embedder.eval()
         embedder.cuda()
-        df_emb = embedder.embed(adata, batch_size=batch_size, flavor="seurat_v3")
+        df_emb = embedder.embed(adata, batch_size=batch_size, normalized=True)
         return df_emb.to_numpy()
 
     def compute_metrics(

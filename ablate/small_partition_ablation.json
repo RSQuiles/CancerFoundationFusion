@@ -5,12 +5,11 @@
   "train_entrypoint": "pretrain:main",
   "base_config": {
     "trainer": {
-      "gpus": 1,
-      "num_workers": 1,
+      "gpus": 2,
+      "num_workers": 4,
       "precision": "bf16-mixed",
-      "strategy": "auto",
-      "epochs": 1,
-      "epoch_size": 1,
+      "strategy": "ddp",
+      "epochs": 3,
       "seed": 0,
       "val_check_interval": 0.5,
       "log_interval": 50,
@@ -20,37 +19,32 @@
       "train_path": "/cluster/work/boeva/rquiles/data/small_partition/pipeline_ready",
       "conditions": ["tissue_general", "assay"],
       "zero_percentages": [0.2, 0.4, 0.6],
-      "bulk_ratio": 0.5,
-      "pb_ratio": 0.5,
+      "bulk_ratio": 0.3,
+      "pb_ratio": 0.3,
       "n_sc_per_pseudobulk": 5,
       "pb_group_column": "tissue_general",
-      "trunc_by_sample": true
+      "trunc_by_sample": true,
+      "balanced_sampler": "separate",
+      "balanced_labels": ["tissue_general", "assay"]
     },
     "model": {
-      "nlayers": 3,
-      "nheads": 4,
-      "embsize": 64,
+      "nlayers": 6,
+      "nheads": 8,
+      "embsize": 128,
       "d_hid": 256,
       "lr": 0.0001,
       "warmup_ratio_or_step": 10000,
       "max_seq_len": 600,
       "batch_size": 32,
-      "input_style": "log1p",
-      "loss": "zinb",
+      "input_style": "binned",
+      "loss": "mse",
       "training_tasks": "both",
       "do_mvc": true,
       "where_condition": "end",
       "gen_method": "theirs"
     },
     "features": {
-      "unified": true,
-      "contrastive_training": true,
-      "agg_consistency": true,
-      "balanced_sampler": "separate",
-      "balanced_labels": ["tissue_general", "assay"],
-      "noise": [0.6],
-      "esm_emb": true,
-      "esm_emb_path": "/cluster/work/boeva/rquiles/data/esm3_homo_emb.parquet"
+      "unified": false
     }
   },
   "base_overrides": {},
@@ -67,58 +61,91 @@
       }
     },
     {
-      "name": "1",
+      "name": "zinb_reconstruction",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/..."
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/zinb_rec"
         },
         "data": {},
-        "model": {},
+        "model": {
+          "loss": "zinb"
+        },
         "features": {}
       }
     },
     {
-      "name": "2",
+      "name": "denoise_zinb",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/..."
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/denoise_zinb"
         },
         "data": {},
-        "model": {},
-        "features": {}
+        "model": {
+          "input_style": "log1p",
+          "loss": "zinb"
+        },
+        "features": {
+          "noise": [0.4, 0.6]
+
+        }
       }
     },
     {
-      "name": "3",
+      "name": "contrastive_denoise_zinb",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/..."
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/contrastive_denoise_zinb"
         },
         "data": {},
-        "model": {},
-        "features": {}
+        "model": {
+          "input_style": "log1p",
+          "loss": "zinb"
+        },
+        "features": {
+          "unified": true,
+          "contrastive_training": true,
+          "noise": [0.4, 0.6]
+        }
       }
     },
     {
-      "name": "4",
+      "name": "agg_contrastive_denoise_zinb",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/..."
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/agg_contrastive_denoise_zinb"
         },
         "data": {},
-        "model": {},
-        "features": {}
+        "model": {
+          "input_style": "log1p",
+          "loss": "zinb"
+        },
+        "features": {
+          "unified": true,
+          "contrastive_training": true,
+          "agg_consistency": true,
+          "noise": [0.4, 0.6]
+        }
       }
     },
     {
-      "name": "5",
+      "name": "dat_agg_contrastive_denoise_zinb",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/..."
+          "save_dir": "${work}/outputs/save_CFF/ablation_test/dat_agg_contrastive_denoise_zinb"
         },
         "data": {},
-        "model": {},
-        "features": {}
+        "model": {
+          "input_style": "log1p",
+          "loss": "zinb"
+        },
+        "features": {
+          "unified": true,
+          "contrastive_training": true,
+          "agg_consistency": true,
+          "noise": [0.4, 0.6],
+          "do_dat": true,
+          "dat_columns": ["modality", "assay"]
+        }
       }
     }
   ],
@@ -129,21 +156,16 @@
       "config": "/cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/configs/cancer_annot_config.yaml"
     },
     {
-      "name": "deconvolution",
-      "entrypoint": "evaluate.finetune.run_downstream_task:main",
-      "config": "/cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/configs/deconv_config.yaml"
-    },
-    {
       "name": "survival_prediction",
       "entrypoint": "evaluate.finetune.run_downstream_task:main",
       "config": "/cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/configs/survival_pred_config.yaml"
     }
   ],
   "slurm": {
-    "enabled": false,
+    "enabled": true,
     "python_executable": "python",
     "sbatch_args": [
-      "--time=24:00:00",
+      "--time=48:00:00",
       "--partition=gpu",
       "--ntasks-per-node=2",
       "--gres=gpu:rtx4090:2",

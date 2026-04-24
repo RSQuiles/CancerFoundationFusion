@@ -71,7 +71,7 @@ class CancerFoundation(pl.LightningModule):
         gen_method: str,
         their_init_weights: bool,
         perturbation: bool = False,
-        n_top_genes: int = 5000,
+        n_top_genes: int = 1200,
         # Unified FM parameters
         contrastive: bool = False,
         aggregation: bool = False,
@@ -472,8 +472,21 @@ class CancerFoundation(pl.LightningModule):
 
         return load_pretrained(self.model, tensors, gene_mapping, verbose=verbose)
 
+
+    def _maybe_fix_negative(self, data):
+        """Shift z-scored or centered data to non-negative range."""
+        X = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
+        min_val = np.nanmin(X)
+        if min_val < 0:
+            print(
+                f"Data contains negative values (min={min_val:.3f}), "
+                "likely z-scored. Shifting to non-negative range."
+            )
+            data.X = X - min_val
+        return data
+
     @torch.no_grad()
-    def embed(self, adata, flavor="seurat", batch_size: int = 64):
+    def embed(self, adata, batch_size: int = 64, normalized=False, log1p_only=False, flavor="seurat"):
         """Embeds an AnnData object into cell embeddings.
 
         Handles all preprocessing: gene intersection with vocab, HVG selection,
@@ -495,6 +508,17 @@ class CancerFoundation(pl.LightningModule):
         if hasattr(data.X, "toarray"):
             data.X = data.X.toarray()
 
+        data = self._maybe_fix_negative(data)
+
+        # Normalize to CP10K + log1p if not already normalized
+        if not normalized:
+            print("Normalizing before embedding!")
+            if not log1p_only:
+                # Raw counts
+                sc.pp.normalize_total(data, target_sum=1e4)
+            sc.pp.normalize_total(data, target_sum=1e4)
+            sc.pp.log1p(data)
+
         # Intersect genes with vocab
         common_genes = list(set(self.vocab.keys()).intersection(set(data.var.index)))
         data = data[:, common_genes].copy()
@@ -503,10 +527,49 @@ class CancerFoundation(pl.LightningModule):
         # sc.pp.highly_variable_genes(data, n_top_genes=self.n_top_genes, layer=None, flavor=flavor)
         # data = data[:, data.var["highly_variable"]].copy()
 
-        # RAFA: just take top n_top_genes by variance
+        # RAFA: adapt HVG selection wihout scanpy to avoid library issues
         if data.n_vars > self.n_top_genes:
-            gene_vars = np.asarray(data.X.var(axis=0)).flatten()
-            top_idx = np.argpartition(gene_vars, -self.n_top_genes)[-self.n_top_genes:]
+            X = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
+            
+            mean = X.mean(axis=0)
+            var = X.var(axis=0)
+            
+            # Clip means to avoid log(0), same as scanpy
+            mean[mean == 0] = 1e-12
+            dispersion = var / mean
+            
+            # Log-transform dispersion, same as scanpy seurat flavor
+            dispersion[dispersion == 0] = np.nan
+            dispersion = np.log(dispersion)
+            
+            # Bin genes by mean expression and normalize dispersion within bins
+            n_bins = 20  # scanpy default
+            mean_log = np.log1p(mean)
+            bins = np.percentile(mean_log, np.linspace(0, 100, n_bins + 1))
+            bins = np.unique(bins)  # remove duplicate bin edges (common in sparse data)
+            bin_indices = np.digitize(mean_log, bins) - 1
+            bin_indices = np.clip(bin_indices, 0, len(bins) - 2)
+            
+            disp_norm = np.zeros_like(dispersion)
+            for b in range(len(bins) - 1):
+                mask = bin_indices == b
+                if mask.sum() < 2:
+                    # Not enough genes in bin to normalize, keep raw dispersion
+                    disp_norm[mask] = dispersion[mask]
+                    continue
+                bin_disp = dispersion[mask]
+                # Ignore NaNs when computing bin stats, same as scanpy
+                bin_mean = np.nanmean(bin_disp)
+                bin_std = np.nanstd(bin_disp)
+                if bin_std == 0:
+                    disp_norm[mask] = 0.0
+                else:
+                    disp_norm[mask] = (bin_disp - bin_mean) / bin_std
+            
+            # NaN genes (zero dispersion) get lowest score
+            disp_norm = np.nan_to_num(disp_norm, nan=-np.inf)
+            
+            top_idx = np.argsort(disp_norm)[-self.n_top_genes:]
             data = data[:, top_idx].copy()
 
         # Bin expression values if required

@@ -35,7 +35,7 @@ srun singularity run \
         --nlayers 6 \
         --nheads 8 \
         --embsize 128 \
-        --d-hi 256 \
+        --d-hid 256 \
         --epochs 10 \
         --lr 0.0001 \
         --warmup-ratio-or-step 10000 \

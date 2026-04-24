@@ -17,8 +17,18 @@ finetune:
     # Cancer types to include. Can be a single type (e.g. ["BRCA"]) or multiple
     # for a pan-cancer model. Available: BRCA, BLCA, COAD, GBM, KIRC, LAML, LGG,
     # LIHC, LUAD, LUSC, OV, PAAD, SARC, SKCM, STAD, UCEC (+ ICGC and METABRIC cohorts).
-    cohorts: [ICGC, TCGA]
-    cancer_types: [CLLE-ES]
+    cohorts: [ICGC, TCGA, TARGET, METABRIC]
+    cancer_types: [
+      # ICGC
+      CLLE-ES, LIRI-JP, PACA-AU, PACA-CA,
+      # TARGET
+      ALL, WT,
+      # METABRIC
+      BRCA,
+      # TCGA
+      BLCA, BRCA, CESC, COAD, ESCA, GBM, HNSC, KIRC, KIRP, LAML,
+      LGG, LIHC, LUAD, LUSC, OV, PAAD, READ, SARC, SKCM, STAD, UCEC
+    ]
 
     head_learning_rate: 0.001
 
