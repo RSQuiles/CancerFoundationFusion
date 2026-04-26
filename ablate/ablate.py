@@ -111,7 +111,10 @@ def _submit_runs_to_slurm(
 		python_executable = cfg.slurm.python_executable or "python"
 
 		# Generate command to run inside SLURM job
-		project_root = Path("/cluster/work/boeva/rquiles/CancerFoundationFusion")
+		usr_dir = Path("/cluster/work/boeva/rquiles")
+		downstream_data_dir_1 = Path("/cluster/work/boeva/eheiss")
+		downstream_data_dir_2 = Path("/cluster/work/boeva/bulkFM")
+		project_root = usr_dir / "CancerFoundationFusion"
 		current_dir = project_root / "ablate"
 		train_dir = Path(run_model_cfg["data"]["train_path"])
 		singularity_image = "/cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif"
@@ -135,9 +138,13 @@ def _submit_runs_to_slurm(
 				"--pwd",
 				str(current_dir),
 				"--bind",
-				f"{project_root}:{project_root}",
+				f"{usr_dir}:{usr_dir}",
 				"--bind",
 				f"{train_dir}:{train_dir}",
+				"--bind",
+				f"{downstream_data_dir_1}:{downstream_data_dir_1}",
+				"--bind",
+				f"{downstream_data_dir_2}:{downstream_data_dir_2}",
 				"--nv",
 				singularity_image,
 				"bash",

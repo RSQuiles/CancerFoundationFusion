@@ -5,10 +5,10 @@
   "train_entrypoint": "pretrain:main",
   "base_config": {
     "trainer": {
-      "gpus": 2,
+      "gpus": 1,
       "num_workers": 4,
       "precision": "bf16-mixed",
-      "strategy": "ddp",
+      "strategy": "auto",
       "epochs": 3,
       "seed": 0,
       "val_check_interval": 0.5,
@@ -68,7 +68,7 @@
       "name": "zinb_reconstruction",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/zinb_rec",
+          "save_dir": "${work}/outputs/save_CFF/ablation_partition/zinb_rec",
           "wandb_name": "zinb"
         },
         "data": {},
@@ -82,7 +82,7 @@
       "name": "denoise_zinb",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/denoise_zinb",
+          "save_dir": "${work}/outputs/save_CFF/ablation_partition/denoise_zinb",
           "wandb_name": "denoise_zinb"
         },
         "data": {},
@@ -92,7 +92,6 @@
         },
         "features": {
           "noise": [0.4, 0.6]
-
         }
       }
     },
@@ -100,7 +99,7 @@
       "name": "contrastive",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/contrastive",
+          "save_dir": "${work}/outputs/save_CFF/ablation_partition/contrastive",
           "wandb_name": "contrastive"
         },
         "data": {},
@@ -115,7 +114,7 @@
       "name": "agg_contrastive",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/agg_contrastive_denoise_zinb",
+          "save_dir": "${work}/outputs/save_CFF/ablation_partition/agg_contrastive_denoise_zinb",
           "wandb_name": "agg_contrastive"
         },
         "data": {},
@@ -131,7 +130,7 @@
       "name": "dat_agg_contrastive_denoise_zinb",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_test/dat_agg_contrastive_denoise_zinb",
+          "save_dir": "${work}/outputs/save_CFF/ablation_partition/dat_agg_contrastive_denoise_zinb",
           "wandb_name": "dat_agg_contrastive_denoise_zinb"
         },
         "data": {},
@@ -168,8 +167,8 @@
     "sbatch_args": [
       "--time=48:00:00",
       "--partition=gpu",
-      "--ntasks-per-node=2",
-      "--gres=gpu:rtx4090:2",
+      "--ntasks-per-node=1",
+      "--gres=gpu:rtx4090:1",
       "--cpus-per-task=4",
       "--mem-per-cpu=16G"
     ],

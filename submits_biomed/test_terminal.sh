@@ -10,13 +10,9 @@
 
 set -e
 
-SAVE_DIR="./save/${SLURM_JOB_NAME}_${SLURM_JOB_ID}"
-TRAIN_DIR="/cluster/work/boeva/rquiles/data/small_partition/pipeline_ready"
-mkdir -p "$SAVE_DIR"
-
 # Improve CUDA traceback
 CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py \
-    --loss zinb \
+    --loss mse \
     --config ./config_test.json \
 
 if [ -d "./lightning_logs/version_${SLURM_JOB_ID}" ]; then
