@@ -6,4 +6,4 @@
 #SBATCH --cpus-per-task=1
 
 python ablation_benchmark.py \
-    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_test
+    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition

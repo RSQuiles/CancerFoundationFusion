@@ -524,6 +524,9 @@ class CancerFoundation(pl.LightningModule):
 
         # Intersect genes with vocab
         common_genes = list(set(self.vocab.keys()).intersection(set(data.var.index)))
+        if len(common_genes) == 0:
+            raise ValueError(f"No common genes between vocab and data. Check gene name format.")
+        print(f"Common genes: {len(common_genes)} / {data.n_vars}")
         data = data[:, common_genes].copy()
 
         # Select highly variable genes (RAFA removed, HVG libraries gave many problems)

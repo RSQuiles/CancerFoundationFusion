@@ -211,13 +211,19 @@ def _assign_colors(
     cat_colors : category → RGBA mapping, or None for continuous data.
     categories : sorted category list, or None for continuous data.
     """
-    if pd.api.types.is_numeric_dtype(col) and not pd.api.types.is_bool_dtype(col):
+    # Force categorical treatment if col has few unique values or is object/string dtype
+    if (
+        pd.api.types.is_numeric_dtype(col)
+        and not pd.api.types.is_bool_dtype(col)
+        and col.nunique() > 20  # only treat as continuous if many unique numeric values
+    ):
         vals = col.to_numpy(dtype=float)
         vmin, vmax = np.nanmin(vals), np.nanmax(vals)
         norm = plt.Normalize(vmin, vmax) if vmin != vmax else plt.Normalize(0, 1)
         rgba = plt.get_cmap("viridis")(norm(vals)).astype(np.float32)
         return rgba, None, None
 
+    # Categorical path
     categories = sorted(col.astype(str).unique())
     n = len(categories)
     cmap = plt.get_cmap("tab20" if n > 10 else "tab10")
@@ -240,44 +246,43 @@ def _plot_umap_modality_aware(
     One panel is produced per entry in ``color_keys``.
     """
     umap_coords = adata.obsm["X_umap"]
-    modality_vals = adata.obs["modality"].astype(str).to_numpy()
+    modality_vals = adata.obs["modality"].astype(str).replace("nan", "sc").to_numpy()
     sc_mask   = np.array([_is_sc_modality(v) for v in modality_vals])
     bulk_mask = ~sc_mask
 
     n_panels = max(len(color_keys), 1)
-    fig, axes = plt.subplots(1, n_panels, figsize=(6.0 * n_panels, 5.5), squeeze=False)
+    # Extra width per panel for the legend
+    fig, axes = plt.subplots(
+        1, n_panels,
+        figsize=(7.5 * n_panels, 6.0),
+        squeeze=False,
+    )
     axes_flat = axes[0]
 
     for ax, color_key in zip(axes_flat, color_keys):
         if color_key is not None and color_key in adata.obs:
-            point_colors, cat_colors, categories = _assign_colors(adata.obs[color_key])
+            # Force string to ensure categorical treatment
+            col = adata.obs[color_key].astype(str)
+            point_colors, cat_colors, categories = _assign_colors(col)
         else:
             fallback = np.array([0.35, 0.55, 0.80, 1.0], dtype=np.float32)
             point_colors = np.tile(fallback, (len(adata), 1))
             cat_colors, categories = None, None
 
-        # SC: small translucent dots (plotted first so bulk sits on top)
         if sc_mask.any():
             ax.scatter(
-                umap_coords[sc_mask, 0],
-                umap_coords[sc_mask, 1],
+                umap_coords[sc_mask, 0], umap_coords[sc_mask, 1],
                 c=point_colors[sc_mask],
-                s=4, alpha=0.45, marker="o", linewidths=0,
-                rasterized=True,
+                s=4, alpha=0.6, marker="o", linewidths=0, rasterized=True,
             )
-
-        # Bulk: larger stars with dark edge (plotted on top for visibility)
         if bulk_mask.any():
             ax.scatter(
-                umap_coords[bulk_mask, 0],
-                umap_coords[bulk_mask, 1],
+                umap_coords[bulk_mask, 0], umap_coords[bulk_mask, 1],
                 c=point_colors[bulk_mask],
-                s=70, alpha=0.90, marker="*",
-                linewidths=0.4, edgecolors="black",
-                rasterized=True,
+                s=4, alpha=0.6, marker="D",
+                linewidths=0.5, edgecolors="black", rasterized=True,
             )
 
-        # Axis styling
         ax.set_xlabel("UMAP 1", fontsize=9)
         ax.set_ylabel("UMAP 2", fontsize=9)
         ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
@@ -285,42 +290,51 @@ def _plot_umap_modality_aware(
         for spine in ("top", "right"):
             ax.spines[spine].set_visible(False)
 
-        # Category colour legend (placed outside to the right)
+        # Place category legend inside the axes (upper right), pinned with add_artist
         if cat_colors and categories:
             color_handles = [
                 mpatches.Patch(color=cat_colors[cat], label=cat)
                 for cat in categories
             ]
-            ncol = max(1, len(categories) // 20)
-            ax.legend(
+            n_cats = len(categories)
+            # For many categories use smaller font and multiple columns
+            leg_fontsize = 3 if n_cats > 50 else 5 if n_cats > 20 else 6
+            ncol = max(1, n_cats // 25)
+            cat_legend = ax.legend(
                 handles=color_handles,
-                title=color_key, fontsize=7, title_fontsize=8,
-                bbox_to_anchor=(1.02, 1.0), loc="upper left",
-                frameon=True, ncol=ncol,
+                title=color_key,
+                fontsize=leg_fontsize,
+                title_fontsize=8,
+                loc="lower right",
+                frameon=True,
+                framealpha=0.85,
+                ncol=ncol,
+                borderpad=0.5,
+                labelspacing=0.3,
+                handlelength=1.0,
             )
+            ax.add_artist(cat_legend)  # pin so modality legend doesn't overwrite
 
-    # Modality legend anchored to the first panel (bottom-left).
+    # Modality legend on first panel, lower left
     modality_handles = [
         mlines.Line2D(
             [], [], marker="o", color="grey", markersize=5, alpha=0.6,
             linestyle="None", label="Single-cell",
         ),
         mlines.Line2D(
-            [], [], marker="*", color="grey", markersize=10, alpha=0.9,
-            markeredgecolor="black", markeredgewidth=0.4,
+            [], [], marker="D", color="grey", markersize=5, alpha=0.6,
+            markeredgecolor="black", markeredgewidth=0.2,
             linestyle="None", label="Bulk",
         ),
     ]
-    axes_flat[0].add_artist(
-        axes_flat[0].legend(
-            handles=modality_handles,
-            title="Modality", fontsize=8, title_fontsize=8,
-            loc="lower left", frameon=True, framealpha=0.9,
-        )
+    axes_flat[0].legend(
+        handles=modality_handles,
+        title="Modality", fontsize=8, title_fontsize=8,
+        loc="lower left", frameon=True, framealpha=0.9,
     )
 
     if title:
-        fig.suptitle(title, fontsize=12, fontweight="bold", y=1.01)
+        fig.suptitle(title, fontsize=12, fontweight="bold", y=1.02)
 
     fig.tight_layout()
     return fig

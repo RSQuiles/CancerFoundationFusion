@@ -48,7 +48,7 @@ def binning(
     row = row.cpu().numpy() if isinstance(row, torch.Tensor) else row
     # TODO: use torch.quantile and torch.bucketize
 
-    if row.max() == 0:
+    if row.size == 0 or row.max() == 0:
         return (
             np.zeros_like(row, dtype=dtype)
             if return_np
