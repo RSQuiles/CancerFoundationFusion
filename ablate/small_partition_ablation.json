@@ -114,7 +114,7 @@
       "name": "agg_contrastive",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_partition/agg_contrastive_denoise_zinb",
+          "save_dir": "${work}/outputs/save_CFF/ablation_partition/agg_contrastive",
           "wandb_name": "agg_contrastive"
         },
         "data": {},
