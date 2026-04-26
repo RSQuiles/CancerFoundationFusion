@@ -91,7 +91,12 @@ def load_runner_config(config_path: str | Path, checkpoint_path: str | Path | No
     return cfg
 
 
-def main(config_path: str, checkpoint_path: str | Path | None = None, task_name: str | None = None) -> dict:
+def main(
+    config_path: str,
+    checkpoint_path: str | Path | None = None,
+    task_name: str | None = None,
+    output_dir: str | Path | None = None,
+) -> dict:
     """
     Main entry point for running a downstream task.
 
@@ -155,7 +160,10 @@ def main(config_path: str, checkpoint_path: str | Path | None = None, task_name:
         log.info(f"Final metrics: {results}")
         log.info("=" * 60)
 
-        save_dir = Path(cfg.finetune[task_name].pretrained_model_path).parent / "metrics"
+        if output_dir is not None:
+            save_dir = Path(output_dir)
+        else:
+            save_dir = Path(cfg.finetune[task_name].pretrained_model_path).parent / "metrics"
         save_dir.mkdir(parents=True, exist_ok=True)
         results_path = save_dir / f"results_{task_name}.json"
         with open(results_path, "w") as f:

@@ -206,25 +206,17 @@ class BulkSCCollator(AnnDataCollator):
                 pb_sample[cond] = self._average_condition_value(sc_samples, cond)
 
     def _average_condition_value(self, samples: List[Dict[str, Any]], condition: str):
-        """
-        Return the "average" value for a given condition and a set of samples, preferrably related
-        """
-        values = {}
+        """Return the most frequent value of *condition* across the given samples."""
+        counts: dict = {}
         max_count = 0
-        max_value = 0
-        # Determine the cardinalities and choose the most prevalent value
+        max_value = None
         for sample in samples:
-            assert (
-                condition in sample
-            ), f"{condition} not present in some of the samples"
-            if sample[condition] not in values:
-                values[sample[condition]] = 1
-            else:
-                values[sample[condition]] += 1
-            # Retrieve max
-            if values[sample[condition]] > max_count and sample[condition] != max_value:
-                max_value = sample[condition]
-                max_count = values[sample[condition]]
+            assert condition in sample, f"{condition} not present in some of the samples"
+            val = sample[condition]
+            counts[val] = counts.get(val, 0) + 1
+            if counts[val] > max_count:
+                max_value = val
+                max_count = counts[val]
         return max_value
 
     def _aggregate_sc(
@@ -232,29 +224,36 @@ class BulkSCCollator(AnnDataCollator):
         sc_samples: List[Dict[str, Any]],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         k = self.keep_first_n_tokens
-        gene_expr: Dict[int, float] = {}
-        gene_count: Dict[int, int] = {}
 
-        for sample in sc_samples:
-            genes = sample["genes"][k:].detach().cpu().numpy()
-            exprs = sample["expressions"][k:].detach().cpu().numpy()
-            for g, e in zip(genes, exprs):
-                g = int(g)
-                if g == self.pad_token_id:
-                    continue
-                # Sum over all samples
-                gene_expr[g] = gene_expr.get(g, 0.0) + float(e)
-                gene_count[g] = gene_count.get(g, 0) + 1
+        # Stack all genes / expressions from every SC sample in one numpy pass
+        all_genes = np.concatenate(
+            [s["genes"][k:].detach().cpu().numpy() for s in sc_samples]
+        ).astype(np.int64)
+        all_exprs = np.concatenate(
+            [s["expressions"][k:].detach().cpu().numpy() for s in sc_samples]
+        ).astype(np.float64)
 
-        if self.aggregation == "mean":
-            for g in gene_expr:
-                gene_expr[g] /= gene_count[g]
+        # Drop padding positions
+        valid = all_genes != self.pad_token_id
+        all_genes = all_genes[valid]
+        all_exprs = all_exprs[valid]
 
-        gene_ids = np.array(list(gene_expr.keys()), dtype=np.int64)
-        expr_vals = np.array(list(gene_expr.values()), dtype=np.float32)
+        if len(all_genes) == 0:
+            gene_ids  = np.array([], dtype=np.int64)
+            expr_vals = np.array([], dtype=np.float32)
+        else:
+            n_bins = int(all_genes.max()) + 1
+            expr_sum = np.bincount(all_genes, weights=all_exprs, minlength=n_bins)
+            if self.aggregation == "mean":
+                gene_count = np.bincount(all_genes, minlength=n_bins).astype(np.float64)
+                present = gene_count > 0
+                expr_sum[present] /= gene_count[present]
+            expressed = expr_sum != 0
+            gene_ids  = np.where(expressed)[0].astype(np.int64)
+            expr_vals = expr_sum[expressed].astype(np.float32)
 
-        cls_id = int(sc_samples[0]["genes"][0].item())
-        gene_ids = np.insert(gene_ids, 0, cls_id)
+        cls_id    = int(sc_samples[0]["genes"][0].item())
+        gene_ids  = np.insert(gene_ids,  0, cls_id)
         expr_vals = np.insert(expr_vals, 0, self.pad_value)
 
         return torch.from_numpy(gene_ids), torch.tensor(expr_vals, dtype=torch.float32)

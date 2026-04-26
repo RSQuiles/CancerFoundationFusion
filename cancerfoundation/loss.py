@@ -286,9 +286,10 @@ class ZINB(AbstractGeneExpressionLoss):
         # Split and process input tensor
         pred_value, var_value, zero_logits = input.split(1, dim=-1)
         
-        # mu=F.softplus(pred_value.squeeze(-1)) # used softplus instead of softmax to avoid gradient explosion
-        mu=F.softmax(pred_value.squeeze(-1), dim=-1)
-        theta=torch.exp(torch.clamp(var_value.squeeze(-1), max=15))
+        mu = F.softplus(pred_value.squeeze(-1))
+        # clamp both sides: upper prevents overflow, lower prevents underflow to 0 in fp16
+        # (lgamma(0)=inf causes inf-inf=NaN)
+        theta = torch.exp(torch.clamp(var_value.squeeze(-1), min=-15, max=15))
         pi=zero_logits.squeeze(-1)
 
         #  uses log(sigmoid(x)) = -softplus(-x)
@@ -316,7 +317,10 @@ class ZINB(AbstractGeneExpressionLoss):
         # we want to minize the loss but maximize the log likelyhood
         if mask is not None:
             res = res * mask
-            return -res.sum() / mask.sum()
+            n_valid = mask.sum()
+            if n_valid == 0:
+                return torch.tensor(0.0, device=input.device, dtype=input.dtype)
+            return -res.sum() / n_valid
         return -res.mean()
 
     def get_in_dim(self) -> int:

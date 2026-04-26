@@ -7,9 +7,6 @@ import torch
 from pathlib import Path
 from torch.utils.data import Dataset, Sampler, Subset
 from typing import Union, List, Dict
-from tqdm import tqdm
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import multiprocessing as mp
 
 from bionemo.scdl.io.single_cell_memmap_dataset import SingleCellMemMapDataset
 
@@ -84,6 +81,10 @@ class BulkSCDataset(Dataset):
         assert self.memmap.number_of_rows() == self.obs.shape[0]
         assert modality_column in self.obs.columns
 
+        # Pre-extract obs columns as plain numpy arrays for O(1) random access in __getitem__
+        # (pandas .iloc on a 100M-row DataFrame is expensive — numpy array indexing is not)
+        self._obs_arrays = {col: self.obs[col].to_numpy() for col in (obs_columns or [])}
+
         # Pre-compute index arrays per modality
         modality_vals = self.obs[modality_column].values
         bulk_code = self.mapping[modality_column][bulk_label]
@@ -113,7 +114,7 @@ class BulkSCDataset(Dataset):
         # Label categories for balanced sampling
         self.balance = balance
         self.labels = None
-        if balance is not None:
+        if balance:
             self.balance_labels = (
                 balance_labels if balance_labels is not None else obs_columns
             )
@@ -143,9 +144,8 @@ class BulkSCDataset(Dataset):
         }
 
         # Additional conditions input to model (e.g. tissue type)
-        row = self.obs.iloc[index]
         for col in self.obs_columns:
-            data[col] = row[col]
+            data[col] = self._obs_arrays[col][index]
 
         return data
 
@@ -198,29 +198,22 @@ class BulkSCDataset(Dataset):
 
     def get_merged_labels(self, label_key: str) -> Dict[str, pd.Categorical]:
         """
-        Get categorical labels for a given key, with categories mapped to their string values.
+        Get categorical labels for a given key as integer-coded Categoricals.
 
-        Given the virtual separation between bulk and SC samples in relation to
-        sampling, this method deals with these two different set indices independently
-
-        Args:
-            label_key (str): Column name in the obs DataFrame to retrieve.
-        Returns:
-            Dict[str, pd.Categorical]: Categorical labels with string categories for each group.
+        Returns only "sc" and "bulk" groups — the "all" group is never used by
+        the sampler and would wastefully process 100M+ entries at scale.
         """
         if label_key not in self.obs.columns:
             raise ValueError(f"Label key '{label_key}' not found in obs columns.")
         if label_key not in self.mapping:
             raise ValueError(f"Label key '{label_key}' not found in mapping.")
-        code_to_str = {v: k for k, v in self.mapping[label_key].items()}
-        all_codes = self.obs[label_key].values
-        sc_codes = self.obs[label_key].values[self.sc_indices]
-        bulk_codes = self.obs[label_key].values[self.bulk_indices]
-        all_labels = pd.Categorical([code_to_str[code] for code in all_codes])
-        sc_labels = pd.Categorical([code_to_str[code] for code in sc_codes])
-        bulk_labels = pd.Categorical([code_to_str[code] for code in bulk_codes])
-        str_labels = {"all": all_labels, "sc": sc_labels, "bulk": bulk_labels}
-        return str_labels
+        all_codes = self.obs[label_key].to_numpy()
+        n_cats = len(self.mapping[label_key])
+        categories = np.arange(n_cats)
+        return {
+            "sc":   pd.Categorical.from_codes(all_codes[self.sc_indices],   categories=categories),
+            "bulk": pd.Categorical.from_codes(all_codes[self.bulk_indices], categories=categories),
+        }
 
 
 # ======================================================================
@@ -288,46 +281,43 @@ class BulkSCSampler(Sampler[list[int]]):
         # Since the Subset uses a local set of indices, different from the original dataset
         if isinstance(dataset, Subset):
             self.dataset = dataset
-            self.subset_base_indices = dataset.indices
-            base_to_subset = {
-                base_idx: sub_idx
-                for sub_idx, base_idx in enumerate(self.subset_base_indices)
-            }
-
+            self.subset_base_indices = np.asarray(dataset.indices)
             self.base_dataset = dataset.dataset
 
-            # Map previously computed indices to indices in the current dataset (Subset)
-            self.bulk_indices = np.array(
-                [
-                    base_to_subset[i]
-                    for i in self.base_dataset.bulk_indices
-                    if i in base_to_subset
-                ]
-            )
-            self.sc_indices = np.array(
-                [
-                    base_to_subset[i]
-                    for i in self.base_dataset.sc_indices
-                    if i in base_to_subset
-                ]
-            )
+            # Vectorized base->subset mapping using a lookup array
+            max_idx = int(self.subset_base_indices.max()) + 1
+            base_to_subset = np.full(max_idx, -1, dtype=np.int64)
+            base_to_subset[self.subset_base_indices] = np.arange(len(self.subset_base_indices), dtype=np.int64)
 
-            # Remap SC group pools to subset-local indices
+            # Vectorized bulk remapping
+            bulk_mapped = base_to_subset[self.base_dataset.bulk_indices]
+            self.bulk_indices = bulk_mapped[bulk_mapped >= 0]
+
+            # Vectorized SC remapping
+            sc_mapped = base_to_subset[self.base_dataset.sc_indices]
+            self.sc_indices = sc_mapped[sc_mapped >= 0]
+
+            # Vectorized SC group remapping
             if self.base_dataset.sc_group_to_indices is not None:
-                self.sc_group_to_indices = {
-                    g: np.array([base_to_subset[i] for i in idxs if i in base_to_subset])
-                    for g, idxs in self.base_dataset.sc_group_to_indices.items()
-                }
+                self.sc_group_to_indices = {}
+                for g, idxs in self.base_dataset.sc_group_to_indices.items():
+                    idxs = np.asarray(idxs)
+                    # Only remap indices that fall within the lookup array bounds
+                    valid_mask = idxs < max_idx
+                    mapped = np.full(len(idxs), -1, dtype=np.int64)
+                    mapped[valid_mask] = base_to_subset[idxs[valid_mask]]
+                    self.sc_group_to_indices[g] = mapped[mapped >= 0]
             else:
                 self.sc_group_to_indices = None
+            del base_to_subset  # free the large lookup table (800MB at 100M rows)
+
         else:
             self.dataset = dataset
             self.base_dataset = dataset
+            self.subset_base_indices = np.arange(len(dataset))
             self.subset_indices = None
             self.bulk_indices = self.dataset.bulk_indices
             self.sc_indices = self.dataset.sc_indices
-
-            # SC group pools are already in global index space
             self.sc_group_to_indices = self.base_dataset.sc_group_to_indices
 
         # Pre-compute sorted group keys (drop any group that became empty after Subset)
@@ -350,6 +340,9 @@ class BulkSCSampler(Sampler[list[int]]):
         self.n_sc = self.batch_size - self.n_bulk - self.n_pb
         self.n_sc_per_pb = n_sc_per_pb
         self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pb
+
+        # Define RNG
+        self.rng = np.random.default_rng()
 
         # Confirm batch composition
         """
@@ -374,248 +367,83 @@ class BulkSCSampler(Sampler[list[int]]):
 
         # Balanced sampling setup
         self.balance = balance
-        self.sample_balanced = balance is not None
-        if balance is not None:
+        self.sample_balanced = bool(balance)
+        if balance:
             print("Setting up balanced sampler...")
             self.curiculum = curiculum
-            self.element_weights = (
-                None  # Placeholder for potential future use of per-sample weights
-            )
-            self.replacement = (
-                replacement  # Balanced sampling typically requires replacement
-            )
+            self.element_weights = None
+            self.replacement = replacement
 
             if self.base_dataset.labels is None:
                 raise ValueError("Dataset does not have labels for balanced sampling.")
-            # Map labels to the current Subset if necessary
+
+            # Map labels to the current Subset if necessary; skip the "all" modality
+            # which is never used by sample() and wastes 800MB+ at 100M-row scale.
             if isinstance(dataset, Subset):
-                print("1. Mapping labels back to current Subset")
-                labels = {}
                 subset_base_indices = np.asarray(self.subset_base_indices)
-
-                labels["all"] = self.base_dataset.labels["all"][subset_base_indices]
-
-                sc_mask = np.isin(self.base_dataset.sc_indices, subset_base_indices)
-                labels["sc"] = self.base_dataset.labels["sc"][sc_mask]
-
+                sc_mask   = np.isin(self.base_dataset.sc_indices,   subset_base_indices)
                 bulk_mask = np.isin(self.base_dataset.bulk_indices, subset_base_indices)
-                labels["bulk"] = self.base_dataset.labels["bulk"][bulk_mask]
+                labels = {
+                    "sc":   self.base_dataset.labels["sc"][sc_mask],
+                    "bulk": self.base_dataset.labels["bulk"][bulk_mask],
+                }
             else:
-                labels = self.base_dataset.labels
+                labels = {
+                    "sc":   self.base_dataset.labels["sc"],
+                    "bulk": self.base_dataset.labels["bulk"],
+                }
 
-            print("2. Computing label weights...")
+            print("Computing label weights...")
             counts = {key: np.bincount(labels[key]) for key in labels}
             label_weights = {
                 key: (weight_scaler * counts[key]) / (counts[key] + weight_scaler)
                 for key in counts
             }
             self.label_weights = {
-                key: torch.as_tensor(
-                    label_weights[key], dtype=torch.float32
-                ).share_memory_()
+                key: torch.as_tensor(label_weights[key], dtype=torch.float32).share_memory_()
                 for key in label_weights
             }
-            # Build class indices for weighted sampling
-            print("3. Building class indices")
-            print(f"Building class indices with {num_workers} workers...")
-            klass_indices = {
-                key: self._build_class_indices(
-                    labels[key], key, chunk_size, num_workers
-                )
-                for key in labels
-            }
 
-            # Convert klass_indices to a single tensor and offset vector
-            all_indices = {key: [] for key in klass_indices}
-            offsets = {key: [] for key in klass_indices}
-            current_offset = {key: 0 for key in klass_indices}
+            print("Building class indices...")
+            self.klass_indices = {}
+            self.klass_offsets = {}
+            for key in labels:
+                idx_t, off_t = self._build_klass_tensors(labels[key])
+                self.klass_indices[key] = idx_t
+                self.klass_offsets[key] = off_t
+            n_classes = {key: int(len(self.klass_offsets[key]) - 1) for key in self.klass_offsets}
+            print(f"Done: {len(self.klass_offsets)} modalities, max class label per modality: {n_classes}")
 
-            # Build concatenated tensor and track offsets
-            print("Concatenating...")
-            for modality in klass_indices.keys():
-                print(modality)
-                # Sort keys to ensure consistent ordering
-                keys = klass_indices[modality].keys()
-                print(f"{modality}: {keys}")
-                for i in range(max(keys) + 2):
-                    try:
-                        offsets[modality].append(current_offset[modality])
-                        if i in keys:
-                            indices = klass_indices[modality][i]
-                            all_indices[modality].append(indices)
-                            current_offset[modality] += len(indices)
-                    except Exception as e:
-                        print(e)
-                        print(
-                            f"Encountered problem with key {i} in modality {modality}"
-                        )
+    def _build_klass_tensors(
+        self, labels: np.ndarray
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Build a flat sorted-index tensor and a dense offset array for O(1) class lookup.
 
-            # Convert to tensors
-            print("4. Converting to tensors")
-            self.klass_indices = {
-                modality: torch.cat(all_indices[modality])
-                .to(torch.int32)
-                .share_memory_()
-                for modality in all_indices
-            }
-            self.klass_offsets = {
-                modality: torch.tensor(
-                    offsets[modality], dtype=torch.long
-                ).share_memory_()
-                for modality in offsets
-            }
-            print(
-                f"Done initializing balanced sampler for {len(self.klass_offsets)} modalities with {len(self.klass_offsets["all"])} classes"
-            )
+        Replaces the old chunk+executor approach with a single O(N log N) numpy pass.
 
-    def _build_class_indices(
-        self, labels: np.ndarray, modality: str, chunk_size: int, n_workers: int
-    ):
-        """Build class indices in parallel across multiple workers.
-
-        Args:
-            labels: array of class labels
-            modality: the modality group to which the labels belong ("sc", "bulk", or "all")
-            n_workers: number of parallel workers
-            chunk_size: size of chunks to process
-
-        Returns:
-            dictionary mapping class labels to tensors of indices
+        Returns
+        -------
+        klass_indices : int64 tensor of shape (N,) — sample indices sorted by class.
+        klass_offsets : int64 tensor of shape (max_label+2,) — the slice
+                        klass_indices[offsets[c] : offsets[c+1]] gives all sample
+                        indices belonging to class c.
         """
-        n = len(labels)
-        assert modality in ["sc", "bulk", "all"], f"Invalid modality: {modality}"
-        if modality == "sc":
-            assert n == len(
-                self.sc_indices
-            ), "Label length does not match number of SC samples"
-        if modality == "bulk":
-            assert n == len(
-                self.bulk_indices
-            ), "Label length does not match number of bulk samples"
-        if modality == "all":
-            assert n == len(
-                self.subset_base_indices
-            ), "Label length does not match number of total samples"
-
-        print(f"For {modality}:")
-
-        results = []
-        # Create chunks of the labels array with proper sizing
-        n_chunks = (n + chunk_size - 1) // chunk_size  # Ceiling division
-        print(f"Processing {n:,} elements in {n_chunks} chunks...")
-
-        # Process in chunks to limit memory usage
-        if n_workers == 1:
-            # Process sequentially without multiprocessing
-            for i in tqdm(
-                range(n_chunks), total=n_chunks, desc="Processing chunks sequentially"
-            ):
-                start_idx = i * chunk_size
-                end_idx = min((i + 1) * chunk_size, n)
-                results.append(
-                    self._process_chunk_with_slice((start_idx, end_idx, labels))
-                )
-            print("Merging results from all chunks...")
-            return self._merge_chunk_results(results)
-
-        with ProcessPoolExecutor(
-            max_workers=n_workers, mp_context=mp.get_context("spawn")
-        ) as executor:
-            # Submit chunks for processing
-            futures = []
-            for i in range(n_chunks):
-                start_idx = i * chunk_size
-                end_idx = min((i + 1) * chunk_size, n)
-                # We pass only chunk boundaries, not the data itself
-                # This avoids unnecessary copies during process creation
-                futures.append(
-                    executor.submit(
-                        self._process_chunk_with_slice,
-                        (start_idx, end_idx, labels),
-                    )
-                )
-
-            # Collect results as they complete with progress reporting
-            for future in tqdm(
-                as_completed(futures), total=len(futures), desc="Processing chunks"
-            ):
-                results.append(future.result())
-
-        # Merge results from all chunks
-        print("Merging results from all chunks...")
-        merged_results = self._merge_chunk_results(results)
-
-        return merged_results
-
-    def _process_chunk_with_slice(self, slice_info):
-        """Process a slice of the labels array by indices.
-
-        Args:
-            slice_info: tuple of (start_idx, end_idx, labels_array) where
-                       start_idx and end_idx define the slice to process
-
-        Returns:
-            dict mapping class labels to arrays of indices
-        """
-        start_idx, end_idx, labels_array = slice_info
-
-        # We're processing a slice of the original array
-        labels_slice = labels_array[start_idx:end_idx]
-        chunk_indices = {}
-
-        # Create a direct map of indices
-        indices = np.arange(start_idx, end_idx)
-
-        # Get unique labels in this slice for more efficient processing
-        unique_labels = np.unique(labels_slice)
-        # For each valid label, find its indices
-        for label in unique_labels:
-            # Find positions where this label appears (using direct boolean indexing)
-            label_mask = labels_slice == label
-            chunk_indices[int(label)] = indices[label_mask]
-
-        return chunk_indices
-
-    def _merge_chunk_results(self, results_list):
-        """Merge results from multiple chunks into a single dictionary.
-
-        Args:
-            results_list: list of dictionaries mapping class labels to index arrays
-
-        Returns:
-            merged dictionary with PyTorch tensors
-        """
-        merged = {}
-
-        # Collect all labels across all chunks
-        all_labels = set()
-        for chunk_result in results_list:
-            all_labels.update(chunk_result.keys())
-
-        # For each unique label
-        for label in all_labels:
-            # Collect indices from all chunks where this label appears
-            indices_lists = [
-                chunk_result[label]
-                for chunk_result in results_list
-                if label in chunk_result
-            ]
-
-            if indices_lists:
-                # Concatenate all indices for this label
-                merged[label] = torch.tensor(
-                    np.concatenate(indices_lists), dtype=torch.long
-                )
-            else:
-                merged[label] = torch.tensor([], dtype=torch.long)
-
-        return merged
+        order = np.argsort(labels, kind="stable")
+        unique_labels, counts = np.unique(labels[order], return_counts=True)
+        max_label = int(unique_labels[-1]) if len(unique_labels) else 0
+        offsets = np.zeros(max_label + 2, dtype=np.int64)
+        offsets[unique_labels.astype(np.int64) + 1] = counts
+        np.cumsum(offsets, out=offsets)
+        return (
+            torch.from_numpy(order.astype(np.int64)).share_memory_(),
+            torch.from_numpy(offsets).share_memory_(),
+        )
 
     def __len__(self) -> int:
         return self._n_batches
 
     def __iter__(self):
-        rng = np.random.default_rng()
+        rng = self.rng
         batch_order = np.arange(self._n_batches)
 
         for _ in batch_order:
@@ -682,8 +510,7 @@ class BulkSCSampler(Sampler[list[int]]):
             return []
 
         if not balanced:
-            rng = np.random.default_rng()
-            return rng.choice(
+            return self.rng.choice(
                 indices,
                 size=size,
                 replace=len(indices) < size,

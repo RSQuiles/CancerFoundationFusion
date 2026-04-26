@@ -36,18 +36,10 @@ def concat_categorical_codes(series_list: List[pd.Categorical]) -> pd.Categorica
         combined_codes = (combined_codes * n_cat) + codes
         multiplier *= n_cat
 
-    # Find unique combinations that actually exist in the data
-    unique_existing_codes = np.unique(combined_codes)
-
-    # Create a mapping from old codes to new compressed codes
-    code_mapping = {old: new for new, old in enumerate(unique_existing_codes)}
-
-    # Map the combined codes to their new compressed values
-    combined_codes = np.array([code_mapping[code] for code in combined_codes])
-
-    # Create final categorical with only existing combinations
+    # Remap to dense 0..K-1 with a single numpy pass — avoids a 100M-element Python loop.
+    _, combined_codes = np.unique(combined_codes, return_inverse=True)
     return pd.Categorical.from_codes(
         codes=combined_codes,
-        categories=np.arange(len(unique_existing_codes)),
+        categories=np.arange(int(combined_codes.max()) + 1),
         ordered=False,
     )
