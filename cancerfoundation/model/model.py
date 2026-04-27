@@ -62,7 +62,8 @@ class CancerFoundation(pl.LightningModule):
         do_mvc: bool,
         no_invert_dat: bool,
         activation: str,
-        norm_first: bool,
+        norm_scheme: str,
+        norm_type: str,
         cell_emb_style: str,
         batchnorm: bool,
         dat_scale: float,
@@ -149,7 +150,8 @@ class CancerFoundation(pl.LightningModule):
         self.epochs = epochs
         self.compile_model = compile_model
         self.activation = F.relu if activation == "relu" else F.gelu
-        self.norm_first = norm_first
+        self.norm_scheme = norm_scheme
+        self.norm_type = norm_type
         self.batchnorm = batchnorm
         self.cell_emb_style = cell_emb_style
         self.perturbation = perturbation
@@ -247,7 +249,8 @@ class CancerFoundation(pl.LightningModule):
                 no_invert_dat=self.no_invert_dat,
                 explicit_zero_prob=self.explicit_zero_prob,
                 activation=self.activation,
-                norm_first=self.norm_first,
+                norm_scheme=self.norm_scheme,
+                norm_type=self.norm_type,
                 batchnorm=self.batchnorm,
                 cell_emb_style=self.cell_emb_style,
                 dat_scale=self.dat_scale,
@@ -284,7 +287,8 @@ class CancerFoundation(pl.LightningModule):
                 no_invert_dat=self.no_invert_dat,
                 explicit_zero_prob=self.explicit_zero_prob,
                 activation=self.activation,
-                norm_first=self.norm_first,
+                norm_scheme=self.norm_scheme,
+                norm_type=self.norm_type,
                 batchnorm=self.batchnorm,
                 cell_emb_style=self.cell_emb_style,
                 dat_scale=self.dat_scale,

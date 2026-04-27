@@ -312,17 +312,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "--norm-first",
-        action="store_true",
-        help="If set, use Pre-LayerNorm transformer architecture. Default is Post-LayerNorm.",
+        "--norm-scheme",
+        type=str,
+        choices=["pre", "post"],
+        default="post",
+        help=(
+            "Normalisation scheme: 'pre' (Pre-LayerNorm) or 'post' (Post-LayerNorm). "
+            "Default is 'post'."
+        ),
+    )
+
+    parser.add_argument(
+        "--norm-type",
+        type=str,
+        choices=["layer", "rms"],
+        default="layer",
+        help="Normalisation layer type: 'layer' (LayerNorm) or 'rms' (RMSNorm). Default is 'layer'.",
     )
 
     parser.add_argument(
         "--activation",
         type=str,
-        choices=["relu", "gelu"],
+        choices=["relu", "gelu", "swiglu"],
         default="relu",
-        help="The activation function to use in the transformer model. Default is gelu.",
+        help="The activation function to use in the transformer model. Default is relu.",
     )
 
     parser.add_argument(

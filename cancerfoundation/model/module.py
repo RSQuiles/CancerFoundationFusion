@@ -44,7 +44,8 @@ class TransformerModule(nn.Module):
         mvc_decoder_style: str,
         explicit_zero_prob: Optional[bool],
         use_generative_training: bool,
-        norm_first: bool,
+        norm_scheme: str,
+        norm_type: str,
         do_dat: bool,
         batchnorm: bool,
         dat_scale: float,
@@ -84,7 +85,8 @@ class TransformerModule(nn.Module):
             mvc_decoder_style (str): The architecture for the MVC decoder.
             explicit_zero_prob (Optional[bool]): Whether to explicitly predict zero-expression probability.
             use_generative_training (bool): Whether to use the generative training setup.
-            norm_first (bool): Whether to use pre-layer normalization in the transformer.
+            norm_scheme (str): Normalisation scheme: "pre" or "post".
+            norm_type (str): Normalisation layer type: "layer" (LayerNorm) or "rms" (RMSNorm).
             do_dat (bool): Whether to include Domain Adversarial Training.
             batchnorm (bool): Whether to use batch normalization on the input embeddings.
             weight_conditionloss (float): Weight for the condition prediction loss in DAT.
@@ -102,7 +104,7 @@ class TransformerModule(nn.Module):
         self.cell_emb_style = cell_emb_style
         self.explicit_zero_prob = explicit_zero_prob
         self.pad_token_id = pad_token_id
-        self.norm_scheme = "pre" if norm_first else "post"
+        self.norm_scheme = norm_scheme
         self.use_generative_training = use_generative_training
         self.where_condition = where_condition
         self.max_seq_len = max_seq_len
@@ -180,6 +182,7 @@ class TransformerModule(nn.Module):
                     dropout,
                     batch_first=True,
                     norm_scheme=self.norm_scheme,
+                    norm_type=norm_type,
                 )
                 self.transformer_encoder = CFGenerator(
                     encoder_layer=encoder_layers, num_layers=nlayers
@@ -198,6 +201,7 @@ class TransformerModule(nn.Module):
                     dropout,
                     batch_first=True,
                     norm_scheme=self.norm_scheme,
+                    norm_type=norm_type,
                 )
                 self.transformer_encoder = CFGenerator(
                     encoder_layer=encoder_layers, num_layers=nlayers
@@ -240,13 +244,15 @@ class TransformerModule(nn.Module):
                     padding_idx=pad_token_id,
                 )
         else:
+            # norm_first maps "pre" → True, everything else → False
+            _norm_first = self.norm_scheme == "pre"
             encoder_layers = TransformerEncoderLayer(
                 d_model,
                 nhead,
                 d_hid,
                 dropout,
                 batch_first=True,
-                norm_first=norm_first,
+                norm_first=_norm_first,
                 activation=activation,
             )
             self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)

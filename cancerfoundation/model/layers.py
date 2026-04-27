@@ -8,6 +8,20 @@ from torch.nn.modules.transformer import _get_clones
 from functools import partial, lru_cache
 
 
+def _make_norm(norm_type: str, d_model: int, eps: float, **factory_kwargs):
+    """Create a normalisation layer.
+
+    Args:
+        norm_type: "layer" for LayerNorm, "rms" for RMSNorm.
+        d_model: Feature dimension.
+        eps: Epsilon for numerical stability.
+        **factory_kwargs: Extra kwargs (device, dtype) forwarded to the layer.
+    """
+    if norm_type == "rms":
+        return nn.RMSNorm(d_model, eps=eps, **factory_kwargs)
+    return nn.LayerNorm(d_model, eps=eps, **factory_kwargs)
+
+
 class MHA(nn.Module):
     """
     Custom MHA layer. This takes two separate forward passes on the pect
@@ -159,6 +173,7 @@ class CFLayer(nn.Module):
         device=None,
         dtype=None,
         norm_scheme="post",  # "pre" or "post"
+        norm_type="layer",   # "layer" or "rms"
     ) -> None:
         super().__init__()
         factory_kwargs = {"device": device, "dtype": dtype}
@@ -170,19 +185,25 @@ class CFLayer(nn.Module):
             **factory_kwargs,
         )
         # Implementation of Feedforward model
-        self.linear1 = nn.Linear(d_model, dim_feedforward, **factory_kwargs)
+        self.activation_name = activation
+        if activation == "swiglu":
+            # SwiGLU: two parallel projections replace linear1
+            self.linear_gate = nn.Linear(d_model, dim_feedforward, **factory_kwargs)
+            self.linear_val = nn.Linear(d_model, dim_feedforward, **factory_kwargs)
+        else:
+            self.linear1 = nn.Linear(d_model, dim_feedforward, **factory_kwargs)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model, **factory_kwargs)
 
-        self.norm1 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
-        self.norm2 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
+        self.norm1 = _make_norm(norm_type, d_model, layer_norm_eps, **factory_kwargs)
+        self.norm2 = _make_norm(norm_type, d_model, layer_norm_eps, **factory_kwargs)
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
 
         self.activation = self._get_activation_fn(activation)
         self.norm_scheme = norm_scheme
         if norm_scheme not in ["pre", "post"]:
-            raise ValueError("norm_scheme must be either pre or post")
+            raise ValueError("norm_scheme must be 'pre' or 'post'")
 
     @staticmethod
     def _get_activation_fn(activation):
@@ -190,8 +211,23 @@ class CFLayer(nn.Module):
             return F.relu
         elif activation == "gelu":
             return F.gelu
+        elif activation == "swiglu":
+            # SwiGLU is handled directly in _ff; no scalar activation needed here
+            return None
 
-        raise RuntimeError("activation should be relu/gelu, not {}".format(activation))
+        raise RuntimeError(
+            "activation should be relu/gelu/swiglu, not {}".format(activation)
+        )
+
+    def _ff(self, x: Tensor) -> Tensor:
+        """Feed-forward sub-layer, dispatching between standard and SwiGLU."""
+        if self.activation_name == "swiglu":
+            # SwiGLU: gate * value, then project out
+            gate = F.silu(self.linear_gate(x))
+            val = self.linear_val(x)
+            return self.linear2(self.dropout(gate * val))
+        else:
+            return self.linear2(self.dropout(self.activation(self.linear1(x))))
 
     def __setstate__(self, state):
         if "activation" not in state:
@@ -236,52 +272,34 @@ class CFLayer(nn.Module):
         gen_key_padding_mask_ = gen_key_padding_mask
 
         if self.norm_scheme == "pre":
-            pcpt_total_embs = self.norm1(pcpt_total_embs)
-            if gen_total_embs is not None:
-                gen_total_embs = self.norm1(gen_total_embs)
+            # Pre-norm: normalise BEFORE each sublayer
             pcpt_total_embs2, gen_total_embs2 = self.self_attn(
-                pcpt_total_embs,
-                gen_total_embs,
+                self.norm1(pcpt_total_embs),
+                self.norm1(gen_total_embs) if gen_total_embs is not None else None,
                 pcpt_key_padding_mask=pcpt_key_padding_mask_,
                 gen_key_padding_mask=gen_key_padding_mask_,
             )[0]
             pcpt_total_embs = pcpt_total_embs + self.dropout1(pcpt_total_embs2)
-            pcpt_total_embs = self.norm2(pcpt_total_embs)
-            pcpt_total_embs2 = self.linear2(
-                self.dropout(self.activation(self.linear1(pcpt_total_embs)))
-            )
-            pcpt_total_embs = pcpt_total_embs + self.dropout2(pcpt_total_embs2)
+            pcpt_total_embs = pcpt_total_embs + self.dropout2(self._ff(self.norm2(pcpt_total_embs)))
 
             if gen_total_embs is not None:
                 gen_total_embs = gen_total_embs + self.dropout1(gen_total_embs2)
-                gen_total_embs = self.norm2(gen_total_embs)
-                gen_total_embs2 = self.linear2(
-                    self.dropout(self.activation(self.linear1(gen_total_embs)))
-                )
-                gen_total_embs = gen_total_embs + self.dropout2(gen_total_embs2)
+                gen_total_embs = gen_total_embs + self.dropout2(self._ff(self.norm2(gen_total_embs)))
+
         else:
+            # Post-norm: normalise AFTER residual addition
             pcpt_total_embs2, gen_total_embs2 = self.self_attn(
                 pcpt_total_embs,
                 gen_total_embs,
                 pcpt_key_padding_mask=pcpt_key_padding_mask_,
                 gen_key_padding_mask=gen_key_padding_mask_,
             )[0]
-            pcpt_total_embs = pcpt_total_embs + self.dropout1(pcpt_total_embs2)
-            pcpt_total_embs = self.norm1(pcpt_total_embs)
-            pcpt_total_embs2 = self.linear2(
-                self.dropout(self.activation(self.linear1(pcpt_total_embs)))
-            )
-            pcpt_total_embs = pcpt_total_embs + self.dropout2(pcpt_total_embs2)
-            pcpt_total_embs = self.norm2(pcpt_total_embs)
+            pcpt_total_embs = self.norm1(pcpt_total_embs + self.dropout1(pcpt_total_embs2))
+            pcpt_total_embs = self.norm2(pcpt_total_embs + self.dropout2(self._ff(pcpt_total_embs)))
 
             if gen_total_embs is not None:
-                gen_total_embs = gen_total_embs + self.dropout1(gen_total_embs2)
-                gen_total_embs = self.norm1(gen_total_embs)
-                gen_total_embs2 = self.linear2(
-                    self.dropout(self.activation(self.linear1(gen_total_embs)))
-                )
-                gen_total_embs = gen_total_embs + self.dropout2(gen_total_embs2)
-                gen_total_embs = self.norm2(gen_total_embs)
+                gen_total_embs = self.norm1(gen_total_embs + self.dropout1(gen_total_embs2))
+                gen_total_embs = self.norm2(gen_total_embs + self.dropout2(self._ff(gen_total_embs)))
 
         return pcpt_total_embs, gen_total_embs
 
@@ -409,11 +427,9 @@ class RefactoredCFGenerator(nn.Module):
         assert norm_scheme in [
             "pre",
             "post",
-        ], "norm_scheme must be either 'pre' or 'post'"
+        ], "norm_scheme must be 'pre' or 'post'"
 
-        # Map norm_scheme to the 'norm_first' parameter in the standard layer
-        # norm_first = True if norm_scheme == "pre" else False
-        norm_first = False
+        norm_first = norm_scheme == "pre"
 
         # Create a standard Transformer Encoder Layer
         encoder_layer = nn.TransformerEncoderLayer(
