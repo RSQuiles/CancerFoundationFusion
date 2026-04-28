@@ -193,16 +193,35 @@ def get_normalized_metadata_bulk(bulk_metadata_path: Path, meta_fields=["charact
     bulk_obs = pd.read_csv(bulk_metadata_path)
     
     def check_name(name, index, meta, meta_fields):
+        def normalize(s):
+            s = str(s).lower()
+            s = re.sub(r"[_\-/]", " ", s)
+            s = re.sub(r"[^a-z0-9 ]", "", s)
+            s = re.sub(r"\s+", " ", s).strip()
+            return s
+
+        norm_name = normalize(name)
+        words = norm_name.split()
+
         for col, item in meta.loc[index, meta_fields].items():
             try:
-                if re.search(name, item, re.IGNORECASE):
-                    return True
-            except Exception as e:
-                print(f"Error checking index {index}")
+                norm_item = normalize(str(item))
+                # Match if ANY word from the name appears in the text
+                # For single-word names: direct substring match
+                # For multi-word names: match if ALL words appear (in any order)
+                if len(words) == 1:
+                    if words[0] in norm_item:
+                        return True
+                else:
+                    if all(w in norm_item for w in words):
+                        return True
+            except Exception:
+                # print(f"Error checking index {index}, col {col}")
+                continue
         return False
 
     tissues = []
-    for i in tqdm.tqdm(range(bulk_obs.shape[0])):
+    for i in tqdm.tqdm(range(bulk_obs.shape[0]), miniters=100):
         tissues.append(walk_tissue_names(check_name, i, bulk_obs, meta_fields))
 
     # Include tissues in bulk_obs
@@ -351,7 +370,9 @@ def h5_to_h5ad(
                 else pd.DataFrame(index=gene_names)
                 # else pd.DataFrame({GENE_ID: range(len(gene_names))}, index=gene_names)
             )
-            var[GENE_ID] = var[GENE_ID].astype(int)
+            # Only cast GENE_ID if it exists
+            if GENE_ID in var.columns:
+                var[GENE_ID] = var[GENE_ID].astype(int)
 
             adata = ad.AnnData(X=X_sparse, obs=obs_chunk, var=var)
 
