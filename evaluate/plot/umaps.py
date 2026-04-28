@@ -201,6 +201,7 @@ def _is_sc_modality(val: str) -> bool:
 
 def _assign_colors(
     col: pd.Series,
+    skip_unknown: bool = False,
 ) -> tuple[np.ndarray, dict[str, tuple] | None, list[str] | None]:
     """
     Map a Series to RGBA colours.
@@ -211,11 +212,10 @@ def _assign_colors(
     cat_colors : category → RGBA mapping, or None for continuous data.
     categories : sorted category list, or None for continuous data.
     """
-    # Force categorical treatment if col has few unique values or is object/string dtype
     if (
         pd.api.types.is_numeric_dtype(col)
         and not pd.api.types.is_bool_dtype(col)
-        and col.nunique() > 20  # only treat as continuous if many unique numeric values
+        and col.nunique() > 20
     ):
         vals = col.to_numpy(dtype=float)
         vmin, vmax = np.nanmin(vals), np.nanmax(vals)
@@ -223,12 +223,25 @@ def _assign_colors(
         rgba = plt.get_cmap("viridis")(norm(vals)).astype(np.float32)
         return rgba, None, None
 
-    # Categorical path
-    categories = sorted(col.astype(str).unique())
+    _SKIP = {"unknown", "nan", "none", "n/a", ""}
+    all_categories = sorted(col.astype(str).unique())
+    categories = (
+        [c for c in all_categories if c.lower() not in _SKIP]
+        if skip_unknown
+        else all_categories
+    )
+
     n = len(categories)
     cmap = plt.get_cmap("tab20" if n > 10 else "tab10")
-    cat_colors = {cat: cmap(i % cmap.N) for i, cat in enumerate(categories)}
-    rgba = np.array([cat_colors[str(v)] for v in col], dtype=np.float32)
+    _NORMAL_ALPHA = 0.6
+    invisible = (0.75, 0.75, 0.75, 0.05)
+    cat_colors = {cat: (*cmap(i % cmap.N)[:3], _NORMAL_ALPHA) for i, cat in enumerate(categories)}
+
+    # Skipped categories -> invisible
+    rgba = np.array(
+        [cat_colors.get(str(v), invisible) for v in col],
+        dtype=np.float32,
+    )
     return rgba, cat_colors, categories
 
 
@@ -236,6 +249,7 @@ def _plot_umap_modality_aware(
     adata: sc.AnnData,
     color_keys: list[str | None],
     title: str | None,
+    skip_unknown: bool = False
 ) -> plt.Figure:
     """
     UMAP plot with modality-sensitive markers.
@@ -263,7 +277,7 @@ def _plot_umap_modality_aware(
         if color_key is not None and color_key in adata.obs:
             # Force string to ensure categorical treatment
             col = adata.obs[color_key].astype(str)
-            point_colors, cat_colors, categories = _assign_colors(col)
+            point_colors, cat_colors, categories = _assign_colors(col, skip_unknown=skip_unknown)
         else:
             fallback = np.array([0.35, 0.55, 0.80, 1.0], dtype=np.float32)
             point_colors = np.tile(fallback, (len(adata), 1))
@@ -273,14 +287,13 @@ def _plot_umap_modality_aware(
             ax.scatter(
                 umap_coords[sc_mask, 0], umap_coords[sc_mask, 1],
                 c=point_colors[sc_mask],
-                s=4, alpha=0.6, marker="o", linewidths=0, rasterized=True,
+                s=4, marker="o", linewidths=0, rasterized=True,
             )
         if bulk_mask.any():
             ax.scatter(
                 umap_coords[bulk_mask, 0], umap_coords[bulk_mask, 1],
                 c=point_colors[bulk_mask],
-                s=4, alpha=0.6, marker="D",
-                linewidths=0.5, edgecolors="black", rasterized=True,
+                s=4, marker="D", linewidths=0, edgecolors="black", rasterized=True,
             )
 
         ax.set_xlabel("UMAP 1", fontsize=9)
@@ -350,6 +363,7 @@ def save_umap_plot(
     color: str | Sequence[str] | None = None,
     title: str | None = None,
     dpi: int = 200,
+    skip_unknown: bool = False,
 ) -> Path:
     """Save a UMAP plot to a PNG/PDF file.
 
@@ -370,7 +384,7 @@ def save_umap_plot(
         else:
             color_keys = list(color)
 
-        fig = _plot_umap_modality_aware(adata, color_keys, title)
+        fig = _plot_umap_modality_aware(adata, color_keys, title, skip_unknown=skip_unknown)
         fig.savefig(out_png, dpi=dpi, bbox_inches="tight")
         plt.close(fig)
     else:
@@ -397,6 +411,7 @@ def run_ablation_umaps(
     seed: int = 0,
     device: str | None = None,
     vocab: dict | None = None,
+    skip_unknown: bool = False,
 ) -> None:
     """Generate and save a UMAP for every model inside an ablation directory.
 
@@ -444,7 +459,7 @@ def run_ablation_umaps(
                          min_dist=min_dist, random_state=seed)
             out_png = model_dir / "umap.png"
             save_umap_plot(adata_copy, out_png=out_png, color=color,
-                           title=model_dir.name)
+                           title=model_dir.name, skip_unknown=skip_unknown)
             print(f"  saved → {out_png}")
         except Exception as exc:
             print(f"  [error] UMAP generation failed: {exc}")
@@ -520,6 +535,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             seed=args.seed,
             device=args.device,
             vocab=vocab,
+            skip_unknown=args.skip_unknown
         )
         return 0
 
@@ -565,7 +581,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         random_state=args.seed,
     )
 
-    save_umap_plot(adata, out_png=out_png, color=color, title=prefix)
+    save_umap_plot(adata, out_png=out_png, color=color, title=prefix, skip_unknown=args.skip_unknown)
 
     adata.write_h5ad(out_h5ad)
     print(f"Checkpoint: {paths.ckpt_path}")
@@ -685,6 +701,11 @@ def build_argparser() -> argparse.ArgumentParser:
         type=str,
         default="seurat",
         help="Flavor used for HVG selection (default: seurat).",
+    )
+    p.add_argument(
+        "--skip-unknown",
+        action="store_true",
+        help="Whether to skip the unknonw / nan categories"
     )
     return p
 

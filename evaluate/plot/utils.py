@@ -87,7 +87,7 @@ def sample_h5ad_subset_from_prefix(
     directory: Union[str, Path],
     n_subset: int,
     seed: int | None = None,
-    max_files: int = 10,
+    max_files: int = 6,
 ) -> AnnData:
     """
     Load a representative subset of .h5ad files in a directory, combine their

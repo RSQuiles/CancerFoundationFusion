@@ -26,6 +26,7 @@ SCRIPT_ARGS=(
     --adata-dir /cluster/work/boeva/rquiles/data/small_partition/pipeline_ready/h5ads
     --color tissue_general assay
     --sample-size 75_000
+    --skip-unknown
 )
 
 if [[ "$USE_LOCAL" -eq 1 ]]; then
