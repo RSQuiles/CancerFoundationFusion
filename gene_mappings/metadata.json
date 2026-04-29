@@ -1,0 +1,5 @@
+{
+  "description": "Comprehensive human gene ID mappings to Ensembl gene IDs",
+  "source": "MyGene.info, taxid:9606 (Homo sapiens)",
+  "n_genes": 82804
+}
