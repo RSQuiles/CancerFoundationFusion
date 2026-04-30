@@ -12,7 +12,6 @@ set -e
 
 # Improve CUDA traceback
 CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py \
-    --loss mse \
     --config ./config_test.json \
 
 if [ -d "./lightning_logs/version_${SLURM_JOB_ID}" ]; then

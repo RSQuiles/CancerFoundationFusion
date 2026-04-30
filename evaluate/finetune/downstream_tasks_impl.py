@@ -29,7 +29,7 @@ from torch import nn
 from torch.utils.data import Dataset
 
 from evaluate.finetune.downstream_task import DownstreamTask, TaskRegistry
-from evaluate.finetune.utils import parquet_to_adata
+from evaluate.finetune.utils import parquet_to_adata, translate_gene_symbols, strip_ensembl_versions, deduplicate_var_names
 
 log = logging.getLogger(__name__)
 
@@ -739,17 +739,6 @@ class SurvivalTask(DownstreamTask):
                 f"Expected at {self.config_key}."
             )
 
-    @staticmethod
-    def _strip_ensembl_versions(gene_names: list[str]) -> list[str]:
-        """Strip version suffixes from Ensembl gene IDs (e.g. ENSG00000000003.10 → ENSG00000000003).
-
-        Non-Ensembl names (HGNC symbols, lncRNA names like RP11-554J4.1) are
-        returned unchanged because their dots are part of the name, not a version.
-        """
-        import re
-        pattern = re.compile(r"^(ENSG\d+)\.\d+$")
-        return [pattern.sub(r"\1", g) for g in gene_names]
-
     def load_data(
         self, task_cfg: DictConfig, embedder: Any
     ) -> tuple[int, ad.AnnData, ad.AnnData, np.ndarray, np.ndarray]:
@@ -824,6 +813,7 @@ class SurvivalTask(DownstreamTask):
 
         # Make gene names compatible with vocabulary
         adata.var_names = self._strip_ensembl_versions(adata.var_names.tolist())
+
         # Manage the generated duplicated column names
         if not adata.var_names.is_unique:
             df_expr = pd.DataFrame(adata.X, columns=adata.var_names)
@@ -1184,11 +1174,13 @@ class ProteomePredTask(DownstreamTask):
         log.info(f"CPTAC: {len(shared)} paired RNA–protein samples retained")
 
         # Translate gene symbols to the model vocab convention, then build AnnData
-        rna_genes_translated = self._translate_gene_symbols(rna_genes)
+        rna_genes_translated = translate_gene_symbols(rna_genes, "symbol_to_ensembl.json")
         adata = parquet_to_adata(df_rna, rna_genes)
-        adata.var_names = rna_genes_translated
+        adata.var_names = pd.Index(rna_genes_translated)
+        adata = deduplicate_var_names(adata)
 
         targets = df_prot[prot_genes].to_numpy(dtype=np.float32)
+        targets = np.nan_to_num(targets, nan=0.0)  # Impute nan values in targets
 
         # Stratify by cancer_type if present so every type appears in both splits
         strata = None
@@ -1426,7 +1418,7 @@ class DrugSensitivityTask(DownstreamTask):
             )
 
     def load_data(
-        self, task_cfg: DictConfig, embedder: Any
+        self, task_cfg: DictConfig, embedder: Any, patient_id_column: str = "dbgap_subject_id",
     ) -> tuple[int, ad.AnnData, ad.AnnData, np.ndarray, np.ndarray]:
         """
         Load BeatAML expression and drug response data.
@@ -1488,10 +1480,12 @@ class DrugSensitivityTask(DownstreamTask):
         # Patient-level split: prevents leakage from multi-specimen patients.
         # metadata.csv is expected to contain a 'patient_id' column; if missing,
         # fall back to specimen-level split with a warning.
-        df_meta_aligned = df_meta.reindex(shared)
-        if "patient_id" in df_meta_aligned.columns:
+        df_meta_aligned = df_meta[df_meta["dbgap_dnaseq_sample"].isin(shared)]
+        df_meta_aligned = df_meta_aligned.set_index("dbgap_dnaseq_sample").reindex(shared)
+
+        if patient_id_column in df_meta_aligned.columns:
             patient_ids = (
-                df_meta_aligned["patient_id"]
+                df_meta_aligned[patient_id_column]
                 .fillna(df_meta_aligned.index.to_series())
                 .to_numpy()
             )
@@ -1511,8 +1505,20 @@ class DrugSensitivityTask(DownstreamTask):
                 np.arange(len(shared)), test_size=test_size, random_state=split_seed
             )
 
-        adata   = parquet_to_adata(df_expr, df_expr.columns.tolist())
-        targets = df_drug.to_numpy(dtype=np.float32)   # NaN preserved
+        expr_gene_names = df_expr.columns.tolist()
+       # Fill NaNs in expression matrix
+        n_nan_expr = df_expr[expr_gene_names].isna().sum().sum()
+        if n_nan_expr > 0:
+            log.warning(f"BeatAML: {n_nan_expr} NaN values in expression matrix — filling with 0")
+            df_expr[expr_gene_names] = df_expr[expr_gene_names].fillna(0.0)
+
+        # Translate gene names to model's vocabulary
+        expr_gene_names_translated = translate_gene_symbols(expr_gene_names, "symbol_to_ensembl.json")
+        adata   = parquet_to_adata(df_expr, expr_gene_names)
+        adata.var_names = pd.Index(expr_gene_names_translated)
+        adata = deduplicate_var_names(adata)
+
+        targets = df_drug.to_numpy(dtype=np.float32)   # NaN preserved, handled in the masked loss
 
         n_drugs = len(kept_drugs)
         avg_cov = float(df_drug.notna().mean().mean()) * 100

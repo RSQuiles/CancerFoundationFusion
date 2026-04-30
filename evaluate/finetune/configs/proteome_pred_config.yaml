@@ -9,18 +9,18 @@
 finetune:
   proteome_pred:
     # ===== REQUIRED =====
-    pretrained_model_path: /path/to/pretrained_model.ckpt
+    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/dummy_test/epoch_epoch=00.ckpt
 
-    rna_path:              /path/to/data/processed/cptac/rna_expression.parquet
-    protein_path:          /path/to/data/processed/cptac/protein_expression.parquet
-    gene_protein_map_path: /path/to/data/processed/cptac/gene_protein_mapping.csv
+    rna_path:              /cluster/work/boeva/bulkFM/data/processed/cptac/rna_expression.parquet
+    protein_path:          /cluster/work/boeva/bulkFM/data/processed/cptac/protein_expression.parquet
+    gene_protein_map_path: /cluster/work/boeva/bulkFM/data/processed/cptac/gene_protein_mapping.csv
 
     head_learning_rate: 0.001
 
     # ===== DATA CONFIGURATION =====
     # Subset of cancer types. Leave empty ([]) to use all available types.
     # Available: BRCA, CCRCC, COAD, GBM, HNSCC, LUAD, LSCC, OV, PDAC, UCEC
-    cancer_types: []
+    cancer_types: [BRCA]
 
     test_size: 0.2
     random_seed: 42
@@ -32,7 +32,7 @@ finetune:
     dropout: 0.1
 
     # ===== TRAINING HYPERPARAMETERS =====
-    epochs: 30
+    epochs: 10
     batch_size: 64
     min_lr: 0.000001
     first_cycle_steps: 20

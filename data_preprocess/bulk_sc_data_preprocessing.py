@@ -221,7 +221,7 @@ def get_normalized_metadata_bulk(bulk_metadata_path: Path, meta_fields=["charact
         return False
 
     tissues = []
-    for i in tqdm.tqdm(range(bulk_obs.shape[0]), miniters=100):
+    for i in tqdm.tqdm(range(bulk_obs.shape[0]), miniters=1000):
         tissues.append(walk_tissue_names(check_name, i, bulk_obs, meta_fields))
 
     # Include tissues in bulk_obs

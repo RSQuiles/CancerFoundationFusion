@@ -173,6 +173,7 @@ def main(input_args=None):
         balance=args.balanced_sampler,
         balance_labels=args.balanced_labels,
         pb_group_column=args.pb_group_column,
+        agg_consistency=args.agg_consistency
     )
     datamodule.setup(stage="fit")
 

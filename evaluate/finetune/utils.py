@@ -32,6 +32,7 @@ from torch.optim.lr_scheduler import _LRScheduler
 from torch import nn
 import torch.nn.functional as F
 from torch.nn.modules.loss import _WeightedLoss
+import pandas as pd
 
 ## From Enrico's implementation:
 
@@ -145,19 +146,84 @@ def parquet_to_adata(df: pd.DataFrame, gene_cols: list[str]) -> ad.AnnData:
     return adata
 
 
-def _translate_gene_symbols(gene_symbols: list[str]) -> list[str]:
+def translate_gene_symbols(
+    gene_symbols: list[str],
+    mapping_file: str = "symbol_to_ensembl.json",
+    mapping_dir: str | Path = "/cluster/work/boeva/rquiles/CancerFoundationFusion/gene_mappings",
+    direction: str = "to_ensembl",
+) -> list[str]:
     """
-    Translate HGNC gene symbols to the naming convention used by the
-    CancerFoundation vocabulary.
+    Translate gene symbols using a JSON mapping file.
 
-    The model vocab is mostly HGNC but contains older Ensembl-style lncRNA
-    names (e.g. RP11-554J4.1, AC020910.4) that have since been retired or
-    renamed. CPTAC uses current HGNC symbols throughout.
+    Parameters
+    ----------
+    gene_symbols  : list of gene names to translate.
+    mapping_dir   : directory where the mapping JSON is stored.
+    mapping_file  : filename of the JSON mapping (e.g. "gene_mapping.json").
+    direction     : label used for logging only ("to_ensembl" or "to_hgnc").
 
-    Currently a pass-through — genes not in the vocab are silently dropped
-    by CancerFoundation.embed() during its internal gene intersection, so
-    the model still runs correctly at the cost of reduced gene coverage.
-    Replace this with a mygene.info lookup or a pre-built alias table to
-    recover renamed symbols.
+    Returns
+    -------
+    Translated list; unmapped symbols are returned unchanged.
     """
-    return gene_symbols
+    mapping_path = Path(mapping_dir) / mapping_file
+
+    if not mapping_path.exists():
+        print(f"Gene mapping file not found at {mapping_path} — symbols returned unchanged.")
+        return gene_symbols
+
+    with open(mapping_path, "r") as f:
+        mapping: dict[str, str] = json.load(f)
+
+    translated = [mapping.get(g, g) for g in gene_symbols]
+
+    n_translated = sum(1 for o, t in zip(gene_symbols, translated) if o != t)
+    print(f"Gene translation ({direction}): {n_translated}/{len(gene_symbols)} symbols mapped.")
+
+    return translated
+
+
+def strip_ensembl_versions(gene_names: list[str]) -> list[str]:
+    """Strip version suffixes from Ensembl gene IDs (e.g. ENSG00000000003.10 → ENSG00000000003).
+
+    Non-Ensembl names (HGNC symbols, lncRNA names like RP11-554J4.1) are
+    returned unchanged because their dots are part of the name, not a version.
+    """
+    import re
+    pattern = re.compile(r"^(ENSG\d+)\.\d+$")
+    return [pattern.sub(r"\1", g) for g in gene_names]
+
+
+def deduplicate_var_names(adata: ad.AnnData) -> ad.AnnData:
+    """Remove duplicate var_names, keeping the first occurrence."""
+    if adata.var_names.is_unique:
+        return adata
+    expr_df = pd.DataFrame(
+        adata.X if not hasattr(adata.X, "toarray") else adata.X.toarray(),
+        columns=adata.var_names
+    )
+    expr_df = expr_df.loc[:, ~expr_df.columns.duplicated(keep='first')]
+    return ad.AnnData(
+        X=expr_df.values.astype(np.float32),
+        obs=adata.obs,
+        var=pd.DataFrame(index=expr_df.columns)
+    )
+
+def deduplicate_index(df: pd.DataFrame, label: str = "DataFrame") -> pd.DataFrame:
+    """
+    Remove duplicate row index entries, keeping the first occurrence.
+
+    Parameters
+    ----------
+    df    : DataFrame whose index may contain duplicates.
+    label : Name used in the log warning for easier debugging.
+
+    Returns
+    -------
+    DataFrame with a unique index.
+    """
+    if not df.index.is_unique:
+        n_dupes = df.index.duplicated().sum()
+        log.warning(f"{label} has {n_dupes} duplicate index entries — keeping first occurrence.")
+        df = df[~df.index.duplicated(keep='first')]
+    return df

@@ -168,6 +168,8 @@ class TransformerModule(nn.Module):
                     if dat_columns and cond_name not in dat_columns:
                         continue
                     print(f"Using {cond_name} for DAT!")
+                    # For modality DAT, only distinguish bulk vs pseudobulk (binary)
+                    n_cls = 2 if cond_name == "modality" else cond_num
                     self.grad_reverse_discriminators[cond_name] = (
                         AdversarialDiscriminator(
                             d_model,
@@ -641,6 +643,7 @@ class TransformerModule(nn.Module):
         self,
         output: Mapping[str, Tensor],
         transformer_output: Tensor,
+        conditions: Optional[Tensor] = None,
         condition_emb: Optional[Tensor] = None,
         do_sample: bool = False,
     ) -> Mapping[str, Tensor]:
@@ -674,14 +677,21 @@ class TransformerModule(nn.Module):
 
         if self.do_dat:
             if self.conditions:
+                modality = conditions.get("modality")
                 output["condition_output"] = {}
-                for (
-                    cond_name,
-                    discriminator,
-                ) in self.grad_reverse_discriminators.items():
-                    output["condition_output"][cond_name] = discriminator(cell_emb)
-                # Inform about DAT conditions
                 # print(f"Performing DAT on: {list(self.grad_reverse_discriminators.keys())}")
+                for cond_name, discriminator in self.grad_reverse_discriminators.items():
+                    if cond_name == "modality" and modality is not None:
+                        # Only apply DAT between real bulk (0) and pseudobulk (2)
+                        # print("Masking modality DAT...")
+                        bulk_pb_mask = (modality == 0) | (modality == 2)
+                        if bulk_pb_mask.sum() == 0:
+                            continue
+                        filtered_emb = cell_emb[bulk_pb_mask]
+                        output["condition_output"][cond_name] = discriminator(filtered_emb)
+                    else:
+                        # All samples for other conditions
+                        output["condition_output"][cond_name] = discriminator(cell_emb)
 
         return output
 
@@ -862,22 +872,36 @@ class TransformerModule(nn.Module):
         # Domain adversarial training
         if self.do_dat:
             if self.conditions:
+                modality = conditions_batch.get("modality")
                 for condition in self.grad_reverse_discriminators:
-                    condition_loss = self.criterion_conditions(
-                        output_dict["condition_output"][condition],
-                        conditions_batch[condition].squeeze(),
-                    )
+                    cond_preds = output_dict["condition_output"].get(condition)
+                    if cond_preds is None:
+                        continue
+
+                    if condition == "modality" and modality is not None:
+                        # Only bulk (0) and pseudobulk (2)
+                        bulk_pb_mask = (modality == 0) | (modality == 2)
+                        cond_labels = modality[bulk_pb_mask].squeeze()
+                        # Remap 0→0, 2→1 for binary classification
+                        cond_labels = (cond_labels == 2).long()
+                    else:
+                        cond_labels = conditions_batch[condition].squeeze()
+
+                    condition_loss = self.criterion_conditions(cond_preds, cond_labels)
+
+                    # Confidence: mean probability assigned to the correct class
                     loss_dict[condition + "_confidence"] = (
-                        output_dict["condition_output"][condition]
+                        cond_preds
                         .softmax(dim=-1)
-                        .gather(dim=1, index=conditions_batch[condition].unsqueeze(1))
+                        .gather(dim=1, index=cond_labels.unsqueeze(1))
                         .squeeze(1)
                         .float()
                         .mean()
                     )
+
                     loss += condition_loss / len(self.grad_reverse_discriminators)
                     loss_dict["condition_" + condition] = condition_loss.detach() / len(
-                        self.conditions
+                        self.grad_reverse_discriminators
                     )
 
         # Contrastive loss: if enabled, it brings the pseudobulk and real bulk samples closer together in the embedding space.
@@ -942,66 +966,122 @@ class TransformerModule(nn.Module):
         modalities: torch.Tensor,
         temperature: float = 0.1,
         use_cls_token: bool = True,
+        lambda_: float = 25.0, # invariance
+        mu: float = 25.0, # variance
+        nu: float = 1.0, # covariance
+        eps: float = 1e-4,
     ) -> torch.Tensor:
         """
-        Multi-positive InfoNCE:
-        - anchors: modality == 0
-        - positives: modality == 2
-        - negatives: modality == 1
+        Wrapper for bulk-pseudobulk alignment.
 
-        embeddings:
-            shape (B, D) or (B, L, D)
-        modalities:
-            shape (B,)
+        Modality convention (from BulkSCCollator):
+            0 = real bulk      → anchors in fwd, positives in bwd
+            1 = single-cell    → hard negatives in both directions
+            2 = pseudobulk     → positives in fwd, anchors in bwd
+
+        embeddings : (B, L, D) or (B, D)
+        modalities  : (B,)
         """
-        assert embeddings.size(0) == modalities.size(
-            0
-        ), "Embeddings and modalities tensors must have the same batch size"
+        # print("Performing VICReg with Symmetric Multi-Positive InfoNCE")
+        assert embeddings.size(0) == modalities.size(0), \
+            "Embeddings and modalities tensors must have the same batch size"
 
-        # As transformer_output is sequence-shaped, reduce to one embedding per sample.
+        # Reduce sequence dim → (B, D)
         if embeddings.dim() == 3:
-            if use_cls_token:
-                embeddings = embeddings[:, 0, :]  # CLS token
-            else:
-                embeddings = embeddings.mean(dim=1)  # mean pooling
+            embeddings = embeddings[:, 0, :] if use_cls_token else embeddings.mean(dim=1)
 
         assert embeddings.dim() == 2, f"Expected (B, D), got {embeddings.shape}"
         assert modalities.dim() == 1, f"Expected (B,), got {modalities.shape}"
 
-        # Masks
-        anchor_mask = modalities == 0
-        candidate_mask = (modalities == 1) | (modalities == 2)
+        # Split by modality
+        bulk_emb = embeddings[modalities == 0]   # (N0, D)
+        sc_emb   = embeddings[modalities == 1]   # (N1, D)
+        pb_emb   = embeddings[modalities == 2]   # (N2, D)
 
-        # Select anchor and candidate embeddings
-        anchor_emb = embeddings[anchor_mask]  # (N0, D)
-        candidate_emb = embeddings[candidate_mask]  # (N1+N2, D)
-        candidate_mods = modalities[candidate_mask]  # (N1+N2,)
+        if bulk_emb.size(0) == 0:
+            raise ValueError("No modality-0 (bulk) samples in batch.")
+        if pb_emb.size(0) == 0:
+            raise ValueError("No modality-2 (pseudobulk) samples in batch.")
 
-        if anchor_emb.size(0) == 0:
-            raise ValueError("No modality-0 samples in batch.")
-        if not (candidate_mods == 2).any():
-            raise ValueError("No modality-2 samples in batch for positives.")
-        if not (candidate_mods == 1).any():
-            raise ValueError("No modality-1 samples in batch for negatives.")
+        sc_emb = sc_emb if sc_emb.size(0) > 0 else None
 
-        # Normalize for cosine similarity
-        anchor_emb = F.normalize(anchor_emb, dim=1)
-        candidate_emb = F.normalize(candidate_emb, dim=1)
+        inv_loss = self.symmetric_multipositive_infonce(
+            bulk_emb, pb_emb, sc_emb, temperature=temperature
+        )
+        var_loss, cov_loss = self.vicreg_loss(bulk_emb, pb_emb, eps=eps)
 
-        # Similarity matrix: (N0, N1+N2)
-        logits = anchor_emb @ candidate_emb.T
-        logits = logits / temperature
+        return lambda_ * inv_loss + mu * var_loss + nu * cov_loss
 
-        # Positive mask over candidate columns
-        pos_cols = (candidate_mods == 2).unsqueeze(0).expand(anchor_emb.size(0), -1)
 
-        # Stable log-softmax form:
-        log_denom = torch.logsumexp(logits, dim=1)  # (N0,)
-        pos_logits = logits.masked_fill(~pos_cols, float("-inf"))
-        log_num = torch.logsumexp(pos_logits, dim=1)  # (N0,)
+    def symmetric_multipositive_infonce(
+        self,
+        bulk_emb: torch.Tensor,
+        pb_emb: torch.Tensor,
+        sc_emb: torch.Tensor | None = None,
+        temperature: float = 0.1,
+    ) -> torch.Tensor:
 
-        loss = -(log_num - log_denom).mean()
-        return loss
+        has_sc = sc_emb is not None and sc_emb.size(0) > 0
+        if not has_sc:
+            raise ValueError(
+                "SC samples are required as hard negatives for the symmetric "
+                "multi-positive InfoNCE loss. Ensure sc_ratio > 0 in your sampler."
+            )
+
+        bulk_norm = F.normalize(bulk_emb, dim=1)
+        pb_norm   = F.normalize(pb_emb,   dim=1)
+        sc_norm   = F.normalize(sc_emb,   dim=1)
+
+        def _infonce(anchors, positives, negatives):
+            pos_sim   = (anchors @ positives.T) / temperature # (Na, Np)
+            neg_sim   = (anchors @ negatives.T) / temperature # (Na, Nn)
+            log_denom = torch.logsumexp(
+                torch.cat([pos_sim, neg_sim], dim=1), dim=1 # (Na,)
+            )
+            log_prob_pos = pos_sim - log_denom.unsqueeze(1) # (Na, Np)
+            return -log_prob_pos.mean()
+
+        loss_fwd = _infonce(bulk_norm, pb_norm,   sc_norm)   # bulk → pb, SC as neg
+        loss_bwd = _infonce(pb_norm,   bulk_norm, sc_norm)   # pb   → bulk, SC as neg
+
+        return (loss_fwd + loss_bwd) / 2
+
+
+    def vicreg_loss(
+        self,
+        bulk_emb: torch.Tensor,
+        pb_emb: torch.Tensor,
+        eps: float = 1e-4,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        VICReg variance and covariance terms for collapse prevention.
+        Operates on unnormalized embeddings independently per modality.
+
+        Returns
+        -------
+        var_loss : variance term (scalar)
+        cov_loss : covariance term (scalar)
+        """
+        # Hinge function on the standard deviation of the embeddings along the batch dimension
+        def _variance(z: torch.Tensor) -> torch.Tensor:
+            std = torch.sqrt(z.var(dim=0) + eps)
+            return torch.mean(F.relu(1 - std))
+
+        # Covariance to enforce decorrelation between embedidng positions
+        def _covariance(z: torch.Tensor) -> torch.Tensor:
+            n, d = z.shape
+            if n < 2:
+                return torch.tensor(0.0, device=z.device)
+            z = z - z.mean(dim=0)
+            cov = (z.T @ z) / (n - 1)
+            off_diag = cov ** 2
+            off_diag.fill_diagonal_(0)
+            return off_diag.sum() / d
+
+        var_loss = _variance(bulk_emb) + _variance(pb_emb)
+        cov_loss = _covariance(bulk_emb) + _covariance(pb_emb)
+
+        return var_loss, cov_loss
 
     def training_step(self, batch, batch_idx):
         """Performs a single training step (for PyTorch Lightning).
@@ -1110,6 +1190,7 @@ class TransformerModule(nn.Module):
             transformer_output,
             condition_emb=condition_emb,
             do_sample=do_sample,
+            conditions=conditions,
         )
 
         return output
@@ -1182,6 +1263,7 @@ class TransformerModule(nn.Module):
             transformer_output,
             condition_emb=(condition_emb if self.conditions else None),
             do_sample=do_sample,
+            conditions=conditions
         )
 
         return output

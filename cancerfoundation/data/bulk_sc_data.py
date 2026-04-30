@@ -200,8 +200,7 @@ class BulkSCDataset(Dataset):
         """
         Get categorical labels for a given key as integer-coded Categoricals.
 
-        Returns only "sc" and "bulk" groups — the "all" group is never used by
-        the sampler and would wastefully process 100M+ entries at scale.
+        Returns "sc" and "bulk" groups.
         """
         if label_key not in self.obs.columns:
             raise ValueError(f"Label key '{label_key}' not found in obs columns.")
@@ -266,7 +265,7 @@ class BulkSCSampler(Sampler[list[int]]):
         batch_size: int,
         bulk_ratio: float = 0.3,
         pb_ratio: float = 0.3,
-        n_sc_per_pb: int = 10,
+        n_sc_per_pb: int = 5,
         drop_last: bool = True,
         shuffle: bool = True,
         balance: Optional[bool] = False,
@@ -290,11 +289,15 @@ class BulkSCSampler(Sampler[list[int]]):
             base_to_subset[self.subset_base_indices] = np.arange(len(self.subset_base_indices), dtype=np.int64)
 
             # Vectorized bulk remapping
-            bulk_mapped = base_to_subset[self.base_dataset.bulk_indices]
+            bulk_base = np.asarray(self.base_dataset.bulk_indices)
+            bulk_base = bulk_base[bulk_base < max_idx]  # clip out-of-bounds first
+            bulk_mapped = base_to_subset[bulk_base]
             self.bulk_indices = bulk_mapped[bulk_mapped >= 0]
 
             # Vectorized SC remapping
-            sc_mapped = base_to_subset[self.base_dataset.sc_indices]
+            sc_base = np.asarray(self.base_dataset.sc_indices)
+            sc_base = sc_base[sc_base < max_idx]  # clip out-of-bounds first
+            sc_mapped = base_to_subset[sc_base]
             self.sc_indices = sc_mapped[sc_mapped >= 0]
 
             # Vectorized SC group remapping
@@ -303,9 +306,8 @@ class BulkSCSampler(Sampler[list[int]]):
                 for g, idxs in self.base_dataset.sc_group_to_indices.items():
                     idxs = np.asarray(idxs)
                     # Only remap indices that fall within the lookup array bounds
-                    valid_mask = idxs < max_idx
-                    mapped = np.full(len(idxs), -1, dtype=np.int64)
-                    mapped[valid_mask] = base_to_subset[idxs[valid_mask]]
+                    idxs = idxs[idxs < max_idx]
+                    mapped = base_to_subset[idxs]
                     self.sc_group_to_indices[g] = mapped[mapped >= 0]
             else:
                 self.sc_group_to_indices = None
@@ -358,8 +360,9 @@ class BulkSCSampler(Sampler[list[int]]):
         if self.n_bulk <= 0:
             raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")
 
+        # The number of bulk indices defines the epoch length
         self._n_batches = (
-            len(self.bulk_indices) // 5
+            len(self.bulk_indices)
             if self.epoch_size is None
             else self.epoch_size
         )
@@ -377,8 +380,7 @@ class BulkSCSampler(Sampler[list[int]]):
             if self.base_dataset.labels is None:
                 raise ValueError("Dataset does not have labels for balanced sampling.")
 
-            # Map labels to the current Subset if necessary; skip the "all" modality
-            # which is never used by sample() and wastes 800MB+ at 100M-row scale.
+            # Map labels to the current Subset if necessary
             if isinstance(dataset, Subset):
                 subset_base_indices = np.asarray(self.subset_base_indices)
                 sc_mask   = np.isin(self.base_dataset.sc_indices,   subset_base_indices)
@@ -407,6 +409,7 @@ class BulkSCSampler(Sampler[list[int]]):
             print("Building class indices...")
             self.klass_indices = {}
             self.klass_offsets = {}
+            # Key corresponds to modality in this case
             for key in labels:
                 idx_t, off_t = self._build_klass_tensors(labels[key])
                 self.klass_indices[key] = idx_t
@@ -419,7 +422,7 @@ class BulkSCSampler(Sampler[list[int]]):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Build a flat sorted-index tensor and a dense offset array for O(1) class lookup.
 
-        Replaces the old chunk+executor approach with a single O(N log N) numpy pass.
+        Uses a single O(N log N) numpy pass with np.argsort.
 
         Returns
         -------
@@ -604,7 +607,7 @@ class BulkSCSampler(Sampler[list[int]]):
                 torch.randperm(len(final_result_indices))
             ]
 
-            # Map back to original indices
+            # Map back to original indices (klass_indices conains positions within sc_indices or bulk_indices)
             if sample_modality == "sc":
                 true_indices = self.sc_indices[shuffled_indices]
             elif sample_modality == "bulk":

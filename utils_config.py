@@ -365,7 +365,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--where-condition",
         type=str,
-        choices=["begin", "end"],
+        choices=["begin", "end", "none"],
+        help="Where to include the condition embeddings: encoder, decoder, or do not include them at all"
     )
 
     parser.add_argument(
@@ -450,14 +451,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--agg-fn",
         type=str,
         choices=["mean", "sum"],
-        default="sum",
+        default="mean",
         help="The function to use for aggregating single-cell embeddings into pseudobulk embeddings. Default is 'mean'.",
     )
 
     parser.add_argument(
         "--balanced-sampler",
-        choices=[None, "joint", "separate"],
-        default=None,
+        action="store_true",
         help="Whether to use a balanced sampler that oversamples underrepresented classes in the training data. It can treat single-cell and bulk samples separately. Default is None.",
     )
 

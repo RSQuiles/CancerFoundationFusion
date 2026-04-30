@@ -50,6 +50,7 @@ class BulkSCCollator(AnnDataCollator):
     n_sc_per_pseudobulk: int = 10
     aggregation: str = "sum"
     match_fn: Optional[Callable] = None
+    agg_consistency: bool = False # Determines whether to include the sc_for_pb samples in the batch
 
     def __post_init__(self):
         """
@@ -149,13 +150,15 @@ class BulkSCCollator(AnnDataCollator):
             unified_is_real.append(0)
             unified_pseudobulk_index.append(pb_idx)
             unified_is_sc_for_pb.append(0)
+
         # 3 (1) -> sc for pb
-        for sc_idx, sample in enumerate(sc_for_pb_samples):
-            unified_samples.append(sample)
-            unified_modalities.append(1)
-            unified_is_real.append(1)
-            unified_pseudobulk_index.append(sc_pseudobulk_index[sc_idx])
-            unified_is_sc_for_pb.append(1)
+        if self.agg_consistency:
+            for sc_idx, sample in enumerate(sc_for_pb_samples):
+                unified_samples.append(sample)
+                unified_modalities.append(1)
+                unified_is_real.append(1)
+                unified_pseudobulk_index.append(sc_pseudobulk_index[sc_idx])
+                unified_is_sc_for_pb.append(1)
 
         """
         # 4 -> matched bulk (optional)

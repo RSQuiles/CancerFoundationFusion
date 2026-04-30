@@ -10,11 +10,11 @@
 finetune:
   drug_sensitivity:
     # ===== REQUIRED =====
-    pretrained_model_path: /path/to/pretrained_model.ckpt
+    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/dummy_test/epoch_epoch=00.ckpt
 
-    expression_path:    /path/to/data/processed/beataml/expression.parquet
-    drug_response_path: /path/to/data/processed/beataml/drug_response.parquet
-    metadata_path:      /path/to/data/processed/beataml/metadata.csv
+    expression_path:    /cluster/work/boeva/bulkFM/data/processed/beataml/expression.parquet
+    drug_response_path: /cluster/work/boeva/bulkFM/data/processed/beataml/drug_response.parquet
+    metadata_path:      /cluster/work/boeva/bulkFM/data/processed/beataml/metadata.csv
 
     head_learning_rate: 0.001
 
@@ -36,7 +36,7 @@ finetune:
     dropout: 0.1
 
     # ===== TRAINING HYPERPARAMETERS =====
-    epochs: 30
+    epochs: 10
     batch_size: 64
 
     # Larger batches are beneficial here: a batch with mostly NaN entries for a

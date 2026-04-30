@@ -7,19 +7,19 @@
     "epochs": 1,
     "seed": 0,
     "val_check_interval": 0.5,
-    "log_interval": 50,
+    "log_interval": 1,
     "save_dir": "${work}/outputs/save_CFF/dummy_test"
   },
   "data": {
-    "train_path": "/cluster/work/boeva/rquiles/data/cellxgene_bulk/pipeline_ready",
+    "train_path": "/cluster/work/boeva/rquiles/data/small_partition/pipeline_ready",
     "conditions": ["tissue_general", "assay"],
     "zero_percentages": [0.2, 0.4, 0.6],
-    "bulk_ratio": 0.3,
+    "bulk_ratio": 0.6,
     "pb_ratio": 0.3,
     "n_sc_per_pseudobulk": 5,
     "pb_group_column": "tissue_general",
     "trunc_by_sample": true,
-    "balanced_sampler": "separate",
+    "balanced_sampler": true,
     "balanced_labels": ["tissue_general", "assay"]
   },
 
@@ -32,15 +32,18 @@
     "warmup_ratio_or_step": 10000,
     "max_seq_len": 600,
     "batch_size": 32,
-    "input_style": "log1p",
-    "loss": "zinb",
+    "input_style": "binned",
+    "loss": "mse",
     "training_tasks": "both",
     "do_mvc": true,
-    "where_condition": "end",
+    "where_condition": "none",
     "gen_method": "theirs"
   },
   
   "features": {
-    "noise": [0.4, 0.6]
+    "unified":true,
+    "contrastive_training": true,
+    "do_dat": true,
+    "dat_columns": ["modality", "assay"]
   }
 }
