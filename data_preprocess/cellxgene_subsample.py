@@ -11,8 +11,11 @@ def read_anndata(file_path):
         if "uns" in f and "log1p" in f["uns"] and "base" in f["uns"]["log1p"]:
             del f["uns"]["log1p"]["base"]
             # print("Deleted /uns/log1p/base")
-    
+
     adata = sc.read_h5ad(file_path)
+    # Change var_names to Ensembl gene ids
+    if "feature_id" in adata.var.columns:
+        adata.var_names = adata.var["feature_id"].astype(str)
     return adata
 
 SAMPLE_COLS = [
@@ -170,9 +173,9 @@ def process_partitions(
 # --- Usage ---
 process_partitions(
     input_dir="/cluster/work/boeva/rquiles/data/cellxgene_full",
-    output_dir="/cluster/work/boeva/rquiles/data/cellxgene_bulk",
+    output_dir="/cluster/work/boeva/rquiles/data/cellxgene_subsample",
     prefix="partition",
-    fraction=0.5,
+    fraction=0.1,
     min_cells=10,
     max_output_cells=200_000,
     seed=42,

@@ -149,7 +149,7 @@ def _submit_runs_to_slurm(
 				singularity_image,
 				"bash",
 				"-c",
-				f"export PATH=/usr/bin:/bin && {worker_inner_cmd}",
+				f"export PATH=/usr/bin:/bin && export MASTER_ADDR=localhost && export MASTER_PORT=$(( SLURM_JOB_ID % 16384 + 20000 )) && {worker_inner_cmd}",
 			]
 		)
 

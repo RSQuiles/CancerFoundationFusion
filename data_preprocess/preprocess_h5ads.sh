@@ -10,6 +10,6 @@ source ~/.bashrc
 conda activate bulkFM
 
 python -u bulk_sc_data_preprocessing.py \
-    --h5ad-path /cluster/work/boeva/rquiles/data/bulk_only \
-    --data-path /cluster/work/boeva/rquiles/data/bulk_only/pipeline_ready \
+    --h5ad-path /cluster/work/boeva/rquiles/data/cellxgene_bulk \
+    --data-path /cluster/work/boeva/rquiles/data/cellxgene_bulk/pipeline_ready \
     --obs-columns tissue_general assay \

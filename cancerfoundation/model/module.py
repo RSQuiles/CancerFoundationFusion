@@ -147,7 +147,7 @@ class TransformerModule(nn.Module):
         mvc_decoder_d_in = d_model
         expr_decoder_d_in = d_model
         # Conditions are taken into account only in the decoder
-        if self.conditions:
+        if self.conditions and self.where_condition != "none":
             mvc_decoder_d_in = d_model * (len(self.conditions) + 1)
             if where_condition == "end":
                 expr_decoder_d_in = d_model * (len(self.conditions) + 1)
@@ -671,7 +671,7 @@ class TransformerModule(nn.Module):
         output["embeddings"] = transformer_output
 
         if self.do_mvc:
-            if self.conditions:
+            if self.conditions and self.where_condition != "none":
                 mvc_input_emb = torch.cat(
                     [cell_emb, condition_emb.view(condition_emb.shape[0], -1)], dim=1
                 )

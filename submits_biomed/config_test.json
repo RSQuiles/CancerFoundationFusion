@@ -11,7 +11,7 @@
     "save_dir": "${work}/outputs/save_CFF/dummy_test"
   },
   "data": {
-    "train_path": "/cluster/work/boeva/rquiles/data/small_partition/pipeline_ready",
+    "train_path": "/cluster/work/boeva/rquiles/data/cellxgene_bulk/pipeline_ready",
     "conditions": ["tissue_general", "assay"],
     "zero_percentages": [0.2, 0.4, 0.6],
     "bulk_ratio": 0.6,
@@ -41,7 +41,7 @@
   },
   
   "features": {
-    "unified":true,
+    "unified": true,
     "contrastive_training": true,
     "do_dat": true,
     "dat_columns": ["modality", "assay"]
