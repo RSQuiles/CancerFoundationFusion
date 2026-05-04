@@ -397,6 +397,69 @@ def save_umap_plot(
 
 
 # --------------------------------------------------------------------------- #
+# Modality-split UMAP helper
+# --------------------------------------------------------------------------- #
+
+def _save_modality_split_umaps(
+    adata: sc.AnnData,
+    joint_out_png: Path,
+    color: list[str] | None,
+    n_neighbors: int,
+    min_dist: float,
+    seed: int,
+    dpi: int = 200,
+    skip_unknown: bool = False,
+) -> None:
+    """Compute and save separate UMAP plots for SC-only and bulk-only subsets.
+
+    Each subset re-runs ``sc.pp.neighbors`` + ``sc.tl.umap`` on its own cells
+    (using the already-embedded ``X_cf`` vectors) so the UMAP layout reflects
+    the internal structure of that modality rather than the shared joint space.
+
+    Output files are named after ``joint_out_png`` with ``_sc`` / ``_bulk``
+    inserted before the extension, e.g.:
+        umap.png  →  umap_sc.png   umap_bulk.png
+    """
+    if "modality" not in adata.obs.columns:
+        return
+
+    modality_vals = adata.obs["modality"].astype(str).replace("nan", "sc").to_numpy()
+    sc_mask   = np.array([_is_sc_modality(v) for v in modality_vals])
+    bulk_mask = ~sc_mask
+
+    stem = joint_out_png.stem
+    suffix = joint_out_png.suffix
+    out_dir = joint_out_png.parent
+
+    for label, mask in [("sc", sc_mask), ("bulk", bulk_mask)]:
+        n = int(mask.sum())
+        if n == 0:
+            continue
+
+        subset = adata[mask].copy()
+        out_png = out_dir / f"{stem}_{label}{suffix}"
+        try:
+            compute_umap(
+                subset,
+                use_rep="X_cf",
+                n_neighbors=min(n_neighbors, n - 1),
+                min_dist=min_dist,
+                random_state=seed,
+            )
+            save_umap_plot(
+                subset,
+                out_png=out_png,
+                color=color,
+                title=f"{stem} ({label})",
+                dpi=dpi,
+                skip_unknown=skip_unknown,
+            )
+            print(f"  saved → {out_png}")
+        except Exception as exc:
+            print(f"  [warn] {label}-only UMAP failed: {exc}")
+
+
+# --------------------------------------------------------------------------- #
 # Ablation-level UMAP generation
 # --------------------------------------------------------------------------- #
 
@@ -412,6 +475,7 @@ def run_ablation_umaps(
     device: str | None = None,
     vocab: dict | None = None,
     skip_unknown: bool = False,
+    modality_split: bool = True,
 ) -> None:
     """Generate and save a UMAP for every model inside an ablation directory.
 
@@ -422,13 +486,18 @@ def run_ablation_umaps(
     1. Loads the model from the best-epoch checkpoint.
     2. Embeds a copy of ``adata``.
     3. Computes UMAP coordinates.
-    4. Saves the figure to ``{model_dir}/umap.png``.
+    4. Saves the joint figure to ``{model_dir}/umap.png``.
+    5. If ``adata.obs`` contains a ``modality`` column and ``modality_split``
+       is True, also saves separate UMAPs for SC-only and bulk-only cells to
+       ``{model_dir}/umap_sc.png`` and ``{model_dir}/umap_bulk.png``.
 
     Parameters
     ----------
-    ablation_dir : path to the top-level ablation experiment directory.
-    adata        : AnnData to embed (a copy is made per model).
-    color        : obs column(s) to colour by.
+    ablation_dir   : path to the top-level ablation experiment directory.
+    adata          : AnnData to embed (a copy is made per model).
+    color          : obs column(s) to colour by.
+    modality_split : when True (default), generate per-modality UMAPs if the
+                     ``modality`` column is present.
     """
     ablation_dir = _as_path(ablation_dir)
 
@@ -461,6 +530,13 @@ def run_ablation_umaps(
             save_umap_plot(adata_copy, out_png=out_png, color=color,
                            title=model_dir.name, skip_unknown=skip_unknown)
             print(f"  saved → {out_png}")
+
+            if modality_split:
+                _save_modality_split_umaps(
+                    adata_copy, out_png, color,
+                    n_neighbors, min_dist, seed,
+                    skip_unknown=skip_unknown,
+                )
         except Exception as exc:
             print(f"  [error] UMAP generation failed: {exc}")
         finally:
@@ -535,7 +611,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             seed=args.seed,
             device=args.device,
             vocab=vocab,
-            skip_unknown=args.skip_unknown
+            skip_unknown=args.skip_unknown,
+            modality_split=not args.no_modality_split,
         )
         return 0
 
@@ -582,6 +659,13 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
 
     save_umap_plot(adata, out_png=out_png, color=color, title=prefix, skip_unknown=args.skip_unknown)
+
+    if not args.no_modality_split:
+        _save_modality_split_umaps(
+            adata, out_png, color,
+            args.neighbors, args.min_dist, args.seed,
+            skip_unknown=args.skip_unknown,
+        )
 
     adata.write_h5ad(out_h5ad)
     print(f"Checkpoint: {paths.ckpt_path}")
@@ -705,7 +789,16 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument(
         "--skip-unknown",
         action="store_true",
-        help="Whether to skip the unknonw / nan categories"
+        help="Whether to skip the unknown / nan categories.",
+    )
+    p.add_argument(
+        "--no-modality-split",
+        action="store_true",
+        help=(
+            "Disable per-modality UMAPs. By default, when the AnnData contains "
+            "a 'modality' column, separate SC-only and bulk-only UMAPs are "
+            "computed and saved alongside the joint UMAP."
+        ),
     )
     return p
 

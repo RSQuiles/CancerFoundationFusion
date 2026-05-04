@@ -150,7 +150,12 @@ class BaseDownstreamRunner:
     via the DownstreamTask interface.
     """
 
-    def __init__(self, cfg: DictConfig, task: DownstreamTask) -> None:
+    def __init__(
+        self,
+        cfg: DictConfig,
+        task: DownstreamTask,
+        embedder: Any = None,
+    ) -> None:
         """
         Initialize the runner.
 
@@ -160,6 +165,10 @@ class BaseDownstreamRunner:
             Full Hydra config containing finetune section with task config.
         task : DownstreamTask
             Task object defining heads, datasets, metrics, etc.
+        embedder : Any, optional
+            Pre-built embedder to use instead of loading from a checkpoint.
+            When provided, ``_load_embedder()`` is skipped and
+            ``pretrained_model_path`` is not required to point to a real file.
         """
         self.cfg = cfg
         self.task = task
@@ -184,8 +193,8 @@ class BaseDownstreamRunner:
         self.embedding_dim: int | None = None
         self.pretrained_model_stem: str | None = None
 
-        # Embedder (frozen pretrained model)
-        self.embedder = None
+        # Embedder (frozen pretrained model, or an externally provided one)
+        self.embedder = embedder
 
         # Task-specific state (subclasses can add more)
         self.task_state: dict[str, Any] = {}
@@ -550,7 +559,12 @@ class BaseDownstreamRunner:
 
         # Setup
         self._setup_runtime()
-        self.embedder = self._load_embedder()
+        if self.embedder is None:
+            self.embedder = self._load_embedder()
+        else:
+            self.pretrained_model_stem = type(self.embedder).__name__
+            if self.is_master:
+                log.info("Using externally provided embedder: %s", self.pretrained_model_stem)
 
         # Load data and build components
         self._build_loaders()

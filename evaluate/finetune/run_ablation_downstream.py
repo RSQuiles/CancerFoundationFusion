@@ -53,6 +53,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from evaluate.finetune.run_downstream_task import main as run_task
+from evaluate.finetune.pca_baseline import PCAEmbedder
 
 logging.basicConfig(
     level=logging.INFO,
@@ -126,6 +127,34 @@ def _discover_model_dirs(ablation_dir: Path) -> list[Path]:
 # Main logic
 # --------------------------------------------------------------------------- #
 
+def _run_pca_task(
+    task: str,
+    cfg_file: Path,
+    output_dir: Path,
+    n_components: int,
+) -> str:
+    """Run a single downstream task using PCA embeddings as baseline.
+
+    A fresh PCAEmbedder is created per task so that train/test leakage cannot
+    occur across tasks (each embedder fits only on that task's training split).
+
+    Returns 'ok', 'skip' (caller's responsibility), or 'fail'.
+    """
+    pca_embedder = PCAEmbedder(n_components=n_components)
+    try:
+        run_task(
+            config_path=str(cfg_file),
+            checkpoint_path=None,
+            task_name=task,
+            output_dir=output_dir,
+            embedder=pca_embedder,
+        )
+        return "ok"
+    except Exception:
+        log.error("  [pca/%s] FAILED:\n%s", task, traceback.format_exc())
+        return "fail"
+
+
 def run_ablation(
     ablation_dir: Path,
     tasks: list[str],
@@ -134,14 +163,18 @@ def run_ablation(
     plot: bool,
     plot_show: bool,
     plot_output: Path | None,
+    pca_baseline: bool = False,
+    pca_n_components: int = 128,
 ) -> None:
     model_dirs = _discover_model_dirs(ablation_dir)
 
     if not model_dirs:
-        log.error("No model directories with checkpoints found in %s", ablation_dir)
-        sys.exit(1)
-
-    log.info("Found %d model(s): %s", len(model_dirs), [d.name for d in model_dirs])
+        if not pca_baseline:
+            log.error("No model directories with checkpoints found in %s", ablation_dir)
+            sys.exit(1)
+        log.info("No model checkpoints found — running PCA baseline only.")
+    else:
+        log.info("Found %d model(s): %s", len(model_dirs), [d.name for d in model_dirs])
 
     # Validate that all requested tasks have a config file.
     missing_configs: list[str] = []
@@ -189,6 +222,33 @@ def run_ablation(
             except Exception:
                 log.error("  [%s] FAILED:\n%s", task, traceback.format_exc())
                 results_summary[model_name][task] = "fail"
+
+    # ------------------------------------------------------------------ #
+    # PCA baseline
+    # ------------------------------------------------------------------ #
+    if pca_baseline:
+        pca_name = "pca_baseline"
+        pca_dir = ablation_dir / pca_name
+        pca_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = pca_dir / "metrics"
+
+        log.info(
+            "Running PCA baseline (n_components=%d) for all tasks …", pca_n_components
+        )
+        results_summary[pca_name] = {}
+
+        for task in tasks:
+            if skip_existing and _results_exist(pca_dir, task):
+                log.info("  [pca/%s] results already exist — skipping", task)
+                results_summary[pca_name][task] = "skip"
+                continue
+
+            cfg_file = config_dir / TASK_CONFIG_FILES.get(task, f"{task}_config.yaml")
+            log.info("  [pca/%s] running with config %s …", task, cfg_file.name)
+            status = _run_pca_task(task, cfg_file, output_dir, pca_n_components)
+            results_summary[pca_name][task] = status
+            if status == "ok":
+                log.info("  [pca/%s] done.", task)
 
     # Print summary table.
     log.info("\n%s\nSummary\n%s", "=" * 60, "=" * 60)
@@ -300,6 +360,22 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print all known task names and their config files, then exit.",
     )
+    parser.add_argument(
+        "--pca-baseline",
+        action="store_true",
+        help=(
+            "Also evaluate a PCA baseline. Embeddings are computed by fitting "
+            "PCA on each task's training split and transforming the test split. "
+            "Results are written to {ablation_dir}/pca_baseline/metrics/."
+        ),
+    )
+    parser.add_argument(
+        "--pca-n-components",
+        type=int,
+        default=128,
+        metavar="N",
+        help="Number of PCA components for the baseline (default: 128).",
+    )
     return parser.parse_args()
 
 
@@ -330,6 +406,8 @@ def main() -> None:
         plot=args.plot,
         plot_show=not args.no_show,
         plot_output=args.plot_output,
+        pca_baseline=args.pca_baseline,
+        pca_n_components=args.pca_n_components,
     )
 
 

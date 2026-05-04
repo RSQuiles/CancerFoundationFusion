@@ -51,18 +51,21 @@ def _select_representative_files(
     seed: int | None,
 ) -> list[Path]:
     """
-    Select up to ``max_files`` h5ad files while guaranteeing that every
-    distinct group (prefix) found in the directory is represented by at
-    least one file.
+    Select up to ``max_files`` h5ad files with equal representation per group.
 
     Algorithm
     ---------
     1. Group files by their *natural prefix* (stem with trailing digits removed).
-    2. Pick one random file per group → guaranteed coverage.
-    3. If the total is still below ``max_files``, fill with additional random
-       picks from the remaining pool.
-    4. If the number of groups already exceeds ``max_files``, return all
-       representative files (coverage takes priority over the cap).
+    2. Divide ``max_files`` slots equally across groups (floor division);
+       any remainder is distributed one extra slot at a time, prioritising
+       groups that still have unsampled files.
+    3. Each group's allocation is capped at its actual size so a small group
+       cannot be over-drawn.
+    4. Within each group, files are chosen at random.
+
+    The result is that every group contributes roughly the same number of
+    files regardless of how many files it contains, preventing a large group
+    from dominating the selection.
     """
     rng = random.Random(seed)
 
@@ -70,14 +73,29 @@ def _select_representative_files(
     for f in files:
         groups.setdefault(_file_group(f), []).append(f)
 
-    # One random representative per group.
-    selected: list[Path] = [rng.choice(group) for group in groups.values()]
+    group_names = list(groups.keys())
+    n_groups = len(group_names)
 
-    # Fill up to max_files with extras drawn from the remaining pool.
-    if len(selected) < max_files:
-        pool = [f for f in files if f not in selected]
+    base = max_files // n_groups
+    remainder = max_files % n_groups
+
+    # Groups are shuffled so the remainder bonus is not always given to the
+    # same group(s) across calls with different seeds.
+    order = list(range(n_groups))
+    rng.shuffle(order)
+
+    allocs = [base] * n_groups
+    for i in order[:remainder]:
+        allocs[i] += 1
+
+    # Cap each allocation at the group's actual size.
+    allocs = [min(a, len(groups[group_names[i]])) for i, a in enumerate(allocs)]
+
+    selected: list[Path] = []
+    for g, alloc in zip(group_names, allocs):
+        pool = list(groups[g])
         rng.shuffle(pool)
-        selected.extend(pool[: max_files - len(selected)])
+        selected.extend(pool[:alloc])
 
     return sorted(selected, key=lambda p: p.name)
 

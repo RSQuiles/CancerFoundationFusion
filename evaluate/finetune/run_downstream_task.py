@@ -96,6 +96,7 @@ def main(
     checkpoint_path: str | Path | None = None,
     task_name: str | None = None,
     output_dir: str | Path | None = None,
+    embedder=None,
 ) -> dict:
     """
     Main entry point for running a downstream task.
@@ -105,9 +106,12 @@ def main(
     config_path : str
         Path to YAML config file.
     checkpoint_path : str or Path or None
-        Path to checkpoint file.
+        Path to checkpoint file.  Ignored when *embedder* is provided.
     task_name : str, optional
         Task name to run. If None, will infer from config or list available tasks.
+    embedder : optional
+        Pre-built embedder object (e.g. PCAEmbedder).  When supplied,
+        checkpoint loading is skipped entirely.
 
     Returns
     -------
@@ -151,7 +155,7 @@ def main(
         raise
 
     # Create and run runner
-    runner = BaseDownstreamRunner(cfg, task)
+    runner = BaseDownstreamRunner(cfg, task, embedder=embedder)
     results = runner.run()
 
     if runner.is_master:
