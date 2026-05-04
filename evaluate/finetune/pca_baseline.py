@@ -76,8 +76,9 @@ class PCAEmbedder:
         if sp is not None and sp.issparse(X):
             X = X.toarray()
         X = np.asarray(X, dtype=np.float32)
+        X = np.nan_to_num(X, nan=0.0)
 
-        if normalized:
+        if not normalized:
             row_sums = X.sum(axis=1, keepdims=True)
             safe_sums = np.where(row_sums == 0, 1.0, row_sums)
             X = X / safe_sums * 1e4
@@ -107,3 +108,9 @@ class PCAEmbedder:
             )
 
         return pd.DataFrame(X_emb, index=adata.obs_names)
+
+    def eval(self):
+        return
+
+    def cuda(self):
+        return

@@ -812,7 +812,7 @@ class SurvivalTask(DownstreamTask):
             adata.X = np.nan_to_num(adata.X, nan=0.0)
 
         # Make gene names compatible with vocabulary
-        adata.var_names = self._strip_ensembl_versions(adata.var_names.tolist())
+        adata.var_names = strip_ensembl_versions(adata.var_names.tolist())
 
         # Manage the generated duplicated column names
         if not adata.var_names.is_unique:

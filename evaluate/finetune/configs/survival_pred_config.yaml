@@ -9,7 +9,7 @@
 finetune:
   survival:
     # ===== REQUIRED =====
-    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/dummy_test/epoch_epoch=00.ckpt
+    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/aggregation/epoch_epoch=00.ckpt
 
     # Directory containing {CANCER}.parquet files and optionally a splits/ subdirectory.
     survboard_data_dir: /cluster/work/boeva/bulkFM/data/processed/survboard
@@ -53,7 +53,7 @@ finetune:
     dropout: 0.1
 
     # ===== TRAINING HYPERPARAMETERS =====
-    epochs: 10
+    epochs: 30
     batch_size: 64
 
     # Note: Cox loss batches should be large enough to contain multiple observed

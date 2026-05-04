@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # Default: use singularity
-USE_LOCAL=0
+USE_LOCAL=1
 
 # Parse args
 for arg in "$@"; do
@@ -22,10 +22,10 @@ for arg in "$@"; do
 done
 
 SCRIPT_ARGS=(
-    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition
-    --adata-dir /cluster/work/boeva/rquiles/data/small_partition/pipeline_ready/h5ads
+    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison
+    --adata-dir /cluster/work/boeva/rquiles/data/cellxgene_bulk/pipeline_ready/h5ads
     --color tissue_general assay
-    --sample-size 75_000
+    --sample-size 50_000
     --skip-unknown
 )
 

@@ -36,7 +36,7 @@ finetune:
     dropout: 0.1
 
     # ===== TRAINING HYPERPARAMETERS =====
-    epochs: 10
+    epochs: 30
     batch_size: 64
 
     # Larger batches are beneficial here: a batch with mostly NaN entries for a

@@ -20,7 +20,7 @@ finetune:
     # ===== DATA CONFIGURATION =====
     # Subset of cancer types. Leave empty ([]) to use all available types.
     # Available: BRCA, CCRCC, COAD, GBM, HNSCC, LUAD, LSCC, OV, PDAC, UCEC
-    cancer_types: [BRCA]
+    cancer_types: [BRCA, CCRCC, COAD, GBM, HNSCC, LUAD, LSCC, OV, PDAC, UCEC]
 
     test_size: 0.2
     random_seed: 42
@@ -32,7 +32,7 @@ finetune:
     dropout: 0.1
 
     # ===== TRAINING HYPERPARAMETERS =====
-    epochs: 10
+    epochs: 30
     batch_size: 64
     min_lr: 0.000001
     first_cycle_steps: 20
