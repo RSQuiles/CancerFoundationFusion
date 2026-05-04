@@ -402,6 +402,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--ckpt-every-n-steps",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Also save a checkpoint every N training steps. "
+            "These step checkpoints are saved in addition to the regular "
+            "epoch checkpoints. Use --save-every to keep all of them; "
+            "otherwise only the latest step checkpoint is retained."
+        ),
+    )
+
+    parser.add_argument(
         "--num-workers",
         type=int,
         help="How many workers to use for the DataLoader.",

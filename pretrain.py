@@ -30,6 +30,7 @@ def train_model(
     val_check_interval: float,
     log_interval: int,
     save_every: bool,
+    ckpt_every_n_steps: Optional[int] = None,
 ):
     """
     Train the model using PyTorch Lightning Trainer
@@ -52,7 +53,7 @@ def train_model(
     # Setup callbacks
     callbacks = []
     callbacks.append(MyProgressBar(refresh_rate=log_interval))
-    # Model checkpointing
+    # Epoch-level checkpoint (always active)
     checkpoint_callback = ModelCheckpoint(
         dirpath=save_dir,
         filename="epoch_{epoch:02d}",
@@ -60,6 +61,16 @@ def train_model(
         save_top_k=-1 if save_every else 1,
     )
     callbacks.append(checkpoint_callback)
+
+    # Step-level checkpoint (optional)
+    if ckpt_every_n_steps is not None:
+        step_checkpoint_callback = ModelCheckpoint(
+            dirpath=save_dir,
+            filename="step_{step:06d}_epoch_{epoch:02d}",
+            every_n_train_steps=ckpt_every_n_steps,
+            save_top_k=-1 if save_every else 1,
+        )
+        callbacks.append(step_checkpoint_callback)
 
     # Learning rate monitoring
     lr_monitor = LearningRateMonitor(logging_interval="step")
@@ -267,6 +278,7 @@ def main(input_args=None):
         gradient_clip_val=args.gradient_clip_val,
         log_interval=args.log_interval,
         save_every=args.save_every,
+        ckpt_every_n_steps=args.ckpt_every_n_steps,
     )
 
     # Return latest model checkpoint
