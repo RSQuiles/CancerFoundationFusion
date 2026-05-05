@@ -812,18 +812,12 @@ class SurvivalTask(DownstreamTask):
             adata.X = np.nan_to_num(adata.X, nan=0.0)
 
         # Make gene names compatible with vocabulary
-        adata.var_names = strip_ensembl_versions(adata.var_names.tolist())
+        # stripped_genes = strip_ensembl_versions(adata.var_names.tolist())
+        # adata.var_names = translate_gene_symbols(stripped_genes)
 
         # Manage the generated duplicated column names
-        if not adata.var_names.is_unique:
-            df_expr = pd.DataFrame(adata.X, columns=adata.var_names)
-            # Keep the duplicate column with highest variance
-            df_expr = df_expr.loc[:, ~df_expr.columns.duplicated(keep='first')]
-            adata = ad.AnnData(
-                X=df_expr.values,
-                obs=adata.obs,
-                var=pd.DataFrame(index=df_expr.columns)
-            )
+        adata = deduplicate_var_names(adata)
+
         adata.obs["cancer_type"] = df_all["_cancer_type"].values
         adata.obs["cohort"]      = df_all["_cohort"].values
         adata.obs["OS_days"]     = times

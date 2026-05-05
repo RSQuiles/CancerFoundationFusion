@@ -108,31 +108,33 @@ def sample_h5ad_subset_from_prefix(
     max_files: int = 6,
 ) -> AnnData:
     """
-    Load a representative subset of .h5ad files in a directory, combine their
-    observations virtually, and return a random subset of ``n_subset``
-    observations as a single AnnData object.
+    Load a balanced subset of .h5ad files in a directory and return
+    ``n_subset`` observations as a single AnnData object.
 
-    Only ``max_files`` files are ever opened for cell counting and reading,
-    keeping memory and I/O overhead low even when the directory contains many
-    files.  Files are selected so that every distinct filename-prefix group
-    (e.g. "brain", "liver") is represented by at least one file; remaining
-    slots are filled with random picks from the full pool.
+    When multiple filename-prefix groups exist (e.g. "sc" and "bulk"),
+    the ``n_subset`` budget is divided **equally** across groups so that
+    no group dominates the final sample.  Within each group, observations
+    are drawn proportionally to file size.  If a group contains fewer
+    observations than its target share, its actual total is used and the
+    returned count may be slightly below ``n_subset``.
+
+    Only ``max_files`` files are ever opened (selected with balanced
+    per-group representation via ``_select_representative_files``).
 
     Args:
-        prefix:    Filename prefix filter.  If None or empty, all .h5ad files
-                   in the directory are candidates.
+        prefix:    Filename prefix filter.  If None or empty, all .h5ad
+                   files in the directory are candidates.
         directory: Directory containing .h5ad files.
-        n_subset:  Number of observations (cells/rows) to return.
+        n_subset:  Target number of observations to return.
         seed:      Random seed for reproducibility.
-        max_files: Maximum number of files to load (default: 2).  Set to a
-                   large number to disable the cap.
+        max_files: Maximum number of files to load (default: 6).
 
     Returns:
         AnnData containing the sampled observations.
 
     Raises:
         FileNotFoundError: If no matching .h5ad files are found.
-        ValueError:        If n_subset is invalid or exceeds total available cells.
+        ValueError:        If n_subset is invalid or exceeds total cells.
     """
     directory = Path(directory)
     pattern = f"{prefix}*.h5ad" if prefix else "*.h5ad"
@@ -144,7 +146,7 @@ def sample_h5ad_subset_from_prefix(
             + (f" with prefix '{prefix}'." if prefix else ".")
         )
 
-    # Select a small representative set of files.
+    # Select a small, balanced set of files.
     files = _select_representative_files(all_files, max_files=max_files, seed=seed)
     if len(files) < len(all_files):
         print(
@@ -155,15 +157,13 @@ def sample_h5ad_subset_from_prefix(
     if n_subset <= 0:
         raise ValueError("n_subset must be a positive integer.")
 
-    # First pass: get number of observations in each selected file.
+    # First pass: count observations per file.
     file_infos: list[tuple[Path, int]] = []
     total_obs = 0
-
     for file in files:
         adata_backed = ad.read_h5ad(file, backed="r")
         n_obs = adata_backed.n_obs
         adata_backed.file.close()
-
         if n_obs > 0:
             file_infos.append((file, n_obs))
             total_obs += n_obs
@@ -177,51 +177,74 @@ def sample_h5ad_subset_from_prefix(
             f"are available across {len(file_infos)} files."
         )
 
+    # Group files by prefix and allocate n_subset equally across groups.
+    group_infos: dict[str, list[tuple[Path, int]]] = {}
+    for file, n_obs in file_infos:
+        group_infos.setdefault(_file_group(file), []).append((file, n_obs))
+
+    group_names = list(group_infos.keys())
+    n_groups = len(group_names)
+    base = n_subset // n_groups
+    remainder = n_subset % n_groups
+
+    # Give each group a base allocation; distribute leftover cells one by one.
+    group_targets: dict[str, int] = {g: base for g in group_names}
+    for g in group_names[:remainder]:
+        group_targets[g] += 1
+
+    # Cap each group at its actual observation count.
+    for g in group_names:
+        group_total = sum(n for _, n in group_infos[g])
+        if group_targets[g] > group_total:
+            print(
+                f"Group '{g}' has only {group_total} observations "
+                f"(target {group_targets[g]}); capping."
+            )
+            group_targets[g] = group_total
+
     rng = random.Random(seed)
 
-    # Sample global row indices from the combined dataset.
-    sampled_global_indices = sorted(rng.sample(range(total_obs), n_subset))
-
-    # Map sampled global indices back to per-file local indices.
-    per_file_indices: dict[Path, list[int]] = {file: [] for file, _ in file_infos}
-
-    cursor = 0
-    sample_ptr = 0
-    for file, n_obs in file_infos:
-        file_start = cursor
-        file_end = cursor + n_obs
-
-        local_indices = []
-        while sample_ptr < len(sampled_global_indices):
-            global_idx = sampled_global_indices[sample_ptr]
-            if global_idx >= file_end:
-                break
-            local_indices.append(global_idx - file_start)
-            sample_ptr += 1
-
-        if local_indices:
-            per_file_indices[file] = local_indices
-
-        cursor = file_end
-
-    # Second pass: load only selected rows from each file.
+    # Second pass: sample and load rows for each group.
     subsets: list[AnnData] = []
-    for file, _ in file_infos:
-        print(f"File: {file}")
-        local_indices = per_file_indices[file]
-        if not local_indices:
-            continue
+    for group in group_names:
+        infos = group_infos[group]
+        target = group_targets[group]
+        group_total = sum(n for _, n in infos)
 
-        adata = ad.read_h5ad(file, backed="r")
-        try:
-            subset = adata[local_indices].to_memory()
-            subset.obs["_source_file"] = file.name
-            subsets.append(subset)
-        finally:
-            adata.file.close()
+        # Sample target indices from this group's combined index space.
+        sampled = sorted(rng.sample(range(group_total), target))
 
-        del adata
-        gc.collect()
+        # Map global-within-group indices to per-file local indices.
+        per_file: dict[Path, list[int]] = {f: [] for f, _ in infos}
+        cursor = 0
+        ptr = 0
+        for file, n_obs in infos:
+            file_end = cursor + n_obs
+            local: list[int] = []
+            while ptr < len(sampled) and sampled[ptr] < file_end:
+                local.append(sampled[ptr] - cursor)
+                ptr += 1
+            if local:
+                per_file[file] = local
+            cursor = file_end
+
+        for file, _ in infos:
+            indices = per_file[file]
+            if not indices:
+                continue
+            print(f"File: {file}")
+            adata = ad.read_h5ad(file, backed="r")
+            try:
+                subset = adata[indices].to_memory()
+                subset.obs["_source_file"] = file.name
+                subsets.append(subset)
+            finally:
+                adata.file.close()
+            del adata
+            gc.collect()
+
+    if not subsets:
+        raise ValueError("No observations were sampled.")
 
     if len(subsets) == 1:
         return subsets[0]

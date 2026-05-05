@@ -26,8 +26,7 @@ finetune:
       # METABRIC
       BRCA,
       # TCGA
-      BLCA, BRCA, CESC, COAD, ESCA, GBM, HNSC, KIRC, KIRP, LAML,
-      LGG, LIHC, LUAD, LUSC, OV, PAAD, READ, SARC, SKCM, STAD, UCEC
+      BRCA
     ]
 
     head_learning_rate: 0.001

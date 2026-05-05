@@ -148,35 +148,60 @@ def parquet_to_adata(df: pd.DataFrame, gene_cols: list[str]) -> ad.AnnData:
 
 def translate_gene_symbols(
     gene_symbols: list[str],
-    mapping_file: str = "symbol_to_ensembl.json",
-    mapping_dir: str | Path = "/cluster/work/boeva/rquiles/CancerFoundationFusion/gene_mappings",
+    mapping_file: str | Path | None = None,
+    mapping_dir: str | Path | None = "/cluster/work/boeva/rquiles/CancerFoundationFusion/gene_mappings",
     direction: str = "to_ensembl",
 ) -> list[str]:
     """
-    Translate gene symbols using a JSON mapping file.
+    Translate gene symbols using one or all JSON mapping files.
 
     Parameters
     ----------
     gene_symbols  : list of gene names to translate.
-    mapping_dir   : directory where the mapping JSON is stored.
-    mapping_file  : filename of the JSON mapping (e.g. "gene_mapping.json").
-    direction     : label used for logging only ("to_ensembl" or "to_hgnc").
+    mapping_file  : full path to a specific JSON mapping file. If provided,
+                    mapping_dir is ignored.
+    mapping_dir   : directory of JSON mapping files. All *.json files whose
+                    name contains `direction` are loaded and merged, with later
+                    files taking precedence for duplicate keys.
+    direction     : used to filter files in directory mode (only files whose
+                    name contains this string are loaded), e.g. "to_ensembl"
+                    will match "symbol_to_ensembl.json", "hgnc_to_ensembl.json".
 
     Returns
     -------
     Translated list; unmapped symbols are returned unchanged.
     """
-    mapping_path = Path(mapping_dir) / mapping_file
+    if mapping_file is None and mapping_dir is None:
+        raise ValueError("Either mapping_file or mapping_dir must be provided.")
+    if mapping_file is not None and mapping_dir is not None:
+        raise ValueError("Provide either mapping_file or mapping_dir, not both.")
 
-    if not mapping_path.exists():
-        print(f"Gene mapping file not found at {mapping_path} — symbols returned unchanged.")
-        return gene_symbols
+    if mapping_file is not None:
+        mapping_path = Path(mapping_file)
+        if not mapping_path.exists():
+            print(f"Gene mapping file not found at {mapping_path} — symbols returned unchanged.")
+            return gene_symbols
+        with open(mapping_path, "r") as f:
+            mapping: dict[str, str] = json.load(f)
+        print(f"Loaded mapping: {mapping_path.name} ({len(mapping):,} entries)")
 
-    with open(mapping_path, "r") as f:
-        mapping: dict[str, str] = json.load(f)
+    else:
+        mapping_dir = Path(mapping_dir)
+        json_files = sorted(
+            jf for jf in mapping_dir.glob("*.json") if direction in jf.name
+        )
+        if not json_files:
+            print(f"No JSON files matching '{direction}' found in {mapping_dir} — symbols returned unchanged.")
+            return gene_symbols
+
+        mapping = {}
+        for jf in json_files:
+            with open(jf, "r") as f:
+                partial = json.load(f)
+            mapping.update(partial)
+            print(f"Loaded mapping: {jf.name} ({len(partial):,} entries)")
 
     translated = [mapping.get(g, g) for g in gene_symbols]
-
     n_translated = sum(1 for o, t in zip(gene_symbols, translated) if o != t)
     print(f"Gene translation ({direction}): {n_translated}/{len(gene_symbols)} symbols mapped.")
 

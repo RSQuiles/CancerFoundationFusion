@@ -23,7 +23,7 @@ done
 
 SCRIPT_ARGS=(
     --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison
-    --tasks canc_type_class proteome_pred drug_sensitivity
+    --tasks canc_type_class proteome_pred drug_sensitivity survival
     --config-dir /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/configs
     --pca-baseline
     --skip-existing
