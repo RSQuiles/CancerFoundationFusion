@@ -17,7 +17,7 @@
       "wandb_entity": "rquiles",
       "wandb": "ablation_base_comparison",
       "compile": true,
-      "ckpt-every-n-steps": 50000,
+      "ckpt_every_n_steps": 50000,
       "resume_from_checkpoint": "last"
     },
     "data": {
@@ -54,34 +54,6 @@
   },
   "base_overrides": {},
   "ablations": [
-    {
-      "name": "bulk_baseline",
-      "overrides": {
-        "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_base_comparison/bulk_baseline",
-          "wandb_name": "bulk_baseline"
-        },
-        "data": {
-          "train_path": "/cluster/work/boeva/rquiles/data/bulk_only/pipeline_ready"
-        },
-        "model": {},
-        "features": {}
-      }
-    },
-      {
-      "name": "sc_baseline",
-      "overrides": {
-        "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_base_comparison/sc_baseline",
-          "wandb_name": "sc_baseline"
-        },
-        "data": {
-          "train_path": "/cluster/work/boeva/rquiles/data/cellxgene_subsample/pipeline_ready"
-        },
-        "model": {},
-        "features": {}
-      }
-    },
       {
       "name": "unified_baseline",
       "overrides": {

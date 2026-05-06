@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from typing import Optional
+from pathlib import Path
 
 sys.path.insert(0, "../")
 from utils import get_args, MyProgressBar
@@ -109,16 +110,12 @@ def train_model(
     )
 
     # Start training
-    if resume_from_checkpoint == "last":
-        resume_from_checkpoint = _get_last_checkpoint_path(save_dir)
-    if resume_from_checkpoint is not None:
-        print(f"Resuming training from {resume_from_checkpoint}!")
     trainer.fit(model, datamodule=datamodule, ckpt_path=resume_from_checkpoint)
 
     return trainer
 
 
-def _get_last_checkpoint_path(trainer: pl.Trainer, save_dir: str) -> Optional[str]:
+def _get_last_checkpoint_path_from_trainer(trainer: pl.Trainer, save_dir: str) -> Optional[str]:
     """Return the most recently saved checkpoint path, if any."""
     for callback in trainer.callbacks:
         if isinstance(callback, ModelCheckpoint):
@@ -130,6 +127,17 @@ def _get_last_checkpoint_path(trainer: pl.Trainer, save_dir: str) -> Optional[st
                 return callback.best_model_path
 
     checkpoint_dir = Path(save_dir)
+    candidates = list(checkpoint_dir.glob("*.ckpt"))
+    if not candidates:
+        return None
+    latest = max(candidates, key=lambda p: p.stat().st_mtime)
+    return str(latest)
+
+def _get_last_checkpoint_path(save_dir: str) -> Optional[str]:
+    """Return the most recently saved checkpoint path in save_dir, if any."""
+    checkpoint_dir = Path(save_dir)
+    if not checkpoint_dir.exists():
+        return None
     candidates = list(checkpoint_dir.glob("*.ckpt"))
     if not candidates:
         return None
@@ -192,9 +200,16 @@ def main(input_args=None):
     )
     datamodule.setup(stage="fit")
 
-    if args.resume_from_checkpoint:
+    # Define training start point
+    if args.resume_from_checkpoint == "last":
+        resume_from_checkpoint = _get_last_checkpoint_path(args.save_dir)
+    else:
+        resume_from_checkpoint = args.resume_from_checkpoint
+
+    if resume_from_checkpoint is not None:
+        print(f"Resuming training from {resume_from_checkpoint}")
         model = CancerFoundation.load_from_checkpoint(
-            args.resume_from_checkpoint, vocab=datamodule.vocab
+            resume_from_checkpoint, vocab=datamodule.vocab
         )
     else:
         model = CancerFoundation(
@@ -271,7 +286,7 @@ def main(input_args=None):
         num_nodes=args.num_nodes,
         gpus=args.gpus,
         save_dir=args.save_dir,
-        resume_from_checkpoint=args.resume_from_checkpoint,
+        resume_from_checkpoint=resume_from_checkpoint,
         val_check_interval=args.val_check_interval,
         wandb_project=args.wandb,
         wandb_entity=args.wandb_entity,
@@ -286,7 +301,7 @@ def main(input_args=None):
     )
 
     # Return latest model checkpoint
-    return _get_last_checkpoint_path(trainer, args.save_dir)
+    return _get_last_checkpoint_path_from_trainer(trainer, args.save_dir)
 
 
 if __name__ == "__main__":

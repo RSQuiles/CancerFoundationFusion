@@ -19,7 +19,7 @@ from omegaconf import OmegaConf, DictConfig
 import hydra
 
 # Import task implementations to register them
-from evaluate.finetune.downstream_tasks_impl import (
+from evaluate.finetune.tasks import (
     CancTypeClassTask,
     DeconvTask,
     SurvivalTask,
