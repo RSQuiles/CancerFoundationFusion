@@ -8,7 +8,9 @@
     "seed": 0,
     "val_check_interval": 0.5,
     "log_interval": 1,
-    "save_dir": "${work}/outputs/save_CFF/dummy_test"
+    "save_dir": "${work}/outputs/save_CFF/dummy_test",
+    "ckpt-every-n-steps": 5,
+    "resume_from_checkpoint": "last"
   },
   "data": {
     "train_path": "/cluster/work/boeva/rquiles/data/cellxgene_bulk/pipeline_ready",

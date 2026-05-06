@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--resume-from-checkpoint",
         type=str,
-        help="The directory to load the checkpoint.",
+        help="The directory to load the checkpoint. If 'last' is used, the last checkpoint in save-dir is used",
     )
     parser.add_argument(
         "--pretrained",

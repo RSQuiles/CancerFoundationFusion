@@ -109,6 +109,10 @@ def train_model(
     )
 
     # Start training
+    if resume_from_checkpoint == "last":
+        resume_from_checkpoint = _get_last_checkpoint_path(save_dir)
+    if resume_from_checkpoint is not None:
+        print(f"Resuming training from {resume_from_checkpoint}!")
     trainer.fit(model, datamodule=datamodule, ckpt_path=resume_from_checkpoint)
 
     return trainer

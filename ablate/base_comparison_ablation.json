@@ -16,7 +16,9 @@
       "save_dir": "${work}/outputs/save_CFF/ablation_base_comparison",
       "wandb_entity": "rquiles",
       "wandb": "ablation_base_comparison",
-      "compile": true
+      "compile": true,
+      "ckpt-every-n-steps": 50000,
+      "resume_from_checkpoint": "last"
     },
     "data": {
       "train_path": "/cluster/work/boeva/rquiles/data/cellxgene_bulk/pipeline_ready",
