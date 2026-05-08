@@ -1,62 +1,92 @@
-# Configuration for Survival Prediction Task (SurvBoard)
+# Configuration for the SurvBoard Survival Prediction Task
 #
-# Task: Predict a scalar risk score from bulk RNA-seq. Trained with Cox PH loss;
-# evaluated with Harrell's C-index.
+# Task: Train a Cox PH head on CFF embeddings from bulk RNA-seq; generate
+# per-patient survival functions; save them in SurvBoard's consolidated CSV
+# format for external evaluation with SurvBoard's evaluate_metrics.py.
 #
-# Data source: bulkFM-data/data/processed/survboard/
-# Run preparation: python bulkFM-data/scripts/prepare_survboard.py
+# Survival functions are written to:
+#   {survboard_results_dir}/{COHORT}/{CANCER}/cff/split_{fold_index}.csv
+# (or {save_dir}/survival_functions_cff/... if survboard_results_dir is unset)
+#
+# Run:
+#   cd evaluate/finetune/scripts && bash survival.sh
+#   python run_downstream_task.py --config configs/survival_pred_config.yaml
 
 finetune:
   survival:
+
     # ===== REQUIRED =====
+
     pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/aggregation/epoch_epoch=00.ckpt
 
-    # Directory containing {CANCER}.parquet files and optionally a splits/ subdirectory.
+    # Root directory containing {COHORT}_{CANCER}.parquet files.
     survboard_data_dir: /cluster/work/boeva/bulkFM/data/processed/survboard
 
-    # Cancer types to include. Can be a single type (e.g. ["BRCA"]) or multiple
-    # for a pan-cancer model. Available: BRCA, BLCA, COAD, GBM, KIRC, LAML, LGG,
-    # LIHC, LUAD, LUSC, OV, PAAD, SARC, SKCM, STAD, UCEC (+ ICGC and METABRIC cohorts).
+    # Cohorts and cancer types to include.  Every combination that has a
+    # matching parquet file is loaded and concatenated before training.
     cohorts: [TCGA]
-    cancer_types: [
-      # ICGC
-      CLLE-ES, LIRI-JP, PACA-AU, PACA-CA,
-      # TARGET
-      ALL, WT,
-      # METABRIC
-      BRCA,
-      # TCGA
-      BRCA
-    ]
+    cancer_types:
+      # TCGA (22 cancer types)
+      - BRCA
+      - BLCA
+      - COAD
+      - GBM
+      - KIRC
+      - LAML
+      - LGG
+      - LIHC
+      - LUAD
+      - LUSC
+      - OV
+      - PAAD
+      - SARC
+      - SKCM
+      - STAD
+      - UCEC
+      # Uncomment to add ICGC cohort (set cohorts: [TCGA, ICGC])
+      # - CLLE-ES
+      # - LIRI-JP
+      # - PACA-AU
+      # - PACA-CA
+      # Uncomment to add METABRIC cohort (set cohorts: [TCGA, METABRIC])
+      # - BRCA   # METABRIC BRCA
 
     head_learning_rate: 0.001
 
-    # ===== PRE-MADE SPLITS (optional) =====
-    # If set, the pre-made SurvBoard CV splits are used instead of a random split.
-    # Only active when a single cancer type is requested (pan-cancer runs fall back
-    # to stratified random split automatically).
-    # Expected file format: {splits_dir}/{CANCER}_splits.csv
-    #   Row index = sample ID matching the parquet file.
-    #   'fold' column = integer (0 .. K-1) denoting fold membership.
-    # splits_dir: /path/to/data/processed/survboard/splits
-    # fold_index: 0    # which fold to use as the test set (0-indexed)
+    # ===== PRE-MADE SPLITS =====
+    # Directory containing SurvBoard's official split index CSVs:
+    #   {splits_dir}/{COHORT}/{CANCER}_train_splits.csv
+    #   {splits_dir}/{COHORT}/{CANCER}_test_splits.csv
+    # Each CSV: rows = folds, columns = NaN-padded integer sample indices.
+    splits_dir: /cluster/work/boeva/bulkFM/data/processed/survboard/data_reproduced/splits
+    # fold_index: integer (0–24)  → train a single fold; save split_{fold}.csv
+    # fold_index: "all"           → train one Cox head per fold internally;
+    #                               report mean C-index; save all split_*.csv files
+    fold_index: 0
 
-    # ===== DATA CONFIGURATION =====
-    test_size: 0.2
-    random_seed: 42
+    # ===== OUTPUT =====
+
+    # Where the runner saves model checkpoints.
+    save_dir: /cluster/work/boeva/rquiles/outputs/save_CFF/survival/checkpoints
+
+    # Where survival-function CSVs are written for SurvBoard evaluation.
+    # Defaults to {save_dir}/survival_functions_cff/ when unset.
+    survboard_results_dir: /cluster/work/boeva/rquiles/outputs/save_CFF/survival/results
+
+    # ===== DATA =====
+    test_size: 0.2                 # only used when splits_dir is unset
     train_test_split_version: 1
 
     # ===== MODEL ARCHITECTURE =====
-    # The head outputs a single scalar risk score (output_dim is fixed to 1).
+    # EmbeddingPredHead: embedding_dim → hidden_dim → 1 (scalar risk score)
     hidden_dim: 128
     dropout: 0.1
 
     # ===== TRAINING HYPERPARAMETERS =====
     epochs: 30
     batch_size: 64
+    # Cox batches should be large enough to contain multiple observed events.
 
-    # Note: Cox loss batches should be large enough to contain multiple observed
-    # events — very small batches may produce degenerate gradients.
     min_lr: 0.000001
     first_cycle_steps: 20
     cycle_mult: 2.0
@@ -64,6 +94,3 @@ finetune:
     gamma: 0.9
     grad_accumulation_steps: 1
     max_grad_norm: 10.0
-
-    # ===== OUTPUT =====
-    save_dir: ./checkpoints/survival

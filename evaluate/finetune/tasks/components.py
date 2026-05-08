@@ -31,3 +31,16 @@ class EmbeddingPredHead(nn.Module):
         x = self.act1(x)
         x = self.dropout1(x)
         return self.fc2(x)
+    
+    
+class LinearPredHead(nn.Module):
+    def __init__(
+        self,
+        embedding_dim: int,
+        output_dim: int = 1,
+    ) -> None:
+        super().__init__()
+        self.fc = nn.Linear(embedding_dim, output_dim, bias=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc(x)

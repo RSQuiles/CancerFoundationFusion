@@ -1,6 +1,6 @@
 from canc_type_pred import CancTypeClassTask
 from deconv import DeconvTask
-from survival_pred import SurvivalTask
+from survboard_task import SurvBoardTask
 from drug_sens_pred import DrugSensitivityTask
 from prot_pred import ProteomePredTask
 from components import EmbeddingPredHead

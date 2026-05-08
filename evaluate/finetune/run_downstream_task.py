@@ -22,7 +22,7 @@ import hydra
 from evaluate.finetune.tasks import (
     CancTypeClassTask,
     DeconvTask,
-    SurvivalTask,
+    SurvBoardTask,
     ProteomePredTask,
     DrugSensitivityTask,
 )
