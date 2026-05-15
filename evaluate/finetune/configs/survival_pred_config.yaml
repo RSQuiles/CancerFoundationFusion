@@ -22,32 +22,35 @@ finetune:
     # Root directory containing {COHORT}_{CANCER}.parquet files.
     survboard_data_dir: /cluster/work/boeva/bulkFM/data/processed/survboard
 
+    # Ablation directory where results will be written to
+    ablation_dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison
+
     # Cohorts and cancer types to include.  Every combination that has a
     # matching parquet file is loaded and concatenated before training.
-    cohorts: [TCGA]
+    cohorts: [ICGC]
     cancer_types:
       # TCGA (22 cancer types)
-      - BRCA
-      - BLCA
-      - COAD
-      - GBM
-      - KIRC
-      - LAML
-      - LGG
-      - LIHC
-      - LUAD
-      - LUSC
-      - OV
-      - PAAD
-      - SARC
-      - SKCM
-      - STAD
-      - UCEC
+      # - BRCA
+      # - BLCA
+      # - COAD
+      # - GBM
+      # - KIRC
+      # - LAML
+      # - LGG
+      # - LIHC
+      # - LUAD
+      # - LUSC
+      # - OV
+      # - PAAD
+      # - SARC
+      # - SKCM
+      # - STAD
+      # - UCEC
       # Uncomment to add ICGC cohort (set cohorts: [TCGA, ICGC])
-      # - CLLE-ES
-      # - LIRI-JP
-      # - PACA-AU
-      # - PACA-CA
+      - CLLE-ES
+      - LIRI-JP
+      - PACA-AU
+      - PACA-CA
       # Uncomment to add METABRIC cohort (set cohorts: [TCGA, METABRIC])
       # - BRCA   # METABRIC BRCA
 
@@ -58,7 +61,7 @@ finetune:
     #   {splits_dir}/{COHORT}/{CANCER}_train_splits.csv
     #   {splits_dir}/{COHORT}/{CANCER}_test_splits.csv
     # Each CSV: rows = folds, columns = NaN-padded integer sample indices.
-    splits_dir: /cluster/work/boeva/bulkFM/data/processed/survboard/data_reproduced/splits
+    splits_dir: /cluster/work/boeva/bulkFM/data/processed/survboard/splits
     # fold_index: integer (0–24)  → train a single fold; save split_{fold}.csv
     # fold_index: "all"           → train one Cox head per fold internally;
     #                               report mean C-index; save all split_*.csv files
@@ -67,11 +70,11 @@ finetune:
     # ===== OUTPUT =====
 
     # Where the runner saves model checkpoints.
-    save_dir: /cluster/work/boeva/rquiles/outputs/save_CFF/survival/checkpoints
+    save_dir: /cluster/work/boeva/rquiles/outputs/survival/checkpoints
 
     # Where survival-function CSVs are written for SurvBoard evaluation.
     # Defaults to {save_dir}/survival_functions_cff/ when unset.
-    survboard_results_dir: /cluster/work/boeva/rquiles/outputs/save_CFF/survival/results
+    survboard_results_dir: /cluster/work/boeva/rquiles/outputs/survival/functions
 
     # ===== DATA =====
     test_size: 0.2                 # only used when splits_dir is unset
@@ -83,7 +86,7 @@ finetune:
     dropout: 0.1
 
     # ===== TRAINING HYPERPARAMETERS =====
-    epochs: 30
+    epochs: 5
     batch_size: 64
     # Cox batches should be large enough to contain multiple observed events.
 

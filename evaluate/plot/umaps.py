@@ -90,8 +90,7 @@ def resolve_run_checkpoint(
     `{save_root}/{run_name}` for `*.ckpt`.
 
     Heuristic:
-    - prefer the highest `epoch_XX*.ckpt` if present,
-    - otherwise fall back to newest-mtime `*.ckpt`.
+    - Always prefer the newest-mtime (most recently modified) `*.ckpt`.
     """
     save_root = _as_path(save_root)
     run_dir = save_root / run_name
@@ -110,24 +109,23 @@ def resolve_run_checkpoint(
     if not ckpts:
         raise FileNotFoundError(f"No .ckpt files found in: {run_dir}")
 
-    ckpts_with_epoch = [(p, _epoch_num(p)) for p in ckpts]
-    epoch_candidates = [(p, e) for p, e in ckpts_with_epoch if e >= 0]
-    if epoch_candidates:
-        best = max(epoch_candidates, key=lambda t: t[1])[0]
-        return RunPaths(run_dir=run_dir, ckpt_path=best)
-
+    # Always use the most recently modified checkpoint
     best = max(ckpts, key=lambda p: p.stat().st_mtime)
     return RunPaths(run_dir=run_dir, ckpt_path=best)
 
 
 def _find_best_ckpt(model_dir: Path) -> Path | None:
-    """Search model_dir and its checkpoints/ subdirectory for the best ckpt."""
+    """Search model_dir and its checkpoints/ subdirectory for the best ckpt.
+    
+    Returns the most recently modified checkpoint.
+    """
     candidates: list[Path] = []
     for pattern in ("*.ckpt", "checkpoints/*.ckpt"):
         candidates.extend(model_dir.glob(pattern))
     if not candidates:
         return None
-    return max(candidates, key=_epoch_num)
+    # Return the most recently modified
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def load_vocab_from_json(vocab_json: str | Path) -> dict:

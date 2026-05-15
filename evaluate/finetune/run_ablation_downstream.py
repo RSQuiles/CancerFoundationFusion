@@ -103,7 +103,7 @@ def _find_best_ckpt(model_dir: Path) -> Path | None:
     if not candidates:
         return None
 
-    return max(candidates, key=lambda p: (_epoch_num(p), p.stat().st_mtime))
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def _results_exist(model_dir: Path, task: str) -> bool:

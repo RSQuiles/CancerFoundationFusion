@@ -37,6 +37,8 @@ class LinearPredHead(nn.Module):
     def __init__(
         self,
         embedding_dim: int,
+        hidden_dim : int,
+        dropout: float,
         output_dim: int = 1,
     ) -> None:
         super().__init__()

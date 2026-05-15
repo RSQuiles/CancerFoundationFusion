@@ -31,8 +31,8 @@ Usage
 
 Expected file layout produced by SurvBoardTask
 ----------------------------------------------
-    {results_dir}/{COHORT}/{CANCER}/cff/split_0.csv
-    {results_dir}/{COHORT}/{CANCER}/cff/split_1.csv
+    {results_dir}/{COHORT}/{CANCER}/{model_name}/split_0.csv
+    {results_dir}/{COHORT}/{CANCER}/{model_name}/split_1.csv
     ...
 
 Each CSV: rows = test patients, columns = float time-grid values + metadata
@@ -53,6 +53,7 @@ import logging
 import sys
 import warnings
 from pathlib import Path
+import yaml
 
 import numpy as np
 import pandas as pd
@@ -158,6 +159,33 @@ def _load_survival_csv(
     surv_df         = surv_df.T.sort_index()   # (n_times × n_patients)
     return surv_df
 
+def _find_best_ckpt(model_dir: Path) -> Path | None:
+    """
+    Find the best (highest-epoch) checkpoint in a model directory.
+
+    Searches ``{model_dir}/*.ckpt`` and ``{model_dir}/checkpoints/*.ckpt``.
+    Returns None if no checkpoint is found.
+    """
+    candidates: list[Path] = []
+    candidates.extend(model_dir.glob("*.ckpt"))
+    candidates.extend((model_dir / "checkpoints").glob("*.ckpt"))
+
+    if not candidates:
+        return None
+
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+def _discover_model_dirs(ablation_dir: Path) -> list[Path]:
+    """Return sorted list of sub-directories that contain at least one checkpoint."""
+    dirs = []
+    for d in sorted(ablation_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        ckpt = _find_best_ckpt(d)
+        if ckpt is not None:
+            dirs.append(d)
+    return dirs
+
 
 # --------------------------------------------------------------------------- #
 # Per-fold metric computation
@@ -217,6 +245,9 @@ def evaluate_all(
     ibs_grid_len: int,
 ) -> None:
     rows: list[dict] = []
+
+    log.info(f"Evaluating model '{model_name}' across {len(cohorts)} cohort(s) "
+             f"and {len(cancer_types)} cancer type(s).")
 
     for cohort in cohorts:
         for cancer in cancer_types:
@@ -334,39 +365,13 @@ def parse_args() -> argparse.Namespace:
         epilog=__doc__,
     )
     p.add_argument(
-        "--data-dir", required=True, type=Path,
-        help="Directory containing {COHORT}_{CANCER}.parquet files.",
+        "--config", required=True, type=Path,
+        help="Configuration file for the survival prediction task",
     )
     p.add_argument(
-        "--splits-dir", required=True, type=Path,
-        help="Directory containing SurvBoard split CSVs ({COHORT}/{CANCER}_*_splits.csv).",
-    )
-    p.add_argument(
-        "--results-dir", required=True, type=Path,
-        help="Directory where SurvBoardTask wrote survival CSVs "
-             "({cohort}/{cancer}/{model_name}/split_*.csv).",
-    )
-    p.add_argument(
-        "--ablation-dir", required=True, type=Path,
-        help="Root ablation directory. Metrics are written to "
-             "{ablation_dir}/{model_name}/metrics/.",
-    )
-    p.add_argument(
-        "--cohorts", nargs="+", required=True,
-        help="Cohort names to evaluate (e.g. TCGA METABRIC).",
-    )
-    p.add_argument(
-        "--cancer-types", nargs="+", required=True,
-        help="Cancer type codes to evaluate (e.g. BRCA LUAD PAAD).",
-    )
-    p.add_argument(
-        "--model-name", default="cff",
-        help="Sub-directory name inside results-dir and output name in ablation-dir "
-             "(default: cff).",
-    )
-    p.add_argument(
-        "--ibs-grid-len", type=int, default=100,
-        help="Number of time points for IBS integration (default: 100).",
+        "--ablation",
+        action="store_true",
+        help="Whether to evaluate the whole ablation dir or just the model from the given pretrained path"
     )
     p.add_argument(
         "--verbose", "-v", action="store_true",
@@ -383,28 +388,50 @@ def main() -> None:
         format="%(levelname)s  %(message)s",
     )
 
+    # Read fields from config file
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+    cfg = config['finetune']['survival']
+
+    data_dir = Path(cfg["survboard_data_dir"])
+    splits_dir = Path(cfg["splits_dir"])
+    results_dir = Path(cfg["survboard_results_dir"])
+    pretrained_path = Path(cfg["pretrained_model_path"])
+    ablation_dir = Path(cfg["ablation_dir"])
+    cohorts = cfg["cohorts"]
+    cancer_types = cfg["cancer_types"]
+
+
     for name, path in [
-        ("--data-dir",    args.data_dir),
-        ("--splits-dir",  args.splits_dir),
-        ("--results-dir", args.results_dir),
+        ("data-dir",    data_dir),
+        ("splits-dir",  splits_dir),
+        ("results-dir", results_dir),
     ]:
         if not path.exists():
             log.error(f"{name} does not exist: {path}")
             sys.exit(1)
 
-    log.info(f"Evaluating model '{args.model_name}' across {len(args.cohorts)} cohort(s) "
-             f"and {len(args.cancer_types)} cancer type(s).")
+    def get_model_name(pretrained_path):
+        model_name = Path(pretrained_path).parent.name
+        log.info(f"Model name: {model_name}")
+        return model_name
 
-    evaluate_all(
-        data_dir     = args.data_dir.resolve(),
-        splits_dir   = args.splits_dir.resolve(),
-        results_dir  = args.results_dir.resolve(),
-        ablation_dir = args.ablation_dir.resolve(),
-        cohorts      = args.cohorts,
-        cancer_types = args.cancer_types,
-        model_name   = args.model_name,
-        ibs_grid_len = args.ibs_grid_len,
-    )
+    if not args.ablation:
+        models = [get_model_name(pretrained_path)]
+    else:
+        models = [model_dir.name for model_dir in _discover_model_dirs(ablation_dir)]
+
+    for model in models:
+        evaluate_all(
+            data_dir     = data_dir.resolve(),
+            splits_dir   = splits_dir.resolve(),
+            results_dir  = results_dir.resolve(),
+            ablation_dir = ablation_dir.resolve(),
+            cohorts      = cohorts,
+            cancer_types = cancer_types,
+            model_name   = model,
+            ibs_grid_len = int(cfg.get("ibs_grid_len", 100)),
+        )
 
 
 if __name__ == "__main__":

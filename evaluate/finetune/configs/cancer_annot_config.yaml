@@ -15,7 +15,8 @@ finetune:
     
     # ===== DATA CONFIGURATION =====
     # TCGA cohorts to include
-    cohorts: [BRCA, BLCA, GBM, LGG, LUAD, UCEC]
+    # cohorts: [BRCA, BLCA, GBM, LGG, LUAD, UCEC]
+    cohorts: [BRCA, BLCA, COAD, GBM, HNSC, KIRC, KIRP, LAML, LGG, LIHC, LUAD, LUSC, MESO, OV, PAAD, PRAD, READ, SARC, SKCM, STAD, TGCT, THCA, UCEC, UCS]
     
     # Whether to merge GBM and LGG into single class
     merge_gbm_lgg: true

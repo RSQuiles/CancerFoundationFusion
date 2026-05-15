@@ -13,7 +13,7 @@ mkdir -p "${SCRIPT_DIR}/slurm_outputs"
 CONFIG="${SCRIPT_DIR}/../configs/survival_pred_config.yaml"
 
 # ---- Phase 1: CFF Cox training + survival CSV export --------------------- #
-echo "=== Phase 1: CFF Cox training (fold_index: all) ==="
+echo "=== Phase 1: CFF Cox training ==="
 CUDA_LAUNCH_BLOCKING=1 \
 python -u "${SCRIPT_DIR}/../run_downstream_task.py" \
     --config "$CONFIG"

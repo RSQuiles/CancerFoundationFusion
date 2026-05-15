@@ -46,7 +46,8 @@ from torch.utils.data import DataLoader, Dataset
 
 from evaluate.finetune.downstream_task import DownstreamTask, TaskRegistry
 from evaluate.finetune.tasks.components import EmbeddingPredHead, LinearPredHead
-from evaluate.finetune.utils import deduplicate_var_names, parquet_to_adata
+from evaluate.finetune.utils import parquet_to_adata, translate_gene_symbols, strip_ensembl_versions, deduplicate_var_names
+
 
 log = logging.getLogger(__name__)
 
@@ -205,6 +206,8 @@ class SurvBoardTask(DownstreamTask):
                 f"Missing required config keys for {self.task_name}: {missing}. "
                 f"Expected at {self.config_key}."
             )
+        # Save configuration
+        self.task_cfg = task_cfg
 
     # ---- Data loading ------------------------------------------------------- #
 
@@ -252,12 +255,20 @@ class SurvBoardTask(DownstreamTask):
         meta_cols = {"OS_days", "OS_event", "OS", "_cancer_type", "_cohort"}
         gene_cols = [c for c in df_all.columns if c not in meta_cols]
 
+        # Translate gene names to model's vocabulary
+        gene_cols_stripped = strip_ensembl_versions(gene_cols)
+
         event_col = "OS" if "OS" in df_all.columns else "OS_event"
         times     = df_all["OS_days"].to_numpy(dtype=np.float32)
         events    = df_all[event_col].to_numpy(dtype=np.float32)
         targets   = np.stack([times, events], axis=1)
 
         adata = parquet_to_adata(df_all, gene_cols)
+        # print(adata.var_names)
+        adata.var_names = pd.Index(gene_cols_stripped)
+        # print(adata.var_names)
+        adata = deduplicate_var_names(adata)
+
         if hasattr(adata.X, "toarray"):
             adata.X = adata.X.toarray()
         adata.X = np.nan_to_num(np.asarray(adata.X, dtype=np.float32), nan=0.0)
@@ -494,7 +505,7 @@ class SurvBoardTask(DownstreamTask):
             # Update instance state so _save_survival_csvs uses the correct fold/indices
             self._test_idx   = test_idx
             self._fold_index = fold_i
-            self._save_survival_csvs(surv_mat, time_grid, test_times, test_events)
+            self._save_survival_csvs(surv_mat, time_grid, test_times, test_events, self.get_model_name())
 
             c_idx = _c_index(test_times, test_risk, test_events.astype(bool))
             fold_c_indices.append(c_idx)
@@ -545,7 +556,8 @@ class SurvBoardTask(DownstreamTask):
         hidden  = int(getattr(cfg, "hidden_dim", 128))
         dropout = float(getattr(cfg, "dropout", 0.1))
 
-        head = self.get_head_class(
+        head_class = self.get_head_class()
+        head = head_class(
             embedding_dim=train_emb.shape[1],
             output_dim=1,
             hidden_dim=hidden,
@@ -585,6 +597,11 @@ class SurvBoardTask(DownstreamTask):
 
     # ---- Evaluation --------------------------------------------------------- #
 
+    def get_model_name(self):
+        model_name = Path(getattr(self.task_cfg, "pretrained_model_path", "unknown")).parent.name
+        log.info(f"Model name: {model_name}")
+        return model_name
+
     def compute_metrics(
         self,
         predictions: np.ndarray,
@@ -612,7 +629,7 @@ class SurvBoardTask(DownstreamTask):
         surv_mat, time_grid = _breslow_survival(
             self._train_times, self._train_events, risk
         )
-        self._save_survival_csvs(surv_mat, time_grid, times, events)
+        self._save_survival_csvs(surv_mat, time_grid, times, events, self.get_model_name())
 
         n_events = int(events.sum())
         log.info(
@@ -632,12 +649,13 @@ class SurvBoardTask(DownstreamTask):
         time_grid: np.ndarray,
         times:     np.ndarray,
         events:    np.ndarray,
+        model_name: str,
     ) -> None:
         """
         Write one consolidated CSV per (cohort, cancer) in SurvBoard format.
 
         Output path:
-            {survboard_results_dir}/{cohort}/{cancer}/cff/split_{fold_index}.csv
+            {survboard_results_dir}/{cohort}/{cancer}/{model_name}/split_{fold_index}.csv
 
         Uses self._test_idx and self._fold_index, which are updated per-fold in
         multi-fold mode before each call.
@@ -658,13 +676,13 @@ class SurvBoardTask(DownstreamTask):
                 continue
 
             sf_df = pd.DataFrame(surv_mat[pos_in_test], columns=time_grid)
-            sf_df["model_type"] = "cff"
-            sf_df["modality"]   = "cff_embeddings"
+            sf_df["model_type"] = model_name
+            sf_df["modality"]   = f"{model_name}_embeddings"
             sf_df["project"]    = cohort
             sf_df["cancer"]     = cancer
             sf_df["split"]      = fold
 
-            out_dir = results_dir / cohort / cancer / "cff"
+            out_dir = results_dir / cohort / cancer / model_name
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"split_{fold}.csv"
             sf_df.to_csv(out_path, index=False)
