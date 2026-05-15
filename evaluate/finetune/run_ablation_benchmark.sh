@@ -30,6 +30,9 @@ SCRIPT_ARGS=(
     --pca-baseline
 )
 
+echo "=== GPU status ==="
+nvidia-smi
+
 # ---- Run downstream tasks -------------------------------- #
 echo "=== Running Downstream tasks ==="
 if [[ "$USE_LOCAL" -eq 1 ]]; then
