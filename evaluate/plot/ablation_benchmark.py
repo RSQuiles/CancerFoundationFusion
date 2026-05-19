@@ -61,11 +61,13 @@ TASK_PRIMARY_METRIC: dict[str, str] = {
 }
 
 # Metrics where lower is better — shown with a ↓ indicator.
-LOWER_IS_BETTER: set[str] = {"mae", "mse", "rmse"}
+LOWER_IS_BETTER: set[str] = {"mae", "mse", "rmse", "ibs", "d_calibration"}
 
 # Informational / count metrics that are not meaningful to plot as bars.
 SKIP_METRICS: set[str] = {
     "n_events",
+    "c_index",
+    "n_folds_evaluated",
     "n_drugs_evaluated",
     "n_proteins_evaluated",
     "event_rate",

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Evaluate CFF survival functions with SurvBoard metrics.
 
@@ -420,6 +419,7 @@ def main() -> None:
         models = [get_model_name(pretrained_path)]
     else:
         models = [model_dir.name for model_dir in _discover_model_dirs(ablation_dir)]
+        log.info(f"Found models: {models}")
 
     for model in models:
         evaluate_all(

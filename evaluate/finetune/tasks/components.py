@@ -24,13 +24,19 @@ class EmbeddingPredHead(nn.Module):
         self.fc1 = nn.Linear(embedding_dim, hidden_dim, bias=True)
         self.act1 = nn.ReLU()
         self.dropout1 = nn.Dropout(dropout)
-        self.fc2 = nn.Linear(hidden_dim, output_dim, bias=True)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim, bias=True)
+        self.act2 = nn.ReLU()
+        self.dropout2 = nn.Dropout(dropout)
+        self.fc3 = nn.Linear(hidden_dim, output_dim, bias=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.fc1(x)
         x = self.act1(x)
         x = self.dropout1(x)
-        return self.fc2(x)
+        x = self.fc2(x)
+        x = self.act2(x)
+        x = self.dropout2(x)
+        return self.fc3(x)
     
     
 class LinearPredHead(nn.Module):

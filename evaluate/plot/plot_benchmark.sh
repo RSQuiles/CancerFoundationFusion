@@ -5,5 +5,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
 
+source $surv
+
 python ablation_benchmark.py \
-    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition
+    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison

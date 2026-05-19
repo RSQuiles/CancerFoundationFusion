@@ -65,7 +65,7 @@ finetune:
     # fold_index: integer (0–24)  → train a single fold; save split_{fold}.csv
     # fold_index: "all"           → train one Cox head per fold internally;
     #                               report mean C-index; save all split_*.csv files
-    fold_index: 0
+    fold_index: "all"
 
     # ===== OUTPUT =====
 
@@ -86,7 +86,7 @@ finetune:
     dropout: 0.1
 
     # ===== TRAINING HYPERPARAMETERS =====
-    epochs: 5
+    epochs: 30
     batch_size: 64
     # Cox batches should be large enough to contain multiple observed events.
 

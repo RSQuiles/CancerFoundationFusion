@@ -56,10 +56,9 @@ python -u ./tasks/evaluate_survboard_metrics.py \
      --config "$CONFIG" \
      --ablation
 echo "Completed."
-echo "Metrics written to: ${ABLATION_DIR}/${MODEL_NAME}/metrics/results_survival.json"
+echo "Survboard metrics saved"
 
 # ---- Plot -------------------------------- #
-conda activate bulkFM
 echo "=== Plotting metrics ==="
 python ./plot/ablation_benchmark.py \
     --ablation-dir $ABLATION_DIR
