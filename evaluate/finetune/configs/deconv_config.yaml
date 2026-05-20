@@ -7,9 +7,10 @@ finetune:
     # Path to pretrained model checkpoint
     pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/dummy_test/epoch_epoch=00.ckpt
     
-    # Path to pseudobulk/bulk data (H5AD format)
-    # Should contain cell type proportions in obs columns
-    pseudo_bulk_data_path: /cluster/work/boeva/eheiss/datasets/preprocessed_pseudo_bulk/pseudo_bulk_binned.h5ad
+    # Path to pseudobulk/bulk data (H5AD format).
+    # Expected: pseudo_bulk_RAW.h5ad — raw summed counts, normalized internally
+    # via CP10K + log1p before embedding (see normalize_input below).
+    pseudo_bulk_data_path: /cluster/work/boeva/rquiles/datasets/pseudo_bulk_RAW.h5ad
     
     # Learning rate for the head
     head_learning_rate: 0.001
@@ -23,11 +24,20 @@ finetune:
     #   T_cells: T_cell_prop
     #   Fibroblasts: fibroblast_prop
     
-    # Column name for splitting context (e.g., study/batch for stratified split)
-    context_col: context
-    
+    # Composite context columns for context-aware splitting.
+    # Samples sharing all listed columns are kept together in train or test.
+    # These defaults prevent leakage between pseudobulks from the same donor.
+    context_cols:
+      - dataset_id
+      - donor_id
+      - tissue_general
+
     # Whether to split by context variable rather than random split
     split_by_context: true
+
+    # Apply CP10K + log1p normalization to raw counts before embedding.
+    # Set to false only if the h5ad already contains normalized expression.
+    normalize_input: true
     
     # Train/test split ratio
     test_size: 0.2

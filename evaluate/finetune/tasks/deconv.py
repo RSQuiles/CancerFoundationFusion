@@ -7,15 +7,10 @@ import anndata as ad
 import hydra
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 import torch
 import torch.nn.functional as F
-from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    confusion_matrix,
-    f1_score,
-    precision_recall_fscore_support,
-)
+from scipy.stats import pearsonr
 from sklearn.model_selection import train_test_split
 from omegaconf import DictConfig
 from pathlib import Path
@@ -23,7 +18,6 @@ from torch import nn
 from torch.utils.data import Dataset
 
 from evaluate.finetune.downstream_task import DownstreamTask, TaskRegistry
-from evaluate.finetune.utils import parquet_to_adata, translate_gene_symbols, strip_ensembl_versions, deduplicate_var_names
 
 log = logging.getLogger(__name__)
 
@@ -36,17 +30,20 @@ log = logging.getLogger(__name__)
 # the underlying cell type proportion vector. This tests whether the foundation
 # model captures cell-type-specific transcriptional signatures in bulk data.
 #
-# Data: Pseudobulk h5ad file where each observation is a bulk-aggregated sample.
-#   - X matrix: gene expression (pseudobulk aggregated from single cells).
-#   - obs columns: per-cell-type proportion values (floats summing to 1).
-#   - uns key: 'cell_type_proportion_columns' — a dict mapping cell type name
-#              to the obs column that stores its proportion. If absent, the
-#              mapping is taken from 'cell_type_mapping' in the config, or
-#              auto-detected from obs column names as a fallback.
+# Data: pseudo_bulk_RAW.h5ad — each obs is a pseudobulk sample built by summing
+#   raw counts of 1000 single cells (CELLxGENE Census).
+#   - X matrix: raw summed counts (sparse CSR float32). Preprocessed via
+#               CP10K + log1p normalization before passing to the embedder.
+#   - obs columns: prop__<cell_type> floats summing to 1.0 per row.
+#   - var index: ensembl_id — Ensembl gene IDs.
+#   - uns keys:
+#       cell_type_proportion_columns      dict: cell_type → obs column name
+#       cell_type_proportion_obs_columns  ordered array of obs column names
+#       cell_type_proportion_cell_types   ordered array of cell type strings
 #
-#   Splitting is preferably done by context variable (e.g. study/donor) so that
-#   the model is evaluated on held-out contexts rather than held-out samples from
-#   seen contexts — this tests generalisation across biological conditions.
+#   Splitting is done by composite context (dataset_id × donor_id ×
+#   tissue_general) so held-out samples come from genuinely unseen contexts,
+#   not just held-out draws from seen donors/datasets.
 # ============================================================================
 
 
@@ -79,7 +76,7 @@ class DeconvEmbeddingDataset(Dataset):
 
 @TaskRegistry.register
 class DeconvTask(DownstreamTask):
-    """Cell type proportion deconvolution from bulk pseudobulk samples."""
+    """Cell type proportion deconvolution from pseudobulk samples."""
 
     @property
     def task_name(self) -> str:
@@ -90,17 +87,16 @@ class DeconvTask(DownstreamTask):
         return "finetune.deconv"
 
     def get_head_class(self) -> type[nn.Module]:
+        from evaluate.finetune.tasks.components import EmbeddingPredHead
         return EmbeddingPredHead
 
     def get_dataset_class(self) -> type[Dataset]:
         return DeconvEmbeddingDataset
 
     def get_loss_fn(self, device: torch.device) -> nn.Module:
-        # Deconvolution uses KL divergence by default
         return nn.KLDivLoss(reduction="batchmean").to(device)
 
     def validate_config(self, task_cfg: DictConfig) -> None:
-        """Validate deconvolution config."""
         super().validate_config(task_cfg)
         required = ["pseudo_bulk_data_path"]
         missing = [key for key in required if getattr(task_cfg, key, None) in (None, "")]
@@ -114,7 +110,6 @@ class DeconvTask(DownstreamTask):
         self, task_cfg: DictConfig, embedder: Any
     ) -> tuple[int, ad.AnnData, ad.AnnData, np.ndarray, np.ndarray]:
         """Load pseudobulk data and cell type proportions."""
-        # Load data
         pb_path = getattr(task_cfg, "pseudo_bulk_data_path", None)
         if not pb_path:
             raise ValueError("finetune.deconv.pseudo_bulk_data_path must be set.")
@@ -127,10 +122,12 @@ class DeconvTask(DownstreamTask):
         adata.var_names_make_unique()
         log.info(f"Loaded pseudobulk data: {adata.shape}")
 
-        # Get cell type proportions
+        # Store task_cfg for use in _embed_adata
+        self._task_cfg = task_cfg
+
         targets = self._load_targets(adata, task_cfg)
 
-        # Train/test split (optionally by context)
+        # Train/test split
         test_size = float(getattr(task_cfg, "test_size", 0.2))
         split_version = getattr(
             task_cfg,
@@ -140,8 +137,7 @@ class DeconvTask(DownstreamTask):
         split_seed = self.hash_split_version(split_version)
 
         if bool(getattr(task_cfg, "split_by_context", True)):
-            # Split by context variable (e.g., study)
-            contexts = adata.obs.get(getattr(task_cfg, "context_col", "context"), None)
+            contexts = self._build_context_series(adata, task_cfg)
             if contexts is not None:
                 unique_contexts = contexts.unique()
                 split_idx = int(len(unique_contexts) * (1 - test_size))
@@ -150,7 +146,7 @@ class DeconvTask(DownstreamTask):
                 train_idx = np.where(~test_mask)[0]
                 test_idx = np.where(test_mask)[0]
             else:
-                log.warning("context_col not found, falling back to random split")
+                log.warning("No context columns found, falling back to random split.")
                 train_idx, test_idx = train_test_split(
                     np.arange(adata.n_obs),
                     test_size=test_size,
@@ -163,8 +159,11 @@ class DeconvTask(DownstreamTask):
                 random_state=split_seed,
             )
 
-        # Number of classes (cell types covered by the dataset)
         num_classes = targets.shape[1]
+        log.info(
+            f"Split: {len(train_idx)} train / {len(test_idx)} test samples, "
+            f"{num_classes} cell types."
+        )
 
         return (
             num_classes,
@@ -174,56 +173,91 @@ class DeconvTask(DownstreamTask):
             targets[test_idx],
         )
 
-    def _load_targets(self, adata: ad.AnnData, task_cfg: DictConfig) -> np.ndarray:
-        """Load cell type proportions from adata.obs."""
+    def _build_context_series(self, adata: ad.AnnData, task_cfg: DictConfig) -> pd.Series | None:
+        """Build a composite context Series for context-aware splitting.
 
-        def recurse_prop_value(value):
-            if isinstance(value, dict):
-                value_rec = list(value.keys())[0]
-                return recurse_prop_value(value[value_rec])
-            return value
-
-        # Get cell type mapping (cell type → obs column)
-        mapping = adata.uns.get("cell_type_proportion_columns")
-        for key, value in mapping.items():
-            mapping[key] = recurse_prop_value(value)
-
-        if mapping is not None:
-            log.info("Using cell type mapping from adata.uns['cell_type_proportion_columns']")
+        Checks config for context_cols (list) first, then context_col (single),
+        then falls back to the standard pseudobulk context columns.
+        """
+        # Priority 1: explicit list of columns from config
+        context_cols = getattr(task_cfg, "context_cols", None)
+        if context_cols is not None:
+            cols = list(context_cols)
         else:
-            # Try to infer or use custom mapping
-            mapping = getattr(task_cfg, "cell_type_mapping", None)
-            if mapping is None:
-                log.info("Inferring cell type proportions!")
-                mapping = self._infer_proportion_mapping_from_obs(adata.obs.columns)
+            # Priority 2: single column from config
+            single = getattr(task_cfg, "context_col", None)
+            if single is not None:
+                cols = [str(single)]
+            else:
+                # Priority 3: default pseudobulk context columns
+                cols = ["dataset_id", "donor_id", "tissue_general"]
 
-        self.cell_types = sorted(mapping)
-        target_columns = [mapping[cell_type] for cell_type in self.cell_types]
+        valid_cols = [c for c in cols if c in adata.obs.columns]
+        if not valid_cols:
+            return None
 
-        missing = [col for col in target_columns if col not in adata.obs.columns]
+        if len(valid_cols) == 1:
+            return adata.obs[valid_cols[0]].astype(str)
+
+        return adata.obs[valid_cols].astype(str).agg("__".join, axis=1)
+
+    def _load_targets(self, adata: ad.AnnData, task_cfg: DictConfig) -> np.ndarray:
+        """Load cell type proportions from adata.obs.
+
+        Handles both the new uns key structure (cell_type_proportion_obs_columns /
+        cell_type_proportion_cell_types) and the legacy dict mapping.
+        """
+        # New format: explicit ordered arrays in uns
+        obs_columns_arr = adata.uns.get("cell_type_proportion_obs_columns")
+        cell_types_arr = adata.uns.get("cell_type_proportion_cell_types")
+
+        if obs_columns_arr is not None and cell_types_arr is not None:
+            prop_columns = list(obs_columns_arr)
+            self.cell_types = list(cell_types_arr)
+            log.info(
+                f"Using {len(self.cell_types)} cell types from "
+                "adata.uns['cell_type_proportion_obs_columns']."
+            )
+        else:
+            # Legacy format: mapping dict (cell_type → column_name)
+            mapping = adata.uns.get("cell_type_proportion_columns")
+            if mapping is not None:
+                mapping = {k: self._recurse_prop_value(v) for k, v in mapping.items()}
+                log.info(
+                    "Using cell type mapping from adata.uns['cell_type_proportion_columns']."
+                )
+            else:
+                mapping = getattr(task_cfg, "cell_type_mapping", None)
+                if mapping is None:
+                    log.info("Inferring cell type proportions from obs column names.")
+                    mapping = self._infer_proportion_mapping_from_obs(adata.obs.columns)
+            self.cell_types = sorted(mapping)
+            prop_columns = [mapping[ct] for ct in self.cell_types]
+
+        missing = [col for col in prop_columns if col not in adata.obs.columns]
         if missing:
             raise ValueError(f"Missing target columns in adata.obs: {missing}")
 
-        targets = adata.obs[target_columns].to_numpy(dtype=np.float32)
+        targets = adata.obs[prop_columns].to_numpy(dtype=np.float32)
         if np.any(targets < 0):
-            raise ValueError("Cell type proportions must be non-negative")
+            raise ValueError("Cell type proportions must be non-negative.")
 
         return targets
 
     @staticmethod
-    def _as_string_list(values: Any) -> list[str] | None:
-        """Convert values to string list if not None."""
-        if values is None:
-            return None
-        array = np.asarray(values).reshape(-1)
-        return [str(v) for v in array]
+    def _recurse_prop_value(value: Any) -> str:
+        """Unwrap nested dicts to reach the leaf column name."""
+        if isinstance(value, dict):
+            return DeconvTask._recurse_prop_value(list(value.values())[0])
+        return value
 
     @staticmethod
     def _infer_proportion_mapping_from_obs(obs_columns) -> dict[str, str]:
-        """Infer cell type mapping from obs column names (e.g., B_cells, T_cells)."""
-        cell_type_cols = [col for col in obs_columns if any(
-            ct in col.lower() for ct in ["cell", "type", "prop"]
-        )]
+        """Infer cell type mapping from obs column names (e.g., prop__b_cell)."""
+        cell_type_cols = [
+            col for col in obs_columns
+            if any(kw in col.lower() for kw in ["prop__", "cell", "type", "prop"])
+        ]
         return {col: col for col in cell_type_cols}
 
     def prepare_datasets(
@@ -235,28 +269,45 @@ class DeconvTask(DownstreamTask):
         embedder: Any,
     ) -> tuple[Dataset, Dataset, int]:
         """Create embeddings and deconvolution datasets."""
-        # Generate embeddings
         train_embeddings = self._embed_adata(embedder, train_adata)
         test_embeddings = self._embed_adata(embedder, test_adata)
 
         if train_embeddings.ndim != 2 or test_embeddings.ndim != 2:
-            raise ValueError("Embeddings must be 2D arrays: [n_cells, embedding_dim].")
+            raise ValueError("Embeddings must be 2D arrays: [n_samples, embedding_dim].")
         if train_embeddings.shape[1] != test_embeddings.shape[1]:
             raise ValueError("Train/test embedding dimensions do not match.")
 
         embedding_dim = int(train_embeddings.shape[1])
 
-        # Create datasets
         train_dataset = DeconvEmbeddingDataset(train_embeddings, train_targets)
         test_dataset = DeconvEmbeddingDataset(test_embeddings, test_targets)
 
-        log.info(f"Created deconv datasets with embedding_dim={embedding_dim}, num_cell_types={len(self.cell_types)}")
+        log.info(
+            f"Created deconv datasets: embedding_dim={embedding_dim}, "
+            f"num_cell_types={len(self.cell_types)}"
+        )
 
         return train_dataset, test_dataset, embedding_dim
 
     def _embed_adata(self, embedder: Any, adata: ad.AnnData) -> np.ndarray:
-        """Generate embeddings for adata."""
-        batch_size = 64
+        """Normalize raw counts (CP10K + log1p) then embed with the frozen model."""
+        task_cfg = getattr(self, "_task_cfg", None)
+        normalize = bool(getattr(task_cfg, "normalize_input", True)) if task_cfg is not None else True
+
+        if normalize:
+            adata = adata.copy()
+            X = adata.X
+            if sp.issparse(X):
+                row_sums = np.asarray(X.sum(axis=1)).ravel()
+                row_sums = np.maximum(row_sums, 1.0)
+                X_norm = X.multiply(10_000.0 / row_sums[:, None]).toarray().astype(np.float32)
+            else:
+                row_sums = np.maximum(np.asarray(X).sum(axis=1), 1.0)
+                X_norm = (np.asarray(X) * (10_000.0 / row_sums[:, np.newaxis])).astype(np.float32)
+            np.log1p(X_norm, out=X_norm)
+            adata.X = X_norm
+
+        batch_size = int(getattr(task_cfg, "embed_batch_size", 64)) if task_cfg is not None else 64
         embedder.eval()
         embedder.cuda()
         df_emb = embedder.embed(adata, batch_size=batch_size, normalized=True)
@@ -267,19 +318,30 @@ class DeconvTask(DownstreamTask):
         predictions: np.ndarray,
         targets: np.ndarray,
     ) -> dict[str, float]:
-        """Compute deconvolution regression metrics."""
-        # Convert logits to proportions (softmax)
-        pred_props = torch.from_numpy(predictions)
-        pred_props = F.softmax(pred_props, dim=-1).numpy()
+        """Compute deconvolution regression metrics.
 
-        # MAE and MSE
-        mae = np.mean(np.abs(pred_props - targets))
-        mse = np.mean((pred_props - targets) ** 2)
+        Includes MAE, MSE, RMSE, and mean per-cell-type Pearson R (computed
+        only over cell types with non-zero variance in both true and predicted).
+        """
+        pred_props = F.softmax(torch.from_numpy(predictions), dim=-1).numpy()
 
-        metrics = {
-            "mae": float(mae),
-            "mse": float(mse),
+        mae = float(np.mean(np.abs(pred_props - targets)))
+        mse = float(np.mean((pred_props - targets) ** 2))
+
+        # Per-cell-type Pearson R (skip constant columns to avoid NaN)
+        pearson_rs = []
+        for i in range(targets.shape[1]):
+            true_col = targets[:, i]
+            pred_col = pred_props[:, i]
+            if np.std(true_col) > 0 and np.std(pred_col) > 0:
+                r, _ = pearsonr(true_col, pred_col)
+                pearson_rs.append(float(r))
+
+        mean_pearson_r = float(np.mean(pearson_rs)) if pearson_rs else float("nan")
+
+        return {
+            "mae": mae,
+            "mse": mse,
             "rmse": float(np.sqrt(mse)),
+            "mean_pearson_r": mean_pearson_r,
         }
-
-        return metrics

@@ -144,7 +144,11 @@ class BulkSCDataModule(pl.LightningDataModule):
         balance_labels: Optional[List[str] | str] = None,
         epoch_size: Optional[int] = None,
         pb_group_column: Optional[str] = None,
-        agg_consistency: Optional[bool] = False
+        agg_consistency: Optional[bool] = False,
+        pb_label: Optional[str] = None,
+        paired_sampling: bool = False,
+        paired_every_n: int = 10,
+        paired_column: Optional[str] = "paired",
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -169,6 +173,10 @@ class BulkSCDataModule(pl.LightningDataModule):
         self.epoch_size = epoch_size
         self.pb_group_column = pb_group_column
         self.agg_consistency = agg_consistency
+        self.pb_label = pb_label
+        self.paired_sampling = paired_sampling
+        self.paired_every_n = paired_every_n
+        self.paired_column = paired_column
 
         # Setup token values based on embedding style
         if self.input_style == "category":
@@ -198,6 +206,8 @@ class BulkSCDataModule(pl.LightningDataModule):
                 balance=self.balance,
                 balance_labels=self.balance_labels,
                 pb_group_column=self.pb_group_column,
+                pb_label=self.pb_label,
+                paired_column=self.paired_column,
             )
 
         # Set condition cardinalities
@@ -243,7 +253,9 @@ class BulkSCDataModule(pl.LightningDataModule):
                 pb_ratio=self.hparams.pb_ratio,
                 n_sc_per_pb=self.hparams.n_sc_per_pseudobulk,
                 balance=self.balance,
-                epoch_size=self.epoch_size
+                epoch_size=self.epoch_size,
+                paired_sampling=self.paired_sampling,
+                paired_every_n=self.paired_every_n,
             )
 
         if self.trainer.world_size > 1:

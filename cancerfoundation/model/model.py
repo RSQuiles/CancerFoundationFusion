@@ -661,3 +661,144 @@ class CancerFoundation(pl.LightningModule):
             index=adata.obs_names,
             columns=[f"dim_{i}" for i in range(emb.shape[1])],
         )
+
+    @torch.no_grad()
+    def embed_batch(
+        self,
+        expression: np.ndarray,
+        gene_names: list,
+        batch_size: int = 64,
+        return_all_tokens: bool = False,
+    ) -> dict:
+        """Embed a numpy array of samples.
+
+        Assumes expression is already log1p-normalized (CP10K + log1p).
+        Handles vocab intersection, HVG selection, and binning
+
+        Args:
+            expression: float32 array of shape (n_samples, n_genes).
+            gene_names: gene names corresponding to columns of expression.
+            batch_size: forward-pass batch size.
+            return_all_tokens: if True, also return per-gene transformer
+                outputs in addition to the CLS token.
+
+        Returns:
+            dict with keys:
+                "cls"         — (n_samples, d_model) CLS token embeddings.
+                "gene_tokens" — (n_samples, n_kept, d_model) gene token
+                                outputs (only when return_all_tokens=True).
+                "gene_names"  — list[str] of genes kept after intersection
+                                and HVG selection (only when return_all_tokens=True).
+        """
+        self.model.eval()
+        device = next(self.model.parameters()).device
+
+        expression = np.asarray(expression, dtype=np.float32)
+        n_samples = expression.shape[0]
+
+        # 1. Gene intersection (preserve input gene order)
+        vocab_set = set(self.vocab.keys())
+        kept_indices = [i for i, g in enumerate(gene_names) if g in vocab_set]
+        kept_genes = [gene_names[i] for i in kept_indices]
+        if not kept_genes:
+            raise ValueError("No genes in expression matrix overlap with model vocabulary.")
+        print(f"Common genes: {len(kept_genes)} / {len(gene_names)}")
+        expr = expression[:, kept_indices].copy()  # (n_samples, n_kept)
+
+        # 2. HVG selection
+        if expr.shape[1] > self.n_top_genes:
+            mean = expr.mean(axis=0)
+            var = expr.var(axis=0)
+            mean[mean == 0] = 1e-12
+            dispersion = var / mean
+            dispersion[dispersion == 0] = np.nan
+            dispersion = np.log(dispersion)
+
+            n_hvg_bins = 20
+            mean_log = np.log1p(mean)
+            bins = np.percentile(mean_log, np.linspace(0, 100, n_hvg_bins + 1))
+            bins = np.unique(bins)
+            bin_indices = np.clip(np.digitize(mean_log, bins) - 1, 0, len(bins) - 2)
+
+            disp_norm = np.zeros_like(dispersion)
+            for b in range(len(bins) - 1):
+                mask = bin_indices == b
+                if mask.sum() < 2:
+                    disp_norm[mask] = dispersion[mask]
+                    continue
+                bin_disp = dispersion[mask]
+                bin_mean = np.nanmean(bin_disp)
+                bin_std = np.nanstd(bin_disp)
+                if bin_std == 0:
+                    disp_norm[mask] = 0.0
+                else:
+                    disp_norm[mask] = (bin_disp - bin_mean) / bin_std
+            disp_norm = np.nan_to_num(disp_norm, nan=-np.inf)
+
+            top_idx = np.argsort(disp_norm)[-self.n_top_genes:]
+            expr = expr[:, top_idx]
+            kept_genes = [kept_genes[i] for i in top_idx]
+
+        # 3. Binning
+        if self.input_style == "binned":
+            normalise = self.model.decoder.normalise_bins
+            for i in range(n_samples):
+                expr[i] = binning(expr[i], self.n_bins)
+                if normalise:
+                    expr[i] /= self.n_bins
+
+        # 4. Gene token ID tensor
+        gene_ids = torch.LongTensor([self.vocab[g] for g in kept_genes])  # (n_kept,)
+
+        # 5. Batched forward passes — prepend CLS token
+        cls_embeddings = []
+        gene_token_embeddings = [] if return_all_tokens else None
+
+        for start in range(0, n_samples, batch_size):
+            end = min(start + batch_size, n_samples)
+            bs = end - start
+
+            batch_expr = torch.FloatTensor(expr[start:end]).to(device)  # (bs, n_kept)
+            batch_genes = gene_ids.unsqueeze(0).expand(bs, -1).to(device)  # (bs, n_kept)
+
+            batch_genes = torch.cat(
+                [
+                    torch.full((bs, 1), self.cls_token_id, dtype=torch.long, device=device),
+                    batch_genes,
+                ],
+                dim=1,
+            )  # (bs, 1+n_kept)
+            batch_expr = torch.cat(
+                [
+                    torch.full((bs, 1), self.pad_value, dtype=batch_expr.dtype, device=device),
+                    batch_expr,
+                ],
+                dim=1,
+            )  # (bs, 1+n_kept)
+
+            padding_mask = torch.zeros(batch_genes.shape, dtype=torch.bool, device=device)
+
+            if self.model.use_generative_training:
+                output, _ = self.model.embed(
+                    src=batch_genes,
+                    values=batch_expr,
+                    src_key_padding_mask=padding_mask,
+                )
+            else:
+                output = self.model.encode(
+                    src=batch_genes,
+                    values=batch_expr,
+                    src_key_padding_mask=padding_mask,
+                    check_conditions=False,
+                )
+            # output: (bs, 1+n_kept, d_model)
+
+            cls_embeddings.append(output[:, 0, :].cpu().numpy())
+            if return_all_tokens:
+                gene_token_embeddings.append(output[:, 1:, :].cpu().numpy())
+
+        result = {"cls": np.concatenate(cls_embeddings, axis=0)}
+        if return_all_tokens:
+            result["gene_tokens"] = np.concatenate(gene_token_embeddings, axis=0)
+            result["gene_names"] = kept_genes
+        return result

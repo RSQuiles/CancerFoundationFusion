@@ -196,7 +196,11 @@ def main(input_args=None):
         balance=args.balanced_sampler,
         balance_labels=args.balanced_labels,
         pb_group_column=args.pb_group_column,
-        agg_consistency=args.agg_consistency
+        agg_consistency=args.agg_consistency,
+        pb_label=args.pb_label,
+        paired_sampling=args.paired_sampling,
+        paired_every_n=args.paired_every_n,
+        paired_column=args.paired_column,
     )
     datamodule.setup(stage="fit")
 

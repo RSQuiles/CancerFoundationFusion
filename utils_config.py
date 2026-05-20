@@ -462,6 +462,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--pb-label",
+        type=str,
+        default="pb",
+        help="Modality label in the modality column that identifies precomputed pseudobulk rows. Required for paired sampling. Default is None (no precomputed PB rows).",
+    )
+
+    parser.add_argument(
+        "--paired-sampling",
+        action="store_true",
+        help="Whether to include periodic paired batches where each precomputed PB row is matched 1-to-1 with its corresponding bulk row. Requires --pb-label and a 'paired' obs column with integer pair IDs. Default is False.",
+    )
+
+    parser.add_argument(
+        "--paired-every-n",
+        type=int,
+        default=10,
+        help="Frequency of paired batches: one paired batch every N standard batches. Only used when --paired-sampling is set. Default is 10.",
+    )
+
+    parser.add_argument(
+        "--paired-column",
+        type=str,
+        default="paired",
+        help="Name of the obs column holding integer pair IDs (0 = unpaired, k > 0 = pair k). Used to match precomputed PB rows to bulk rows. Default is 'paired'.",
+    )
+
+    parser.add_argument(
         "--contrastive-training",
         action="store_true",
         help="Whether to include a contrastive loss that brings the pseudobulk and real bulk samples closer together in the embedding space. Default is False.",

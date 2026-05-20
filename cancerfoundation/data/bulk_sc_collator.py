@@ -225,36 +225,74 @@ class BulkSCCollator(AnnDataCollator):
     def _aggregate_sc(
         self,
         sc_samples: List[Dict[str, Any]],
+        counts: bool = False,
+        rank_normalise: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         k = self.keep_first_n_tokens
+        """
+        Aggregate a list of single-cell token sequences into a single pseudobulk
+        in the same sparse (gene_ids, expressions) format used by individual cells.
+        The log1p values are first mapped back to count space via expm1, then aggregated by gene ID.
 
-        # Stack all genes / expressions from every SC sample in one numpy pass
-        all_genes = np.concatenate(
-            [s["genes"][k:].detach().cpu().numpy() for s in sc_samples]
-        ).astype(np.int64)
-        all_exprs = np.concatenate(
-            [s["expressions"][k:].detach().cpu().numpy() for s in sc_samples]
-        ).astype(np.float64)
+        Each cell can be rank-normalised to unit sum (via expm1 → proportion) before
+        aggregation, so all cells contribute equally regardless of sequencing depth.
+        The result is re-normalised to log1p(CPM) to match the model's input
+        format. Zero entries are dropped and the CLS token is prepended.
+        """
 
-        # Drop padding positions
-        valid = all_genes != self.pad_token_id
-        all_genes = all_genes[valid]
-        all_exprs = all_exprs[valid]
+        # Per-cell mapping to count space and normalization
+        genes_list = []
+        exprs_list = []
 
-        if len(all_genes) == 0:
+        for s in sc_samples:
+            genes = s["genes"][k:].detach().cpu().numpy().astype(np.int64)
+            exprs = s["expressions"][k:].detach().cpu().numpy().astype(np.float64)
+
+            # Mask padding
+            valid = genes != self.pad_token_id
+            genes = genes[valid]
+            exprs = exprs[valid]
+
+            if len(genes) == 0:
+                continue
+
+            # Map to count space: log1p → expm1
+            if not counts:
+                exprs = np.expm1(exprs)
+
+            # Rank normalize: expm1 → normalize to proportions
+            # This way each cell contributes equally to the pseudobulk, regardless of sequencing depth or previous normalization
+            if rank_normalise:
+                cell_sum = exprs.sum()
+                if cell_sum > 0:
+                    exprs /= cell_sum  # each cell now sums to 1
+
+            genes_list.append(genes)
+            exprs_list.append(exprs)
+
+        if not genes_list:
             gene_ids  = np.array([], dtype=np.int64)
             expr_vals = np.array([], dtype=np.float32)
         else:
-            n_bins = int(all_genes.max()) + 1
+            # Concatenate normalized cells and use bincount to scatter-add
+            all_genes = np.concatenate(genes_list)
+            all_exprs = np.concatenate(exprs_list)
+
+            n_bins   = int(all_genes.max()) + 1
+            # Sums by gene index and stores sum at corresponding position in expr_sum
             expr_sum = np.bincount(all_genes, weights=all_exprs, minlength=n_bins)
-            if self.aggregation == "mean":
-                gene_count = np.bincount(all_genes, minlength=n_bins).astype(np.float64)
-                present = gene_count > 0
-                expr_sum[present] /= gene_count[present]
+
+            # Re-normalize to CPM → log1p
+            total = expr_sum.sum()
+            if total > 0:
+                expr_sum = expr_sum / total * 1e6
+            expr_sum = np.log1p(expr_sum)
+
             expressed = expr_sum != 0
             gene_ids  = np.where(expressed)[0].astype(np.int64)
             expr_vals = expr_sum[expressed].astype(np.float32)
 
+        # Prepend CLS token
         cls_id    = int(sc_samples[0]["genes"][0].item())
         gene_ids  = np.insert(gene_ids,  0, cls_id)
         expr_vals = np.insert(expr_vals, 0, self.pad_value)
