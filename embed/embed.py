@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import scanpy as sc
 
 
 def parse_args() -> argparse.Namespace:
@@ -166,6 +167,12 @@ def main() -> None:
     # -------------------------------------------------------------------------
     if args.pca:
         print(f"Computing PCA with {args.n_pcs} components...")
+        
+        # Normalize to CP10K + log1p if not already normalized
+        print("Normalizing input data!")
+        sc.pp.normalize_total(adata, target_sum=1e4)
+        sc.pp.log1p(adata)
+
         sc.pp.pca(adata, n_comps=args.n_pcs)
         print(
             f"Stored PCA embeddings in adata.obsm['X_pca'] "

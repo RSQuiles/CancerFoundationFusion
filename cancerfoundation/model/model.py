@@ -530,7 +530,6 @@ class CancerFoundation(pl.LightningModule):
             if not log1p_only:
                 # Raw counts
                 sc.pp.normalize_total(data, target_sum=1e4)
-            sc.pp.normalize_total(data, target_sum=1e4)
             sc.pp.log1p(data)
 
         # Intersect genes with vocab

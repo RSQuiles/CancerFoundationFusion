@@ -161,6 +161,10 @@ class CancTypeClassTask(DownstreamTask):
         # Number of classes
         num_classes = labels.nunique()
 
+        # Embed AnnData
+        log.info("Embedding samples:")
+        adata.obsm["X_emb"] = self._embed_adata(embedder, adata, task_cfg)
+
         return (
             num_classes, 
             adata[train_idx].copy(), 
@@ -187,9 +191,9 @@ class CancTypeClassTask(DownstreamTask):
             dtype=np.int64,
         )
 
-        # Generate embeddings
-        train_embeddings = self._embed_adata(embedder, train_adata, task_cfg)
-        test_embeddings = self._embed_adata(embedder, test_adata, task_cfg)
+        # Retrieve embeddings
+        train_embeddings = train_adata.obsm["X_emb"].astype(np.float32)
+        test_embeddings = test_adata.obsm["X_emb"].astype(np.float32)
 
         if train_embeddings.ndim != 2 or test_embeddings.ndim != 2:
             raise ValueError("Embeddings must be 2D arrays: [n_cells, embedding_dim].")
