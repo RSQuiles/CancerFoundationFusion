@@ -141,9 +141,6 @@ class CancTypeClassTask(DownstreamTask):
             adata.obs.loc[gbm_lgg_mask, "cancer_type"] = "GBM_LGG"
             log.info("Merged GBM and LGG into single class")
 
-        # Preprocessing
-        adata = self._preprocess_adata(adata, task_cfg)
-
         # Train/test split
         labels = adata.obs["cancer_type"].astype(str)
         test_size = float(getattr(task_cfg, "test_size", 0.2))
@@ -172,18 +169,6 @@ class CancTypeClassTask(DownstreamTask):
             labels.iloc[test_idx].to_numpy()
         )
 
-    def _preprocess_adata(self, adata: ad.AnnData, task_cfg: DictConfig) -> ad.AnnData:
-        """Preprocess and normalize data."""
-        import scanpy as sc
-
-        normalized = bool(getattr(task_cfg, "normalized", True))
-        if not normalized:
-            sc.pp.normalize_total(adata, target_sum=1e4)
-            sc.pp.log1p(adata)
-            log.info("Applied log normalization")
-
-        return adata
-
     def prepare_datasets(
         self,
         train_adata: ad.AnnData,
@@ -191,6 +176,7 @@ class CancTypeClassTask(DownstreamTask):
         train_targets: np.ndarray,
         test_targets: np.ndarray,
         embedder: Any,
+        task_cfg: Any,
     ) -> tuple[Dataset, Dataset, int]:
         """Create embeddings and datasets."""
         # Encode labels
@@ -202,8 +188,8 @@ class CancTypeClassTask(DownstreamTask):
         )
 
         # Generate embeddings
-        train_embeddings = self._embed_adata(embedder, train_adata)
-        test_embeddings = self._embed_adata(embedder, test_adata)
+        train_embeddings = self._embed_adata(embedder, train_adata, task_cfg)
+        test_embeddings = self._embed_adata(embedder, test_adata, task_cfg)
 
         if train_embeddings.ndim != 2 or test_embeddings.ndim != 2:
             raise ValueError("Embeddings must be 2D arrays: [n_cells, embedding_dim].")
@@ -220,12 +206,12 @@ class CancTypeClassTask(DownstreamTask):
 
         return train_dataset, test_dataset, embedding_dim
 
-    def _embed_adata(self, embedder: Any, adata: ad.AnnData) -> np.ndarray:
+    def _embed_adata(self, embedder: Any, adata: ad.AnnData, task_cfg: Any) -> np.ndarray:
         """Generate embeddings for adata."""
         batch_size = 64
         embedder.eval()
         embedder.cuda()
-        df_emb = embedder.embed(adata, batch_size=batch_size, normalized=True)
+        df_emb = embedder.embed(adata, batch_size=batch_size, normalized=bool(getattr(task_cfg, "normalized", True)))
         return df_emb.to_numpy()
 
     def compute_metrics(

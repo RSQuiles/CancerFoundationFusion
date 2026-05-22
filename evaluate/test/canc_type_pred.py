@@ -23,6 +23,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+import json
 
 import numpy as np
 import scanpy as sc
@@ -170,9 +171,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden-dim", type=int, default=128, help="MLP hidden layer width.")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate.")
     parser.add_argument("--lr", type=float, default=1e-3, help="Adam learning rate.")
-    parser.add_argument("--epochs", type=int, default=20, help="Number of training epochs.")
+    parser.add_argument("--epochs", type=int, default=30, help="Number of training epochs.")
     parser.add_argument("--batch-size", type=int, default=64, help="Mini-batch size.")
     parser.add_argument("--cpu", action="store_true", default=False, help="Force CPU.")
+    parser.add_argument("--out-dir", default="./", help="Output directory")
     return parser.parse_args()
 
 
@@ -277,6 +279,11 @@ def main() -> None:
     print("\n--- Test metrics ---")
     for name, value in metrics.items():
         print(f"  {name}: {value:.4f}")
+
+    metrics_path = Path(args.out_dir) / f"metrics_{args.obsm_key}_canc_type.json"
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+    print(f"\nMetrics saved to: {metrics_path}")
 
 
 if __name__ == "__main__":

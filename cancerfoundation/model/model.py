@@ -493,7 +493,14 @@ class CancerFoundation(pl.LightningModule):
         return data
 
     @torch.no_grad()
-    def embed(self, adata, batch_size: int = 64, normalized=False, log1p_only=False, flavor="seurat"):
+    def embed(
+        self, 
+        adata, 
+        batch_size: int = 64, 
+        normalized=False, 
+        log1p_only=False,
+        hvg_select=True, 
+        flavor="seurat"):
         """Embeds an AnnData object into cell embeddings.
 
         Handles all preprocessing: gene intersection with vocab, HVG selection,
@@ -538,9 +545,10 @@ class CancerFoundation(pl.LightningModule):
         # data = data[:, data.var["highly_variable"]].copy()
 
         # RAFA: adapt HVG selection wihout scanpy to avoid library issues
-        if data.n_vars > self.n_top_genes:
+        if hvg_select and data.n_vars > self.n_top_genes:
+            print("Reducing to Highly Variable Genes before embedding!")
+
             X = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
-            
             mean = X.mean(axis=0)
             var = X.var(axis=0)
             

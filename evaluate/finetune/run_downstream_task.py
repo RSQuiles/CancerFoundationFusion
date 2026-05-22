@@ -74,17 +74,9 @@ def load_runner_config(config_path: str | Path, checkpoint_path: str | Path | No
             if cfg.finetune[key] is not None
         ]
 
-        if len(available_in_config) == 0:
-            log.error("No tasks configured in finetune section")
-            log.info(f"Available tasks: {', '.join(TaskRegistry.list_tasks())}")
-            raise ValueError("Please specify --task or configure a task in 'finetune' section")
-
-        if len(available_in_config) > 1 and not task_name:
-            log.error(
-                f"Multiple tasks found in config: {available_in_config}. "
-                "Please specify which one to run with --task"
-            )
-            raise ValueError(f"Ambiguous config: specify --task from {available_in_config}")
+        if len(available_in_config) < 1 and not task_name:
+            raise ValueError(f"Faulty config, must specify downstream task")
+        
         task = available_in_config[0]
         cfg.finetune[task]["pretrained_model_path"] = str(checkpoint_path)
 

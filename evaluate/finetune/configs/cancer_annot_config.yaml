@@ -5,7 +5,7 @@ finetune:
   canc_type_class:
     # ===== REQUIRED =====
     # Path to pretrained model checkpoint
-    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/dummy_test/epoch_epoch=00.ckpt
+    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/unified_baseline/step_step=900000_epoch_epoch=01.ckpt
     
     # Path to TCGA data (H5AD format)
     tcga_data_dir: /cluster/work/boeva/eheiss/datasets/TCGA/tcga.h5ad
@@ -42,14 +42,14 @@ finetune:
     hidden_dim: 128
     
     # Dropout for the head
-    dropout: 0.0
+    dropout: 0.1
     
     # ===== TRAINING HYPERPARAMETERS =====
     # Number of training epochs
-    epochs: 30
+    epochs: 100
     
     # Batch size for training and evaluation
-    batch_size: 32
+    batch_size: 64
     
     # Minimum learning rate
     min_lr: 0.000001

@@ -12,6 +12,7 @@ import math
 import os
 from pathlib import Path
 from typing import Any
+import sys
 
 import numpy as np
 import torch
@@ -32,115 +33,6 @@ from evaluate.finetune.utils import (
 )
 
 log = logging.getLogger(__name__)
-
-
-class GroupedCosineAnnealingWarmupRestarts:
-    """Cosine warmup scheduler that preserves per-parameter-group max LRs."""
-
-    def __init__(
-        self,
-        optimizer: torch.optim.Optimizer,
-        first_cycle_steps: int,
-        max_lrs: list[float],
-        min_lr_ratio: float,
-        cycle_mult: float = 1.0,
-        warmup_steps: int = 0,
-        gamma: float = 1.0,
-    ) -> None:
-        if warmup_steps >= first_cycle_steps:
-            raise ValueError("warmup_steps must be smaller than first_cycle_steps.")
-        if len(max_lrs) != len(optimizer.param_groups):
-            raise ValueError("max_lrs must match optimizer.param_groups.")
-
-        self.optimizer = optimizer
-        self.first_cycle_steps = first_cycle_steps
-        self.cycle_mult = cycle_mult
-        self.base_max_lrs = [float(lr) for lr in max_lrs]
-        self.max_lrs = list(self.base_max_lrs)
-        self.min_lrs = [float(lr) * float(min_lr_ratio) for lr in self.base_max_lrs]
-        self.warmup_steps = warmup_steps
-        self.gamma = gamma
-        self.cur_cycle_steps = first_cycle_steps
-        self.cycle = 0
-        self.step_in_cycle = -1
-        self.last_epoch = -1
-        self._set_lrs(self.min_lrs)
-
-    def _set_lrs(self, lrs: list[float]) -> None:
-        for param_group, lr in zip(self.optimizer.param_groups, lrs):
-            param_group["lr"] = lr
-
-    def get_lr(self) -> list[float]:
-        if self.step_in_cycle == -1:
-            return self.min_lrs
-        if self.step_in_cycle < self.warmup_steps:
-            return [
-                min_lr + (max_lr - min_lr) * self.step_in_cycle / self.warmup_steps
-                for min_lr, max_lr in zip(self.min_lrs, self.max_lrs)
-            ]
-        return [
-            min_lr
-            + (max_lr - min_lr)
-            * (
-                1
-                + math.cos(
-                    math.pi
-                    * (self.step_in_cycle - self.warmup_steps)
-                    / (self.cur_cycle_steps - self.warmup_steps)
-                )
-            )
-            / 2
-            for min_lr, max_lr in zip(self.min_lrs, self.max_lrs)
-        ]
-
-    def step(self, epoch: int | None = None) -> None:
-        if epoch is None:
-            epoch = self.last_epoch + 1
-            self.step_in_cycle += 1
-            if self.step_in_cycle >= self.cur_cycle_steps:
-                self.cycle += 1
-                self.step_in_cycle -= self.cur_cycle_steps
-                self.cur_cycle_steps = int(
-                    (self.cur_cycle_steps - self.warmup_steps) * self.cycle_mult
-                ) + self.warmup_steps
-        else:
-            if epoch >= self.first_cycle_steps:
-                if self.cycle_mult == 1.0:
-                    self.step_in_cycle = epoch % self.first_cycle_steps
-                    self.cycle = epoch // self.first_cycle_steps
-                else:
-                    self.cycle = int(
-                        math.log(
-                            epoch / self.first_cycle_steps * (self.cycle_mult - 1) + 1,
-                            self.cycle_mult,
-                        )
-                    )
-                    self.step_in_cycle = epoch - int(
-                        self.first_cycle_steps * (self.cycle_mult ** self.cycle - 1) / (self.cycle_mult - 1)
-                    )
-            else:
-                self.cycle = 0
-                self.step_in_cycle = epoch
-
-        self.max_lrs = [lr * (self.gamma**self.cycle) for lr in self.base_max_lrs]
-        self.last_epoch = math.floor(epoch)
-        self._set_lrs(self.get_lr())
-
-    def state_dict(self) -> dict[str, object]:
-        return {
-            "first_cycle_steps": self.first_cycle_steps,
-            "cycle_mult": self.cycle_mult,
-            "base_max_lrs": self.base_max_lrs,
-            "max_lrs": self.max_lrs,
-            "min_lrs": self.min_lrs,
-            "warmup_steps": self.warmup_steps,
-            "gamma": self.gamma,
-            "cur_cycle_steps": self.cur_cycle_steps,
-            "cycle": self.cycle,
-            "step_in_cycle": self.step_in_cycle,
-            "last_epoch": self.last_epoch,
-        }
-
 
 class BaseDownstreamRunner:
     """
@@ -188,12 +80,11 @@ class BaseDownstreamRunner:
         self.test_dataset_size = 0
         self.model: nn.Module | None = None
         self.optimizer: Adam | None = None
-        self.scheduler: GroupedCosineAnnealingWarmupRestarts | None = None
         self.loss_fn: nn.Module | None = None
         self.embedding_dim: int | None = None
         self.pretrained_model_stem: str | None = None
 
-        # Embedder (frozen pretrained model, or an externally provided one)
+        # Externally provided embedder
         self.embedder = embedder
 
         # Task-specific state (subclasses can add more)
@@ -204,7 +95,8 @@ class BaseDownstreamRunner:
         config_key = self.task.config_key
         keys = config_key.split(".")
         current = self.cfg
-        for key in keys:
+        for key in keys: 
+            # Go down one level in the dictonary
             if key not in current or current[key] is None:
                 raise ValueError(
                     f"Could not find config at {config_key}. "
@@ -285,6 +177,7 @@ class BaseDownstreamRunner:
             train_targets,
             test_targets,
             self.embedder,
+            self.task_cfg
         )
 
         self.embedding_dim = embedding_dim
@@ -389,16 +282,6 @@ class BaseDownstreamRunner:
             else min_lr / max(head_learning_rate, 1e-12)
         )
 
-        self.scheduler = GroupedCosineAnnealingWarmupRestarts(
-            self.optimizer,
-            first_cycle_steps=int(getattr(self.task_cfg, "first_cycle_steps", 15)),
-            cycle_mult=float(getattr(self.task_cfg, "cycle_mult", 2)),
-            max_lrs=max_lrs,
-            min_lr_ratio=min_lr_ratio,
-            warmup_steps=int(getattr(self.task_cfg, "warmup_steps", 5)),
-            gamma=float(getattr(self.task_cfg, "gamma", 0.9)),
-        )
-
         # Loss function
         self.loss_fn = self.task.get_loss_fn(self.device)
 
@@ -419,9 +302,6 @@ class BaseDownstreamRunner:
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
 
-        grad_acc_steps = max(1, int(getattr(self.task_cfg, "grad_accumulation_steps", 1)))
-        max_grad_norm = float(getattr(self.task_cfg, "max_grad_norm", 1e6))
-
         running_loss = 0.0
         all_metrics: dict[str, list] = {}
 
@@ -440,13 +320,10 @@ class BaseDownstreamRunner:
             logits = self.model(embeddings)
             loss = self.loss_fn(logits, targets)
 
-            # Backward with accumulation
-            (loss / grad_acc_steps).backward()
-
-            if step_idx % grad_acc_steps == 0 or step_idx == len(self.train_loader):
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
-                self.optimizer.step()
-                self.optimizer.zero_grad(set_to_none=True)
+            # Backward
+            loss.backward()
+            self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
 
             running_loss += loss.item()
 
@@ -466,7 +343,6 @@ class BaseDownstreamRunner:
             for key in epoch_metrics:
                 epoch_metrics[key] = get_reduced(epoch_metrics[key], self.local_rank, 0, self.world_size)
 
-        self.scheduler.step()
         return epoch_metrics
 
     def _compute_train_metrics(self, logits: torch.Tensor, targets: torch.Tensor) -> dict[str, float]:
@@ -517,9 +393,6 @@ class BaseDownstreamRunner:
         # Compute metrics via task
         metrics = self.task.compute_metrics(predictions, targets)
 
-        if self.is_master:
-            log.info(f"Evaluation metrics: {metrics}")
-
         return metrics
 
     def _save_checkpoint(
@@ -539,7 +412,6 @@ class BaseDownstreamRunner:
             "epoch": epoch,
             "model_state": self.model.state_dict(),
             "optimizer_state": self.optimizer.state_dict(),
-            "scheduler_state": self.scheduler.state_dict(),
             "config": OmegaConf.to_container(self.task_cfg),
             "train_metrics": train_metrics,
             "test_metrics": test_metrics,
@@ -576,23 +448,22 @@ class BaseDownstreamRunner:
         best_metrics = {}
 
         for epoch in range(epochs):
-            if self.is_master:
+            if self.is_master and epoch % 10 == 0:
                 log.info(f"Starting epoch {epoch + 1}/{epochs}")
 
             # Train
             train_metrics = self._train_one_epoch(epoch)
-            if self.is_master:
+            if self.is_master and epoch % 10 == 0:
                 log.info(f"Train metrics: {train_metrics}")
 
             # Evaluate
             test_metrics = self._evaluate()
+            if self.is_master and epoch % 10 == 0:
+                log.info(f"Evaluation metrics: {test_metrics}")
 
             # Save checkpoint
-            self._save_checkpoint(epoch, train_metrics, test_metrics)
+            # self._save_checkpoint(epoch, train_metrics, test_metrics)
 
             best_metrics = test_metrics
 
         return best_metrics
-
-
-import sys

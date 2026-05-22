@@ -14,6 +14,9 @@ Usage
     # Custom output path and obsm key:
     python embed.py --checkpoint path/to/model.ckpt --input data.h5ad \\
         --output data_embedded.h5ad --obsm-key X_cf
+
+    # PCA embeddings only (no model required):
+    python embed.py --input data.h5ad --pca --n-pcs 50
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ def parse_args() -> argparse.Namespace:
         description="Embed cells in an h5ad file using a CancerFoundation checkpoint.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--checkpoint", required=True, help="Path to .ckpt model checkpoint.")
+    parser.add_argument("--checkpoint", default=None, help="Path to .ckpt model checkpoint.")
     parser.add_argument("--input", required=True, help="Path to input .h5ad file.")
     parser.add_argument(
         "--output",
@@ -68,6 +71,22 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Force CPU inference even when a GPU is available.",
     )
+    # PCA options
+    parser.add_argument(
+        "--pca",
+        action="store_true",
+        default=False,
+        help=(
+            "Compute PCA embeddings and store in adata.obsm['X_pca']. "
+            "Mutually exclusive with model embedding. No checkpoint required."
+        ),
+    )
+    parser.add_argument(
+        "--n-pcs",
+        type=int,
+        default=50,
+        help="Number of principal components to compute (default: 50). Only used with --pca.",
+    )
     return parser.parse_args()
 
 
@@ -78,9 +97,8 @@ def main() -> None:
         print("Error: --normalized and --log1p-only are mutually exclusive.", file=sys.stderr)
         sys.exit(1)
 
-    checkpoint_path = Path(args.checkpoint)
-    if not checkpoint_path.exists():
-        print(f"Error: checkpoint not found: {checkpoint_path}", file=sys.stderr)
+    if not args.pca and args.checkpoint is None:
+        print("Error: --checkpoint is required unless --pca is set.", file=sys.stderr)
         sys.exit(1)
 
     input_path = Path(args.input)
@@ -94,25 +112,7 @@ def main() -> None:
         else input_path.with_name(input_path.stem + "_embedded.h5ad")
     )
 
-    import torch
     import scanpy as sc
-    from cancerfoundation.model.model import CancerFoundation
-
-    # -------------------------------------------------------------------------
-    # Load model
-    # -------------------------------------------------------------------------
-    print(f"Loading checkpoint: {checkpoint_path}")
-    model = CancerFoundation.load_from_checkpoint(str(checkpoint_path), strict=False)
-    model.eval()
-    for param in model.parameters():
-        param.requires_grad = False
-
-    use_gpu = not args.cpu and torch.cuda.is_available()
-    if use_gpu:
-        model = model.cuda()
-        print("Inference device: GPU")
-    else:
-        print("Inference device: CPU")
 
     # -------------------------------------------------------------------------
     # Load data
@@ -122,21 +122,55 @@ def main() -> None:
     print(f"  {adata.n_obs} cells × {adata.n_vars} genes")
 
     # -------------------------------------------------------------------------
-    # Embed
+    # Model embedding branch
     # -------------------------------------------------------------------------
-    print("Generating embeddings...")
-    emb_df = model.embed(
-        adata,
-        batch_size=args.batch_size,
-        normalized=args.normalized,
-        log1p_only=args.log1p_only,
-    )
+    if args.checkpoint is not None:
+        import torch
+        sys.path.insert(0, "../")
+        from cancerfoundation.model.model import CancerFoundation
 
-    adata.obsm[args.obsm_key] = emb_df.to_numpy().astype(np.float32)
-    print(
-        f"Stored embeddings in adata.obsm['{args.obsm_key}'] "
-        f"(shape: {adata.obsm[args.obsm_key].shape})"
-    )
+        checkpoint_path = Path(args.checkpoint)
+        if not checkpoint_path.exists():
+            print(f"Error: checkpoint not found: {checkpoint_path}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"Loading checkpoint: {checkpoint_path}")
+        model = CancerFoundation.load_from_checkpoint(str(checkpoint_path), strict=False)
+        model.eval()
+        for param in model.parameters():
+            param.requires_grad = False
+
+        use_gpu = not args.cpu and torch.cuda.is_available()
+        if use_gpu:
+            model = model.cuda()
+            print("Inference device: GPU")
+        else:
+            print("Inference device: CPU")
+
+        print("Generating embeddings...")
+        emb_df = model.embed(
+            adata,
+            batch_size=args.batch_size,
+            normalized=args.normalized,
+            log1p_only=args.log1p_only,
+        )
+
+        adata.obsm[args.obsm_key] = emb_df.to_numpy().astype(np.float32)
+        print(
+            f"Stored embeddings in adata.obsm['{args.obsm_key}'] "
+            f"(shape: {adata.obsm[args.obsm_key].shape})"
+        )
+
+    # -------------------------------------------------------------------------
+    # PCA branch
+    # -------------------------------------------------------------------------
+    if args.pca:
+        print(f"Computing PCA with {args.n_pcs} components...")
+        sc.pp.pca(adata, n_comps=args.n_pcs)
+        print(
+            f"Stored PCA embeddings in adata.obsm['X_pca'] "
+            f"(shape: {adata.obsm['X_pca'].shape})"
+        )
 
     # -------------------------------------------------------------------------
     # Save
