@@ -480,6 +480,21 @@ class SurvBoardTask(DownstreamTask):
         log.info(f"Survival datasets ready — embedding_dim={embedding_dim}")
         return train_dataset, test_dataset, embedding_dim
 
+    def _clear_survival_csvs(self) -> None:
+        """Remove all split_*.csv files written by previous runs for this model."""
+        results_dir = self._resolve_results_dir()
+        model_name  = self.get_model_name()
+        removed     = 0
+        for cohort, cancer, _ in self._block_info:
+            out_dir = results_dir / cohort / cancer / model_name
+            if not out_dir.exists():
+                continue
+            for csv_path in out_dir.glob("split_*.csv"):
+                csv_path.unlink()
+                removed += 1
+        if removed:
+            log.info(f"Cleared {removed} previous survival function CSV(s) for model '{model_name}'.")
+
     def _prepare_all_folds(self, embedder: Any) -> tuple[Dataset, Dataset, int]:
         """
         Iterate over every selected fold: train a Cox head, compute Breslow survival
@@ -492,6 +507,8 @@ class SurvBoardTask(DownstreamTask):
         Aggregated metrics (mean C-index) are stored in self._multi_fold_metrics for
         retrieval by compute_metrics(). Returns fold-0 datasets so the runner loop is valid.
         """
+        self._clear_survival_csvs()
+
         full_times  = self._full_targets[:, 0]
         full_events = self._full_targets[:, 1]
 
@@ -677,6 +694,8 @@ class SurvBoardTask(DownstreamTask):
         """
         if self._is_multi_fold:
             return self._multi_fold_metrics
+
+        self._clear_survival_csvs()
 
         risk   = predictions[:, 0] if predictions.ndim == 2 else predictions
         times  = targets[:, 0]

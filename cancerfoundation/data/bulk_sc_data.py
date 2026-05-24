@@ -162,6 +162,10 @@ class BulkSCDataset(Dataset):
         for col in self.obs_columns:
             data[col] = self._obs_arrays[col][index]
 
+        # Expose the pair ID so the collator can detect paired batches
+        if self.paired_column is not None:
+            data[self.paired_column] = int(self._obs_arrays[self.paired_column][index])
+
         return data
 
     # ------------------------------------------------------------------

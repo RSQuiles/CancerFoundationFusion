@@ -51,6 +51,7 @@ class BulkSCCollator(AnnDataCollator):
     aggregation: str = "sum"
     match_fn: Optional[Callable] = None
     agg_consistency: bool = False # Determines whether to include the sc_for_pb samples in the batch
+    paired_column: Optional[str] = None  # obs column carrying pair IDs; enables is_paired_batch detection
 
     def __post_init__(self):
         """
@@ -104,6 +105,19 @@ class BulkSCCollator(AnnDataCollator):
             dict(sample)
             for sample in examples[self.n_sc + self.n_pb * self.n_sc_per_pseudobulk :]
         ]
+
+        # Detect paired batch: in paired sampling, sc_for_pb_samples holds precomputed
+        # PB rows (not SC cells), each matched to its corresponding bulk row by the same
+        # pair_positions drawn in BulkSCSampler.sample_paired_batch(). We verify the
+        # match by comparing the pair IDs stored in the paired_column field.
+        # Requires n_sc_per_pseudobulk==1 (each precomputed PB passes through unchanged).
+        is_paired = False
+        if self.paired_column is not None and self.n_sc_per_pseudobulk == 1:
+            pb_pair_ids   = [int(s.get(self.paired_column, 0)) for s in sc_for_pb_samples]
+            bulk_pair_ids = [int(s.get(self.paired_column, 0)) for s in bulk_samples]
+            if (len(pb_pair_ids) == len(bulk_pair_ids)
+                    and all(p == b and p != 0 for p, b in zip(pb_pair_ids, bulk_pair_ids))):
+                is_paired = True
 
         pseudobulk_samples: List[Dict[str, Any]] = []
         sc_pseudobulk_index: List[int] = []
@@ -192,6 +206,7 @@ class BulkSCCollator(AnnDataCollator):
             unified_pseudobulk_index
         )  # similar to above, but for all samples in the batch
         data_dict["pseudobulk_sizes"] = torch.LongTensor(pseudobulk_sizes)
+        data_dict["is_paired_batch"] = torch.tensor(is_paired, dtype=torch.bool)
 
         return data_dict
 

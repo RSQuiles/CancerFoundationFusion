@@ -59,6 +59,7 @@ class TransformerModule(nn.Module):
         contrastive: bool = False,
         aggregation: bool = False,
         agg_fn: Optional[str] = None,
+        paired_alignment: bool = False,
         vocab: Optional[Dict[str, int]] = None,
         gene_embeddings_path: Optional[Union[str, os.PathLike, Path]] = None,
         gene_embeddings_freeze: bool = True,
@@ -113,6 +114,7 @@ class TransformerModule(nn.Module):
         self.contrastive = contrastive
         self.aggregation = aggregation
         self.agg_fn = agg_fn
+        self.paired_alignment = paired_alignment
         self.vocab = vocab
         self.gene_embeddings_path = gene_embeddings_path
         self.gene_embeddings_freeze = gene_embeddings_freeze
@@ -871,6 +873,11 @@ class TransformerModule(nn.Module):
                 loss = loss + loss_mvc
                 loss_dict["loss_mvc"] = loss_mvc
 
+        # Resolve paired-batch flag before any loss blocks that branch on it
+        is_paired_batch = tensors.get("is_paired_batch", False)
+        if isinstance(is_paired_batch, torch.Tensor):
+            is_paired_batch = bool(is_paired_batch.item())
+
         # Return directly if denoising task
         if noise is not None:
             return loss_dict["loss_expr"]
@@ -925,8 +932,22 @@ class TransformerModule(nn.Module):
             loss = loss + loss_contrastive
             loss_dict["loss_contrastive"] = loss_contrastive.detach()
 
-        # Aggregation consistency loss: if enabled, it encourages the model to produce consistent predictions for single-cell and pseudobulk samples
-        if self.aggregation:
+        # Paired alignment loss: MSE between matched bulk–pseudobulk CLS embeddings
+        if self.paired_alignment and is_paired_batch:
+            modality = tensors["conditions"]["modality"]
+            cell_emb = output_dict["cell_emb"]
+            bulk_mask = modality == 0
+            pb_mask   = modality == 2
+            if bulk_mask.any() and pb_mask.any():
+                pb_bulk_local_idx = tensors["sample_pseudobulk_index"][pb_mask]
+                bulk_embs = cell_emb[bulk_mask][pb_bulk_local_idx]
+                pb_embs   = cell_emb[pb_mask]
+                loss_paired = self._paired_alignment_loss(bulk_embs, pb_embs)
+                loss = loss + loss_paired
+                loss_dict["loss_paired_alignment"] = loss_paired.detach()
+
+        # Aggregation consistency loss: skip for paired batches (SC cells are unrelated to the PBs)
+        if self.aggregation and not is_paired_batch:
             # print("Using aggregation consistency loss...")
             embeddings = output_dict["embeddings"]
             # Reconstruct assignment
@@ -1088,6 +1109,14 @@ class TransformerModule(nn.Module):
         cov_loss = _covariance(bulk_emb) + _covariance(pb_emb)
 
         return var_loss, cov_loss
+
+    def _paired_alignment_loss(
+        self,
+        bulk_embs: torch.Tensor,
+        pb_embs:   torch.Tensor,
+    ) -> torch.Tensor:
+        """MSE between CLS embeddings of matched bulk–pseudobulk pairs."""
+        return F.mse_loss(pb_embs, bulk_embs)
 
     def training_step(self, batch, batch_idx):
         """Performs a single training step (for PyTorch Lightning).

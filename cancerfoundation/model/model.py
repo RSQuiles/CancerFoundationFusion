@@ -82,6 +82,7 @@ class CancerFoundation(pl.LightningModule):
         esm_emb_path: Optional[Union[str, os.PathLike]] = None,
         esm_emb_finetune: bool = False,
         dat_columns: Optional[List[str]] = [],
+        paired_alignment: bool = False,
     ):
         """Initializes the CancerFoundation LightningModule.
 
@@ -167,6 +168,7 @@ class CancerFoundation(pl.LightningModule):
         self.contrastive = contrastive
         self.aggregation = aggregation
         self.agg_fn = agg_fn
+        self.paired_alignment = paired_alignment
         self.noise = noise or []
         self.denoise = len(self.noise) > 0
         self.esm_emb = esm_emb
@@ -308,6 +310,7 @@ class CancerFoundation(pl.LightningModule):
                 contrastive=self.contrastive,
                 aggregation=self.aggregation,
                 agg_fn=self.agg_fn,
+                paired_alignment=self.paired_alignment,
                 vocab=self.vocab,
                 gene_embeddings_path=self.esm_emb_path if self.esm_emb else None,
                 gene_embeddings_freeze=not self.esm_emb_finetune,

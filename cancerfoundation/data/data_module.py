@@ -317,7 +317,8 @@ class BulkSCDataModule(pl.LightningDataModule):
                 bulk_ratio=self.hparams.bulk_ratio,
                 pb_ratio=self.hparams.pb_ratio,
                 n_sc_per_pseudobulk=self.hparams.n_sc_per_pseudobulk,
-                agg_consistency = self.agg_consistency
+                agg_consistency = self.agg_consistency,
+                paired_column = "paired" if self.paired_sampling else None,
             )
 
         batch_size = self.batch_size if train else self.batch_size

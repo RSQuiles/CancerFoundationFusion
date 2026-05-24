@@ -266,6 +266,7 @@ def main(input_args=None):
             contrastive=args.contrastive_training,
             aggregation=args.agg_consistency,
             agg_fn=args.agg_fn,
+            paired_alignment=args.paired_sampling,
             noise=args.noise,
             esm_emb=args.esm_emb,
             esm_emb_path=args.esm_emb_path,
