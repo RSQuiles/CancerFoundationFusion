@@ -31,9 +31,15 @@ class PCAEmbedder:
         Random seed passed to sklearn's PCA for reproducibility.
     """
 
+    fittable: bool = True  # signals multi-fold loop to re-fit PCA per fold
+
     def __init__(self, n_components: int = 128, random_state: int = 42) -> None:
         self.n_components = n_components
         self.random_state = random_state
+        self._pca = None
+
+    def reset(self) -> None:
+        """Discard the fitted PCA so the next embed() call re-fits from scratch."""
         self._pca = None
 
     # ------------------------------------------------------------------

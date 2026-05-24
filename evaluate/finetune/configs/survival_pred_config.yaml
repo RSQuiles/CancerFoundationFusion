@@ -62,9 +62,13 @@ finetune:
     #   {splits_dir}/{COHORT}/{CANCER}_test_splits.csv
     # Each CSV: rows = folds, columns = NaN-padded integer sample indices.
     splits_dir: /cluster/work/boeva/bulkFM/data/processed/survboard/splits
-    # fold_index: integer (0–24)  → train a single fold; save split_{fold}.csv
-    # fold_index: "all"           → train one Cox head per fold internally;
-    #                               report mean C-index; save all split_*.csv files
+    # fold_index formats:
+    #   integer     → single fold,            e.g. fold_index: 3
+    #   "all"       → all available folds (25 for SurvBoard)
+    #   "N:M"       → folds N through M-1,    e.g. fold_index: "0:5"
+    #   [0, 3, 7]   → explicit list of folds, e.g. fold_index: [0, 5, 10]
+    # Multi-fold modes train one Cox head per fold internally, report mean C-index,
+    # and save per-fold split_*.csv files named by the actual fold index.
     fold_index: "all"
 
     # ===== OUTPUT =====
@@ -97,3 +101,9 @@ finetune:
     gamma: 0.9
     grad_accumulation_steps: 1
     max_grad_norm: 10.0
+
+    # ===== FINE-TUNING (optional — single fold only) =====
+    # Set to true to fine-tune the pretrained encoder alongside the Cox head.
+    # Not compatible with multi-fold mode (fold_index must be a single integer).
+    # finetune_embedder: false
+    # embedder_learning_rate: 0.000005

@@ -39,7 +39,7 @@ import hydra
 import numpy as np
 import pandas as pd
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig
 from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, Dataset
@@ -283,28 +283,51 @@ class SurvBoardTask(DownstreamTask):
         self._block_info = block_info
         self._task_cfg   = task_cfg
 
-        # Parse fold_index: single int or "all"
-        fold_cfg           = getattr(task_cfg, "fold_index", 0)
-        self._is_all_folds = str(fold_cfg).lower() == "all"
+        # Parse fold_index: int, "all", "N:M" range string, or YAML list
+        fold_cfg = getattr(task_cfg, "fold_index", 0)
 
-        if self._is_all_folds:
-            self._full_adata      = adata
-            self._full_targets    = targets
-            self._all_fold_splits = self._make_all_splits(adata, task_cfg, block_info)
-            n_folds               = len(self._all_fold_splits)
-            log.info(f"Multi-fold mode: {n_folds} folds, {adata.n_obs} total samples")
-            train_idx, test_idx = self._all_fold_splits[0]
-            self._fold_index = 0
+        if isinstance(fold_cfg, (list, ListConfig)):
+            fold_indices: list[int] | None = [int(x) for x in fold_cfg]
+        elif str(fold_cfg).lower() == "all":
+            fold_indices = None  # resolved to range(n_folds) after loading splits
+        elif isinstance(fold_cfg, str) and ":" in fold_cfg:
+            lo, hi = fold_cfg.split(":")
+            fold_indices = list(range(int(lo), int(hi)))
         else:
-            self._fold_index = int(fold_cfg)
-            train_idx, test_idx = self._make_split(adata, task_cfg, block_info, self._fold_index)
+            fold_indices = [int(fold_cfg)]
 
-        self._test_idx = test_idx
+        if fold_indices is None or len(fold_indices) > 1:
+            self._full_adata   = adata
+            self._full_targets = targets
+            all_splits         = self._make_all_splits(adata, task_cfg, block_info)
+            if fold_indices is None:
+                fold_indices = list(range(len(all_splits)))
+            self._fold_indices    = fold_indices
+            self._all_fold_splits = [all_splits[f] for f in fold_indices]
+            train_idx, test_idx   = self._all_fold_splits[0]
+            self._fold_index      = fold_indices[0]
+            log.info(
+                f"Multi-fold mode: {len(fold_indices)} folds selected "
+                f"(indices {fold_indices}), {adata.n_obs} total samples"
+            )
+        else:
+            self._fold_indices    = fold_indices
+            train_idx, test_idx   = self._make_split(adata, task_cfg, block_info, fold_indices[0])
+            self._all_fold_splits = [(train_idx, test_idx)]
+            self._fold_index      = fold_indices[0]
+
+        self._is_multi_fold = len(self._fold_indices) > 1
+        self._test_idx      = test_idx
 
         log.info(
             f"SurvBoard: {adata.n_obs} total, {int(events.sum())} events. "
             f"Train={len(train_idx)}, Test={len(test_idx)}"
         )
+
+        # Set Breslow state here so compute_metrics() works even when
+        # prepare_datasets() is bypassed by the fine-tuning path in the base runner.
+        self._train_times  = targets[train_idx, 0]
+        self._train_events = targets[train_idx, 1]
 
         return (
             1,
@@ -420,15 +443,23 @@ class SurvBoardTask(DownstreamTask):
         train_targets: np.ndarray,
         test_targets:  np.ndarray,
         embedder:      Any,
+        task_cfg:      Any = None,
     ) -> tuple[Dataset, Dataset, int]:
         """
         Embed data and create datasets.
 
-        In all-fold mode, also trains one Cox head per fold, saves per-fold
+        In multi-fold mode, also trains one Cox head per fold, saves per-fold
         survival CSVs, and stores the averaged C-index for compute_metrics().
         Returns fold-0 datasets so the runner's training loop is valid.
         """
-        if self._is_all_folds:
+        finetune = bool(getattr(self._task_cfg, "finetune_embedder", False))
+        if finetune and self._is_multi_fold:
+            raise ValueError(
+                "finetune_embedder=True is not supported with multi-fold evaluation. "
+                "Set fold_index to a single integer."
+            )
+
+        if self._is_multi_fold:
             return self._prepare_all_folds(embedder)
 
         # Single-fold path
@@ -451,37 +482,55 @@ class SurvBoardTask(DownstreamTask):
 
     def _prepare_all_folds(self, embedder: Any) -> tuple[Dataset, Dataset, int]:
         """
-        Embed the full dataset once, then iterate over every fold:
-          - Train a Cox head on the fold's training split.
-          - Compute Breslow survival functions on the test split.
-          - Save the per-fold survival CSV.
-          - Record the Harrell C-index.
+        Iterate over every selected fold: train a Cox head, compute Breslow survival
+        functions, save per-fold CSVs, record Harrell C-index.
 
-        Aggregated metrics (mean C-index) are stored in self._multi_fold_metrics
-        for retrieval by compute_metrics().
+        For PCAEmbedder (fittable=True): embeds per fold (fit on train, transform test)
+        to avoid data leakage. For frozen transformers: embeds the full dataset once and
+        slices per fold.
 
-        Returns fold-0 datasets so the outer runner loop has valid data.
+        Aggregated metrics (mean C-index) are stored in self._multi_fold_metrics for
+        retrieval by compute_metrics(). Returns fold-0 datasets so the runner loop is valid.
         """
-        log.info("Embedding full dataset for multi-fold evaluation …")
-        full_emb      = self._embed_adata(embedder, self._full_adata)
-        embedding_dim = full_emb.shape[1]
-        full_times    = self._full_targets[:, 0]
-        full_events   = self._full_targets[:, 1]
+        full_times  = self._full_targets[:, 0]
+        full_events = self._full_targets[:, 1]
 
-        device = next(embedder.parameters()).device
+        try:
+            device = next(embedder.parameters()).device
+        except (StopIteration, AttributeError):
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        cfg     = self._task_cfg
-        epochs  = int(getattr(cfg, "epochs", 30))
-        bs      = int(getattr(cfg, "batch_size", 64))
+        cfg    = self._task_cfg
+        epochs = int(getattr(cfg, "epochs", 30))
+        bs     = int(getattr(cfg, "batch_size", 64))
 
         n_folds        = len(self._all_fold_splits)
         fold_c_indices: list[float] = []
+        pca_mode       = getattr(embedder, "fittable", False)
 
-        for fold_i, (train_idx, test_idx) in enumerate(self._all_fold_splits):
-            log.info(f"Fold {fold_i + 1}/{n_folds}: train={len(train_idx)}, test={len(test_idx)}")
+        embedding_dim: int | None = None
 
-            train_emb    = full_emb[train_idx]
-            test_emb     = full_emb[test_idx]
+        if not pca_mode:
+            log.info("Embedding full dataset for multi-fold evaluation …")
+            full_emb      = self._embed_adata(embedder, self._full_adata)
+            embedding_dim = full_emb.shape[1]
+
+        for fold_i, (fold_id, (train_idx, test_idx)) in enumerate(
+            zip(self._fold_indices, self._all_fold_splits)
+        ):
+            log.info(f"Fold {fold_i + 1}/{n_folds} (id={fold_id}): train={len(train_idx)}, test={len(test_idx)}")
+
+            if pca_mode:
+                if hasattr(embedder, "reset"):
+                    embedder.reset()
+                train_emb = self._embed_adata(embedder, self._full_adata[train_idx])
+                test_emb  = self._embed_adata(embedder, self._full_adata[test_idx])
+                if embedding_dim is None:
+                    embedding_dim = train_emb.shape[1]
+            else:
+                train_emb = full_emb[train_idx]
+                test_emb  = full_emb[test_idx]
+
             train_times  = full_times[train_idx]
             train_events = full_events[train_idx]
             test_times   = full_times[test_idx]
@@ -502,15 +551,14 @@ class SurvBoardTask(DownstreamTask):
 
             surv_mat, time_grid = _breslow_survival(train_times, train_events, test_risk)
 
-            # Update instance state so _save_survival_csvs uses the correct fold/indices
             self._test_idx   = test_idx
-            self._fold_index = fold_i
+            self._fold_index = fold_id
             self._save_survival_csvs(surv_mat, time_grid, test_times, test_events, self.get_model_name())
 
             c_idx = _c_index(test_times, test_risk, test_events.astype(bool))
             fold_c_indices.append(c_idx)
             log.info(
-                f"  Fold {fold_i}: C-index={c_idx:.4f}, "
+                f"  Fold {fold_id}: C-index={c_idx:.4f}, "
                 f"n_events={int(test_events.sum())}"
             )
 
@@ -527,17 +575,27 @@ class SurvBoardTask(DownstreamTask):
         }
 
         # Restore fold-0 state so the runner's evaluate() call works normally
+        fold0_id              = self._fold_indices[0]
         train_idx_0, test_idx_0 = self._all_fold_splits[0]
-        self._test_idx     = test_idx_0
-        self._fold_index   = 0
-        self._train_times  = full_times[train_idx_0]
-        self._train_events = full_events[train_idx_0]
+        self._test_idx        = test_idx_0
+        self._fold_index      = fold0_id
+        self._train_times     = full_times[train_idx_0]
+        self._train_events    = full_events[train_idx_0]
+
+        if pca_mode:
+            if hasattr(embedder, "reset"):
+                embedder.reset()
+            train_emb_0 = self._embed_adata(embedder, self._full_adata[train_idx_0])
+            test_emb_0  = self._embed_adata(embedder, self._full_adata[test_idx_0])
+        else:
+            train_emb_0 = full_emb[train_idx_0]
+            test_emb_0  = full_emb[test_idx_0]
 
         train_dataset = SurvivalEmbeddingDataset(
-            full_emb[train_idx_0], full_times[train_idx_0], full_events[train_idx_0]
+            train_emb_0, full_times[train_idx_0], full_events[train_idx_0]
         )
         test_dataset = SurvivalEmbeddingDataset(
-            full_emb[test_idx_0], full_times[test_idx_0], full_events[test_idx_0]
+            test_emb_0, full_times[test_idx_0], full_events[test_idx_0]
         )
         return train_dataset, test_dataset, embedding_dim
 
@@ -617,7 +675,7 @@ class SurvBoardTask(DownstreamTask):
         -------
         dict with keys: c_index, n_events, event_rate
         """
-        if self._is_all_folds:
+        if self._is_multi_fold:
             return self._multi_fold_metrics
 
         risk   = predictions[:, 0] if predictions.ndim == 2 else predictions
