@@ -668,7 +668,9 @@ class SurvBoardTask(DownstreamTask):
     ) -> np.ndarray:
         embedder.eval()
         embedder.cuda()
-        return embedder.embed(adata, batch_size=batch_size, normalized=True).to_numpy()
+        result = embedder.embed(adata, batch_size=batch_size, normalized=True)
+        df = result[0] if isinstance(result, tuple) else result
+        return df.to_numpy()
 
     # ---- Evaluation --------------------------------------------------------- #
 
