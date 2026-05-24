@@ -27,25 +27,25 @@ finetune:
 
     # Cohorts and cancer types to include.  Every combination that has a
     # matching parquet file is loaded and concatenated before training.
-    cohorts: [ICGC]
+    cohorts: [TCGA, ICGC]
     cancer_types:
       # TCGA (22 cancer types)
-      # - BRCA
-      # - BLCA
-      # - COAD
-      # - GBM
-      # - KIRC
-      # - LAML
-      # - LGG
-      # - LIHC
-      # - LUAD
-      # - LUSC
-      # - OV
-      # - PAAD
-      # - SARC
-      # - SKCM
-      # - STAD
-      # - UCEC
+      - BRCA
+      - BLCA
+      - COAD
+      - GBM
+      - KIRC
+      - LAML
+      - LGG
+      - LIHC
+      - LUAD
+      - LUSC
+      - OV
+      - PAAD
+      - SARC
+      - SKCM
+      - STAD
+      - UCEC
       # Uncomment to add ICGC cohort (set cohorts: [TCGA, ICGC])
       - CLLE-ES
       - LIRI-JP
@@ -57,7 +57,7 @@ finetune:
     head_learning_rate: 0.001
 
     # ===== PRE-MADE SPLITS =====
-    # Directory containing SurvBoard's official split index CSVs:
+    # Directory containing SurvBoard's split index CSVs:
     #   {splits_dir}/{COHORT}/{CANCER}_train_splits.csv
     #   {splits_dir}/{COHORT}/{CANCER}_test_splits.csv
     # Each CSV: rows = folds, columns = NaN-padded integer sample indices.
@@ -69,7 +69,7 @@ finetune:
     #   [0, 3, 7]   → explicit list of folds, e.g. fold_index: [0, 5, 10]
     # Multi-fold modes train one Cox head per fold internally, report mean C-index,
     # and save per-fold split_*.csv files named by the actual fold index.
-    fold_index: "all"
+    fold_index: "0:5"
 
     # ===== OUTPUT =====
 

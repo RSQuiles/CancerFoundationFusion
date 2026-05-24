@@ -231,15 +231,34 @@ class SurvBoardTask(DownstreamTask):
 
         dfs:        list[pd.DataFrame]         = []
         block_info: list[tuple[str, str, int]] = []
+        meta_cols = {"OS_days", "OS_event", "OS", "_cancer_type", "_cohort"}
 
         for cohort in cohorts:
             for ct in cancer_types:
                 path = data_dir / f"{cohort}_{ct}.parquet"
                 if not path.exists():
                     continue
-                df                 = pd.read_parquet(path)
+                df = pd.read_parquet(path)
+
+                # Translate gene vocabulary
+                gene_cols = [c for c in df.columns if c not in meta_cols]
+                non_gene_cols = [c for c in df.columns if c in meta_cols]
+                # TCGA name format SYMBOL|EntrezID
+                if "|" in gene_cols[0]:
+                    entrez_ids = [name.split("|")[1] for name in gene_cols]
+                    gene_cols_matched = translate_gene_symbols(entrez_ids)
+                else:
+                    gene_cols_matched = strip_ensembl_versions(gene_cols)
+                assert len(gene_cols) == len(gene_cols_matched), "Mismatched gene vocabulary translation"
+
+                gene_cols_matched.extend(non_gene_cols)
+                df.columns = gene_cols_matched
+                # Drop duplicates
+                df = df.loc[:, ~df.columns.duplicated(keep="first")]
+                # Add metadata columns
                 df["_cohort"]      = cohort
                 df["_cancer_type"] = ct
+
                 block_info.append((cohort, ct, len(df)))
                 dfs.append(df)
                 log.info(f"Loaded {path.name}  ({len(df)} samples)")
@@ -251,12 +270,14 @@ class SurvBoardTask(DownstreamTask):
             )
 
         df_all = pd.concat(dfs, axis=0, ignore_index=True)
-
-        meta_cols = {"OS_days", "OS_event", "OS", "_cancer_type", "_cohort"}
         gene_cols = [c for c in df_all.columns if c not in meta_cols]
 
-        # Translate gene names to model's vocabulary
         gene_cols_stripped = strip_ensembl_versions(gene_cols)
+        # TCGA name format
+        if "|" in gene_cols[0]:
+            entrez_ids = [name.split("|")[1] for name in gene_cols if len]
+            gene_cols_matched = translate_gene_symbols(entrez_ids)
+
 
         event_col = "OS" if "OS" in df_all.columns else "OS_event"
         times     = df_all["OS_days"].to_numpy(dtype=np.float32)
