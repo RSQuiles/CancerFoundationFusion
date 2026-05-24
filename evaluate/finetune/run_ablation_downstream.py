@@ -74,6 +74,7 @@ TASK_CONFIG_FILES: dict[str, str] = {
     "survival":        "survival_pred_config.yaml",
     "proteome_pred":   "proteome_pred_config.yaml",
     "drug_sensitivity": "drug_sensitivity_config.yaml",
+    "drug_sensitivity_v2": "drug_sensitivity_v2_config.yaml",
 }
 
 _EPOCH_RE = re.compile(r"epoch[=_]?(\d+)", re.IGNORECASE)

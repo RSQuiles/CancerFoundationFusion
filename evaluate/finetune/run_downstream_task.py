@@ -25,6 +25,7 @@ from evaluate.finetune.tasks import (
     SurvBoardTask,
     ProteomePredTask,
     DrugSensitivityTask,
+    DrugSensitivityV2Task,
 )
 from evaluate.finetune.downstream_task import TaskRegistry
 from evaluate.finetune.base_downstream_runner import BaseDownstreamRunner
