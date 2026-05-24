@@ -499,7 +499,8 @@ class CancerFoundation(pl.LightningModule):
         batch_size: int = 64, 
         normalized=False, 
         log1p_only=False,
-        hvg_select=True, 
+        hvg_select=True,
+        gene_subset=None, 
         flavor="seurat"):
         """Embeds an AnnData object into cell embeddings.
 
@@ -543,8 +544,13 @@ class CancerFoundation(pl.LightningModule):
         # sc.pp.highly_variable_genes(data, n_top_genes=self.n_top_genes, layer=None, flavor=flavor)
         # data = data[:, data.var["highly_variable"]].copy()
 
+        if gene_subset is not None:
+            # Apply supplied gene set (e.g. from train preprocessing) — no HVG re-fit
+            available_set = set(adata.var.index)
+            available = [g for g in gene_subset if g in available_set]
+            data = data[:, available].copy()
         # RAFA: adapt HVG selection wihout scanpy to avoid library issues
-        if hvg_select and data.n_vars > self.n_top_genes:
+        elif hvg_select and data.n_vars > self.n_top_genes:
             print("Reducing to Highly Variable Genes before embedding!")
 
             X = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
@@ -588,6 +594,9 @@ class CancerFoundation(pl.LightningModule):
             
             top_idx = np.argsort(disp_norm)[-self.n_top_genes:]
             data = data[:, top_idx].copy()
+
+        # Retrieve gene set
+        gene_set_used = data.var_names.tolist()
 
         # Bin expression values if required
         if self.input_style == "binned":
@@ -667,7 +676,7 @@ class CancerFoundation(pl.LightningModule):
             emb,
             index=adata.obs_names,
             columns=[f"dim_{i}" for i in range(emb.shape[1])],
-        )
+        ), gene_set_used
 
     def preprocess_for_embedding(
         self,
@@ -781,7 +790,7 @@ class CancerFoundation(pl.LightningModule):
         batch_genes = gene_ids.unsqueeze(0).expand(bs, -1).to(device)
         batch_expr = expr.to(device)
 
-        # Prepend CLS token
+        # Prepend CLS token (pad expression)
         batch_genes = torch.cat(
             [torch.full((bs, 1), self.cls_token_id, dtype=torch.long, device=device), batch_genes],
             dim=1,
@@ -791,6 +800,7 @@ class CancerFoundation(pl.LightningModule):
             dim=1,
         )
 
+        # Nothing is masked
         padding_mask = torch.zeros(batch_genes.shape, dtype=torch.bool, device=device)
 
         if self.model.use_generative_training:

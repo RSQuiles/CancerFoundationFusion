@@ -161,10 +161,6 @@ class CancTypeClassTask(DownstreamTask):
         # Number of classes
         num_classes = labels.nunique()
 
-        # Embed AnnData
-        log.info("Embedding samples:")
-        adata.obsm["X_emb"] = self._embed_adata(embedder, adata, task_cfg)
-
         return (
             num_classes, 
             adata[train_idx].copy(), 
@@ -191,9 +187,11 @@ class CancTypeClassTask(DownstreamTask):
             dtype=np.int64,
         )
 
-        # Retrieve embeddings
-        train_embeddings = train_adata.obsm["X_emb"].astype(np.float32)
-        test_embeddings = test_adata.obsm["X_emb"].astype(np.float32)
+        # Embed AnnDatas
+        log.info("Embedding samples:")
+        train_embeddings, train_gene_set = self._embed_adata(embedder, train_adata, task_cfg)
+        test_embeddings, test_gene_set = self._embed_adata(embedder, test_adata, task_cfg, gene_subset=train_gene_set)
+        assert train_gene_set == test_gene_set, "Train and Test Gene Sets used for embedding must be identical"
 
         if train_embeddings.ndim != 2 or test_embeddings.ndim != 2:
             raise ValueError("Embeddings must be 2D arrays: [n_cells, embedding_dim].")
@@ -210,13 +208,18 @@ class CancTypeClassTask(DownstreamTask):
 
         return train_dataset, test_dataset, embedding_dim
 
-    def _embed_adata(self, embedder: Any, adata: ad.AnnData, task_cfg: Any) -> np.ndarray:
+    def _embed_adata(self, embedder: Any, adata: ad.AnnData, task_cfg: Any, gene_subset: List = None) -> np.ndarray:
         """Generate embeddings for adata."""
         batch_size = 64
         embedder.eval()
         embedder.cuda()
-        df_emb = embedder.embed(adata, batch_size=batch_size, normalized=bool(getattr(task_cfg, "normalized", True)))
-        return df_emb.to_numpy()
+        df_emb, gene_set_used = embedder.embed(
+            adata, 
+            batch_size=batch_size, 
+            normalized=bool(getattr(task_cfg, "normalized", True)),
+            gene_subset=gene_subset
+            )
+        return df_emb.to_numpy(), gene_set_used
 
     def compute_metrics(
         self,

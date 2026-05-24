@@ -46,10 +46,10 @@ finetune:
     
     # ===== TRAINING HYPERPARAMETERS =====
     # Number of training epochs
-    epochs: 100
+    epochs: 30
     
     # Batch size for training and evaluation
-    batch_size: 64
+    batch_size: 16
     
     # Minimum learning rate
     min_lr: 0.000001
@@ -73,7 +73,7 @@ finetune:
     # Set to true to unfreeze the pretrained encoder and fine-tune it end-to-end
     # alongside the head. Raw expression data will be passed through the transformer
     # on every training step instead of using pre-computed frozen embeddings.
-    finetune_embedder: false
+    finetune_embedder: true
 
     # Learning rate for the transformer encoder when finetune_embedder is true.
     # Should be much smaller than head_learning_rate to avoid catastrophic forgetting.
