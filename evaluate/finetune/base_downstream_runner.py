@@ -21,7 +21,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import Adam
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 
 from evaluate.finetune.downstream_task import DownstreamTask
@@ -33,6 +33,32 @@ from evaluate.finetune.utils import (
 )
 
 log = logging.getLogger(__name__)
+
+
+class FineTuneDataset(Dataset):
+    """Dataset for fine-tuning mode: holds preprocessed expression data instead of pre-computed embeddings.
+
+    ``gene_ids`` is an instance attribute shared by all samples (same gene set for every cell).
+    The ``__getitem__`` tuple format ``(expr_row, target)`` is intentionally identical to the
+    embedding-based datasets so the rest of the training loop is unchanged.
+    """
+
+    def __init__(
+        self,
+        expr: np.ndarray,
+        gene_ids: torch.Tensor,
+        targets: np.ndarray,
+    ) -> None:
+        self.expr = torch.from_numpy(np.asarray(expr, dtype=np.float32))
+        self.gene_ids = gene_ids
+        self.targets = torch.from_numpy(np.asarray(targets))
+
+    def __len__(self) -> int:
+        return len(self.targets)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.expr[idx], self.targets[idx]
+
 
 class BaseDownstreamRunner:
     """
@@ -146,11 +172,13 @@ class BaseDownstreamRunner:
 
         embedder = CancerFoundation.load_from_checkpoint(resolved_path, strict=False)
         embedder.eval()
+        finetune_embedder = bool(getattr(self.task_cfg, "finetune_embedder", False))
         for param in embedder.parameters():
-            param.requires_grad = False
+            param.requires_grad = finetune_embedder
 
         if self.is_master:
-            log.info(f"Loaded pretrained embedder from {resolved_path}")
+            mode = "trainable (fine-tuning)" if finetune_embedder else "frozen"
+            log.info(f"Loaded pretrained embedder from {resolved_path} [{mode}]")
 
         return embedder
 
@@ -158,29 +186,76 @@ class BaseDownstreamRunner:
         """
         Load data and build data loaders.
 
-        Delegates to task.load_data() for task-specific data loading,
-        then to task.prepare_datasets() for dataset creation.
+        Delegates to task.load_data() for task-specific data loading.
+        In frozen-embedder mode, delegates to task.prepare_datasets() for embedding.
+        In fine-tuning mode, preprocesses the adata directly and builds FineTuneDatasets
+        so that raw expression data (not pre-computed embeddings) flows through the
+        training loop — enabling gradient propagation through the embedder.
         """
-        # Load task-specific data
         num_classes, train_adata, test_adata, train_targets, test_targets = self.task.load_data(
             self.task_cfg, self.embedder
         )
 
-        # Set number of classes
         if num_classes is not None:
             self.task_state["output_dim"] = num_classes
 
-        # Get datasets (task creates embeddings internally)
-        train_dataset, test_dataset, embedding_dim = self.task.prepare_datasets(
-            train_adata,
-            test_adata,
-            train_targets,
-            test_targets,
-            self.embedder,
-            self.task_cfg
-        )
+        finetune = bool(getattr(self.task_cfg, "finetune_embedder", False))
 
-        self.embedding_dim = embedding_dim
+        if finetune and hasattr(self.embedder, "preprocess_for_embedding"):
+            normalized = bool(getattr(self.task_cfg, "normalized", False))
+
+            # Preprocess train adata — HVG selection runs on training cells only
+            if self.is_master:
+                log.info("Fine-tuning mode: preprocessing train split for embedding...")
+            processed_train = self.embedder.preprocess_for_embedding(
+                train_adata, normalized=normalized
+            )
+            kept_genes = processed_train.var.index.tolist()
+
+            # Apply same gene set to test (no HVG re-fit on test cells)
+            if self.is_master:
+                log.info("Fine-tuning mode: preprocessing test split with train gene set...")
+            processed_test = self.embedder.preprocess_for_embedding(
+                test_adata, normalized=normalized, gene_subset=kept_genes
+            )
+
+            gene_ids = torch.LongTensor([self.embedder.vocab[g] for g in kept_genes])
+
+            train_expr = processed_train.X if isinstance(processed_train.X, np.ndarray) else processed_train.X.toarray()
+            test_expr = processed_test.X if isinstance(processed_test.X, np.ndarray) else processed_test.X.toarray()
+
+            # Encode string labels (classification) or pass numeric targets through
+            if np.asarray(train_targets).dtype.kind in ("U", "S", "O"):
+                classes, train_encoded = np.unique(train_targets, return_inverse=True)
+                label_to_idx = {c: i for i, c in enumerate(classes)}
+                test_encoded = np.array([label_to_idx[t] for t in test_targets], dtype=np.int64)
+                train_encoded = train_encoded.astype(np.int64)
+            else:
+                train_encoded = np.asarray(train_targets)
+                test_encoded = np.asarray(test_targets)
+
+            train_dataset = FineTuneDataset(train_expr, gene_ids, train_encoded)
+            test_dataset = FineTuneDataset(test_expr, gene_ids, test_encoded)
+            self.embedding_dim = self.embedder.embsize
+
+            if self.is_master:
+                log.info(
+                    f"Fine-tuning datasets built: train={len(train_dataset)}, "
+                    f"test={len(test_dataset)}, genes={len(kept_genes)}, "
+                    f"embedding_dim={self.embedding_dim}"
+                )
+        else:
+            # Frozen-embedder path: task pre-computes embeddings
+            train_dataset, test_dataset, embedding_dim = self.task.prepare_datasets(
+                train_adata,
+                test_adata,
+                train_targets,
+                test_targets,
+                self.embedder,
+                self.task_cfg,
+            )
+            self.embedding_dim = embedding_dim
+
         self.test_dataset_size = len(test_dataset)
 
         batch_size = int(getattr(self.task_cfg, "batch_size", 32))
@@ -215,7 +290,7 @@ class BaseDownstreamRunner:
             self.test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
         if self.is_master:
-            log.info(f"Built loaders. embedding_dim={embedding_dim}")
+            log.info(f"Built loaders. embedding_dim={self.embedding_dim}")
 
     def _build_model(self) -> None:
         """Build task-specific head/model."""
@@ -269,8 +344,21 @@ class BaseDownstreamRunner:
         model = self.model.module if isinstance(self.model, DDP) else self.model
         head_params = [param for param in model.parameters() if param.requires_grad]
 
+        param_groups = [{"params": head_params, "lr": head_learning_rate, "name": "head"}]
+
+        finetune = bool(getattr(self.task_cfg, "finetune_embedder", False))
+        if finetune and self.embedder is not None:
+            embedder_lr = float(getattr(self.task_cfg, "embedder_learning_rate", 1e-5))
+            embedder_params = [p for p in self.embedder.parameters() if p.requires_grad]
+            if embedder_params:
+                param_groups.append({"params": embedder_params, "lr": embedder_lr, "name": "embedder"})
+                if self.is_master:
+                    log.info(
+                        f"Added embedder param group: {len(embedder_params)} params, lr={embedder_lr}"
+                    )
+
         # Optimizer
-        self.optimizer = Adam([{"params": head_params, "lr": head_learning_rate, "name": "head"}])
+        self.optimizer = Adam(param_groups)
 
         # Scheduler
         max_lrs = [head_learning_rate]
@@ -299,6 +387,10 @@ class BaseDownstreamRunner:
             self.train_loader.sampler.set_epoch(epoch)
             dist.barrier()
 
+        finetune = bool(getattr(self.task_cfg, "finetune_embedder", False))
+        if finetune and self.embedder is not None:
+            self.embedder.train()
+
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
 
@@ -316,7 +408,11 @@ class BaseDownstreamRunner:
             else:
                 raise ValueError(f"Unsupported batch format: {type(batch)}")
 
-            # Forward
+            # Forward — in fine-tuning mode, run raw expression through the embedder first
+            if finetune and self.embedder is not None:
+                gene_ids = self.train_loader.dataset.gene_ids
+                embeddings = self.embedder.embed_for_finetune(gene_ids, embeddings)
+
             logits = self.model(embeddings)
             loss = self.loss_fn(logits, targets)
 
@@ -359,6 +455,10 @@ class BaseDownstreamRunner:
 
         Returns metrics computed via task.compute_metrics().
         """
+        finetune = bool(getattr(self.task_cfg, "finetune_embedder", False))
+        if finetune and self.embedder is not None:
+            self.embedder.eval()
+
         self.model.eval()
 
         if self.is_distributed:
@@ -377,6 +477,10 @@ class BaseDownstreamRunner:
                     targets = batch["targets"].to(self.device, non_blocking=True)
                 else:
                     raise ValueError(f"Unsupported batch format: {type(batch)}")
+
+                if finetune and self.embedder is not None:
+                    gene_ids = self.train_loader.dataset.gene_ids
+                    embeddings = self.embedder.embed_for_finetune(gene_ids, embeddings)
 
                 logits = self.model(embeddings)
                 all_predictions.append(logits.detach().cpu().numpy())

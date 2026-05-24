@@ -669,64 +669,66 @@ class CancerFoundation(pl.LightningModule):
             columns=[f"dim_{i}" for i in range(emb.shape[1])],
         )
 
-    @torch.no_grad()
-    def embed_batch(
+    def preprocess_for_embedding(
         self,
-        expression: np.ndarray,
-        gene_names: list,
-        batch_size: int = 64,
-        return_all_tokens: bool = False,
-    ) -> dict:
-        """Embed a numpy array of samples.
+        adata,
+        normalized: bool = False,
+        gene_subset: list | None = None,
+    ):
+        """Normalize, intersect vocab, select HVGs, and optionally bin — without running the forward pass.
 
-        Assumes expression is already log1p-normalized (CP10K + log1p).
-        Handles vocab intersection, HVG selection, and binning
+        Calling this on the full dataset before a train/test split ensures every cell
+        uses the same gene set.  Pass the returned ``var.index`` as ``gene_subset`` to
+        a second call on held-out data so HVG selection is never re-fit on test samples.
 
         Args:
-            expression: float32 array of shape (n_samples, n_genes).
-            gene_names: gene names corresponding to columns of expression.
-            batch_size: forward-pass batch size.
-            return_all_tokens: if True, also return per-gene transformer
-                outputs in addition to the CLS token.
+            adata: Input AnnData object.
+            normalized: If True, skip CP10K + log1p normalization (data already normalized).
+            gene_subset: If provided, skip HVG selection and subset directly to these gene
+                names (must be a subset of the vocab-intersected genes).
 
         Returns:
-            dict with keys:
-                "cls"         — (n_samples, d_model) CLS token embeddings.
-                "gene_tokens" — (n_samples, n_kept, d_model) gene token
-                                outputs (only when return_all_tokens=True).
-                "gene_names"  — list[str] of genes kept after intersection
-                                and HVG selection (only when return_all_tokens=True).
+            Preprocessed AnnData ready for ``embed_for_finetune()`` or ``embed(hvg_select=False)``.
         """
-        self.model.eval()
-        device = next(self.model.parameters()).device
+        import scanpy as sc
 
-        expression = np.asarray(expression, dtype=np.float32)
-        n_samples = expression.shape[0]
+        data = adata.copy()
+        if hasattr(data.X, "toarray"):
+            data.X = data.X.toarray()
 
-        # 1. Gene intersection (preserve input gene order)
-        vocab_set = set(self.vocab.keys())
-        kept_indices = [i for i, g in enumerate(gene_names) if g in vocab_set]
-        kept_genes = [gene_names[i] for i in kept_indices]
-        if not kept_genes:
-            raise ValueError("No genes in expression matrix overlap with model vocabulary.")
-        print(f"Common genes: {len(kept_genes)} / {len(gene_names)}")
-        expr = expression[:, kept_indices].copy()  # (n_samples, n_kept)
+        data = self._maybe_fix_negative(data)
 
-        # 2. HVG selection
-        if expr.shape[1] > self.n_top_genes:
-            mean = expr.mean(axis=0)
-            var = expr.var(axis=0)
+        if not normalized:
+            sc.pp.normalize_total(data, target_sum=1e4)
+            sc.pp.log1p(data)
+
+        # Intersect genes with vocab
+        common_genes = list(set(self.vocab.keys()).intersection(set(data.var.index)))
+        if not common_genes:
+            raise ValueError("No common genes between vocab and data. Check gene name format.")
+        print(f"Common genes: {len(common_genes)} / {data.n_vars}")
+        data = data[:, common_genes].copy()
+
+        if gene_subset is not None:
+            # Apply caller-supplied gene set (e.g. from train preprocessing) — no HVG re-fit
+            available_set = set(data.var.index)
+            available = [g for g in gene_subset if g in available_set]
+            data = data[:, available].copy()
+        elif self.n_top_genes and data.n_vars > self.n_top_genes:
+            print("Reducing to Highly Variable Genes before embedding!")
+            X = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
+            mean = X.mean(axis=0)
+            var = X.var(axis=0)
             mean[mean == 0] = 1e-12
             dispersion = var / mean
             dispersion[dispersion == 0] = np.nan
             dispersion = np.log(dispersion)
-
-            n_hvg_bins = 20
+            n_bins = 20
             mean_log = np.log1p(mean)
-            bins = np.percentile(mean_log, np.linspace(0, 100, n_hvg_bins + 1))
+            bins = np.percentile(mean_log, np.linspace(0, 100, n_bins + 1))
             bins = np.unique(bins)
-            bin_indices = np.clip(np.digitize(mean_log, bins) - 1, 0, len(bins) - 2)
-
+            bin_indices = np.digitize(mean_log, bins) - 1
+            bin_indices = np.clip(bin_indices, 0, len(bins) - 2)
             disp_norm = np.zeros_like(dispersion)
             for b in range(len(bins) - 1):
                 mask = bin_indices == b
@@ -741,71 +743,68 @@ class CancerFoundation(pl.LightningModule):
                 else:
                     disp_norm[mask] = (bin_disp - bin_mean) / bin_std
             disp_norm = np.nan_to_num(disp_norm, nan=-np.inf)
-
             top_idx = np.argsort(disp_norm)[-self.n_top_genes:]
-            expr = expr[:, top_idx]
-            kept_genes = [kept_genes[i] for i in top_idx]
+            data = data[:, top_idx].copy()
 
-        # 3. Binning
         if self.input_style == "binned":
             normalise = self.model.decoder.normalise_bins
-            for i in range(n_samples):
-                expr[i] = binning(expr[i], self.n_bins)
+            X = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
+            for idx in range(data.n_obs):
+                X[idx] = binning(X[idx], self.n_bins)
                 if normalise:
-                    expr[i] /= self.n_bins
+                    X[idx] = X[idx] / self.n_bins
+            data.X = X
 
-        # 4. Gene token ID tensor
-        gene_ids = torch.LongTensor([self.vocab[g] for g in kept_genes])  # (n_kept,)
+        return data
 
-        # 5. Batched forward passes — prepend CLS token
-        cls_embeddings = []
-        gene_token_embeddings = [] if return_all_tokens else None
+    def embed_for_finetune(
+        self,
+        gene_ids: torch.Tensor,
+        expr: torch.Tensor,
+    ) -> torch.Tensor:
+        """Gradient-enabled cell embedding for end-to-end fine-tuning.
 
-        for start in range(0, n_samples, batch_size):
-            end = min(start + batch_size, n_samples)
-            bs = end - start
+        Identical to the per-batch forward pass inside ``embed()``, but without the
+        ``@torch.no_grad()`` decorator so gradients flow through the transformer.
+        Expects inputs already preprocessed by ``preprocess_for_embedding()``.
 
-            batch_expr = torch.FloatTensor(expr[start:end]).to(device)  # (bs, n_kept)
-            batch_genes = gene_ids.unsqueeze(0).expand(bs, -1).to(device)  # (bs, n_kept)
+        Args:
+            gene_ids: ``(n_genes,)`` LongTensor of vocabulary IDs for the fixed gene set.
+            expr: ``(batch_size, n_genes)`` FloatTensor of preprocessed expression values.
 
-            batch_genes = torch.cat(
-                [
-                    torch.full((bs, 1), self.cls_token_id, dtype=torch.long, device=device),
-                    batch_genes,
-                ],
-                dim=1,
-            )  # (bs, 1+n_kept)
-            batch_expr = torch.cat(
-                [
-                    torch.full((bs, 1), self.pad_value, dtype=batch_expr.dtype, device=device),
-                    batch_expr,
-                ],
-                dim=1,
-            )  # (bs, 1+n_kept)
+        Returns:
+            ``(batch_size, d_model)`` FloatTensor — CLS token cell embeddings with gradient history.
+        """
+        device = next(self.model.parameters()).device
+        bs = expr.shape[0]
 
-            padding_mask = torch.zeros(batch_genes.shape, dtype=torch.bool, device=device)
+        batch_genes = gene_ids.unsqueeze(0).expand(bs, -1).to(device)
+        batch_expr = expr.to(device)
 
-            if self.model.use_generative_training:
-                output, _ = self.model.embed(
-                    src=batch_genes,
-                    values=batch_expr,
-                    src_key_padding_mask=padding_mask,
-                )
-            else:
-                output = self.model.encode(
-                    src=batch_genes,
-                    values=batch_expr,
-                    src_key_padding_mask=padding_mask,
-                    check_conditions=False,
-                )
-            # output: (bs, 1+n_kept, d_model)
+        # Prepend CLS token
+        batch_genes = torch.cat(
+            [torch.full((bs, 1), self.cls_token_id, dtype=torch.long, device=device), batch_genes],
+            dim=1,
+        )
+        batch_expr = torch.cat(
+            [torch.full((bs, 1), self.pad_value, dtype=batch_expr.dtype, device=device), batch_expr],
+            dim=1,
+        )
 
-            cls_embeddings.append(output[:, 0, :].cpu().numpy())
-            if return_all_tokens:
-                gene_token_embeddings.append(output[:, 1:, :].cpu().numpy())
+        padding_mask = torch.zeros(batch_genes.shape, dtype=torch.bool, device=device)
 
-        result = {"cls": np.concatenate(cls_embeddings, axis=0)}
-        if return_all_tokens:
-            result["gene_tokens"] = np.concatenate(gene_token_embeddings, axis=0)
-            result["gene_names"] = kept_genes
-        return result
+        if self.model.use_generative_training:
+            output, _ = self.model.embed(
+                src=batch_genes,
+                values=batch_expr,
+                src_key_padding_mask=padding_mask,
+            )
+        else:
+            output = self.model.encode(
+                src=batch_genes,
+                values=batch_expr,
+                src_key_padding_mask=padding_mask,
+                check_conditions=False,
+            )
+
+        return output[:, 0, :]  # CLS token embedding
