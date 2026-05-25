@@ -15,7 +15,7 @@ DEFAULT_EXPRESSION_PATH = (DEFAULT_DATA_ROOT / "rnaseq_merged_rsem_expected_coun
 DEFAULT_LABELS_PATH = DEFAULT_DATA_ROOT / "bulk_download.csv"
 DEFAULT_MODEL_LIST_PATH = DEFAULT_DATA_ROOT / "model_list_latest.csv"
 DEFAULT_VOCAB_PATH = Path(__file__).resolve().parents[1] / "vocab.json"
-DEFAULT_OUTPUT_DIR = Path("/cluster/work/boeva/bulkFM/data/processed")
+DEFAULT_OUTPUT_DIR = Path("/cluster/work/boeva/bulkFM/data/processed/drug_sens_prediction")
 
 DEFAULT_DRUGS = (
     "Tanespimycin",
