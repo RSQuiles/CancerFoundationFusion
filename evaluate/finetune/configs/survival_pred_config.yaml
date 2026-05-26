@@ -17,7 +17,7 @@ finetune:
 
     # ===== REQUIRED =====
 
-    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/aggregation/epoch_epoch=00.ckpt
+    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/unified_baseline/step_step=900000_epoch_epoch=01.ckpt
 
     # Root directory containing {COHORT}_{CANCER}.parquet files.
     survboard_data_dir: /cluster/work/boeva/bulkFM/data/processed/survboard
@@ -69,7 +69,7 @@ finetune:
     #   [0, 3, 7]   → explicit list of folds, e.g. fold_index: [0, 5, 10]
     # Multi-fold modes train one Cox head per fold internally, report mean C-index,
     # and save per-fold split_*.csv files named by the actual fold index.
-    fold_index: "0:5"
+    fold_index: 5
 
     # ===== OUTPUT =====
 
@@ -91,7 +91,7 @@ finetune:
 
     # ===== TRAINING HYPERPARAMETERS =====
     epochs: 30
-    batch_size: 64
+    batch_size: 16
     # Cox batches should be large enough to contain multiple observed events.
 
     min_lr: 0.000001
@@ -105,5 +105,5 @@ finetune:
     # ===== FINE-TUNING (optional — single fold only) =====
     # Set to true to fine-tune the pretrained encoder alongside the Cox head.
     # Not compatible with multi-fold mode (fold_index must be a single integer).
-    # finetune_embedder: false
-    # embedder_learning_rate: 0.000005
+    finetune_embedder: true
+    embedder_learning_rate: 0.00001

@@ -23,8 +23,6 @@ from evaluate.finetune.tasks import (
     CancTypeClassTask,
     DeconvTask,
     SurvBoardTask,
-    ProteomePredTask,
-    DrugSensitivityTask,
     DrugSensitivityV2Task,
 )
 from evaluate.finetune.downstream_task import TaskRegistry

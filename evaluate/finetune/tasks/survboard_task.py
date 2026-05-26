@@ -592,6 +592,7 @@ class SurvBoardTask(DownstreamTask):
             self._test_idx   = test_idx
             self._fold_index = fold_id
             self._save_survival_csvs(surv_mat, time_grid, test_times, test_events, self.get_model_name())
+            log.info(f"Saved survival functions for Fold: {fold_id}")
 
             c_idx = _c_index(test_times, test_risk, test_events.astype(bool))
             fold_c_indices.append(c_idx)
@@ -786,10 +787,10 @@ class SurvBoardTask(DownstreamTask):
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"split_{fold}.csv"
             sf_df.to_csv(out_path, index=False)
-            log.info(
-                f"Saved survival functions: {out_path} "
-                f"({len(pos_in_test)} test samples, {len(time_grid)} time points)"
-            )
+            # log.info(
+            #     f"Saved survival functions: {out_path} "
+            #     f"({len(pos_in_test)} test samples, {len(time_grid)} time points)"
+            # )
 
             offset += block_size
 

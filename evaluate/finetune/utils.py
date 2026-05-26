@@ -151,6 +151,7 @@ def translate_gene_symbols(
     mapping_file: str | Path | None = None,
     mapping_dir: str | Path | None = "/cluster/work/boeva/rquiles/CancerFoundationFusion/gene_mappings",
     direction: str = "to_ensembl",
+    verbose: bool = False,
 ) -> list[str]:
     """
     Translate gene symbols using one or all JSON mapping files.
@@ -183,7 +184,8 @@ def translate_gene_symbols(
             return gene_symbols
         with open(mapping_path, "r") as f:
             mapping: dict[str, str] = json.load(f)
-        print(f"Loaded mapping: {mapping_path.name} ({len(mapping):,} entries)")
+        if verbose:
+            print(f"Loaded mapping: {mapping_path.name} ({len(mapping):,} entries)")
 
     else:
         mapping_dir = Path(mapping_dir)
@@ -199,7 +201,8 @@ def translate_gene_symbols(
             with open(jf, "r") as f:
                 partial = json.load(f)
             mapping.update(partial)
-            print(f"Loaded mapping: {jf.name} ({len(partial):,} entries)")
+            if verbose:
+                print(f"Loaded mapping: {jf.name} ({len(partial):,} entries)")
 
     translated = [mapping.get(g, g) for g in gene_symbols]
     n_translated = sum(1 for o, t in zip(gene_symbols, translated) if o != t)
