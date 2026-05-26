@@ -50,10 +50,10 @@ finetune:
     
     # ===== MODEL ARCHITECTURE =====
     # Hidden dimension of the head
-    head_hidden_dim: 128
-    
+    hidden_dim: 128
+
     # Dropout for the head
-    head_dropout: 0.0
+    dropout: 0.0
     
     # ===== TRAINING HYPERPARAMETERS =====
     # Number of training epochs

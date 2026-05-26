@@ -253,12 +253,12 @@ class DeconvTask(DownstreamTask):
 
     @staticmethod
     def _infer_proportion_mapping_from_obs(obs_columns) -> dict[str, str]:
-        """Infer cell type mapping from obs column names (e.g., prop__b_cell)."""
-        cell_type_cols = [
-            col for col in obs_columns
-            if any(kw in col.lower() for kw in ["prop__", "cell", "type", "prop"])
-        ]
-        return {col: col for col in cell_type_cols}
+        """Infer cell type → obs column mapping from columns prefixed with 'prop__'."""
+        return {
+            col.removeprefix("prop__"): col
+            for col in obs_columns
+            if col.startswith("prop__")
+        }
 
     def prepare_datasets(
         self,
@@ -267,6 +267,7 @@ class DeconvTask(DownstreamTask):
         train_targets: np.ndarray,
         test_targets: np.ndarray,
         embedder: Any,
+        task_cfg: Any = None,
     ) -> tuple[Dataset, Dataset, int]:
         """Create embeddings and deconvolution datasets."""
         train_embeddings = self._embed_adata(embedder, train_adata)
@@ -310,7 +311,8 @@ class DeconvTask(DownstreamTask):
         batch_size = int(getattr(task_cfg, "embed_batch_size", 64)) if task_cfg is not None else 64
         embedder.eval()
         embedder.cuda()
-        df_emb = embedder.embed(adata, batch_size=batch_size, normalized=True)
+        result = embedder.embed(adata, batch_size=batch_size, normalized=True)
+        df_emb = result[0] if isinstance(result, tuple) else result
         return df_emb.to_numpy()
 
     def compute_metrics(
