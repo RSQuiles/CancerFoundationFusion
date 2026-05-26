@@ -201,10 +201,11 @@ class BaseDownstreamRunner:
         if num_classes is not None:
             self.task_state["output_dim"] = num_classes
 
-        finetune = bool(getattr(self.task_cfg, "finetune_embedder", False))
+        finetune      = bool(getattr(self.task_cfg, "finetune_embedder", False))
+        is_multi_fold = getattr(self.task, "_is_multi_fold", False)
 
-        # FINETUNE BRANCH
-        if finetune and hasattr(self.embedder, "preprocess_for_embedding"):
+        # FINETUNE BRANCH (single-fold only — multi-fold delegates to prepare_datasets)
+        if finetune and hasattr(self.embedder, "preprocess_for_embedding") and not is_multi_fold:
             normalized = bool(getattr(self.task_cfg, "normalized", False))
 
             # Preprocess train adata — HVG selection runs on training cells only
@@ -502,10 +503,28 @@ class BaseDownstreamRunner:
             predictions = distributed_concat(torch.from_numpy(predictions), self.world_size).numpy()
             targets = distributed_concat(torch.from_numpy(targets), self.world_size).numpy()
 
+        # Supply training-set risk scores to tasks that need them (e.g. Breslow baseline)
+        if self.task.needs_train_risk():
+            self.task._train_risk = self._compute_train_risk()
+
         # Compute metrics via task
         metrics = self.task.compute_metrics(predictions, targets)
 
         return metrics
+
+    def _compute_train_risk(self) -> np.ndarray:
+        """Run the trained head on the training set and return scalar risk scores."""
+        finetune = bool(getattr(self.task_cfg, "finetune_embedder", False))
+        self.model.eval()
+        parts: list[np.ndarray] = []
+        with torch.no_grad():
+            for batch in self.train_loader:
+                data = batch[0].to(self.device, non_blocking=True)
+                if finetune and self.embedder is not None:
+                    gene_ids = self.train_loader.dataset.gene_ids
+                    data = self.embedder.embed_for_finetune(gene_ids, data)
+                parts.append(self.model(data).squeeze(-1).cpu().numpy())
+        return np.concatenate(parts)
 
     def _save_checkpoint(
         self,
@@ -552,6 +571,12 @@ class BaseDownstreamRunner:
 
         # Load data and build components
         self._build_loaders()
+
+        # Multi-fold tasks complete all work inside prepare_datasets(); skip the loop.
+        if getattr(self.task, "_multi_fold_metrics", None) is not None:
+            log.info("Multi-fold evaluation complete. Skipping runner training loop.")
+            return self.task._multi_fold_metrics
+
         self._build_model()
         self._build_optimization()
 

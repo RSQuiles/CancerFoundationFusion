@@ -134,6 +134,10 @@ class DownstreamTask(ABC):
                 f"Expected at finetune.{self.config_key}."
             )
 
+    def needs_train_risk(self) -> bool:
+        """Override to True if compute_metrics() requires training-set risk scores."""
+        return False
+
     @staticmethod
     def hash_split_version(version: Any) -> int:
         """Convert a version string/number to a deterministic random seed."""

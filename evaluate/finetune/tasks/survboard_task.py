@@ -119,11 +119,15 @@ def _breslow_survival(
     train_times:  np.ndarray,
     train_events: np.ndarray,
     test_risk:    np.ndarray,
+    train_risk:   np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Estimate per-patient survival functions via the Breslow estimator.
 
-    Uses zero training risk scores (equivalent to a KM-based baseline hazard).
+    When ``train_risk`` is provided (log-risk scores from the trained Cox head on
+    training subjects), the baseline cumulative hazard is weighted by exp(risk),
+    which is the standard Breslow formula.  Without it, the denominator reduces to
+    a simple at-risk count (Nelson-Aalen / KM baseline).
 
     Returns
     -------
@@ -134,6 +138,11 @@ def _breslow_survival(
     order        = np.argsort(train_times)
     t_sorted     = train_times[order]
     e_sorted     = train_events[order]
+    exp_train    = (
+        np.exp(np.clip(train_risk[order], -75.0, 75.0))
+        if train_risk is not None
+        else np.ones(len(t_sorted))
+    )
 
     time_grid = np.unique(t_sorted[e_sorted])
     if len(time_grid) == 0:
@@ -141,9 +150,9 @@ def _breslow_survival(
 
     dH0 = np.zeros(len(time_grid))
     for i, t_i in enumerate(time_grid):
-        n_at_risk  = (t_sorted >= t_i).sum()
-        n_events_i = ((t_sorted == t_i) & e_sorted).sum()
-        dH0[i]     = n_events_i / max(n_at_risk, 1)
+        at_risk      = t_sorted >= t_i
+        n_events_i   = ((t_sorted == t_i) & e_sorted).sum()
+        dH0[i]       = n_events_i / max(exp_train[at_risk].sum(), 1e-10)
 
     H0 = np.cumsum(dH0)
     S0 = np.exp(-H0)
@@ -196,6 +205,9 @@ class SurvBoardTask(DownstreamTask):
 
     def get_loss_fn(self, device: torch.device) -> nn.Module:
         return CoxPHLoss().to(device)
+
+    def needs_train_risk(self) -> bool:
+        return True
 
     def validate_config(self, task_cfg: DictConfig) -> None:
         super().validate_config(task_cfg)
@@ -320,13 +332,21 @@ class SurvBoardTask(DownstreamTask):
         if fold_indices is None or len(fold_indices) > 1:
             self._full_adata   = adata
             self._full_targets = targets
-            all_splits         = self._make_all_splits(adata, task_cfg, block_info)
+
             if fold_indices is None:
-                fold_indices = list(range(len(all_splits)))
-            self._fold_indices    = fold_indices
-            self._all_fold_splits = [all_splits[f] for f in fold_indices]
-            train_idx, test_idx   = self._all_fold_splits[0]
-            self._fold_index      = fold_indices[0]
+                # "all" — must discover n_folds from the split CSVs
+                all_splits        = self._make_all_splits(adata, task_cfg, block_info)
+                fold_indices      = list(range(len(all_splits)))
+                self._all_fold_splits = all_splits
+            else:
+                # Explicit subset: load only the requested folds
+                self._all_fold_splits = [
+                    self._make_split(adata, task_cfg, block_info, f) for f in fold_indices
+                ]
+
+            self._fold_indices = fold_indices
+            train_idx, test_idx = self._all_fold_splits[0]
+            self._fold_index    = fold_indices[0]
             log.info(
                 f"Multi-fold mode: {len(fold_indices)} folds selected "
                 f"(indices {fold_indices}), {adata.n_obs} total samples"
@@ -474,13 +494,10 @@ class SurvBoardTask(DownstreamTask):
         Returns fold-0 datasets so the runner's training loop is valid.
         """
         finetune = bool(getattr(self._task_cfg, "finetune_embedder", False))
-        if finetune and self._is_multi_fold:
-            raise ValueError(
-                "finetune_embedder=True is not supported with multi-fold evaluation. "
-                "Set fold_index to a single integer."
-            )
 
         if self._is_multi_fold:
+            if finetune:
+                return self._prepare_all_folds_finetune(embedder)
             return self._prepare_all_folds(embedder)
 
         # Single-fold path
@@ -490,6 +507,7 @@ class SurvBoardTask(DownstreamTask):
 
         self._train_times  = train_targets[:, 0]
         self._train_events = train_targets[:, 1]
+        self._train_risk   = None  # populated by runner via _compute_train_risk()
 
         train_dataset = SurvivalEmbeddingDataset(
             train_emb, train_targets[:, 0], train_targets[:, 1]
@@ -582,12 +600,14 @@ class SurvBoardTask(DownstreamTask):
             with torch.no_grad():
                 test_risk = (
                     head(torch.from_numpy(test_emb).float().to(device))
-                    .squeeze(-1)
-                    .cpu()
-                    .numpy()
+                    .squeeze(-1).cpu().numpy()
+                )
+                train_risk = (
+                    head(torch.from_numpy(train_emb).float().to(device))
+                    .squeeze(-1).cpu().numpy()
                 )
 
-            surv_mat, time_grid = _breslow_survival(train_times, train_events, test_risk)
+            surv_mat, time_grid = _breslow_survival(train_times, train_events, test_risk, train_risk)
 
             self._test_idx   = test_idx
             self._fold_index = fold_id
@@ -613,30 +633,192 @@ class SurvBoardTask(DownstreamTask):
             "event_rate": float(full_events.mean()),
         }
 
-        # Restore fold-0 state so the runner's evaluate() call works normally
-        fold0_id              = self._fold_indices[0]
-        train_idx_0, test_idx_0 = self._all_fold_splits[0]
-        self._test_idx        = test_idx_0
-        self._fold_index      = fold0_id
-        self._train_times     = full_times[train_idx_0]
-        self._train_events    = full_events[train_idx_0]
+        # Restore fold-0 state
+        fold0_id                     = self._fold_indices[0]
+        fold0_train_idx, fold0_test_idx = self._all_fold_splits[0]
+        self._test_idx     = fold0_test_idx
+        self._fold_index   = fold0_id
+        self._train_times  = full_times[fold0_train_idx]
+        self._train_events = full_events[fold0_train_idx]
 
-        if pca_mode:
-            if hasattr(embedder, "reset"):
-                embedder.reset()
-            train_emb_0 = self._embed_adata(embedder, self._full_adata[train_idx_0])
-            test_emb_0  = self._embed_adata(embedder, self._full_adata[test_idx_0])
-        else:
-            train_emb_0 = full_emb[train_idx_0]
-            test_emb_0  = full_emb[test_idx_0]
+        # Dummy datasets — the runner exits before consuming them (early-exit in run())
+        dummy = np.zeros((1, embedding_dim), dtype=np.float32)
+        return (
+            SurvivalEmbeddingDataset(dummy, np.zeros(1), np.zeros(1)),
+            SurvivalEmbeddingDataset(dummy, np.zeros(1), np.zeros(1)),
+            embedding_dim,
+        )
 
-        train_dataset = SurvivalEmbeddingDataset(
-            train_emb_0, full_times[train_idx_0], full_events[train_idx_0]
+    def _prepare_all_folds_finetune(self, embedder: Any) -> tuple[Dataset, Dataset, int]:
+        """
+        Multi-fold fine-tuning: for each fold, reload the pretrained encoder from the
+        checkpoint, preprocess the fold's train split (HVG fitted on train only), then
+        jointly train encoder + Cox head end-to-end. Saves per-fold survival CSVs and
+        stores aggregated C-index in self._multi_fold_metrics.
+
+        The runner exits immediately after this returns (early-exit in run()); the
+        returned datasets are dummies that satisfy the interface contract.
+        """
+        from cancerfoundation.model.model import CancerFoundation
+
+        cfg       = self._task_cfg
+        ckpt_path = str(getattr(cfg, "pretrained_model_path", ""))
+        if not ckpt_path:
+            raise ValueError("pretrained_model_path must be set for fine-tuning.")
+
+        epochs     = int(getattr(cfg, "epochs", 30))
+        bs         = int(getattr(cfg, "batch_size", 64))
+        lr_head    = float(getattr(cfg, "head_learning_rate", 1e-3))
+        lr_emb     = float(getattr(cfg, "embedder_learning_rate", 1e-5))
+        hidden     = int(getattr(cfg, "hidden_dim", 128))
+        dropout    = float(getattr(cfg, "dropout", 0.1))
+        normalized = bool(getattr(cfg, "normalized", False))
+
+        try:
+            device = next(embedder.parameters()).device
+        except (StopIteration, AttributeError):
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        full_times  = self._full_targets[:, 0]
+        full_events = self._full_targets[:, 1]
+        n_folds     = len(self._all_fold_splits)
+
+        head_class      = self.get_head_class()
+        loss_fn         = CoxPHLoss().to(device)
+        fold_c_indices: list[float] = []
+        embedding_dim: int | None   = None
+
+        for fold_i, (fold_id, (train_idx, test_idx)) in enumerate(
+            zip(self._fold_indices, self._all_fold_splits)
+        ):
+            log.info(
+                f"Fold {fold_i + 1}/{n_folds} (id={fold_id}) [finetune]: "
+                f"train={len(train_idx)}, test={len(test_idx)}"
+            )
+
+            # Reload pretrained weights — fresh copy for each fold
+            fresh_emb = CancerFoundation.load_from_checkpoint(ckpt_path, strict=False)
+            fresh_emb = fresh_emb.to(device)
+            for param in fresh_emb.parameters():
+                param.requires_grad = True
+
+            if embedding_dim is None:
+                embedding_dim = fresh_emb.embsize
+
+            # Preprocess: HVG fitted on train, same gene set applied to test
+            processed_train = fresh_emb.preprocess_for_embedding(
+                self._full_adata[train_idx], normalized=normalized
+            )
+            kept_genes = processed_train.var.index.tolist()
+            processed_test = fresh_emb.preprocess_for_embedding(
+                self._full_adata[test_idx], normalized=normalized, gene_subset=kept_genes
+            )
+            gene_ids = torch.LongTensor(
+                [fresh_emb.vocab[g] for g in kept_genes]
+            ).to(device)
+
+            train_expr   = np.asarray(processed_train.X, dtype=np.float32)
+            test_expr    = np.asarray(processed_test.X,  dtype=np.float32)
+            train_times  = full_times[train_idx]
+            train_events = full_events[train_idx]
+            test_times   = full_times[test_idx]
+            test_events  = full_events[test_idx]
+
+            # Head + joint optimizer
+            head = head_class(
+                embedding_dim=embedding_dim,
+                output_dim=1,
+                hidden_dim=hidden,
+                dropout=dropout,
+            ).to(device)
+            optimizer = Adam([
+                {"params": list(head.parameters()),      "lr": lr_head},
+                {"params": list(fresh_emb.parameters()), "lr": lr_emb},
+            ])
+
+            # Training loop
+            train_ds = SurvivalEmbeddingDataset(train_expr, train_times, train_events)
+            loader   = DataLoader(train_ds, batch_size=bs, shuffle=True)
+            fresh_emb.train()
+            head.train()
+            for epoch in range(epochs):
+                epoch_loss = 0.0
+                for expr_b, tgt_b in loader:
+                    expr_b = expr_b.to(device)
+                    tgt_b  = tgt_b.to(device)
+                    optimizer.zero_grad()
+                    emb_b = fresh_emb.embed_for_finetune(gene_ids, expr_b)
+                    loss  = loss_fn(head(emb_b), tgt_b)
+                    loss.backward()
+                    optimizer.step()
+                    epoch_loss += loss.item()
+                if (epoch + 1) % 10 == 0:
+                    log.debug(
+                        f"    Epoch {epoch + 1}/{epochs}: "
+                        f"loss={epoch_loss / len(loader):.4f}"
+                    )
+
+            # Inference on test fold
+            fresh_emb.eval()
+            head.eval()
+            test_risk_parts: list[np.ndarray] = []
+            with torch.no_grad():
+                for i in range(0, len(test_expr), bs):
+                    expr_b = torch.from_numpy(test_expr[i : i + bs]).to(device)
+                    emb_b  = fresh_emb.embed_for_finetune(gene_ids, expr_b)
+                    test_risk_parts.append(head(emb_b).squeeze(-1).cpu().numpy())
+            test_risk = np.concatenate(test_risk_parts)
+
+            train_risk_parts: list[np.ndarray] = []
+            with torch.no_grad():
+                for i in range(0, len(train_expr), bs):
+                    expr_b = torch.from_numpy(train_expr[i : i + bs]).to(device)
+                    emb_b  = fresh_emb.embed_for_finetune(gene_ids, expr_b)
+                    train_risk_parts.append(head(emb_b).squeeze(-1).cpu().numpy())
+            train_risk = np.concatenate(train_risk_parts)
+
+            surv_mat, time_grid = _breslow_survival(train_times, train_events, test_risk, train_risk)
+            self._test_idx   = test_idx
+            self._fold_index = fold_id
+            self._save_survival_csvs(
+                surv_mat, time_grid, test_times, test_events, self.get_model_name()
+            )
+
+            c_idx = _c_index(test_times, test_risk, test_events.astype(bool))
+            fold_c_indices.append(c_idx)
+            log.info(
+                f"  Fold {fold_id}: C-index={c_idx:.4f}, "
+                f"n_events={int(test_events.sum())}"
+            )
+
+            del fresh_emb  # release GPU memory before next fold
+
+        mean_c = float(np.mean(fold_c_indices))
+        log.info(
+            f"Multi-fold C-index (finetune): mean={mean_c:.4f} "
+            f"(±{float(np.std(fold_c_indices)):.4f}) across {n_folds} folds"
         )
-        test_dataset = SurvivalEmbeddingDataset(
-            test_emb_0, full_times[test_idx_0], full_events[test_idx_0]
+        self._multi_fold_metrics = {
+            "c_index":    mean_c,
+            "n_events":   int(full_events.astype(bool).sum()),
+            "event_rate": float(full_events.mean()),
+        }
+
+        # Restore fold-0 state
+        fold0_id                     = self._fold_indices[0]
+        fold0_train_idx, fold0_test_idx = self._all_fold_splits[0]
+        self._test_idx     = fold0_test_idx
+        self._fold_index   = fold0_id
+        self._train_times  = full_times[fold0_train_idx]
+        self._train_events = full_events[fold0_train_idx]
+
+        # Dummy datasets — the runner exits before consuming them (early-exit in run())
+        dummy = np.zeros((1, embedding_dim), dtype=np.float32)
+        return (
+            SurvivalEmbeddingDataset(dummy, np.zeros(1), np.zeros(1)),
+            SurvivalEmbeddingDataset(dummy, np.zeros(1), np.zeros(1)),
+            embedding_dim,
         )
-        return train_dataset, test_dataset, embedding_dim
 
     def _train_cox_head(
         self,
@@ -728,7 +910,8 @@ class SurvBoardTask(DownstreamTask):
         c_idx = _c_index(times, risk, events)
 
         surv_mat, time_grid = _breslow_survival(
-            self._train_times, self._train_events, risk
+            self._train_times, self._train_events, risk,
+            train_risk=getattr(self, "_train_risk", None),
         )
         self._save_survival_csvs(surv_mat, time_grid, times, events, self.get_model_name())
 
