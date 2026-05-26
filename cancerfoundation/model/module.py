@@ -748,10 +748,11 @@ class TransformerModule(nn.Module):
         return input_gene_ids, input_values, src_key_padding_mask, target_values
 
     def forward(  # tensors is the data_dict from collator
-        self, 
-        tensors: dict[str, torch.Tensor], 
+        self,
+        tensors: dict[str, torch.Tensor],
         use_cell_embedding: bool = False,
-        noise: float = None
+        noise: float = None,
+        apply_dat: bool = True,
     ) -> Mapping[str, Tensor]:
         """Main forward pass that dispatches to generative or perceptual mode.
 
@@ -883,7 +884,7 @@ class TransformerModule(nn.Module):
             return loss_dict["loss_expr"]
 
         # Domain adversarial training
-        if self.do_dat:
+        if self.do_dat and apply_dat:
             if self.conditions:
                 modality = conditions_batch.get("modality")
                 for condition in self.grad_reverse_discriminators:

@@ -102,6 +102,11 @@ finetune:
     grad_accumulation_steps: 1
     max_grad_norm: 10.0
 
+    # ===== BRESLOW ESTIMATOR =====
+    # When true, the baseline cumulative hazard is weighted by exp(train_risk),
+    # giving the proper Breslow estimator.  When false, all weights are 1 (KM baseline).
+    use_train_risk: true
+
     # ===== FINE-TUNING (optional — single fold only) =====
     # Set to true to fine-tune the pretrained encoder alongside the Cox head.
     # Not compatible with multi-fold mode (fold_index must be a single integer).

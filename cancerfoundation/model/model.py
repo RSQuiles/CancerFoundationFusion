@@ -67,6 +67,8 @@ class CancerFoundation(pl.LightningModule):
         cell_emb_style: str,
         batchnorm: bool,
         dat_scale: float,
+        dat_start_step: int = 0,
+        dat_interval_steps: int = 1,
         normalise_bins: bool,
         where_condition: str,
         gen_method: str,
@@ -195,6 +197,8 @@ class CancerFoundation(pl.LightningModule):
 
         self.normalise_bins = normalise_bins
         self.dat_scale = dat_scale
+        self.dat_start_step = dat_start_step
+        self.dat_interval_steps = dat_interval_steps
 
         # Balance sampling parameters
         if balance_primary is None and balance_secondary is not None:
@@ -318,13 +322,14 @@ class CancerFoundation(pl.LightningModule):
         if self.compile_model:
             self.model = torch.compile(self.model)
 
-    def forward(self, data_dict, use_cell_embedding=None):
+    def forward(self, data_dict, use_cell_embedding=None, apply_dat: bool = True):
         """Performs a forward pass through the underlying `TransformerModule`.
 
         Args:
             data_dict (dict): A dictionary of input tensors.
             use_cell_embedding (Optional[bool], optional): A flag to control a specific training behavior.
                 If None, uses the module's default. Defaults to None.
+            apply_dat (bool): Whether to apply the DAT loss this step. Defaults to True.
 
         Returns:
             dict: The output dictionary from the model, typically containing losses.
@@ -333,17 +338,17 @@ class CancerFoundation(pl.LightningModule):
             use_cell_embedding = self.use_cell_embedding
 
         # First pass without noising
-        loss_dict = self.model(data_dict, use_cell_embedding=use_cell_embedding)
+        loss_dict = self.model(data_dict, use_cell_embedding=use_cell_embedding, apply_dat=apply_dat)
 
         # DENOISING TASK
         if self.denoise:
             loss_dict["loss_noise"] = 0
             for i in self.noise:
                 # print(f"Running with noise level {i}")
-                loss_noise = self.model(data_dict, use_cell_embedding=use_cell_embedding, noise=i)
+                loss_noise = self.model(data_dict, use_cell_embedding=use_cell_embedding, noise=i, apply_dat=False)
                 loss_dict["loss_noise"] += loss_noise
                 loss_dict["total_loss"] += loss_noise
-        
+
         return loss_dict
 
     def training_step(self, batch, batch_idx):  # batch = data_dict from collator
@@ -361,7 +366,12 @@ class CancerFoundation(pl.LightningModule):
             self.USE_GENERATIVE_TRAINING and self.global_step > 1000
         )
 
-        loss_dict = self.forward(batch, use_cell_embedding=self.use_cell_embedding)
+        apply_dat = (
+            self.do_dat
+            and self.global_step >= self.dat_start_step
+            and (self.dat_interval_steps <= 1 or self.global_step % self.dat_interval_steps == 0)
+        )
+        loss_dict = self.forward(batch, use_cell_embedding=self.use_cell_embedding, apply_dat=apply_dat)
 
         # Log training metrics
         for key, value in loss_dict.items():

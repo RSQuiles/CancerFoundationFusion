@@ -566,6 +566,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="If doing domain adversarial training, whether to invert the gradients.",
     )
+    parser.add_argument(
+        "--dat-start-step",
+        type=int,
+        default=100_000,
+        help=(
+            "Global training step at which DAT becomes active. "
+            "0 = active from the start (default, backward-compatible)."
+        ),
+    )
+    parser.add_argument(
+        "--dat-interval-steps",
+        type=int,
+        default=2,
+        help=(
+            "Apply DAT loss only every N training steps. "
+            "1 = every step (default, backward-compatible). "
+            "2 = every other step, etc."
+        ),
+    )
 
     return parser
 

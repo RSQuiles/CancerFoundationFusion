@@ -207,7 +207,8 @@ class SurvBoardTask(DownstreamTask):
         return CoxPHLoss().to(device)
 
     def needs_train_risk(self) -> bool:
-        return True
+        cfg = getattr(self, "_task_cfg", None)
+        return bool(getattr(cfg, "use_train_risk", True))
 
     def validate_config(self, task_cfg: DictConfig) -> None:
         super().validate_config(task_cfg)
@@ -596,16 +597,20 @@ class SurvBoardTask(DownstreamTask):
                 train_emb, train_times, train_events, device, epochs, bs
             )
 
+            use_train_risk = bool(getattr(cfg, "use_train_risk", True))
             head.eval()
             with torch.no_grad():
                 test_risk = (
                     head(torch.from_numpy(test_emb).float().to(device))
                     .squeeze(-1).cpu().numpy()
                 )
-                train_risk = (
-                    head(torch.from_numpy(train_emb).float().to(device))
-                    .squeeze(-1).cpu().numpy()
-                )
+                if use_train_risk:
+                    train_risk = (
+                        head(torch.from_numpy(train_emb).float().to(device))
+                        .squeeze(-1).cpu().numpy()
+                    )
+                else:
+                    train_risk = None
 
             surv_mat, time_grid = _breslow_survival(train_times, train_events, test_risk, train_risk)
 
@@ -769,13 +774,17 @@ class SurvBoardTask(DownstreamTask):
                     test_risk_parts.append(head(emb_b).squeeze(-1).cpu().numpy())
             test_risk = np.concatenate(test_risk_parts)
 
-            train_risk_parts: list[np.ndarray] = []
-            with torch.no_grad():
-                for i in range(0, len(train_expr), bs):
-                    expr_b = torch.from_numpy(train_expr[i : i + bs]).to(device)
-                    emb_b  = fresh_emb.embed_for_finetune(gene_ids, expr_b)
-                    train_risk_parts.append(head(emb_b).squeeze(-1).cpu().numpy())
-            train_risk = np.concatenate(train_risk_parts)
+            use_train_risk = bool(getattr(cfg, "use_train_risk", True))
+            if use_train_risk:
+                train_risk_parts: list[np.ndarray] = []
+                with torch.no_grad():
+                    for i in range(0, len(train_expr), bs):
+                        expr_b = torch.from_numpy(train_expr[i : i + bs]).to(device)
+                        emb_b  = fresh_emb.embed_for_finetune(gene_ids, expr_b)
+                        train_risk_parts.append(head(emb_b).squeeze(-1).cpu().numpy())
+                train_risk: np.ndarray | None = np.concatenate(train_risk_parts)
+            else:
+                train_risk = None
 
             surv_mat, time_grid = _breslow_survival(train_times, train_events, test_risk, train_risk)
             self._test_idx   = test_idx
