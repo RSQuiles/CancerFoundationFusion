@@ -24,6 +24,8 @@ from sklearn.cluster import MiniBatchKMeans
 from sklearn.feature_extraction.text import TfidfVectorizer
 import tqdm
 
+from pseudobulk_generation import generate_pseudobulk_chunks
+
 GENE_ID = "_cf_gene_id"
 CLS_TOKEN = "<cls>"
 PAD_TOKEN = "<pad>"
@@ -456,11 +458,24 @@ def main(args):
     assert not (
         args.bulk_only and args.mixed
     ), "Cannot set both --bulk-only and --mixed"
-    if not args.bulk_only:
-        assert (
-            args.h5ad_path is not None
-        ), "h5ad_path is required when --bulk-only is not set"
+
+    # Resolve h5ad_path: the staging directory where all h5ad files accumulate
+    # before being converted to memory-mapped format.
+    if args.bulk_only or args.mixed:
+        # h5ad_path is set below after the bulk preprocessing block
+        h5ad_path = None
+    elif args.h5ad_path is not None:
         h5ad_path = args.h5ad_path
+    elif args.paired_h5ad is not None:
+        # Paired-only mode: no CellxGene h5ads, no ARCHS4 bulk.
+        # Default the staging dir to a sibling of data_path.
+        h5ad_path = args.data_path / "source_h5ads"
+        h5ad_path.mkdir(parents=True, exist_ok=True)
+    else:
+        raise ValueError(
+            "--h5ad-path is required when --bulk-only and --mixed are both unset "
+            "and no --paired-h5ad is provided."
+        )
 
     # Bulk preprocessing
     if args.bulk_only or args.mixed:
@@ -468,9 +483,7 @@ def main(args):
             args.bulk_path is not None
         ), "--bulk_path is required when --bulk-only or --mixed is set"
 
-        h5ad_path = (
-            args.bulk_path / "h5ads" if args.h5ad_path is None else args.h5ad_path
-        )
+        h5ad_path = args.bulk_path / "h5ads" if args.h5ad_path is None else args.h5ad_path
         h5_to_h5ad(
             bulk_dir=args.bulk_path,
             obs_columns=args.obs_columns,
@@ -479,6 +492,28 @@ def main(args):
             expr_key=args.bulk_expr_key,
             h5ad_dir=h5ad_path,
             existing_vocab_path=args.vocab_path,
+        )
+
+    # Paired SC + bulk dataset preprocessing (generates pseudobulk chunks)
+    if args.paired_h5ad is not None:
+        print("Generating pseudobulk chunks from paired dataset...")
+        generate_pseudobulk_chunks(
+            input_h5ad=args.paired_h5ad,
+            output_dir=h5ad_path,
+            n_pseudobulk=args.n_pseudobulk,
+            n_cells_per_pb=args.n_cells_per_pb,
+            is_log1p=args.paired_is_log1p,
+            extra_obs_columns=args.paired_extra_obs_columns,
+            cell_line_col=args.paired_cell_line_col,
+            domain_col=args.paired_domain_col,
+            sc_label=args.paired_sc_label,
+            bulk_label=args.paired_bulk_label,
+            include_sc=args.include_paired_sc,
+            include_bulk=args.include_paired_bulk,
+            existing_vocab_path=args.vocab_path,
+            min_cells=args.paired_min_cells,
+            chunk_prefix="paired",
+            seed=args.seed,
         )
 
     data_path = DatasetDir(args.data_path)
@@ -507,7 +542,12 @@ def main(args):
     # Collect observations
     print("Collecting observations...")
     obs_list = []
-    obs_columns = args.obs_columns + ["modality"]  # Ensure modality is included
+    obs_columns = (args.obs_columns or []) + ["modality"]  # Ensure modality is included
+    # "paired" column links pseudobulk↔bulk rows; add it when paired data is present
+    # so that BulkSCDataset can use it for paired sampling.
+    if args.paired_h5ad is not None and "paired" not in obs_columns:
+        obs_columns = obs_columns + ["paired"]
+
     for i, fname in enumerate(memmaps.fname_to_mmap.keys()):
         print(f"Processing {i + 1}/{len(memmaps.fname_to_mmap)}: {fname.name}")
         adata = read_anndata(h5ad_path / (fname.name + ".h5ad"))
@@ -515,13 +555,10 @@ def main(args):
         if "modality" not in adata.obs.columns:
             adata.obs["modality"] = "sc"
 
-        # Extract tissue name from the filename (e.g., '..._kidney' -> 'kidney')
-        # tissue_name = fname.name.split("_")[1]
-
-        # Create the 'tissue' column and assign the extracted name to all cells
-        # adata.obs["tissue"] = tissue_name
-
-        obs_list.append(adata.obs[obs_columns].copy())
+        # Use reindex so that columns absent in this h5ad (e.g. "paired" for
+        # CellxGene files, or "tissue_general" for paired-dataset files) are
+        # filled with 0 rather than raising a KeyError.
+        obs_list.append(adata.obs.reindex(columns=obs_columns, fill_value=0))
 
     obs = pd.concat(obs_list)
 
@@ -605,6 +642,108 @@ def get_args():
     parser.add_argument(
         "--vocab-path", type=Path, required=False, help="Path to existing vocab file"
     )
+
+    # --- Paired SC+bulk dataset ---
+    parser.add_argument(
+        "--paired-h5ad",
+        type=Path,
+        required=False,
+        default=None,
+        help=(
+            "Path to a paired h5ad file containing single-cell and bulk profiles "
+            "identified by obs[cell_line_col] and obs[domain_col]. Pseudobulk "
+            "samples are generated from the SC profiles and written alongside the "
+            "bulk samples into h5ad_path."
+        ),
+    )
+    parser.add_argument(
+        "--n-pseudobulk",
+        type=int,
+        default=10,
+        help="Pseudobulk samples to generate per cell_line (default: 10)",
+    )
+    parser.add_argument(
+        "--n-cells-per-pb",
+        type=int,
+        default=None,
+        help=(
+            "Number of SC cells to aggregate per pseudobulk. "
+            "Defaults to None (use all available cells)."
+        ),
+    )
+    parser.add_argument(
+        "--paired-is-log1p",
+        action="store_true",
+        help="Counts in the paired h5ad are log1p-transformed; expm1 before summing",
+    )
+    parser.add_argument(
+        "--paired-cell-line-col",
+        type=str,
+        default="cell_line",
+        help="obs column with the sample / pair identifier (default: cell_line)",
+    )
+    parser.add_argument(
+        "--paired-domain-col",
+        type=str,
+        default="domain",
+        help="obs column distinguishing SC from bulk profiles (default: domain)",
+    )
+    parser.add_argument(
+        "--paired-sc-label",
+        type=str,
+        default="SC",
+        help="Value in domain_col that identifies SC profiles (default: SC)",
+    )
+    parser.add_argument(
+        "--paired-bulk-label",
+        type=str,
+        default="bulk",
+        help="Value in domain_col that identifies bulk profiles (default: bulk)",
+    )
+    parser.add_argument(
+        "--include-paired-sc",
+        action="store_true",
+        default=True,
+        help="Include individual SC profiles from the paired dataset (default: True)",
+    )
+    parser.add_argument(
+        "--no-paired-sc",
+        dest="include_paired_sc",
+        action="store_false",
+        help="Exclude individual SC profiles from the paired dataset",
+    )
+    parser.add_argument(
+        "--include-paired-bulk",
+        action="store_true",
+        default=True,
+        help="Include bulk profiles from the paired dataset (default: True)",
+    )
+    parser.add_argument(
+        "--no-paired-bulk",
+        dest="include_paired_bulk",
+        action="store_false",
+        help="Exclude bulk profiles from the paired dataset",
+    )
+    parser.add_argument(
+        "--paired-extra-obs-columns",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Extra obs columns from the paired h5ad to carry into the output h5ads",
+    )
+    parser.add_argument(
+        "--paired-min-cells",
+        type=int,
+        default=1,
+        help="Minimum SC cells per cell_line to attempt pseudobulk generation (default: 1)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for pseudobulk sampling (default: 42)",
+    )
+
     return parser.parse_args()
 
 
