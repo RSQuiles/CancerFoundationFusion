@@ -17,6 +17,6 @@ CONFIG="/cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/con
 echo "=== Phase 2: SurvBoard metric evaluation ==="
 python -u ./../tasks/evaluate_survboard_metrics.py \
     --config "$CONFIG" \
-    --ablation
+    # --ablation
 echo "Completed."
 echo "Metrics written to: ${ABLATION_DIR}/${MODEL_NAME}/metrics/results_survival.json"

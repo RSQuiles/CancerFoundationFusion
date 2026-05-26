@@ -5,12 +5,12 @@ finetune:
   deconv:
     # ===== REQUIRED =====
     # Path to pretrained model checkpoint
-    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/dummy_test/epoch_epoch=00.ckpt
+    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/unified_baseline/step_step=900000_epoch_epoch=01.ckpt
     
     # Path to pseudobulk/bulk data (H5AD format).
     # Expected: pseudo_bulk_RAW.h5ad — raw summed counts, normalized internally
     # via CP10K + log1p before embedding (see normalize_input below).
-    pseudo_bulk_data_path: /cluster/work/boeva/rquiles/datasets/pseudo_bulk_RAW.h5ad
+    pseudo_bulk_data_path: /cluster/work/boeva/eheiss/datasets/pseudo_bulk
     
     # Learning rate for the head
     head_learning_rate: 0.001
@@ -83,6 +83,16 @@ finetune:
     
     # Max gradient norm for clipping
     max_grad_norm: 1000000.0
+
+    # ===== FINE-TUNING (optional) =====
+    # Set to true to unfreeze the pretrained encoder and fine-tune it end-to-end
+    # alongside the head. Raw expression data will be passed through the transformer
+    # on every training step instead of using pre-computed frozen embeddings.
+    finetune_embedder: true
+
+    # Learning rate for the transformer encoder when finetune_embedder is true.
+    # Should be much smaller than head_learning_rate to avoid catastrophic forgetting.
+    embedder_learning_rate: 0.00001
     
     # ===== OUTPUT =====
     # Directory to save checkpoints
