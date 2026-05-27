@@ -306,6 +306,7 @@ class SurvBoardTask(DownstreamTask):
         times     = df_all["OS_days"].to_numpy(dtype=np.float32)
         events    = df_all[event_col].to_numpy(dtype=np.float32)
         targets   = np.stack([times, events], axis=1)
+        self._all_targets = targets  # stored for cancer-specific Breslow in all fold modes
 
         adata = parquet_to_adata(df_all, gene_cols)
         # print(adata.var_names)
@@ -622,11 +623,9 @@ class SurvBoardTask(DownstreamTask):
                 else:
                     train_risk = None
 
-            surv_mat, time_grid = _breslow_survival(train_times, train_events, test_risk, train_risk)
-
             self._test_idx   = test_idx
             self._fold_index = fold_id
-            self._save_survival_csvs(surv_mat, time_grid, test_times, test_events, self.get_model_name())
+            self._save_survival_csvs(test_risk, train_idx, train_risk, self.get_model_name())
             log.info(f"Saved survival functions for Fold: {fold_id}")
 
             c_idx = _c_index(test_times, test_risk, test_events.astype(bool))
@@ -796,12 +795,9 @@ class SurvBoardTask(DownstreamTask):
             else:
                 train_risk = None
 
-            surv_mat, time_grid = _breslow_survival(train_times, train_events, test_risk, train_risk)
             self._test_idx   = test_idx
             self._fold_index = fold_id
-            self._save_survival_csvs(
-                surv_mat, time_grid, test_times, test_events, self.get_model_name()
-            )
+            self._save_survival_csvs(test_risk, train_idx, train_risk, self.get_model_name())
 
             c_idx = _c_index(test_times, test_risk, test_events.astype(bool))
             fold_c_indices.append(c_idx)
@@ -928,11 +924,10 @@ class SurvBoardTask(DownstreamTask):
 
         c_idx = _c_index(times, risk, events)
 
-        surv_mat, time_grid = _breslow_survival(
-            self._train_times, self._train_events, risk,
-            train_risk=getattr(self, "_train_risk", None),
+        train_idx = self._all_fold_splits[0][0]
+        self._save_survival_csvs(
+            risk, train_idx, getattr(self, "_train_risk", None), self.get_model_name()
         )
-        self._save_survival_csvs(surv_mat, time_grid, times, events, self.get_model_name())
 
         n_events = int(events.sum())
         log.info(
@@ -948,53 +943,74 @@ class SurvBoardTask(DownstreamTask):
 
     def _save_survival_csvs(
         self,
-        surv_mat:  np.ndarray,
-        time_grid: np.ndarray,
-        times:     np.ndarray,
-        events:    np.ndarray,
+        test_risk:  np.ndarray,
+        train_idx:  np.ndarray,
+        train_risk: np.ndarray | None,
         model_name: str,
     ) -> None:
         """
-        Write one consolidated CSV per (cohort, cancer) in SurvBoard format.
+        Fit a cancer-specific Breslow baseline hazard for each (cohort, cancer) block
+        and write one survival-function CSV per block in SurvBoard format.
+
+        The pan-cancer Cox head risk scores are used as-is; only the baseline hazard
+        is estimated locally from each cancer type's own training patients.
 
         Output path:
             {survboard_results_dir}/{cohort}/{cancer}/{model_name}/split_{fold_index}.csv
-
-        Uses self._test_idx and self._fold_index, which are updated per-fold in
-        multi-fold mode before each call.
         """
-        results_dir = self._resolve_results_dir()
-        fold        = self._fold_index
-        offset      = 0
+        results_dir  = self._resolve_results_dir()
+        fold         = self._fold_index
+        full_times   = self._all_targets[:, 0]
+        full_events  = self._all_targets[:, 1]
+        block_offset = 0
 
         for cohort, cancer, block_size in self._block_info:
-            block_start = offset
-            block_end   = offset + block_size
+            block_start = block_offset
+            block_end   = block_offset + block_size
 
-            mask        = (self._test_idx >= block_start) & (self._test_idx < block_end)
-            pos_in_test = np.where(mask)[0]
+            # Test patients belonging to this cancer block
+            test_mask   = (self._test_idx >= block_start) & (self._test_idx < block_end)
+            pos_in_test = np.where(test_mask)[0]
 
             if len(pos_in_test) == 0:
-                offset += block_size
+                block_offset += block_size
                 continue
 
-            sf_df = pd.DataFrame(surv_mat[pos_in_test], columns=time_grid)
+            # Training patients belonging to this cancer block
+            train_cancer_mask   = (train_idx >= block_start) & (train_idx < block_end)
+            cancer_train_times  = full_times[train_idx[train_cancer_mask]]
+            cancer_train_events = full_events[train_idx[train_cancer_mask]]
+            cancer_train_risk   = (
+                train_risk[train_cancer_mask] if train_risk is not None else None
+            )
+            cancer_test_risk = test_risk[pos_in_test]
+
+            if len(cancer_train_times) == 0:
+                log.warning(
+                    f"No training patients for {cohort}/{cancer} in fold {fold}; "
+                    "using constant survival (all ones)."
+                )
+                surv_mat  = np.ones((len(pos_in_test), 1), dtype=np.float32)
+                time_grid = np.array([full_times.max()])
+            else:
+                surv_mat, time_grid = _breslow_survival(
+                    cancer_train_times, cancer_train_events,
+                    cancer_test_risk, cancer_train_risk,
+                )
+
+            sf_df = pd.DataFrame(surv_mat, columns=time_grid)
             sf_df["model_type"] = model_name
             sf_df["modality"]   = f"{model_name}_embeddings"
             sf_df["project"]    = cohort
             sf_df["cancer"]     = cancer
             sf_df["split"]      = fold
 
-            out_dir = results_dir / cohort / cancer / model_name
+            out_dir  = results_dir / cohort / cancer / model_name
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"split_{fold}.csv"
             sf_df.to_csv(out_path, index=False)
-            # log.info(
-            #     f"Saved survival functions: {out_path} "
-            #     f"({len(pos_in_test)} test samples, {len(time_grid)} time points)"
-            # )
 
-            offset += block_size
+            block_offset += block_size
 
     def _resolve_results_dir(self) -> Path:
         """Determine output directory for survival function CSVs."""
