@@ -216,10 +216,6 @@ class SurvBoardTask(DownstreamTask):
     def get_loss_fn(self, device: torch.device) -> nn.Module:
         return CoxPHLoss().to(device)
 
-    def needs_train_risk(self) -> bool:
-        cfg = getattr(self, "_task_cfg", None)
-        return bool(getattr(cfg, "use_train_risk", True))
-
     def validate_config(self, task_cfg: DictConfig) -> None:
         super().validate_config(task_cfg)
         required = ["survboard_data_dir", "cancer_types", "cohorts"]
@@ -608,24 +604,16 @@ class SurvBoardTask(DownstreamTask):
                 train_emb, train_times, train_events, device, epochs, bs
             )
 
-            use_train_risk = bool(getattr(cfg, "use_train_risk", True))
             head.eval()
             with torch.no_grad():
                 test_risk = (
                     head(torch.from_numpy(test_emb).float().to(device))
                     .squeeze(-1).cpu().numpy()
                 )
-                if use_train_risk:
-                    train_risk = (
-                        head(torch.from_numpy(train_emb).float().to(device))
-                        .squeeze(-1).cpu().numpy()
-                    )
-                else:
-                    train_risk = None
 
             self._test_idx   = test_idx
             self._fold_index = fold_id
-            self._save_survival_csvs(test_risk, train_idx, train_risk, self.get_model_name())
+            self._save_survival_csvs(test_risk, train_idx, self.get_model_name())
             log.info(f"Saved survival functions for Fold: {fold_id}")
 
             c_idx = _c_index(test_times, test_risk, test_events.astype(bool))
@@ -783,21 +771,9 @@ class SurvBoardTask(DownstreamTask):
                     test_risk_parts.append(head(emb_b).squeeze(-1).cpu().numpy())
             test_risk = np.concatenate(test_risk_parts)
 
-            use_train_risk = bool(getattr(cfg, "use_train_risk", True))
-            if use_train_risk:
-                train_risk_parts: list[np.ndarray] = []
-                with torch.no_grad():
-                    for i in range(0, len(train_expr), bs):
-                        expr_b = torch.from_numpy(train_expr[i : i + bs]).to(device)
-                        emb_b  = fresh_emb.embed_for_finetune(gene_ids, expr_b)
-                        train_risk_parts.append(head(emb_b).squeeze(-1).cpu().numpy())
-                train_risk: np.ndarray | None = np.concatenate(train_risk_parts)
-            else:
-                train_risk = None
-
             self._test_idx   = test_idx
             self._fold_index = fold_id
-            self._save_survival_csvs(test_risk, train_idx, train_risk, self.get_model_name())
+            self._save_survival_csvs(test_risk, train_idx, self.get_model_name())
 
             c_idx = _c_index(test_times, test_risk, test_events.astype(bool))
             fold_c_indices.append(c_idx)
@@ -925,9 +901,7 @@ class SurvBoardTask(DownstreamTask):
         c_idx = _c_index(times, risk, events)
 
         train_idx = self._all_fold_splits[0][0]
-        self._save_survival_csvs(
-            risk, train_idx, getattr(self, "_train_risk", None), self.get_model_name()
-        )
+        self._save_survival_csvs(risk, train_idx, self.get_model_name())
 
         n_events = int(events.sum())
         log.info(
@@ -945,15 +919,15 @@ class SurvBoardTask(DownstreamTask):
         self,
         test_risk:  np.ndarray,
         train_idx:  np.ndarray,
-        train_risk: np.ndarray | None,
         model_name: str,
     ) -> None:
         """
-        Fit a cancer-specific Breslow baseline hazard for each (cohort, cancer) block
-        and write one survival-function CSV per block in SurvBoard format.
+        Fit a cancer-specific KM baseline for each (cohort, cancer) block and
+        write one survival-function CSV per block in SurvBoard format.
 
-        The pan-cancer Cox head risk scores are used as-is; only the baseline hazard
-        is estimated locally from each cancer type's own training patients.
+        The baseline S0_cancer(t) is the unweighted (KM / Nelson-Aalen) estimator
+        fitted only on that cancer type's training patients.  Test-patient survival
+        is then:  S(t | x) = S0_cancer(t) ^ exp(risk(x))
 
         Output path:
             {survboard_results_dir}/{cohort}/{cancer}/{model_name}/split_{fold_index}.csv
@@ -980,10 +954,7 @@ class SurvBoardTask(DownstreamTask):
             train_cancer_mask   = (train_idx >= block_start) & (train_idx < block_end)
             cancer_train_times  = full_times[train_idx[train_cancer_mask]]
             cancer_train_events = full_events[train_idx[train_cancer_mask]]
-            cancer_train_risk   = (
-                train_risk[train_cancer_mask] if train_risk is not None else None
-            )
-            cancer_test_risk = test_risk[pos_in_test]
+            cancer_test_risk    = test_risk[pos_in_test]
 
             if len(cancer_train_times) == 0:
                 log.warning(
@@ -993,9 +964,10 @@ class SurvBoardTask(DownstreamTask):
                 surv_mat  = np.ones((len(pos_in_test), 1), dtype=np.float32)
                 time_grid = np.array([full_times.max()])
             else:
+                # train_risk=None → equal at-risk weights → KM / Nelson-Aalen baseline
                 surv_mat, time_grid = _breslow_survival(
                     cancer_train_times, cancer_train_events,
-                    cancer_test_risk, cancer_train_risk,
+                    cancer_test_risk, None,
                 )
 
             sf_df = pd.DataFrame(surv_mat, columns=time_grid)
