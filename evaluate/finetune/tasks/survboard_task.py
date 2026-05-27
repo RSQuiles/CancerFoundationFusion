@@ -119,20 +119,12 @@ def _breslow_survival(
     train_times:  np.ndarray,
     train_events: np.ndarray,
     test_risk:    np.ndarray,
-    train_risk:   np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Estimate per-patient survival functions via the Breslow estimator.
 
-    When ``train_risk`` is provided (log-risk scores from the trained Cox head on
-    training subjects), the baseline cumulative hazard is weighted by exp(risk),
-    which is the standard Breslow formula.  Without it, the denominator reduces to
-    a simple at-risk count (Nelson-Aalen / KM baseline).
-
-    Risk scores are centered by the training mean before exponentiation to prevent
-    the baseline hazard from being distorted by large absolute risk values — this
-    matches the convention used by R's survival package.  The same mean is
-    subtracted from test risk scores so that the relative adjustment is preserved.
+    The baseline cumulative hazard denominator reduces to
+    a simple at-risk count (Nelson-Aalen / KM baseline), in a per-cancer basis.
 
     Returns
     -------
@@ -144,15 +136,7 @@ def _breslow_survival(
     t_sorted     = train_times[order]
     e_sorted     = train_events[order]
 
-    if train_risk is not None:
-        log.info("Using trained risk to compute survival function!")
-        risk_mean   = train_risk.mean()                              # center by training mean
-        r_centered  = train_risk[order] - risk_mean
-        exp_train   = np.exp(np.clip(r_centered, -75.0, 75.0))
-        test_risk_c = test_risk - risk_mean                          # same centering for test
-    else:
-        exp_train   = np.ones(len(t_sorted))
-        test_risk_c = test_risk
+    exp_train   = np.ones(len(t_sorted))
 
     time_grid = np.unique(t_sorted[e_sorted])
     if len(time_grid) == 0:
@@ -167,7 +151,7 @@ def _breslow_survival(
     H0 = np.cumsum(dH0)
     S0 = np.exp(-H0)
 
-    exp_risk = np.exp(np.clip(test_risk_c, -75.0, 75.0))
+    exp_risk = np.exp(np.clip(test_risk, -75.0, 75.0))
     surv_mat = np.power(S0[None, :], exp_risk[:, None])   # (N_test, T)
 
     return surv_mat, time_grid
@@ -964,10 +948,9 @@ class SurvBoardTask(DownstreamTask):
                 surv_mat  = np.ones((len(pos_in_test), 1), dtype=np.float32)
                 time_grid = np.array([full_times.max()])
             else:
-                # train_risk=None → equal at-risk weights → KM / Nelson-Aalen baseline
                 surv_mat, time_grid = _breslow_survival(
                     cancer_train_times, cancer_train_events,
-                    cancer_test_risk, None,
+                    cancer_test_risk,
                 )
 
             sf_df = pd.DataFrame(surv_mat, columns=time_grid)

@@ -27,9 +27,8 @@ finetune:
 
     # Cohorts and cancer types to include.  Every combination that has a
     # matching parquet file is loaded and concatenated before training.
-    cohorts: [TCGA]
+    cohorts: [TCGA, ICGC]
     cancer_types:
-      # ===== well-calibrated, small C-index/Antolini gap =====
       - KIRC
       - LGG    
       - LIHC   
@@ -37,19 +36,15 @@ finetune:
       - SARC   
       - BRCA   
       - LUAD   
-
-      # ===== BORDERLINE =====
       - BLCA   
       - LAML
-
-      # ===== poor Antolini or severe miscalibration =====
-      # - GBM    
-      # - COAD   
-      # - STAD   
-      # - PAAD   
-      # - OV     
-      # - SKCM   
-      # - LUSC   
+      - GBM    
+      - COAD   
+      - STAD   
+      - PAAD   
+      - OV     
+      - SKCM   
+      - LUSC   
       # Uncomment to add ICGC cohort (set cohorts: [TCGA, ICGC])
       - CLLE-ES
       - LIRI-JP
@@ -94,7 +89,7 @@ finetune:
     dropout: 0.1
 
     # ===== TRAINING HYPERPARAMETERS =====
-    epochs: 3
+    epochs: 10
     batch_size: 16
     # Cox batches should be large enough to contain multiple observed events.
 
@@ -105,11 +100,6 @@ finetune:
     gamma: 0.9
     grad_accumulation_steps: 1
     max_grad_norm: 10.0
-
-    # ===== BRESLOW ESTIMATOR =====
-    # When true, the baseline cumulative hazard is weighted by exp(train_risk),
-    # giving the proper Breslow estimator.  When false, all weights are 1 (KM baseline).
-    use_train_risk: true
 
     # ===== FINE-TUNING (optional — single fold only) =====
     # Set to true to fine-tune the pretrained encoder alongside the Cox head.
