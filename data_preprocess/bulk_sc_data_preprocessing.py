@@ -24,7 +24,7 @@ from sklearn.cluster import MiniBatchKMeans
 from sklearn.feature_extraction.text import TfidfVectorizer
 import tqdm
 
-from pseudobulk_generation import generate_pseudobulk_chunks
+from pseudobulk_paired_generation import generate_pseudobulk_chunks
 
 GENE_ID = "_cf_gene_id"
 CLS_TOKEN = "<cls>"
