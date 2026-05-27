@@ -94,7 +94,33 @@ class DeconvTask(DownstreamTask):
         return DeconvEmbeddingDataset
 
     def get_loss_fn(self, device: torch.device) -> nn.Module:
-        return nn.KLDivLoss(reduction="batchmean").to(device)
+        """
+        Use MSE on softmax-normalized predictions.
+        Wraps softmax inside the loss so the base runner can pass raw logits directly.
+        """
+        class DeconvLoss(nn.Module):
+            def __init__(self, alpha: float = 0.5):
+                super().__init__()
+                self.alpha = alpha  # weight between MSE and correlation
+
+            def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+                pred = F.softmax(logits, dim=-1)
+
+                # MSE term
+                mse_loss = F.mse_loss(pred, targets)
+
+                # Pearson correlation term
+                pred_c   = pred   - pred.mean(dim=0, keepdim=True)
+                target_c = targets - targets.mean(dim=0, keepdim=True)
+                num      = (pred_c * target_c).sum(dim=0)
+                denom    = (pred_c.norm(dim=0) * target_c.norm(dim=0)).clamp(min=1e-8)
+                corr     = num / denom
+                valid    = targets.std(dim=0) > 0
+                corr_loss = 1 - corr[valid].mean()
+
+                return self.alpha * mse_loss + (1 - self.alpha) * corr_loss
+
+        return DeconvLoss().to(device)
 
     def validate_config(self, task_cfg: DictConfig) -> None:
         super().validate_config(task_cfg)
@@ -127,7 +153,51 @@ class DeconvTask(DownstreamTask):
 
         targets = self._load_targets(adata, task_cfg)
 
+        # ------------------------------------------------------------------ #
+        # Filter to top-N most abundant cell types and high-coverage samples
+        # ------------------------------------------------------------------ #
+        n_top       = int(getattr(task_cfg, "n_top_cell_types", 0))
+        if n_top > 0:
+            min_coverage = float(getattr(task_cfg, "min_top_coverage", 0.8))
+
+            # Step 1: rank cell types by mean proportion across all samples
+            mean_props   = targets.mean(axis=0)                          # (C,)
+            top_idx      = np.argsort(mean_props)[::-1][:n_top]          # top-N indices
+            top_idx      = np.sort(top_idx)                              # preserve order
+            targets      = targets[:, top_idx]                           # (N, n_top)
+            self.cell_types = [self.cell_types[i] for i in top_idx]
+
+            log.info(
+                f"Selected top {n_top} cell types: {self.cell_types[:5]}... "
+                f"(mean proportions {mean_props[top_idx[:5]].round(4).tolist()})"
+            )
+
+            # Step 2: keep only samples where top-N cell types cover >= min_coverage
+            n_total         = adata.n_obs
+            coverage        = targets.sum(axis=1)                        # (N,) sum of top-N props
+            sample_mask     = coverage >= min_coverage
+            n_kept          = sample_mask.sum()
+            pct_kept        = 100.0 * n_kept / n_total
+
+            log.info(
+                f"Coverage filter (>= {min_coverage:.0%} of top-{n_top} cell types): "
+                f"{n_kept}/{n_total} samples kept ({pct_kept:.1f}%)"
+            )
+            print(
+                f"Samples kept after top-{n_top} coverage filter: "
+                f"{n_kept}/{n_total} ({pct_kept:.1f}%)"
+            )
+
+            adata   = adata[sample_mask].copy()
+            targets = targets[sample_mask]
+
+            # Re-normalise proportions to sum to 1 after subsetting cell types
+            # row_sums = targets.sum(axis=1, keepdims=True)
+            # targets  = targets / np.maximum(row_sums, 1e-8)
+
+        # ------------------------------------------------------------------ #
         # Train/test split
+        # ------------------------------------------------------------------ #
         test_size = float(getattr(task_cfg, "test_size", 0.2))
         split_version = getattr(
             task_cfg,
@@ -140,11 +210,11 @@ class DeconvTask(DownstreamTask):
             contexts = self._build_context_series(adata, task_cfg)
             if contexts is not None:
                 unique_contexts = contexts.unique()
-                split_idx = int(len(unique_contexts) * (1 - test_size))
+                split_idx    = int(len(unique_contexts) * (1 - test_size))
                 test_contexts = unique_contexts[split_idx:]
-                test_mask = contexts.isin(test_contexts).to_numpy()
-                train_idx = np.where(~test_mask)[0]
-                test_idx = np.where(test_mask)[0]
+                test_mask    = contexts.isin(test_contexts).to_numpy()
+                train_idx    = np.where(~test_mask)[0]
+                test_idx     = np.where(test_mask)[0]
             else:
                 log.warning("No context columns found, falling back to random split.")
                 train_idx, test_idx = train_test_split(

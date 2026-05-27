@@ -25,7 +25,7 @@ ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_compari
 
 SCRIPT_ARGS=(
     --ablation-dir $ABLATION_DIR
-    --tasks survival canc_type_class
+    --tasks survival deconv
     --config-dir /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/configs
     --pca-baseline
 )

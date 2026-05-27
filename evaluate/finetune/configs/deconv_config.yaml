@@ -3,6 +3,10 @@
 
 finetune:
   deconv:
+    # ===== PREPROCESSING =====
+    n_top_cell_types: 0      # number of most abundant cell types to keep
+    min_top_coverage: 0.8     # min fraction of sample covered by top-N types
+
     # ===== REQUIRED =====
     # Path to pretrained model checkpoint
     pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/unified_baseline/step_step=900000_epoch_epoch=01.ckpt
@@ -10,7 +14,7 @@ finetune:
     # Path to pseudobulk/bulk data (H5AD format).
     # Expected: pseudo_bulk_RAW.h5ad — raw summed counts, normalized internally
     # via CP10K + log1p before embedding (see normalize_input below).
-    pseudo_bulk_data_path: /cluster/work/boeva/eheiss/datasets/pseudo_bulk
+    pseudo_bulk_data_path: /cluster/work/boeva/eheiss/datasets/pseudo_bulk/pseudo_bulk_RAW.h5ad
     
     # Learning rate for the head
     head_learning_rate: 0.001
@@ -50,21 +54,17 @@ finetune:
     
     # ===== MODEL ARCHITECTURE =====
     # Hidden dimension of the head
-    hidden_dim: 128
+    hidden_dim: 256
 
     # Dropout for the head
-    dropout: 0.0
+    dropout: 0.1
     
     # ===== TRAINING HYPERPARAMETERS =====
     # Number of training epochs
-    epochs: 10
+    epochs: 30
     
     # Batch size for training and evaluation
-    batch_size: 64
-    
-    # Loss function: 'kl', 'mse', 'mae' (l1)
-    # KL divergence expects softmax-normalized outputs
-    loss: kl
+    batch_size: 16
     
     # Minimum learning rate
     min_lr: 0.000001

@@ -129,6 +129,11 @@ def _breslow_survival(
     which is the standard Breslow formula.  Without it, the denominator reduces to
     a simple at-risk count (Nelson-Aalen / KM baseline).
 
+    Risk scores are centered by the training mean before exponentiation to prevent
+    the baseline hazard from being distorted by large absolute risk values — this
+    matches the convention used by R's survival package.  The same mean is
+    subtracted from test risk scores so that the relative adjustment is preserved.
+
     Returns
     -------
     surv_mat  : (N_test, T)  survival probabilities at each unique event time
@@ -138,11 +143,16 @@ def _breslow_survival(
     order        = np.argsort(train_times)
     t_sorted     = train_times[order]
     e_sorted     = train_events[order]
-    exp_train    = (
-        np.exp(np.clip(train_risk[order], -75.0, 75.0))
-        if train_risk is not None
-        else np.ones(len(t_sorted))
-    )
+
+    if train_risk is not None:
+        log.info("Using trained risk to compute survival function!")
+        risk_mean   = train_risk.mean()                              # center by training mean
+        r_centered  = train_risk[order] - risk_mean
+        exp_train   = np.exp(np.clip(r_centered, -75.0, 75.0))
+        test_risk_c = test_risk - risk_mean                          # same centering for test
+    else:
+        exp_train   = np.ones(len(t_sorted))
+        test_risk_c = test_risk
 
     time_grid = np.unique(t_sorted[e_sorted])
     if len(time_grid) == 0:
@@ -150,14 +160,14 @@ def _breslow_survival(
 
     dH0 = np.zeros(len(time_grid))
     for i, t_i in enumerate(time_grid):
-        at_risk      = t_sorted >= t_i
-        n_events_i   = ((t_sorted == t_i) & e_sorted).sum()
-        dH0[i]       = n_events_i / max(exp_train[at_risk].sum(), 1e-10)
+        at_risk    = t_sorted >= t_i
+        n_events_i = ((t_sorted == t_i) & e_sorted).sum()
+        dH0[i]     = n_events_i / max(exp_train[at_risk].sum(), 1e-10)
 
     H0 = np.cumsum(dH0)
     S0 = np.exp(-H0)
 
-    exp_risk = np.exp(np.clip(test_risk, -75.0, 75.0))
+    exp_risk = np.exp(np.clip(test_risk_c, -75.0, 75.0))
     surv_mat = np.power(S0[None, :], exp_risk[:, None])   # (N_test, T)
 
     return surv_mat, time_grid

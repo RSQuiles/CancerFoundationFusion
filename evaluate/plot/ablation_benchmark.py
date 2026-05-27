@@ -55,7 +55,7 @@ import numpy as np
 TASK_PRIMARY_METRIC: dict[str, str] = {
     "canc_type_class":  "accuracy",
     "deconv":           "mae",
-    "survival":         "antolini_concordance",
+    "survival":         "c_index",
     "proteome_pred":    "mean_pearson_r",
     "drug_sensitivity": "mean_pearson_r",
 }

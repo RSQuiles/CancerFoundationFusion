@@ -27,25 +27,29 @@ finetune:
 
     # Cohorts and cancer types to include.  Every combination that has a
     # matching parquet file is loaded and concatenated before training.
-    cohorts: [TCGA, ICGC]
+    cohorts: [TCGA]
     cancer_types:
-      # TCGA (22 cancer types)
-      - BRCA
-      - BLCA
-      - COAD
-      - GBM
+      # ===== well-calibrated, small C-index/Antolini gap =====
       - KIRC
+      - LGG    
+      - LIHC   
+      - UCEC   
+      - SARC   
+      - BRCA   
+      - LUAD   
+
+      # ===== BORDERLINE =====
+      - BLCA   
       - LAML
-      - LGG
-      - LIHC
-      - LUAD
-      - LUSC
-      - OV
-      - PAAD
-      - SARC
-      - SKCM
-      - STAD
-      - UCEC
+
+      # ===== poor Antolini or severe miscalibration =====
+      # - GBM    
+      # - COAD   
+      # - STAD   
+      # - PAAD   
+      # - OV     
+      # - SKCM   
+      # - LUSC   
       # Uncomment to add ICGC cohort (set cohorts: [TCGA, ICGC])
       - CLLE-ES
       - LIRI-JP
@@ -86,11 +90,11 @@ finetune:
 
     # ===== MODEL ARCHITECTURE =====
     # EmbeddingPredHead: embedding_dim → hidden_dim → 1 (scalar risk score)
-    hidden_dim: 128
+    hidden_dim: 256
     dropout: 0.1
 
     # ===== TRAINING HYPERPARAMETERS =====
-    epochs: 30
+    epochs: 3
     batch_size: 16
     # Cox batches should be large enough to contain multiple observed events.
 
