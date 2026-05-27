@@ -321,7 +321,15 @@ def evaluate_all(
     out_dir = ablation_dir / model_name / "metrics"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Preserve c_index written by Phase 1 (survboard_task.py / run_downstream_task.py)
+    # so the final JSON contains all four metrics.
     json_path = out_dir / "results_survival.json"
+    if json_path.exists():
+        with open(json_path) as fh:
+            existing = json.load(fh)
+        if "c_index" in existing:
+            aggregated["c_index"] = existing["c_index"]
+
     with open(json_path, "w") as fh:
         json.dump(aggregated, fh, indent=2)
     log.info(f"Saved aggregated metrics → {json_path}")
@@ -334,6 +342,8 @@ def evaluate_all(
     print(f"\n{'='*60}")
     print(f"Model: {model_name}   Folds evaluated: {aggregated['n_folds_evaluated']}")
     print(f"{'='*60}")
+    if "c_index" in aggregated:
+        print(f"  Harrell C-index      : {aggregated['c_index']:.4f}")
     print(f"  Antolini concordance : {aggregated['antolini_concordance']:.4f}")
     print(f"  IBS                  : {aggregated['ibs']:.4f}")
     print(f"  D-calibration stat   : {aggregated['d_calibration']:.4f}")
