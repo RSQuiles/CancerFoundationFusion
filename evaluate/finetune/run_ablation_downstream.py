@@ -112,11 +112,13 @@ def _results_exist(model_dir: Path, task: str) -> bool:
     return (model_dir / "metrics" / f"results_{task}.json").exists()
 
 
-def _discover_model_dirs(ablation_dir: Path) -> list[Path]:
+def _discover_model_dirs(ablation_dir: Path, model_list: List | None = None) -> list[Path]:
     """Return sorted list of sub-directories that contain at least one checkpoint."""
     dirs = []
     for d in sorted(ablation_dir.iterdir()):
         if not d.is_dir():
+            continue
+        if model_list is not None and d not in model_list:
             continue
         ckpt = _find_best_ckpt(d)
         if ckpt is not None:
@@ -163,11 +165,12 @@ def run_ablation(
     skip_existing: bool,
     plot: bool,
     plot_show: bool,
+    model_list: List | None
     plot_output: Path | None,
     pca_baseline: bool = False,
     pca_n_components: int = 128,
 ) -> None:
-    model_dirs = _discover_model_dirs(ablation_dir)
+    model_dirs = _discover_model_dirs(ablation_dir, model_list)
 
     if not model_dirs:
         if not pca_baseline:
@@ -308,9 +311,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--ablation-dir", "-d",
-        required=True,
         type=Path,
         help="Path to the ablation directory containing model sub-directories.",
+    )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        help="List of models to evaluate"
     )
     parser.add_argument(
         "--tasks", "-t",
@@ -401,6 +408,7 @@ def main() -> None:
 
     run_ablation(
         ablation_dir=ablation_dir,
+        model_list=args.models,
         tasks=args.tasks,
         config_dir=config_dir,
         skip_existing=args.skip_existing,

@@ -38,11 +38,9 @@ import scipy.sparse as sp
 GENE_ID = "_cf_gene_id"
 
 
-def _cp10k_log1p(X: np.ndarray) -> np.ndarray:
+def cpm_to_cp10k_log1p(X: np.ndarray) -> np.ndarray:
     """CP10K-normalize each row then apply log1p. Input must be a dense 2-D array."""
-    lib = X.sum(axis=1, keepdims=True)
-    lib[lib == 0] = 1.0
-    return np.log1p(X / lib * 1e4)
+    return np.log1p(X / 100)
 
 
 def _to_dense(X) -> np.ndarray:
@@ -57,7 +55,7 @@ def generate_pseudobulk_chunks(
     n_pseudobulk: int = 10,
     n_cells_per_pb: Optional[int] = None,
     is_log1p: bool = False,
-    extra_obs_columns: Optional[list[str]] = None,
+    extra_obs_columns: Optional[list[str]],
     cell_line_col: str = "cell_line",
     domain_col: str = "domain",
     sc_label: str = "SC",
@@ -72,6 +70,8 @@ def generate_pseudobulk_chunks(
     """
     Read a paired h5ad and write pseudobulk + bulk (+ optionally SC) h5ad files
     to output_dir for inclusion in the main preprocessing pipeline.
+    The data is considered to be CPM by default. It is translated to CP10K and
+    log1p to match the other model inputs.
 
     Parameters
     ----------
@@ -144,7 +144,7 @@ def generate_pseudobulk_chunks(
 
     # --- Split by domain ---
     domain_vals = adata.obs[domain_col].astype(str).values
-    sc_mask_arr  = domain_vals == sc_label
+    sc_mask_arr  = domain_vals == np.isin(domain_vals, [sc_label, ""]) # Assume unlabelled samples to be sc
     bulk_mask_arr = domain_vals == bulk_label
 
     print(f"  SC cells: {sc_mask_arr.sum()}  Bulk samples: {bulk_mask_arr.sum()}")
@@ -191,12 +191,12 @@ def generate_pseudobulk_chunks(
             X_sc = X_all[sc_sel]
             if is_log1p:
                 X_sc = np.expm1(X_sc)
-            sc_X_parts.append(_cp10k_log1p(X_sc).astype(np.float32))
+            sc_X_parts.append(cpm_to_cp10k_log1p(X_sc).astype(np.float32))
             n_sc_rows = int(sc_sel.sum())
             obs_dict: dict = {
                 "modality":   ["sc"] * n_sc_rows,
                 cell_line_col: [cl]  * n_sc_rows,
-                "paired":      [0]   * n_sc_rows,
+                "paired":      [pair_id]   * n_sc_rows,
             }
             for col in extra_present:
                 obs_dict[col] = adata.obs[col].values[sc_sel].tolist()
@@ -215,7 +215,7 @@ def generate_pseudobulk_chunks(
                 idxs = rng.choice(n_sc, size=n_draw, replace=(n_draw > n_sc))
                 pb_X[pb_i] = X_sc_cnt[idxs].sum(axis=0)
 
-            pb_X_parts.append(_cp10k_log1p(pb_X).astype(np.float32))
+            pb_X_parts.append(cpm_to_cp10k_log1p(pb_X).astype(np.float32))
             obs_dict = {
                 "modality":    ["pseudobulk"] * n_pseudobulk,
                 cell_line_col: [cl]           * n_pseudobulk,
@@ -234,7 +234,7 @@ def generate_pseudobulk_chunks(
             X_bulk = X_all[bulk_sel]
             if is_log1p:
                 X_bulk = np.expm1(X_bulk)
-            bulk_X_parts.append(_cp10k_log1p(X_bulk).astype(np.float32))
+            bulk_X_parts.append(cpm_to_cp10k_log1p(X_bulk).astype(np.float32))
             n_bulk_rows = int(bulk_sel.sum())
             obs_dict = {
                 "modality":    ["bulk"]   * n_bulk_rows,
@@ -277,7 +277,7 @@ def _get_args():
                         help="Directory where output h5ad files are written")
     parser.add_argument("--n-pseudobulk", type=int, default=10,
                         help="Pseudobulk samples per cell_line (default: 10)")
-    parser.add_argument("--n-cells-per-pb", type=int, default=None,
+    parser.add_argument("--n-cells-per-pb", type=int, default=500,
                         help="SC cells per pseudobulk (default: all cells)")
     parser.add_argument("--is-log1p", action="store_true",
                         help="Counts are log1p-transformed; expm1 before summing")
