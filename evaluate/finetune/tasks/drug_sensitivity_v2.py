@@ -391,11 +391,9 @@ class DrugSensitivityV2Task(DownstreamTask):
         if torch.cuda.is_available() and hasattr(embedder, "cuda"):
             embedder.cuda()
 
-        return embedder.embed(
-            adata,
-            batch_size=batch_size,
-            normalized=normalized,
-        ).to_numpy(dtype=np.float32)
+        result = embedder.embed(adata, batch_size=batch_size, normalized=normalized)
+        df = result[0] if isinstance(result, tuple) else result
+        return df.to_numpy(dtype=np.float32)
 
     def compute_metrics(self, predictions: np.ndarray, targets: np.ndarray) -> dict[str, float | str]:
         endpoint = str(getattr(self, "_endpoint", "cmax_classification"))
