@@ -208,17 +208,28 @@ class CancTypeClassTask(DownstreamTask):
 
         return train_dataset, test_dataset, embedding_dim
 
-    def _embed_adata(self, embedder: Any, adata: ad.AnnData, task_cfg: Any, gene_subset: List = None) -> np.ndarray:
+    def _embed_adata(self, embedder: Any, adata: ad.AnnData, task_cfg: Any, gene_subset=None) -> tuple[np.ndarray, list]:
         """Generate embeddings for adata."""
         batch_size = 64
         embedder.eval()
         embedder.cuda()
-        df_emb, gene_set_used = embedder.embed(
-            adata, 
-            batch_size=batch_size, 
+
+        kwargs = dict(
+            batch_size=batch_size,
             normalized=bool(getattr(task_cfg, "normalized", True)),
-            gene_subset=gene_subset
-            )
+        )
+        # gene_subset only supported by CancerFoundation; fittable embedders (e.g. PCA) don't accept it
+        if gene_subset is not None and not getattr(embedder, "fittable", False):
+            kwargs["gene_subset"] = gene_subset
+
+        result = embedder.embed(adata, **kwargs)
+
+        if isinstance(result, tuple):
+            df_emb, gene_set_used = result
+        else:
+            df_emb = result
+            gene_set_used = list(df_emb.columns)
+
         return df_emb.to_numpy(), gene_set_used
 
     def compute_metrics(
