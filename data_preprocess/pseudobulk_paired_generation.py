@@ -52,7 +52,7 @@ def _to_dense(X) -> np.ndarray:
 def generate_pseudobulk_chunks(
     input_h5ad: Path | str,
     output_dir: Path | str,
-    n_pseudobulk: int = 10,
+    n_pseudobulk: int = 1,
     n_cells_per_pb: Optional[int] = None,
     is_log1p: bool = False,
     extra_obs_columns: Optional[list[str]] = None,
@@ -214,11 +214,15 @@ def generate_pseudobulk_chunks(
             if is_log1p:
                 X_sc_cnt = np.expm1(X_sc_cnt)
 
-            n_draw = n_cells_per_pb if n_cells_per_pb is not None else n_sc
             pb_X = np.zeros((n_pseudobulk, n_genes), dtype=np.float64)
-            for pb_i in range(n_pseudobulk):
-                idxs = rng.choice(n_sc, size=n_draw, replace=(n_draw > n_sc))
-                pb_X[pb_i] = X_sc_cnt[idxs].sum(axis=0)
+            if n_pseudobulk == 1 and n_cells_per_pb is None:
+                # Single pseudobulk from all cells — no sampling needed
+                pb_X[0] = X_sc_cnt.sum(axis=0)
+            else:
+                n_draw = n_cells_per_pb if n_cells_per_pb is not None else n_sc
+                for pb_i in range(n_pseudobulk):
+                    idxs = rng.choice(n_sc, size=n_draw, replace=(n_draw > n_sc))
+                    pb_X[pb_i] = X_sc_cnt[idxs].sum(axis=0)
 
             pb_X_parts.append(cpm_to_cp10k_log1p(pb_X).astype(np.float32))
             obs_dict = {
@@ -291,9 +295,9 @@ def _get_args():
                         help="Paired h5ad with obs[cell_line_col] and obs[domain_col]")
     parser.add_argument("--output-dir", type=Path, required=True,
                         help="Directory where output h5ad files are written")
-    parser.add_argument("--n-pseudobulk", type=int, default=10,
-                        help="Pseudobulk samples per cell_line (default: 10)")
-    parser.add_argument("--n-cells-per-pb", type=int, default=500,
+    parser.add_argument("--n-pseudobulk", type=int, default=1,
+                        help="Pseudobulk samples per cell_line (default: 1)")
+    parser.add_argument("--n-cells-per-pb", type=int, default=None,
                         help="SC cells per pseudobulk (default: all cells)")
     parser.add_argument("--is-log1p", action="store_true",
                         help="Counts are log1p-transformed; expm1 before summing")
