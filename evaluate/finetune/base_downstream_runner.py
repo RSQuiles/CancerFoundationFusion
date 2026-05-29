@@ -201,11 +201,11 @@ class BaseDownstreamRunner:
         if num_classes is not None:
             self.task_state["output_dim"] = num_classes
 
-        finetune      = bool(getattr(self.task_cfg, "finetune_embedder", False))
-        is_multi_fold = getattr(self.task, "_is_multi_fold", False)
+        finetune = bool(getattr(self.task_cfg, "finetune_embedder", False)) and not isinstance(self.embedder, PCAEmbedder)
+        # is_multi_fold = getattr(self.task, "_is_multi_fold", False)
 
         # FINETUNE BRANCH (single-fold only — multi-fold delegates to prepare_datasets)
-        if finetune and hasattr(self.embedder, "preprocess_for_embedding") and not is_multi_fold:
+        if finetune and hasattr(self.embedder, "preprocess_for_embedding"):
             normalized = bool(getattr(self.task_cfg, "normalized", False))
 
             # Preprocess train adata — HVG selection runs on training cells only

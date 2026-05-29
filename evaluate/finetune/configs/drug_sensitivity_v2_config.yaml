@@ -7,7 +7,7 @@
 finetune:
   drug_sensitivity_v2:
     # ===== REQUIRED =====
-    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/dummy_test/epoch_epoch=00.ckpt
+    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/unified_baseline/step_step=900000_epoch_epoch=01.ckpt
     head_learning_rate: 0.001
 
     x_path: /cluster/work/boeva/bulkFM/data/processed/gene_expression.csv

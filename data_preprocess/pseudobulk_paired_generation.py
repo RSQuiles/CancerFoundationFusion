@@ -55,7 +55,7 @@ def generate_pseudobulk_chunks(
     n_pseudobulk: int = 10,
     n_cells_per_pb: Optional[int] = None,
     is_log1p: bool = False,
-    extra_obs_columns: Optional[list[str]],
+    extra_obs_columns: Optional[list[str]] = None,
     cell_line_col: str = "cell_line",
     domain_col: str = "domain",
     sc_label: str = "SC",
@@ -66,6 +66,7 @@ def generate_pseudobulk_chunks(
     min_cells: int = 1,
     chunk_prefix: str = "paired",
     seed: int = 42,
+    flush_every: int = 50,
 ) -> None:
     """
     Read a paired h5ad and write pseudobulk + bulk (+ optionally SC) h5ad files
@@ -144,7 +145,7 @@ def generate_pseudobulk_chunks(
 
     # --- Split by domain ---
     domain_vals = adata.obs[domain_col].astype(str).values
-    sc_mask_arr  = domain_vals == np.isin(domain_vals, [sc_label, ""]) # Assume unlabelled samples to be sc
+    sc_mask_arr  = np.isin(domain_vals, [sc_label, ""]) # Assume unlabelled samples to be sc
     bulk_mask_arr = domain_vals == bulk_label
 
     print(f"  SC cells: {sc_mask_arr.sum()}  Bulk samples: {bulk_mask_arr.sum()}")
@@ -168,8 +169,8 @@ def generate_pseudobulk_chunks(
     if gene_ids is not None:
         var[GENE_ID] = gene_ids.astype(int)
 
-    # Pre-extract expression matrix and obs arrays for fast row slicing
-    X_all = _to_dense(adata.X)  # (n_obs, n_genes)
+    # Pre-extract obs arrays for fast row slicing
+    # X_all = _to_dense(adata.X)  # (n_obs, n_genes)
     extra_present = [c for c in extra_obs_columns if c in adata.obs.columns]
 
     # --- Accumulate output rows per modality ---
@@ -180,7 +181,11 @@ def generate_pseudobulk_chunks(
     bulk_X_parts: list[np.ndarray]    = []
     bulk_obs_parts: list[pd.DataFrame] = []
 
-    for cl in all_cls:
+    file_idx = [0]
+
+    print("Working on cell lines:")
+    for i, cl in enumerate(all_cls):
+        print(f"- {cl}")
         cl_mask  = cell_line_vals == cl
         sc_sel   = cl_mask & sc_mask_arr
         bulk_sel = cl_mask & bulk_mask_arr
@@ -188,7 +193,7 @@ def generate_pseudobulk_chunks(
 
         # ---- Single-cell profiles ----
         if include_sc and sc_sel.any():
-            X_sc = X_all[sc_sel]
+            X_sc = _to_dense(adata.X[sc_sel])
             if is_log1p:
                 X_sc = np.expm1(X_sc)
             sc_X_parts.append(cpm_to_cp10k_log1p(X_sc).astype(np.float32))
@@ -205,7 +210,7 @@ def generate_pseudobulk_chunks(
         # ---- Pseudobulk profiles ----
         n_sc = int(sc_sel.sum())
         if n_sc >= min_cells:
-            X_sc_cnt = X_all[sc_sel]
+            X_sc_cnt = _to_dense(adata.X[sc_sel])
             if is_log1p:
                 X_sc_cnt = np.expm1(X_sc_cnt)
 
@@ -231,7 +236,7 @@ def generate_pseudobulk_chunks(
 
         # ---- Bulk profiles ----
         if include_bulk and bulk_sel.any():
-            X_bulk = X_all[bulk_sel]
+            X_bulk = _to_dense(adata.X[bulk_sel])
             if is_log1p:
                 X_bulk = np.expm1(X_bulk)
             bulk_X_parts.append(cpm_to_cp10k_log1p(X_bulk).astype(np.float32))
@@ -245,24 +250,35 @@ def generate_pseudobulk_chunks(
                 obs_dict[col] = adata.obs[col].values[bulk_sel].tolist()
             bulk_obs_parts.append(pd.DataFrame(obs_dict))
 
-    # --- Write h5ad output files ---
-    file_idx = [0]
+        # --- Write h5ad output files ---
+        # Flush periodically to avoid accumulating too much in memory
 
-    def _flush(X_parts, obs_parts, label: str) -> None:
-        if not X_parts:
-            return
-        X_cat = np.concatenate(X_parts, axis=0)
-        obs_cat = pd.concat(obs_parts, ignore_index=True)
-        obs_cat.index = obs_cat.index.astype(str)
-        adata_out = ad.AnnData(X=sp.csr_matrix(X_cat), obs=obs_cat, var=var.copy())
-        fname = f"{chunk_prefix}_{label}_chunk_{file_idx[0]:04d}.h5ad"
-        adata_out.write_h5ad(output_dir / fname)
-        print(f"  [{label}] wrote {fname} ({X_cat.shape[0]} rows)")
-        file_idx[0] += 1
+        def _flush(X_parts, obs_parts, label: str) -> None:
+            if not X_parts:
+                return
+            X_cat = np.concatenate(X_parts, axis=0)
+            obs_cat = pd.concat(obs_parts, ignore_index=True)
+            obs_cat.index = obs_cat.index.astype(str)
+            adata_out = ad.AnnData(X=sp.csr_matrix(X_cat), obs=obs_cat, var=var.copy())
+            fname = f"{chunk_prefix}_{label}_chunk_{file_idx[0]:04d}.h5ad"
+            adata_out.write_h5ad(output_dir / fname)
+            print(f"  [{label}] wrote {fname} ({X_cat.shape[0]} rows)")
+            file_idx[0] += 1
 
-    _flush(sc_X_parts,   sc_obs_parts,   "sc")
-    _flush(pb_X_parts,   pb_obs_parts,   "pb")
-    _flush(bulk_X_parts, bulk_obs_parts, "bulk")
+        is_last = (i + 1) == len(all_cls)
+        if (i + 1) % flush_every == 0 or is_last:
+            print(f"  Flushing after {i + 1}/{len(all_cls)} cell lines...")
+            _flush(sc_X_parts,   sc_obs_parts, "sc")
+            _flush(pb_X_parts,   pb_obs_parts, "pb")
+            _flush(bulk_X_parts, bulk_obs_parts, "bulk")
+
+            # Ensure clearing of information
+            sc_X_parts = []
+            sc_obs_parts = []
+            pb_X_parts = []
+            pb_obs_parts = []
+            bulk_X_parts = []
+            bulk_obs_parts = []
 
     print(f"Done: {file_idx[0]} file(s) written to {output_dir}")
 

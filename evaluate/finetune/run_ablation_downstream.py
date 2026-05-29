@@ -118,7 +118,7 @@ def _discover_model_dirs(ablation_dir: Path, model_list: List | None = None) -> 
     for d in sorted(ablation_dir.iterdir()):
         if not d.is_dir():
             continue
-        if model_list is not None and d not in model_list:
+        if model_list is not None and d.name not in model_list:
             continue
         ckpt = _find_best_ckpt(d)
         if ckpt is not None:
@@ -165,12 +165,16 @@ def run_ablation(
     skip_existing: bool,
     plot: bool,
     plot_show: bool,
-    model_list: List | None
+    model_list: List | None,
     plot_output: Path | None,
     pca_baseline: bool = False,
     pca_n_components: int = 128,
+    pca_only: bool = False,
 ) -> None:
-    model_dirs = _discover_model_dirs(ablation_dir, model_list)
+
+    model_dirs = []
+    if not pca_only:
+        model_dirs = _discover_model_dirs(ablation_dir, model_list)
 
     if not model_dirs:
         if not pca_baseline:
@@ -384,6 +388,13 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help="Number of PCA components for the baseline (default: 128).",
     )
+    parser.add_argument(
+        "--pca-only",
+        action="store_true",
+        help=(
+            "Only evaluate the PCA baseline"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -396,15 +407,22 @@ def main() -> None:
             print(f"  {task:<25} {cfg_file}")
         sys.exit(0)
 
-    ablation_dir = args.ablation_dir.expanduser().resolve()
-    if not ablation_dir.is_dir():
-        log.error("--ablation-dir does not exist: %s", ablation_dir)
-        sys.exit(1)
+    if args.ablation_dir:
+        ablation_dir = args.ablation_dir.expanduser().resolve()
+        if not ablation_dir.is_dir():
+            log.error("--ablation-dir does not exist: %s", ablation_dir)
+            sys.exit(1)
+    else:
+        ablation_dir = None
 
     config_dir = (args.config_dir or _DEFAULT_CONFIG_DIR).expanduser().resolve()
     if not config_dir.is_dir():
         log.error("--config-dir does not exist: %s", config_dir)
         sys.exit(1)
+
+    # If pca_only, pca_baseline must be true
+    if args.pca_only:
+        args.pca_baseline = True
 
     run_ablation(
         ablation_dir=ablation_dir,
@@ -417,6 +435,7 @@ def main() -> None:
         plot_output=args.plot_output,
         pca_baseline=args.pca_baseline,
         pca_n_components=args.pca_n_components,
+        pca_only=args.pca_only,
     )
 
 

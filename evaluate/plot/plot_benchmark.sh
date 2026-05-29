@@ -7,5 +7,5 @@
 
 source $surv
 
-python ablation_benchmark.py \
+python plot_ablation_benchmark.py \
     --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison
