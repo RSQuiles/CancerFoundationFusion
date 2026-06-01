@@ -60,5 +60,5 @@ echo "Survboard metrics saved"
 
 # ---- Plot -------------------------------- #
 echo "=== Plotting metrics ==="
-python ./plot/plot_ablation_benchmark.py \
+python ../plot/plot_ablation_benchmark.py \
     --ablation-dir $ABLATION_DIR
