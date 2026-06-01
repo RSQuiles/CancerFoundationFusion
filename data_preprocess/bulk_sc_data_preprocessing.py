@@ -1,5 +1,3 @@
-# BULK DATA
-## Imports
 import re
 import sys
 from utils import walk_tissue_names
@@ -426,7 +424,10 @@ def _add_gene_id_to_h5ads(h5ads: Path, vocab: dict[str, int], data_path: Path) -
             continue
         adata = read_anndata(path)
         adata.var[GENE_ID] = adata.var_names.map(vocab)
+        n_before = adata.n_vars
         adata = adata[:, ~adata.var[GENE_ID].isna()].copy()
+        n_after = adata.n_vars
+        print(f"  {path.name}: {n_before} → {n_after} genes after vocab filter, {adata.n_obs} cells")
         adata.var[GENE_ID] = adata.var[GENE_ID].astype(int)
         adata.write_h5ad(data_path / "h5ads" / path.name)
 
@@ -439,16 +440,20 @@ def convert_columns_to_categorical_with_mapping(df):
     df_categorical = pd.DataFrame(index=df.index)
 
     for column in df.columns:
-        df_copy[column] = df_copy[column].astype("category")
+        col = df_copy[column]
+        # Ensure its a 1D series
+        if isinstance(col, pd.DataFrame):
+            col = col.iloc[:, 0]
 
+        col = col.astype(str).astype("category") # convert to str first to deal with mixed types
         category_mappings[column] = dict(
             zip(
-                df_copy[column].cat.categories,
-                range(len(df_copy[column].cat.categories)),
+                col.cat.categories,
+                range(len(col.cat.categories)),
             )
         )
 
-        df_categorical[column] = df_copy[column].cat.codes
+        df_categorical[column] = col.cat.codes
 
     return df_categorical, category_mappings
 

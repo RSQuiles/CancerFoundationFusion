@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --time=12:00:00
+#SBATCH --time=20:00:00
 #SBATCH --job-name=benchmark
 #SBATCH --output=./slurm_outputs/%x_%j.out
 #SBATCH --partition=gpu
@@ -25,10 +25,9 @@ ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_compari
 
 SCRIPT_ARGS=(
     --ablation-dir $ABLATION_DIR
-    --models dat sc_baseline unified_baseline
-    --tasks deconv
+    --tasks survival deconv
+    --pca-baseline
     --config-dir /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/configs
-    --pca-only
 )
 
 echo "=== GPU status ==="
@@ -61,5 +60,5 @@ echo "Survboard metrics saved"
 
 # ---- Plot -------------------------------- #
 echo "=== Plotting metrics ==="
-python ./plot/ablation_benchmark.py \
+python ./plot/plot_ablation_benchmark.py \
     --ablation-dir $ABLATION_DIR

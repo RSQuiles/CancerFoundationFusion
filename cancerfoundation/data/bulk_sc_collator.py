@@ -70,6 +70,7 @@ class BulkSCCollator(AnnDataCollator):
         self.raw_batch_size = (
             self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pseudobulk
         )
+        self.init_n_sc_per_pseudobulk = self.n_sc_per_pseudobulk
 
         # Confirm batch composition
         print("\nBatch composition at the collator level")
@@ -78,7 +79,7 @@ class BulkSCCollator(AnnDataCollator):
         print("n_pb:", self.n_pb)
         print("n_sc:", self.n_sc)
         print("raw_batch_size:", self.raw_batch_size)
-        print("sum logical:", self.n_bulk + self.n_pb + self.n_sc)
+        print("sum_logical:", self.n_bulk + self.n_pb + self.n_sc)
 
         if self.n_bulk <= 0:
             raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")
@@ -89,7 +90,11 @@ class BulkSCCollator(AnnDataCollator):
             )
 
     def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, Any]:
-        if len(examples) != self.raw_batch_size:
+        if len(examples) == self.raw_batch_size:
+            self.n_sc_per_pseudobulk = self.init_n_sc_per_pseudobulk
+        elif len(examples) == self.batch_size:
+            self.n_sc_per_pseudobulk = 1
+        else:
             raise ValueError(
                 f"Expected {self.raw_batch_size} samples, got {len(examples)}."
             )
@@ -115,9 +120,12 @@ class BulkSCCollator(AnnDataCollator):
         if self.paired_column is not None and self.n_sc_per_pseudobulk == 1:
             pb_pair_ids   = [int(s.get(self.paired_column, 0)) for s in sc_for_pb_samples]
             bulk_pair_ids = [int(s.get(self.paired_column, 0)) for s in bulk_samples]
+            # print(f"PB paired IDs: {pb_pair_ids}")
+            # print(f"Bulk paired IDs: {bulk_pair_ids}")
             if (len(pb_pair_ids) == len(bulk_pair_ids)
-                    and all(p == b and p != 0 for p, b in zip(pb_pair_ids, bulk_pair_ids))):
+                and all(p == b and p != 0 for p, b in zip(pb_pair_ids, bulk_pair_ids))):
                 is_paired = True
+                print("Batch detected as paired!")
 
         pseudobulk_samples: List[Dict[str, Any]] = []
         sc_pseudobulk_index: List[int] = []

@@ -9,20 +9,21 @@
     "val_check_interval": 0.5,
     "log_interval": 1,
     "save_dir": "${work}/outputs/save_CFF/dummy_test",
-    "ckpt_every_n_steps": 5,
-    "resume_from_checkpoint": "last"
+    "ckpt_every_n_steps": 5
   },
   "data": {
-    "train_path": "/cluster/work/boeva/rquiles/data/cellxgene_bulk/pipeline_ready",
+    "train_path": "/cluster/work/boeva/rquiles/data/minimal_paired/pipeline_ready",
     "conditions": ["tissue_general", "assay"],
     "zero_percentages": [0.2, 0.4, 0.6],
-    "bulk_ratio": 0.6,
-    "pb_ratio": 0.3,
+    "bulk_ratio": 0.45,
+    "pb_ratio": 0.45,
     "n_sc_per_pseudobulk": 5,
     "pb_group_column": "tissue_general",
     "trunc_by_sample": true,
     "balanced_sampler": true,
-    "balanced_labels": ["tissue_general", "assay"]
+    "balanced_labels": ["tissue_general", "assay"],
+    "paired_sampling": true,
+    "paired_every_n": 5
   },
 
   "model": {
@@ -43,9 +44,6 @@
   },
   
   "features": {
-    "unified": true,
-    "contrastive_training": true,
-    "do_dat": true,
-    "dat_columns": ["modality", "assay"]
+    "unified": true
   }
 }

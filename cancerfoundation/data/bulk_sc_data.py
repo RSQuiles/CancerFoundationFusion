@@ -60,7 +60,7 @@ class BulkSCDataset(Dataset):
         modality_column: str = "modality",
         bulk_label: str = "bulk",
         sc_label: str = "sc",
-        pb_label: Optional[str] = None,
+        pb_label: Optional[str] = "pseudobulk",
         pb_group_column: Optional[str] = None,
         paired_column: Optional[str] = "paired",
         pad_value: float = -1.0,
@@ -83,6 +83,8 @@ class BulkSCDataset(Dataset):
             paired_column is not None and paired_column in self.obs.columns
         ) else None
 
+        # print(f"MemMap ({str(self.data_dir.memmap_path)}) rows: {self.memmap.number_of_rows()}")
+        # print(f"OBS parquet ({self.data_dir.obs_path}) rows: {self.obs.shape[0]}")
         assert self.memmap.number_of_rows() == self.obs.shape[0]
         assert modality_column in self.obs.columns
 
@@ -534,6 +536,7 @@ class BulkSCSampler(Sampler[list[int]]):
 
             # Sample paired or unpaired batches            
             if is_paired:
+                print("Sampling paired batch!")
                 yield self.sample_paired_batch()
             else:
                 yield self.sample_standard_batch()
@@ -602,7 +605,7 @@ class BulkSCSampler(Sampler[list[int]]):
                         size=self.n_sc_per_pb,
                         modality="pb",
                         balanced=False,
-                    ) or [])
+                        ))
                 )
             pb_idx = np.array(pb_sc_indices)
         else:
@@ -620,9 +623,9 @@ class BulkSCSampler(Sampler[list[int]]):
             balanced=self.sample_balanced,
         )
 
-        indices.extend(sc_idx or [])
-        indices.extend(pb_idx or [])
-        indices.extend(bulk_idx or [])
+        indices.extend(sc_idx)
+        indices.extend(pb_idx)
+        indices.extend(bulk_idx)
         return indices
 
     def sample(

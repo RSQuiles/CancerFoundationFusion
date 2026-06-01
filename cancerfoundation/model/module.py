@@ -935,6 +935,7 @@ class TransformerModule(nn.Module):
 
         # Paired alignment loss: MSE between matched bulk–pseudobulk CLS embeddings
         if self.paired_alignment and is_paired_batch:
+            print("Applying paired alignment loss!")
             modality = tensors["conditions"]["modality"]
             cell_emb = output_dict["cell_emb"]
             bulk_mask = modality == 0

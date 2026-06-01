@@ -32,6 +32,8 @@ from evaluate.finetune.utils import (
     seed_all,
 )
 
+from evaluate.finetune.pca_baseline import PCAEmbedder
+
 log = logging.getLogger(__name__)
 
 

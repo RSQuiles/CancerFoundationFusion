@@ -61,7 +61,7 @@ finetune:
     
     # ===== TRAINING HYPERPARAMETERS =====
     # Number of training epochs
-    epochs: 30
+    epochs: 10
     
     # Batch size for training and evaluation
     batch_size: 16

@@ -464,7 +464,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pb-label",
         type=str,
-        default="pb",
+        default="pseudobulk",
         help="Modality label in the modality column that identifies precomputed pseudobulk rows. Required for paired sampling. Default is None (no precomputed PB rows).",
     )
 
