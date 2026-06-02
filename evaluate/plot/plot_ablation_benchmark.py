@@ -166,7 +166,13 @@ def _build_task_metrics(
             for k, v in model_data.get(task, {}).items():
                 if k not in SKIP_METRICS and isinstance(v, (int, float)):
                     seen.add(k)
-        task_metrics[task] = sorted(seen)
+        # Ensure the primary metric is the first in the plot
+        primary_metric = primary_overrides.get(task) or TASK_PRIMARY_METRIC.get(task)
+        ordered = []
+        if primary_metric and primary_metric in seen:
+            ordered.append(primary_metric)
+        ordered.extend(m for m in sorted(seen) if m != primary_metric)
+        task_metrics[task] = ordered
 
     primary: dict[str, str] = {}
     for task in all_tasks:

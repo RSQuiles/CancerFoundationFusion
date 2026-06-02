@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --time=20:00:00
+#SBATCH --time=4:00:00
 #SBATCH --job-name=benchmark
 #SBATCH --output=./slurm_outputs/%x_%j.out
 #SBATCH --partition=gpu
@@ -27,6 +27,7 @@ SCRIPT_ARGS=(
     --ablation-dir $ABLATION_DIR
     --tasks survival deconv
     --pca-baseline
+    --pca-only
     --config-dir /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/configs
 )
 

@@ -29,6 +29,7 @@ finetune:
     # matching parquet file is loaded and concatenated before training.
     cohorts: [TCGA, ICGC]
     cancer_types:
+      # TCGA
       - KIRC
       - LGG    
       - LIHC   

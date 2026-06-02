@@ -117,6 +117,10 @@ class BaseDownstreamRunner:
         # Task-specific state (subclasses can add more)
         self.task_state: dict[str, Any] = {}
 
+        # Detrmine finetuning status (end-to-end or just head)
+        self.finetune = bool(getattr(self.task_cfg, "finetune_embedder", False)) and not isinstance(self.embedder, PCAEmbedder)
+
+
     def _resolve_task_cfg(self) -> DictConfig:
         """Extract task config from full config."""
         config_key = self.task.config_key
@@ -176,12 +180,11 @@ class BaseDownstreamRunner:
 
         embedder = CancerFoundation.load_from_checkpoint(resolved_path, strict=False)
         embedder.eval()
-        finetune_embedder = bool(getattr(self.task_cfg, "finetune_embedder", False))
         for param in embedder.parameters():
             param.requires_grad = finetune_embedder
 
         if self.is_master:
-            mode = "trainable (fine-tuning)" if finetune_embedder else "frozen"
+            mode = "trainable (fine-tuning)" if self.finetune else "frozen"
             log.info(f"Loaded pretrained embedder from {resolved_path} [{mode}]")
 
         return embedder
@@ -203,11 +206,10 @@ class BaseDownstreamRunner:
         if num_classes is not None:
             self.task_state["output_dim"] = num_classes
 
-        finetune = bool(getattr(self.task_cfg, "finetune_embedder", False)) and not isinstance(self.embedder, PCAEmbedder)
         # is_multi_fold = getattr(self.task, "_is_multi_fold", False)
 
         # FINETUNE BRANCH (single-fold only — multi-fold delegates to prepare_datasets)
-        if finetune and hasattr(self.embedder, "preprocess_for_embedding"):
+        if self.finetune and hasattr(self.embedder, "preprocess_for_embedding"):
             normalized = bool(getattr(self.task_cfg, "normalized", False))
 
             # Preprocess train adata — HVG selection runs on training cells only
@@ -355,8 +357,7 @@ class BaseDownstreamRunner:
         param_groups = [{"params": head_params, "lr": head_learning_rate, "name": "head"}]
 
         # Ensure embedder parameters are trainable in FINETUNE BRANCH
-        finetune = bool(getattr(self.task_cfg, "finetune_embedder", False))
-        if finetune and self.embedder is not None:
+        if self.finetune and self.embedder is not None:
             embedder_lr = float(getattr(self.task_cfg, "embedder_learning_rate", 1e-5))
             embedder_params = [p for p in self.embedder.parameters() if p.requires_grad]
             if embedder_params:
@@ -396,8 +397,7 @@ class BaseDownstreamRunner:
             self.train_loader.sampler.set_epoch(epoch)
             dist.barrier()
 
-        finetune = bool(getattr(self.task_cfg, "finetune_embedder", False))
-        if finetune and self.embedder is not None:
+        if self.finetune and self.embedder is not None:
             self.embedder.train()
 
         self.model.train()
@@ -418,7 +418,7 @@ class BaseDownstreamRunner:
                 raise ValueError(f"Unsupported batch format: {type(batch)}")
 
             # Forward — in fine-tuning mode, run raw expression through the embedder first
-            if finetune and self.embedder is not None:
+            if self.finetune and self.embedder is not None:
                 gene_ids = self.train_loader.dataset.gene_ids
                 embeddings = self.embedder.embed_for_finetune(gene_ids, data)
             else:
@@ -466,8 +466,7 @@ class BaseDownstreamRunner:
 
         Returns metrics computed via task.compute_metrics().
         """
-        finetune = bool(getattr(self.task_cfg, "finetune_embedder", False))
-        if finetune and self.embedder is not None:
+        if self.finetune and self.embedder is not None:
             self.embedder.eval()
 
         self.model.eval()
@@ -489,7 +488,7 @@ class BaseDownstreamRunner:
                 else:
                     raise ValueError(f"Unsupported batch format: {type(batch)}")
 
-                if finetune and self.embedder is not None:
+                if self.finetune and self.embedder is not None:
                     gene_ids = self.train_loader.dataset.gene_ids
                     embeddings = self.embedder.embed_for_finetune(gene_ids, embeddings)
 

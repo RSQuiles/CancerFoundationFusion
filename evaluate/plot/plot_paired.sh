@@ -25,11 +25,12 @@ SCRIPT_ARGS=(
     --ckpt /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/unified_baseline/step_step=900000_epoch_epoch=01.ckpt
     --input-h5ad /cluster/work/boeva/bulkFM/data/processed/paired_samples.h5ad
     --out-dir ./umap_outputs
+    --pca
 )
 
 if [[ "$USE_LOCAL" -eq 1 ]]; then
     echo "Running locally (no singularity)"
-    python -u umaps.py "${SCRIPT_ARGS[@]}"
+    python -u plot_paired_umap.py "${SCRIPT_ARGS[@]}"
 else
     echo "Running with singularity"
     srun singularity run \

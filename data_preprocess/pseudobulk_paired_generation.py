@@ -42,6 +42,10 @@ def cpm_to_cp10k_log1p(X: np.ndarray) -> np.ndarray:
     """CP10K-normalize each row then apply log1p. Input must be a dense 2-D array."""
     return np.log1p(X / 100)
 
+def _log1p(X: np.ndarray) -> np.ndarray:
+    """Apply log1p normalization to a dense 2-D array."""
+    return np.log1p(X)
+
 
 def _to_dense(X) -> np.ndarray:
     if sp.issparse(X):
@@ -51,7 +55,7 @@ def _to_dense(X) -> np.ndarray:
 
 def generate_pseudobulk_chunks(
     input_h5ad: Path | str,
-    output_dir: Path | str,
+    output_dir: Path | str = None,
     n_pseudobulk: int = 1,
     n_cells_per_pb: Optional[int] = None,
     is_log1p: bool = False,
@@ -67,6 +71,7 @@ def generate_pseudobulk_chunks(
     chunk_prefix: str = "paired",
     seed: int = 42,
     flush_every: int = 50,
+    return_adata: bool = False
 ) -> None:
     """
     Read a paired h5ad and write pseudobulk + bulk (+ optionally SC) h5ad files
@@ -115,8 +120,9 @@ def generate_pseudobulk_chunks(
         Random seed for reproducible pseudobulk sampling.
     """
     input_h5ad = Path(input_h5ad)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if output_dir is not None:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
     rng = np.random.default_rng(seed)
     extra_obs_columns = list(extra_obs_columns) if extra_obs_columns else []
@@ -257,24 +263,31 @@ def generate_pseudobulk_chunks(
         # --- Write h5ad output files ---
         # Flush periodically to avoid accumulating too much in memory
 
-        def _flush(X_parts, obs_parts, label: str) -> None:
+        def _flush(X_parts, obs_parts, label: str, return_adata = False)-> ad.AnnData | None:
             if not X_parts:
                 return
             X_cat = np.concatenate(X_parts, axis=0)
             obs_cat = pd.concat(obs_parts, ignore_index=True)
             obs_cat.index = obs_cat.index.astype(str)
             adata_out = ad.AnnData(X=sp.csr_matrix(X_cat), obs=obs_cat, var=var.copy())
+            if return_adata:
+                return adata_out
+            # Write AnnData to file
             fname = f"{chunk_prefix}_{label}_chunk_{file_idx[0]:04d}.h5ad"
             adata_out.write_h5ad(output_dir / fname)
             print(f"  [{label}] wrote {fname} ({X_cat.shape[0]} rows)")
             file_idx[0] += 1
+            return None
 
         is_last = (i + 1) == len(all_cls)
         if (i + 1) % flush_every == 0 or is_last:
             print(f"  Flushing after {i + 1}/{len(all_cls)} cell lines...")
-            _flush(sc_X_parts,   sc_obs_parts, "sc")
-            _flush(pb_X_parts,   pb_obs_parts, "pb")
-            _flush(bulk_X_parts, bulk_obs_parts, "bulk")
+            sc_adata = _flush(sc_X_parts,   sc_obs_parts, "sc", return_adata=return_adata)
+            pb_adata = _flush(pb_X_parts,   pb_obs_parts, "pb", return_adata=return_adata)
+            bulk_adata = _flush(bulk_X_parts, bulk_obs_parts, "bulk", return_adata=return_adata)
+
+            if return_adata:
+                return sc_adata, pb_adata, bulk_adata
 
             # Ensure clearing of information
             sc_X_parts = []
