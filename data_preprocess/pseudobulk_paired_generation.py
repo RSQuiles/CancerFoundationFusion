@@ -202,7 +202,7 @@ def generate_pseudobulk_chunks(
             X_sc = _to_dense(adata.X[sc_sel])
             if is_log1p:
                 X_sc = np.expm1(X_sc)
-            sc_X_parts.append(_log1p(X_sc).astype(np.float32))
+            sc_X_parts.append(cpm_to_cp10k_log1p(X_sc).astype(np.float32))
             n_sc_rows = int(sc_sel.sum())
             obs_dict: dict = {
                 "modality":   ["sc"] * n_sc_rows,
@@ -230,7 +230,7 @@ def generate_pseudobulk_chunks(
                     idxs = rng.choice(n_sc, size=n_draw, replace=(n_draw > n_sc))
                     pb_X[pb_i] = X_sc_cnt[idxs].mean(axis=0)
 
-            pb_X_parts.append(_log1p(pb_X).astype(np.float32))
+            pb_X_parts.append(cpm_to_cp10k_log1p(pb_X).astype(np.float32))
             obs_dict = {
                 "modality":    ["pseudobulk"] * n_pseudobulk,
                 cell_line_col: [cl]           * n_pseudobulk,
@@ -249,7 +249,7 @@ def generate_pseudobulk_chunks(
             X_bulk = _to_dense(adata.X[bulk_sel])
             if is_log1p:
                 X_bulk = np.expm1(X_bulk)
-            bulk_X_parts.append(_log1p(X_bulk).astype(np.float32))
+            bulk_X_parts.append(cpm_to_cp10k_log1p(X_bulk).astype(np.float32))
             n_bulk_rows = int(bulk_sel.sum())
             obs_dict = {
                 "modality":    ["bulk"]   * n_bulk_rows,

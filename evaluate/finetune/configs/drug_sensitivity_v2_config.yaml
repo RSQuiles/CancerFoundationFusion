@@ -13,7 +13,7 @@ finetune:
     x_path: /cluster/work/boeva/bulkFM/data/processed/drug_sens_prediction/gene_expression.csv
     y_path: /cluster/work/boeva/bulkFM/data/processed/drug_sens_prediction/drug_response.csv
 
-    drug: azacitidine
+    drug: Bexarotene
     drug_doses:
       example_drug: 1.0
 
