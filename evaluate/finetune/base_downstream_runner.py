@@ -181,7 +181,7 @@ class BaseDownstreamRunner:
         embedder = CancerFoundation.load_from_checkpoint(resolved_path, strict=False)
         embedder.eval()
         for param in embedder.parameters():
-            param.requires_grad = finetune_embedder
+            param.requires_grad = self.finetune
 
         if self.is_master:
             mode = "trainable (fine-tuning)" if self.finetune else "frozen"

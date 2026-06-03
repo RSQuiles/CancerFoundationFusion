@@ -47,6 +47,7 @@ from torch.utils.data import DataLoader, Dataset
 from evaluate.finetune.downstream_task import DownstreamTask, TaskRegistry
 from evaluate.finetune.tasks.components import EmbeddingPredHead, LinearPredHead
 from evaluate.finetune.utils import parquet_to_adata, translate_gene_symbols, strip_ensembl_versions, deduplicate_var_names
+from evaluate.finetune.pca_baseline import PCAEmbedder
 
 
 log = logging.getLogger(__name__)
@@ -228,6 +229,9 @@ class SurvBoardTask(DownstreamTask):
         Returns (1, train_adata, test_adata, train_targets, test_targets)
         where targets shape = (N, 2) = [OS_days, OS_event].
         """
+        # Save embedder
+        self.embedder = embedder
+
         data_dir     = Path(hydra.utils.to_absolute_path(str(task_cfg.survboard_data_dir)))
         cancer_types = list(task_cfg.cancer_types)
         cohorts      = list(task_cfg.cohorts)
@@ -854,7 +858,10 @@ class SurvBoardTask(DownstreamTask):
     # ---- Evaluation --------------------------------------------------------- #
 
     def get_model_name(self):
-        model_name = Path(getattr(self.task_cfg, "pretrained_model_path", "unknown")).parent.name
+        if isinstance(self.embedder, PCAEmbedder):
+            model_name = "pca_baseline"
+        else:
+            model_name = Path(getattr(self.task_cfg, "pretrained_model_path", "unknown")).parent.name
         log.info(f"Model name: {model_name}")
         return model_name
 

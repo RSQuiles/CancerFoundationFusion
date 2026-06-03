@@ -24,9 +24,9 @@ done
 SCRIPT_ARGS=(
     --ckpt /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/unified_baseline/step_step=900000_epoch_epoch=01.ckpt
     --input-h5ad /cluster/work/boeva/bulkFM/data/processed/paired_samples.h5ad
+    --n-cell-lines 10
     --out-dir ./umap_outputs
-    --pca
-)
+    --out-prefix unified)
 
 if [[ "$USE_LOCAL" -eq 1 ]]; then
     echo "Running locally (no singularity)"
@@ -35,7 +35,7 @@ else
     echo "Running with singularity"
     srun singularity run \
         --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/plot \
-        --bind /cluster/work/boeva/rquiles:/cluster/work/boeva/rquiles \
+        --bind /cluster \
         --nv /cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif \
         python -u plot_paired_umap.py "${SCRIPT_ARGS[@]}"
 fi

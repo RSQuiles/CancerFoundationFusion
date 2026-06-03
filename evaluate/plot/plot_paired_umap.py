@@ -215,6 +215,7 @@ def run(
     bulk_label: str,
     is_log1p: bool,
     normalized: bool,
+    n_cell_lines: int,
     batch_size: int,
     n_neighbors: int,
     min_dist: float,
@@ -227,7 +228,7 @@ def run(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Building combined SC + pseudobulk + bulk AnnData from {input_h5ad}")
-    sc_adata, pb_adata, bulk_adata = generate_pseudobulk_chunks(input_h5ad=input_h5ad, return_adata=True, flush_every=50)
+    sc_adata, pb_adata, bulk_adata = generate_pseudobulk_chunks(input_h5ad=input_h5ad, return_adata=True, flush_every=n_cell_lines)
 
     # Concatenate all modalities
     combined = ad.concat(
@@ -300,6 +301,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--bulk-label", default="bulk", help="Value in domain_col for bulk observations.")
     p.add_argument("--is-log1p", action="store_true",
                    help="Input expression is log1p-transformed; expm1 before computing pseudobulk mean.")
+    p.add_argument("--n-cell-lines", type=int, default=50, help="Number of cell lines to represent")
     p.add_argument("--batch-size", type=int, default=64, help="Embedding batch size.")
     p.add_argument("--neighbors", type=int, default=15, help="n_neighbors for UMAP.")
     p.add_argument("--min-dist", type=float, default=0.5, help="UMAP min_dist.")
@@ -326,6 +328,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         bulk_label=args.bulk_label,
         is_log1p=args.is_log1p,
         normalized=True, # given how the dataset is generated, data is already normalized
+        n_cell_lines=args.n_cell_lines,
         batch_size=args.batch_size,
         n_neighbors=args.neighbors,
         min_dist=args.min_dist,

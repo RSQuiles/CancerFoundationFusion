@@ -181,7 +181,7 @@ def _discover_model_dirs(ablation_dir: Path) -> list[Path]:
         if not d.is_dir():
             continue
         ckpt = _find_best_ckpt(d)
-        if ckpt is not None:
+        if ckpt is not None or (d / "metrics").is_dir():
             dirs.append(d)
     return dirs
 

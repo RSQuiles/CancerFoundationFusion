@@ -52,7 +52,7 @@ finetune:
       - PACA-AU
       - PACA-CA
       # Uncomment to add METABRIC cohort (set cohorts: [TCGA, METABRIC])
-      # - BRCA   # METABRIC BRCA
+      - BRCA   # METABRIC BRCA
 
     head_learning_rate: 0.001
 

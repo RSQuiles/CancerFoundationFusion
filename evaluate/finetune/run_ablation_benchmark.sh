@@ -12,11 +12,21 @@ set -euo pipefail
 
 # Default: use singularity
 USE_LOCAL=0
+# Set to 1 to run SurvBoard metric evaluation after downstream tasks
+RUN_SURV=0
+# Set to 1 to plot the benchmark results
+PLOT=0
 
 # Parse args
 for arg in "$@"; do
     if [[ "$arg" == "--local" ]]; then
         USE_LOCAL=1
+    fi
+    if [[ "$arg" == "--surv" ]]; then
+        RUN_SURV=1
+    fi
+    if [[ "$arg" == "--plot" ]]; then
+        PLOT=1
     fi
 done
 
@@ -25,9 +35,8 @@ ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_compari
 
 SCRIPT_ARGS=(
     --ablation-dir $ABLATION_DIR
-    --tasks survival deconv
+    --tasks drug_sensitivity_v2
     --pca-baseline
-    --pca-only
     --config-dir /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/configs
 )
 
@@ -50,16 +59,24 @@ fi
 
 # ---- SurvBoard metric evaluation -------------------------------- #
 source $surv
-CONFIG="/cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/configs/survival_pred_config.yaml"
 
-echo "=== SurvBoard metric evaluation ==="
-python -u ./tasks/evaluate_survboard_metrics.py \
-     --config "$CONFIG" \
-     --ablation
-echo "Completed."
-echo "Survboard metrics saved"
+if [[ "$RUN_SURV" -eq 1 ]]; then
+    CONFIG="/cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/configs/survival_pred_config.yaml"
+    echo "=== SurvBoard metric evaluation ==="
+    python -u ./tasks/evaluate_survboard_metrics.py \
+        --config "$CONFIG" \
+        --ablation
+    echo "Completed."
+    echo "Survboard metrics saved"
+else
+    echo "=== Skipping SurvBoard metric evaluation ==="
+fi
 
 # ---- Plot -------------------------------- #
-echo "=== Plotting metrics ==="
-python ../plot/plot_ablation_benchmark.py \
-    --ablation-dir $ABLATION_DIR
+if [[ "$PLOT" -eq 1 ]]; then
+    echo "=== Plotting metrics ==="
+    python ../plot/plot_ablation_benchmark.py \
+        --ablation-dir $ABLATION_DIR
+else
+    echo "=== Skipping Benchmark Plotting ==="
+fi
