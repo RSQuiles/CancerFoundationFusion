@@ -27,6 +27,7 @@ from evaluate.finetune.tasks import (
 )
 from evaluate.finetune.downstream_task import TaskRegistry
 from evaluate.finetune.base_downstream_runner import BaseDownstreamRunner
+from evaluate.finetune.tasks.drug_sensitivity_v2 import aggregate_drug_sensitivity_results, make_drug_endpoint_configs
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,7 +74,7 @@ def load_runner_config(config_path: str | Path, checkpoint_path: str | Path | No
             if cfg.finetune[key] is not None
         ]
 
-        if len(available_in_config) < 1 and not task_name:
+        if len(available_in_config) < 1:
             raise ValueError(f"Faulty config, must specify downstream task")
         
         task = available_in_config[0]
@@ -144,6 +145,26 @@ def main(
         log.error(str(e))
         log.info(f"Available tasks: {', '.join(TaskRegistry.list_tasks())}")
         raise
+
+    if task_name == "drug_sensitivity_v2":
+        save_dir = Path(output_dir) if output_dir is not None else Path(cfg.finetune[task_name].pretrained_model_path).parent / "metrics"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        results = []
+        for job in make_drug_endpoint_configs(cfg.finetune[task_name]):
+            job_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+            job_cfg.finetune[task_name].drug = job["drug"]
+            job_cfg.finetune[task_name].endpoint = job["endpoint"]
+            runner = BaseDownstreamRunner(job_cfg, TaskRegistry.get_task(task_name), embedder=embedder)
+            result = runner.run()
+            results.append(result)
+            if runner.is_master:
+                with open(save_dir / f"results_{task_name}__{job['drug']}__{job['endpoint']}.json", "w") as f:
+                    json.dump(result, f, indent=2)
+        results = {"jobs": results, "aggregate": aggregate_drug_sensitivity_results(results)}
+        if runner.is_master:
+            with open(save_dir / f"results_{task_name}.json", "w") as f:
+                json.dump(results, f, indent=2)
+        return results
 
     # Create and run runner
     runner = BaseDownstreamRunner(cfg, task, embedder=embedder)
@@ -223,7 +244,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     try:
-        results = main(args.config, args.task)
+        results = main(args.config, task_name=args.task)
         sys.exit(0)
     except Exception as e:
         log.exception(f"Task failed with error: {e}")

@@ -193,7 +193,7 @@ def load_drug_endpoint_targets(
 ) -> pd.DataFrame:
     """Return model_name-indexed targets for one drug and one endpoint."""
     if endpoint == "cmax_classification":
-        cmax_col = f"{drug}{"_Cmax_viability"}"
+        cmax_col = f"{drug}_Cmax_viability"
         labels = response_df[["model_name", cmax_col]].copy()
         labels[cmax_col] = pd.to_numeric(labels[cmax_col], errors="coerce")
         labels = labels.replace([np.inf, -np.inf], np.nan).dropna(subset=[cmax_col])

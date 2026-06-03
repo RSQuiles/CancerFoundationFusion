@@ -13,11 +13,8 @@ finetune:
     x_path: /cluster/work/boeva/bulkFM/data/processed/drug_sens_prediction/gene_expression.csv
     y_path: /cluster/work/boeva/bulkFM/data/processed/drug_sens_prediction/drug_response.csv
 
-    drug: Bexarotene
-    drug_doses:
-      example_drug: 1.0
-
-    endpoint: ic50_regression
+    drug: null
+    endpoint: null
 
     # ===== LABELS =====
     # IC50 values are expected to be log2-scale. Doses above are linear-scale.
