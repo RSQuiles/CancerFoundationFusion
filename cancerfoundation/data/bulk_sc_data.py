@@ -390,6 +390,11 @@ class BulkSCSampler(Sampler[list[int]]):
 
         if self.n_bulk <= 0:
             raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")
+        if paired_sampling and self.n_bulk != self.n_pb:
+            raise ValueError(
+                f"paired_sampling requires bulk_ratio == pb_ratio "
+                f"(got n_bulk={self.n_bulk}, n_pb={self.n_pb})."
+            )
 
         # The number of bulk indices defines the epoch length
         self._n_batches = (
@@ -547,7 +552,6 @@ class BulkSCSampler(Sampler[list[int]]):
         Sample a paired batch: each precomputed PB row is matched to its bulk sample.
         Pairing is preserved by sampling the same positions from both index arrays.
         """
-        assert self.n_bulk == self.n_pb, "Paired batches require n_bulk == n_pb"
         assert self.paired_pb_indices is not None and self.paired_bulk_indices is not None, \
             "Paired batches require precomputed paired indices"
 

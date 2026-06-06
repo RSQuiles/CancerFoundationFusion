@@ -70,7 +70,6 @@ class BulkSCCollator(AnnDataCollator):
         self.raw_batch_size = (
             self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pseudobulk
         )
-        self.init_n_sc_per_pseudobulk = self.n_sc_per_pseudobulk
 
         # Confirm batch composition
         print("\nBatch composition at the collator level")
@@ -91,57 +90,67 @@ class BulkSCCollator(AnnDataCollator):
 
     def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, Any]:
         if len(examples) == self.raw_batch_size:
-            self.n_sc_per_pseudobulk = self.init_n_sc_per_pseudobulk
+            n_sc_per_pb = self.n_sc_per_pseudobulk
         elif len(examples) == self.batch_size:
-            self.n_sc_per_pseudobulk = 1
+            n_sc_per_pb = 1  # paired batch: one precomputed PB row per slot
         else:
             raise ValueError(
-                f"Expected {self.raw_batch_size} samples, got {len(examples)}."
+                f"Expected {self.raw_batch_size} or {self.batch_size} samples, "
+                f"got {len(examples)}."
             )
 
         sc_samples = [dict(sample) for sample in examples[: self.n_sc]]
         sc_for_pb_samples = [
             dict(sample)
             for sample in examples[
-                self.n_sc : self.n_sc + self.n_pb * self.n_sc_per_pseudobulk
+                self.n_sc : self.n_sc + self.n_pb * n_sc_per_pb
             ]
         ]
         bulk_samples = [
             dict(sample)
-            for sample in examples[self.n_sc + self.n_pb * self.n_sc_per_pseudobulk :]
+            for sample in examples[self.n_sc + self.n_pb * n_sc_per_pb :]
         ]
 
         # Detect paired batch: in paired sampling, sc_for_pb_samples holds precomputed
-        # PB rows (not SC cells), each matched to its corresponding bulk row by the same
-        # pair_positions drawn in BulkSCSampler.sample_paired_batch(). We verify the
-        # match by comparing the pair IDs stored in the paired_column field.
-        # Requires n_sc_per_pseudobulk==1 (each precomputed PB passes through unchanged).
+        # PB rows (not SC cells), each matched to its corresponding bulk row.
+        # ORDERING INVARIANT: sample_paired_batch indexes both paired_pb_indices and
+        # paired_bulk_indices with the same pair_positions array, so element i of
+        # sc_for_pb_samples is always paired with element i of bulk_samples.
+        # The set-equality check below catches any future reordering before it silently
+        # corrupts the loss; the element-wise check then confirms the invariant holds.
         is_paired = False
-        if self.paired_column is not None and self.n_sc_per_pseudobulk == 1:
+        if self.paired_column is not None and n_sc_per_pb == 1:
             pb_pair_ids   = [int(s.get(self.paired_column, 0)) for s in sc_for_pb_samples]
             bulk_pair_ids = [int(s.get(self.paired_column, 0)) for s in bulk_samples]
-            # print(f"PB paired IDs: {pb_pair_ids}")
-            # print(f"Bulk paired IDs: {bulk_pair_ids}")
-            if (len(pb_pair_ids) == len(bulk_pair_ids)
-                and all(p == b and p != 0 for p, b in zip(pb_pair_ids, bulk_pair_ids))):
+            nonzero_pb   = [p for p in pb_pair_ids   if p != 0]
+            nonzero_bulk = [b for b in bulk_pair_ids if b != 0]
+            if (nonzero_pb
+                and set(nonzero_pb) == set(nonzero_bulk)
+                and all(p == b for p, b in zip(pb_pair_ids, bulk_pair_ids))):
                 is_paired = True
-                print("Batch detected as paired!")
 
         pseudobulk_samples: List[Dict[str, Any]] = []
         sc_pseudobulk_index: List[int] = []
         pseudobulk_sizes: List[int] = []
 
-        for pb_idx, start in enumerate(
-            range(0, len(sc_for_pb_samples), self.n_sc_per_pseudobulk)
-        ):
-            chunk = sc_for_pb_samples[start : start + self.n_sc_per_pseudobulk]
-            pb_genes, pb_expr = self._aggregate_sc(chunk)
-            pb_sample = {"genes": pb_genes, "expressions": pb_expr}
-            self._fill_missing_conditions(pb_sample, chunk)
-            pseudobulk_samples.append(pb_sample)
-            pseudobulk_sizes.append(len(chunk))
-            # To which pb does each sc sample belong
-            sc_pseudobulk_index.extend([pb_idx] * len(chunk))
+        if is_paired:
+            # Precomputed PB rows pass through unchanged; no aggregation needed.
+            # Order matches bulk_samples because sample_paired_batch indexes both
+            # paired_pb_indices and paired_bulk_indices with the same pair_positions,
+            # so pseudobulk_samples[i] is guaranteed to be paired with bulk_samples[i].
+            pseudobulk_samples = list(sc_for_pb_samples)
+            pseudobulk_sizes = [1] * len(sc_for_pb_samples)
+        else:
+            for pb_idx, start in enumerate(
+                range(0, len(sc_for_pb_samples), n_sc_per_pb)
+            ):
+                chunk = sc_for_pb_samples[start : start + n_sc_per_pb]
+                pb_genes, pb_expr = self._aggregate_sc(chunk)
+                pb_sample = {"genes": pb_genes, "expressions": pb_expr}
+                self._fill_missing_conditions(pb_sample, chunk)
+                pseudobulk_samples.append(pb_sample)
+                pseudobulk_sizes.append(len(chunk))
+                sc_pseudobulk_index.extend([pb_idx] * len(chunk))
 
         unified_samples: List[Dict[str, Any]] = []
         unified_modalities: List[int] = []
@@ -165,16 +174,16 @@ class BulkSCCollator(AnnDataCollator):
             unified_pseudobulk_index.append(-1)
             unified_is_sc_for_pb.append(0)
 
-        # 2 -> pseudobulk
+        # 2 -> pseudobulk (aggregated SC or precomputed; real only when paired)
         for pb_idx, sample in enumerate(pseudobulk_samples):
             unified_samples.append(sample)
             unified_modalities.append(2)
-            unified_is_real.append(0)
+            unified_is_real.append(1 if is_paired else 0)
             unified_pseudobulk_index.append(pb_idx)
             unified_is_sc_for_pb.append(0)
 
         # 3 (1) -> sc for pb
-        if self.agg_consistency:
+        if self.agg_consistency and not is_paired:
             for sc_idx, sample in enumerate(sc_for_pb_samples):
                 unified_samples.append(sample)
                 unified_modalities.append(1)
@@ -249,7 +258,7 @@ class BulkSCCollator(AnnDataCollator):
         self,
         sc_samples: List[Dict[str, Any]],
         counts: bool = False,
-        rank_normalise: bool = True,
+        rank_normalise: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         k = self.keep_first_n_tokens
         """
@@ -305,10 +314,10 @@ class BulkSCCollator(AnnDataCollator):
             # Sums by gene index and stores sum at corresponding position in expr_sum
             expr_sum = np.bincount(all_genes, weights=all_exprs, minlength=n_bins)
 
-            # Re-normalize to CPM → log1p
+            # Re-normalize to CP10K → log1p
             total = expr_sum.sum()
             if total > 0:
-                expr_sum = expr_sum / total * 1e6
+                expr_sum = expr_sum / total * 1e4
             expr_sum = np.log1p(expr_sum)
 
             expressed = expr_sum != 0

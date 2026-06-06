@@ -1,4 +1,4 @@
 #!/bin/bash -l
 
 python -u ablate.py \
-	--config base_comparison_ablation.json \
+	--config ./configs/base_comparison_ablation.json \

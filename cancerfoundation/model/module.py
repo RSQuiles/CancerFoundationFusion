@@ -919,15 +919,24 @@ class TransformerModule(nn.Module):
                     )
 
         # Contrastive loss: if enabled, it brings the pseudobulk and real bulk samples closer together in the embedding space.
-        if self.contrastive:
-            # print("Using contrastive loss...")
-            embeddings = output_dict[
-                "embeddings"
-            ]  # Embeddings are transformer_output regardless of the training mode
+        # Skipped for paired batches: the all-positive InfoNCE treats every (bulk[i], pb[j])
+        # pair as a positive, which contradicts the 1-to-1 pairing enforced by the paired
+        # alignment loss. VICReg collapse-prevention is still applied via modality_contrastive_loss
+        # in non-paired batches; paired batches rely solely on the paired alignment loss for signal.
+        if self.contrastive and not is_paired_batch:
+            embeddings = output_dict["embeddings"]
             modalities = tensors["conditions"]["modality"]
             assert len(embeddings) == len(
                 modalities
             ), "Embeddings and modalities tensors must have the same batch size"
+
+            # sc_for_pb cells have modality=1 but are pseudobulk constituents, not free
+            # SC cells. Including them as hard negatives opposes the aggregation consistency
+            # loss, which pulls pseudobulk toward their mean. Mask them out with sentinel -1
+            # so they fall outside every == k selector inside modality_contrastive_loss.
+            if "is_sc_for_pb" in tensors and tensors["is_sc_for_pb"].any():
+                modalities = modalities.clone()
+                modalities[tensors["is_sc_for_pb"] == 1] = -1
 
             loss_contrastive = self.modality_contrastive_loss(embeddings, modalities)
             loss = loss + loss_contrastive
@@ -950,41 +959,39 @@ class TransformerModule(nn.Module):
 
         # Aggregation consistency loss: skip for paired batches (SC cells are unrelated to the PBs)
         if self.aggregation and not is_paired_batch:
-            # print("Using aggregation consistency loss...")
             embeddings = output_dict["embeddings"]
-            # Reconstruct assignment
-            sc_assignment = {}
             assert len(embeddings) == len(
                 tensors["is_sc_for_pb"]
             ), "Embeddings and input dictionaries must have the same batch size"
+
+            # Map each sc_for_pb cell to its pseudobulk local index (0…n_pb-1).
+            sc_assignment: dict = {}
             for idx in range(len(embeddings)):
                 if tensors["is_sc_for_pb"][idx] == 1:
-                    if (
-                        tensors["sample_pseudobulk_index"][idx].item()
-                        not in sc_assignment
-                    ):
-                        sc_assignment[
-                            tensors["sample_pseudobulk_index"][idx].item()
-                        ] = []
-                    sc_assignment[
-                        tensors["sample_pseudobulk_index"][idx].item()
-                    ].append(idx)
+                    pb_local_idx = tensors["sample_pseudobulk_index"][idx].item()
+                    sc_assignment.setdefault(pb_local_idx, []).append(idx)
 
-            # Enforce consistency loss for each pseudobulk and its assigned single cells
-            loss_agg = 0
-            for pb_idx, sc_indices in sc_assignment.items():
-                if len(sc_indices) > 0:
-                    pb_embedding = embeddings[pb_idx]
-                    sc_embeddings = embeddings[sc_indices]
-                    if self.agg_fn == "mean":
-                        sc_embedding_agg = sc_embeddings.mean(dim=0)
-                    elif self.agg_fn == "sum":
-                        sc_embedding_agg = sc_embeddings.sum(dim=0)
-                    else:
-                        raise ValueError(f"Unknown agg_fn: {self.agg_fn}")
-                    loss_agg += F.mse_loss(pb_embedding, sc_embedding_agg)
-            loss = loss + loss_agg
-            loss_dict["loss_agg"] = loss_agg.detach()
+            # Resolve local PB indices to global positions in the embeddings tensor.
+            # sample_pseudobulk_index stores 0-based local PB indices, but PBs occupy
+            # positions n_bulk+n_sc … n_bulk+n_sc+n_pb-1 in the unified batch — they
+            # cannot be used directly to index into embeddings without this lookup.
+            pb_global_pos = (tensors["conditions"]["modality"] == 2).nonzero(as_tuple=True)[0]
+
+            loss_agg = torch.tensor(0.0, device=loss.device)
+            for pb_local_idx, sc_indices in sc_assignment.items():
+                pb_embedding = embeddings[pb_global_pos[pb_local_idx]]
+                sc_embeddings = embeddings[sc_indices]
+                if self.agg_fn == "mean":
+                    sc_embedding_agg = sc_embeddings.mean(dim=0)
+                elif self.agg_fn == "sum":
+                    sc_embedding_agg = sc_embeddings.sum(dim=0)
+                else:
+                    raise ValueError(f"Unknown agg_fn: {self.agg_fn}")
+                loss_agg = loss_agg + F.mse_loss(pb_embedding, sc_embedding_agg)
+
+            if sc_assignment:
+                loss = loss + loss_agg
+                loss_dict["loss_agg"] = loss_agg.detach()
 
         loss_dict["total_loss"] = loss
         return loss_dict

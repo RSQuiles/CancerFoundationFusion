@@ -202,7 +202,7 @@ def generate_pseudobulk_chunks(
             X_sc = _to_dense(adata.X[sc_sel])
             if is_log1p:
                 X_sc = np.expm1(X_sc)
-            sc_X_parts.append(cpm_to_cp10k_log1p(X_sc).astype(np.float32))
+            sc_X_parts.append(_log1p(X_sc).astype(np.float32))
             n_sc_rows = int(sc_sel.sum())
             obs_dict: dict = {
                 "modality":   ["sc"] * n_sc_rows,
