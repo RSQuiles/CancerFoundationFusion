@@ -400,16 +400,105 @@ class DeconvTask(DownstreamTask):
         mae = float(np.mean(np.abs(pred_props - targets)))
         mse = float(np.mean((pred_props - targets) ** 2))
 
-        # Per-cell-type Pearson R (skip constant columns to avoid NaN)
+        # --- Per-cell-type breakdown -----------------------------------------
+        # Each row shows how the model performs on one cell type across all samples.
+        # tgt_mean: average true proportion — near-zero values mean a rare cell type
+        #           that is almost always absent. Low-abundance types are nearly
+        #           impossible to learn from expression alone.
+        # tgt_std:  variance in the true label across samples. If tgt_std ≈ 0 the
+        #           cell type is essentially constant (R is undefined, shown as n/a)
+        #           and contributes nothing to mean_pearson_r.
+        # pred_std: variance in the model's output for this cell type. If pred_std
+        #           is much smaller than tgt_std the model is shrinking toward the
+        #           mean (safe but uncorrelated). A pred_std of ~0 means the model
+        #           ignores this cell type entirely regardless of the input.
+        # R:        Pearson correlation between the predicted and true proportions
+        #           across samples. The headline metric for deconvolution quality.
+        #           R > 0.6 is generally considered good; R < 0.2 means the model
+        #           has no useful signal for that type.
+        cell_types = getattr(self, "cell_types", [str(i) for i in range(targets.shape[1])])
+        print(f"\n{'Cell type':<40} {'tgt_mean':>8} {'tgt_std':>8} {'pred_mean':>9} {'pred_std':>8} {'R':>6}")
+        print("-" * 82)
         pearson_rs = []
-        for i in range(targets.shape[1]):
+        for i, ct in enumerate(cell_types):
             true_col = targets[:, i]
             pred_col = pred_props[:, i]
-            if np.std(true_col) > 0 and np.std(pred_col) > 0:
+            tgt_std  = float(np.std(true_col))
+            pred_std = float(np.std(pred_col))
+            if tgt_std > 0 and pred_std > 0:
                 r, _ = pearsonr(true_col, pred_col)
                 pearson_rs.append(float(r))
+                r_str = f"{r:>6.3f}"
+            else:
+                r_str = "   n/a"
+            print(
+                f"{ct[:40]:<40} {np.mean(true_col):>8.4f} {tgt_std:>8.4f}"
+                f" {np.mean(pred_col):>9.4f} {pred_std:>8.4f} {r_str}"
+            )
 
         mean_pearson_r = float(np.mean(pearson_rs)) if pearson_rs else float("nan")
+
+        # --- Collapse check: are predictions essentially constant? -----------
+        # Softmax forces all predictions to sum to 1, so a model that learned nothing
+        # will output the same distribution for every sample (pred_std ≈ 0).
+        # The ratio pred_std / tgt_std summarises this:
+        #   ratio ≈ 1.0  → model spreads predictions as widely as the targets (ideal)
+        #   ratio < 0.3  → model is collapsing toward the mean; MAE is low only
+        #                  because absolute proportions are small, not because the
+        #                  model is correct. Pearson R will be near zero.
+        #   ratio ≈ 0    → complete collapse; the head ignores the embedding entirely.
+        pred_std_mean = float(np.mean(np.std(pred_props, axis=0)))
+        tgt_std_mean  = float(np.mean(np.std(targets,    axis=0)))
+        std_ratio     = pred_std_mean / max(tgt_std_mean, 1e-8)
+        print(f"\nPrediction spread vs target spread (per cell type, mean std):")
+        print(f"  pred std = {pred_std_mean:.4f}  |  target std = {tgt_std_mean:.4f}  |  ratio = {std_ratio:.3f}")
+        if std_ratio < 0.3:
+            print("  WARNING: ratio < 0.3 — model predictions are collapsing toward the mean.")
+
+        # --- Mean-predictor baseline (using test-set mean as proxy) ----------
+        # A mean predictor outputs the average proportion of each cell type for
+        # every sample, ignoring the input entirely. It achieves a non-trivial MAE
+        # because proportions are small numbers (bounded by 1/n_cell_types on
+        # average). If the model cannot beat this baseline it has learned nothing
+        # useful from the embeddings — the deconvolution signal is absent or the
+        # embeddings are not informative for this task.
+        # Note: the baseline here uses the test-set mean as a proxy for the training
+        # mean. The real baseline would be slightly harder to beat since the training
+        # mean is computed on a different split; treat this as a lower bound.
+        baseline_pred = np.broadcast_to(targets.mean(axis=0, keepdims=True), targets.shape)
+        baseline_mae  = float(np.mean(np.abs(baseline_pred - targets)))
+        baseline_mse  = float(np.mean((baseline_pred - targets) ** 2))
+        mae_improvement = (baseline_mae - mae) / max(baseline_mae, 1e-8) * 100
+        print(f"\nMean-predictor baseline   MAE={baseline_mae:.4f}  MSE={baseline_mse:.4f}")
+        print(f"Model                     MAE={mae:.4f}  MSE={mse:.4f}")
+        print(f"Improvement over baseline (MAE): {mae_improvement:.1f}%")
+        # Interpretation: < 5% improvement → embeddings carry no signal for this task.
+        # 5–20% → weak but present signal. > 20% → meaningful learning.
+
+        # --- Sample-wise Pearson R (across cell types per sample) ------------
+        # Cell-type-wise R (above) measures whether the model tracks how a single
+        # cell type's proportion varies across samples.
+        # Sample-wise R measures whether the model correctly ranks cell types by
+        # proportion *within* a single sample (i.e. gets the composition profile right).
+        # High sample-wise R with low cell-type-wise R means the model knows the
+        # relative order of cell types per sample but fails to track how their absolute
+        # levels shift across donors/contexts — pointing to a domain-shift or
+        # normalisation issue rather than prediction collapse.
+        # pct<0: fraction of samples where the model's ranking is anti-correlated
+        # with the truth (worse than random); should be near 0% for a useful model.
+        sample_rs = []
+        for j in range(targets.shape[0]):
+            t, p = targets[j], pred_props[j]
+            if np.std(t) > 0 and np.std(p) > 0:
+                r, _ = pearsonr(t, p)
+                sample_rs.append(float(r))
+        if sample_rs:
+            arr = np.array(sample_rs)
+            print(
+                f"\nSample-wise Pearson R (across cell types per sample):\n"
+                f"  mean={arr.mean():.3f}  median={np.median(arr):.3f}"
+                f"  std={arr.std():.3f}  pct<0={100*(arr < 0).mean():.1f}%"
+            )
 
         return {
             "mae": mae,
