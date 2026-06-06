@@ -55,18 +55,47 @@
   "base_overrides": {},
   "ablations": [
       {
-      "name": "",
+      "name": "unified",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/",
-          "wandb_name": ""
+          "save_dir": "${work}/outputs/save_CFF/ablation_paired_aggfix/unified",
+          "wandb_name": "unified"
         },
-        "data": {
-          "train_path": ""
-        },
+        "data": {},
         "model": {},
         "features": {
           "unified": true
+        }
+      }
+    },
+        {
+      "name": "dat",
+      "overrides": {
+        "trainer": {
+          "save_dir": "${work}/outputs/save_CFF/ablation_paired_aggfix/dat",
+          "wandb_name": "dat"
+        },
+        "data": {},
+        "model": {},
+        "features": {
+          "unified": true,
+          "do_dat": true,
+          "dat_columns": ["modality", "assay"]
+        }
+      }
+    },
+    {
+      "name": "contrastive",
+      "overrides": {
+        "trainer": {
+          "save_dir": "${work}/outputs/save_CFF/ablation_paired_aggfix/contrastive",
+          "wandb_name": "contrastive"
+        },
+        "data": {},
+        "model": {},
+        "features": {
+          "unified": true,
+          "contrastive_training": true
         }
       }
     }

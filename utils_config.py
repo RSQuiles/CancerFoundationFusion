@@ -578,7 +578,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dat-interval-steps",
         type=int,
-        default=2,
+        default=3,
         help=(
             "Apply DAT loss only every N training steps. "
             "1 = every step (default, backward-compatible). "

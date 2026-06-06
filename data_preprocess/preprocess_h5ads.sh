@@ -10,6 +10,6 @@ source ~/.bashrc
 conda activate bulkFM
 
 python -u bulk_sc_data_preprocessing.py \
-    --h5ad-path /cluster/work/boeva/rquiles/data/minimal_paired \
-    --data-path /cluster/work/boeva/rquiles/data/minimal_paired/pipeline_ready \
+    --h5ad-path /cluster/work/boeva/rquiles/data/paired_dataset \
+    --data-path /cluster/work/boeva/rquiles/data/paired_dataset/pipeline_ready \
     --obs-columns tissue_general assay paired \
