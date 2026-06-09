@@ -6,10 +6,33 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem-per-cpu=64G
 
-source ~/.bashrc
-conda activate bulkFM
+export TMPDIR=/cluster/work/boeva/rquiles/tmp
+mkdir -p $TMPDIR
 
-python -u bulk_sc_data_preprocessing.py \
-    --h5ad-path /cluster/work/boeva/rquiles/data/paired_dataset \
-    --data-path /cluster/work/boeva/rquiles/data/paired_dataset/pipeline_ready \
-    --obs-columns tissue_general assay paired \
+# Default, do not use Singularity
+USE_LOCAL=0
+
+# Parse args
+for arg in "$@"; do
+    if [[ "$arg" == "--local" ]]; then
+        USE_LOCAL=1
+    fi
+done
+
+SCRIPT_ARGS=(
+    --h5ad-path /cluster/work/boeva/rquiles/data/paired_dataset
+    --data-path /cluster/work/boeva/rquiles/data/paired_dataset/pipeline_ready
+    --obs-columns tissue_general assay paired
+)
+
+if [[ "$USE_LOCAL" -eq 1 ]]; then
+    echo "Running locally (no singularity)"
+    CUDA_LAUNCH_BLOCKING=1 python -u bulk_sc_data_preprocessing.py "${SCRIPT_ARGS[@]}"
+else
+    echo "Running with singularity"
+    srun singularity run \
+        --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/plot \
+        --bind /cluster/work/boeva/rquiles:/cluster/work/boeva/rquiles \
+        /cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif \
+        CUDA_LAUNCH_BLOCKING=1 python -u bulk_sc_data_preprocessing.py "${SCRIPT_ARGS[@]}"
+fi

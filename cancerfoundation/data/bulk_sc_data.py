@@ -149,9 +149,17 @@ class BulkSCDataset(Dataset):
     def __getitem__(self, index: int) -> dict:
         """Return a single sample with ``genes``, ``expressions``, and a
         tags for the different conditions accounted for."""
-        exp, genes = self.memmap.get_row_padded(
-            index, return_features=True, feature_vars=[self.GENE_ID]
-        )
+        try: 
+            exp, genes, _ = self.memmap.get_row_padded(
+                index, return_var_features=True, var_feature_names=[self.GENE_ID]
+            )
+        except IndexError as e:
+            obs_row = self.obs.iloc[index] if hasattr(self, "obs") else "N/A"
+            raise IndexError(
+                f"IndexError at index={index}: {e}\n"
+                f"obs row: {obs_row}"
+            ) from e
+
         genes = np.insert(genes[0], 0, self.vocab[self.CLS_TOKEN])
         exp = np.insert(exp, 0, self.pad_value)
 

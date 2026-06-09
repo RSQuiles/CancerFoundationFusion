@@ -128,6 +128,7 @@ class BulkSCCollator(AnnDataCollator):
                 and set(nonzero_pb) == set(nonzero_bulk)
                 and all(p == b for p, b in zip(pb_pair_ids, bulk_pair_ids))):
                 is_paired = True
+                print(f"Sampled paired indexes:\n- PB: {pb_pair_ids}\n- Bulk: {bulk_pair_ids}")
 
         pseudobulk_samples: List[Dict[str, Any]] = []
         sc_pseudobulk_index: List[int] = []

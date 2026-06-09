@@ -1,8 +1,8 @@
 {
   "trainer": {
-    "gpus": 1,
+    "gpus": 0,
     "num_workers": 1,
-    "precision": "bf16-mixed",
+    "precision": 32,
     "strategy": "auto",
     "epochs": 1,
     "seed": 0,
@@ -12,7 +12,7 @@
     "ckpt_every_n_steps": 5
   },
   "data": {
-    "train_path": "/cluster/work/boeva/rquiles/data/minimal_paired/pipeline_ready",
+    "train_path": "/cluster/work/boeva/rquiles/data/paired_dataset/pipeline_ready",
     "conditions": ["tissue_general", "assay"],
     "zero_percentages": [0.2, 0.4, 0.6],
     "bulk_ratio": 0.45,
@@ -27,14 +27,14 @@
   },
 
   "model": {
-    "nlayers": 3,
-    "nheads": 4,
-    "embsize": 64,
-    "d_hid": 256,
+    "nlayers": 2,
+    "nheads": 2,
+    "embsize": 32,
+    "d_hid": 32,
     "lr": 0.0001,
     "warmup_ratio_or_step": 10000,
     "max_seq_len": 600,
-    "batch_size": 32,
+    "batch_size": 8,
     "input_style": "binned",
     "loss": "mse",
     "training_tasks": "both",

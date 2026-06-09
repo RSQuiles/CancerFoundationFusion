@@ -18,8 +18,6 @@ from bionemo.scdl.io.single_cell_collection import SingleCellCollection
 from cancerfoundation.data.dataset import DatasetDir
 from typing import Optional
 from collections import Counter, defaultdict
-from sklearn.cluster import MiniBatchKMeans
-from sklearn.feature_extraction.text import TfidfVectorizer
 import tqdm
 
 from pseudobulk_paired_generation import generate_pseudobulk_chunks
@@ -38,143 +36,6 @@ def read_anndata(file_path):
     adata = sc.read_h5ad(file_path)
     return adata
 
-
-def normalize_bulk_tissues(bulk_metadata_path: Path, sc_path: Path) -> pd.DataFrame:
-    print("Normalizing bulk tissue names...")
-
-    # Retrieve at most 5 files from the sc_path directory
-    sc_files = list(sc_path.glob("*.h5ad"))[:5]
-    bulk_obs = pd.read_csv(bulk_metadata_path)
-    adata_list = [read_anndata(f) for f in sc_files]
-
-    # Match bulk tissue names to sc categories, and cluster unmatched one
-    tissue_match = build_tissue_match(adata_list, bulk_obs)
-
-    # Apply the mapping to the bulk metadata
-    bulk_obs["tissue"] = (
-        bulk_obs["tissue"].astype(str).map(tissue_match).fillna("unknown")
-    )
-
-    return bulk_obs
-
-
-def build_tissue_match(
-    adata, bulk_obs, min_cluster_size=5, n_clusters=30, max_features=5000
-):
-    def norm(s):
-        s = str(s).lower().strip().replace('"', "")
-        s = re.sub(r"[_/,+()-]+", " ", s)
-        s = re.sub(r"\s+", " ", s)
-        return s
-
-    # Create readable labels for each auto-cluster
-    def cluster_name(items):
-        stop = {
-            "l",
-            "r",
-            "left",
-            "right",
-            "post",
-            "anterior",
-            "medial",
-            "lateral",
-            "normal",
-            "responsive",
-            "refractory",
-            "disease",
-            "treat",
-            "treatment",
-            "untreated",
-            "treated",
-            "sample",
-            "hrs",
-            "the",
-            "and",
-        }
-        c = Counter()
-        for x in items:
-            c.update(
-                t
-                for t in re.findall(r"[a-z0-9]+", norm(x))
-                if t not in stop and len(t) > 1
-            )
-        return "auto_" + ("_".join(t for t, _ in c.most_common(3)) if c else "misc")
-
-    if isinstance(adata, list):
-        sc_tissues = set()
-        for ad in adata:
-            sc_tissues.update(str(x) for x in ad.obs.tissue_general.dropna().unique())
-        sc_tissues = sorted(sc_tissues)
-    else:
-        sc_tissues = [str(x) for x in adata.obs.tissue_general.dropna().unique()]
-    sc_tissues_norm = {sc_t: norm(sc_t) for sc_t in sc_tissues}
-
-    tissue_match = {sc_t: [] for sc_t in sc_tissues}
-    no_match = []
-
-    # First pass: direct matching to known tissues
-    for t in bulk_obs.tissue.astype(str):
-        t_norm = norm(t)
-        matched = False
-        for sc_t, sc_norm in sc_tissues_norm.items():
-            if sc_norm in t_norm or t_norm in sc_norm:
-                tissue_match[sc_t].append(t)
-                matched = True
-                break
-        if not matched:
-            no_match.append(t)
-
-    # Second pass: cluster unmatched strings
-    if no_match:
-        unique_no_match = sorted(set(no_match))
-        unique_no_match_norm = [norm(x) for x in unique_no_match]
-
-        X = TfidfVectorizer(
-            analyzer="char_wb",
-            ngram_range=(3, 5),
-            max_features=max_features,
-        ).fit_transform(unique_no_match_norm)
-
-        n_clusters_eff = max(1, min(n_clusters, len(unique_no_match)))
-        labels = MiniBatchKMeans(
-            n_clusters=n_clusters_eff,
-            random_state=0,
-            batch_size=1024,
-            n_init="auto",
-        ).fit_predict(X)
-
-        norm_to_cluster = {
-            norm_text: lab for norm_text, lab in zip(unique_no_match_norm, labels)
-        }
-
-        clusters = defaultdict(list)
-        for x in no_match:
-            clusters[norm_to_cluster[norm(x)]].append(x)
-
-        misc = []
-        for items in clusters.values():
-            if len(items) < min_cluster_size:
-                misc.extend(items)
-                continue
-            name = cluster_name(items)
-            base = name
-            i = 2
-            while name in tissue_match:
-                name = f"{base}_{i}"
-                i += 1
-            tissue_match[name] = items
-
-        if misc:
-            tissue_match["auto_misc"] = misc
-
-    tissue_match = {k: v for k, v in tissue_match.items() if len(v) > 0}
-    assert len(bulk_obs) == sum(len(v) for v in tissue_match.values())
-
-    # Transform into sets and invert the mapping
-    tissue_match = {k: set(v) for k, v in tissue_match.items()}
-    tissue_invert_match = {t: k for k, v in tissue_match.items() for t in v}
-
-    return tissue_invert_match
 
 def get_normalized_metadata_bulk(bulk_metadata_path: Path, meta_fields=["characteristics", "extract_protocol", "source_name", "title"]):
     """
@@ -277,7 +138,6 @@ def h5_to_h5ad(
     # Normalize bulk tissue names if requested
     if normalize_tissues:
         metadata = get_normalized_metadata_bulk(METADATA_CSV)
-        #metadata = normalize_bulk_tissues(METADATA_CSV, h5ad_dir)
     else:
         metadata = pd.read_csv(METADATA_CSV)
 

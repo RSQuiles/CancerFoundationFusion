@@ -91,10 +91,17 @@ def train_model(
         )
 
     # Create trainer
+    if gpus == 0:
+        accelerator = "cpu"
+        devices = "auto"
+    else:
+        accelerator = "gpu"
+        devices = gpus
+
     trainer = pl.Trainer(
         max_epochs=max_epochs,
-        accelerator="gpu",
-        devices=gpus,
+        accelerator=accelerator,
+        devices=devices,
         num_nodes=num_nodes,
         strategy=strategy,
         precision=precision,

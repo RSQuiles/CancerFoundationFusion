@@ -113,7 +113,7 @@ def cp10k_log1p_normalize(expr_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_expression_csv(x_path: str | Path) -> ad.AnnData:
-    df = pd.read_csv(x_path)
+    df = pd.read_csv(x_path, low_memory=False)
     if df.empty or df.shape[1] < 2:
         raise ValueError(f"Expression CSV must contain a row-label column and gene columns: {x_path}")
 
