@@ -245,6 +245,52 @@ class BulkSCDataset(Dataset):
 
 
 # ======================================================================
+# Subset reindexer
+# ======================================================================
+
+
+class SubsetReindexer:
+    """Translates base-dataset indices to Subset-local indices via a dense LUT.
+
+    Build once from the Subset's index array, then call ``remap`` for each
+    index pool that needs to be translated.  The LUT is O(max_base_index) in
+    memory (~800 MB at 100 M rows); call ``del reindexer`` when done.
+
+    Parameters
+    ----------
+    subset_base_indices : np.ndarray
+        The ``dataset.indices`` array of the ``torch.utils.data.Subset``.
+    """
+
+    def __init__(self, subset_base_indices: np.ndarray):
+        max_idx = int(subset_base_indices.max()) + 1
+        self._lut = np.full(max_idx, -1, dtype=np.int64)
+        self._lut[subset_base_indices] = np.arange(len(subset_base_indices), dtype=np.int64)
+
+    def remap(self, base_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return ``(subset_local_indices, survival_mask)``.
+
+        ``survival_mask`` is a boolean array aligned with ``base_indices``.
+        Use it to filter any array that is positionally aligned with
+        ``base_indices`` (e.g. a per-sample label array).
+        """
+        base_indices = np.asarray(base_indices)
+        in_bounds = base_indices < len(self._lut)
+        mapped = np.full(len(base_indices), -1, dtype=np.int64)
+        mapped[in_bounds] = self._lut[base_indices[in_bounds]]
+        mask = mapped >= 0
+        return mapped[mask], mask
+
+    def remap_dict(self, group_dict: dict) -> dict:
+        """Remap each value array in ``group_dict``, dropping empty groups."""
+        return {
+            g: mapped
+            for g, idxs in group_dict.items()
+            if len(mapped := self.remap(np.asarray(idxs))[0]) > 0
+        }
+
+
+# ======================================================================
 # Batch sampler
 # ======================================================================
 
@@ -307,49 +353,25 @@ class BulkSCSampler(Sampler[list[int]]):
         paired_sampling: bool = False,
         paired_every_n: int = 10,
     ):
-        # Account for the Subset resulting from random_split
-        # Since the Subset uses a local set of indices, different from the original dataset
+        # Account for the Subset resulting from random_split.
+        # SubsetReindexer builds a LUT once; each remap() call also returns a
+        # survival_mask aligned with the base pool — reused for label filtering.
+        sc_mask = bulk_mask = None
         if isinstance(dataset, Subset):
             self.dataset = dataset
             self.subset_base_indices = np.asarray(dataset.indices)
             self.base_dataset = dataset.dataset
 
-            # Vectorized base->subset mapping using a lookup array
-            max_idx = int(self.subset_base_indices.max()) + 1
-            base_to_subset = np.full(max_idx, -1, dtype=np.int64)
-            base_to_subset[self.subset_base_indices] = np.arange(len(self.subset_base_indices), dtype=np.int64)
-
-            # Vectorized bulk remapping
-            bulk_base = np.asarray(self.base_dataset.bulk_indices)
-            bulk_base = bulk_base[bulk_base < max_idx]  # clip out-of-bounds first
-            bulk_mapped = base_to_subset[bulk_base]
-            self.bulk_indices = bulk_mapped[bulk_mapped >= 0]
-
-            # Vectorized SC remapping
-            sc_base = np.asarray(self.base_dataset.sc_indices)
-            sc_base = sc_base[sc_base < max_idx]  # clip out-of-bounds first
-            sc_mapped = base_to_subset[sc_base]
-            self.sc_indices = sc_mapped[sc_mapped >= 0]
-
-            # Vectorized SC group remapping
-            if self.base_dataset.sc_group_to_indices is not None:
-                self.sc_group_to_indices = {}
-                for g, idxs in self.base_dataset.sc_group_to_indices.items():
-                    idxs = np.asarray(idxs)
-                    # Only remap indices that fall within the lookup array bounds
-                    idxs = idxs[idxs < max_idx]
-                    mapped = base_to_subset[idxs]
-                    self.sc_group_to_indices[g] = mapped[mapped >= 0]
-            else:
-                self.sc_group_to_indices = None
-
-            # Vectorized precomputed-PB remapping
-            pb_base = np.asarray(self.base_dataset.pb_indices)
-            pb_base = pb_base[pb_base < max_idx]
-            pb_mapped = base_to_subset[pb_base]
-            self.pb_indices = pb_mapped[pb_mapped >= 0]
-
-            del base_to_subset  # free the large lookup table (800MB at 100M rows)
+            reindexer = SubsetReindexer(self.subset_base_indices)
+            self.bulk_indices, bulk_mask = reindexer.remap(self.base_dataset.bulk_indices)
+            self.sc_indices,   sc_mask   = reindexer.remap(self.base_dataset.sc_indices)
+            self.pb_indices,   _         = reindexer.remap(self.base_dataset.pb_indices)
+            self.sc_group_to_indices = (
+                reindexer.remap_dict(self.base_dataset.sc_group_to_indices)
+                if self.base_dataset.sc_group_to_indices is not None
+                else None
+            )
+            del reindexer
 
         else:
             self.dataset = dataset
@@ -424,20 +446,11 @@ class BulkSCSampler(Sampler[list[int]]):
             if self.base_dataset.labels is None:
                 raise ValueError("Dataset does not have labels for balanced sampling.")
 
-            # Map labels to the current Subset if necessary
-            if isinstance(dataset, Subset):
-                subset_base_indices = np.asarray(self.subset_base_indices)
-                sc_mask   = np.isin(self.base_dataset.sc_indices,   subset_base_indices)
-                bulk_mask = np.isin(self.base_dataset.bulk_indices, subset_base_indices)
-                labels = {
-                    "sc":   self.base_dataset.labels["sc"][sc_mask],
-                    "bulk": self.base_dataset.labels["bulk"][bulk_mask],
-                }
-            else:
-                labels = {
-                    "sc":   self.base_dataset.labels["sc"],
-                    "bulk": self.base_dataset.labels["bulk"],
-                }
+            # survival_masks come from the SubsetReindexer above (None when not a Subset)
+            labels = {
+                "sc":   self.base_dataset.labels["sc"]   if sc_mask   is None else self.base_dataset.labels["sc"][sc_mask],
+                "bulk": self.base_dataset.labels["bulk"] if bulk_mask is None else self.base_dataset.labels["bulk"][bulk_mask],
+            }
 
             print("Computing label weights...")
             counts = {key: np.bincount(labels[key]) for key in labels}
