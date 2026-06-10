@@ -27,12 +27,12 @@ SCRIPT_ARGS=(
 
 if [[ "$USE_LOCAL" -eq 1 ]]; then
     echo "Running locally (no singularity)"
-    CUDA_LAUNCH_BLOCKING=1 python -u bulk_sc_data_preprocessing.py "${SCRIPT_ARGS[@]}"
+    python -u bulk_sc_data_preprocessing.py "${SCRIPT_ARGS[@]}"
 else
     echo "Running with singularity"
     srun singularity run \
-        --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/plot \
+        --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess \
         --bind /cluster/work/boeva/rquiles:/cluster/work/boeva/rquiles \
         /cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif \
-        CUDA_LAUNCH_BLOCKING=1 python -u bulk_sc_data_preprocessing.py "${SCRIPT_ARGS[@]}"
+        python -u bulk_sc_data_preprocessing.py "${SCRIPT_ARGS[@]}"
 fi

@@ -248,7 +248,6 @@ class BulkSCDataset(Dataset):
 # Subset reindexer
 # ======================================================================
 
-
 class SubsetReindexer:
     """Translates base-dataset indices to Subset-local indices via a dense LUT.
 
