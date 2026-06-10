@@ -67,6 +67,7 @@ class BulkSCDataset(Dataset):
         obs_columns: Optional[list[str]] = None,
         balance: Optional[bool] = False,
         balance_labels: Optional[Union[str, List[str]]] = None,
+        verbose: bool = False,
     ):
         super().__init__()
         self.data_dir = DatasetDir(data_dir)
@@ -77,14 +78,17 @@ class BulkSCDataset(Dataset):
         self.mapping = self._load_mapping()
         self.obs_columns = obs_columns
 
+        self.verbose = verbose
         self.modality_column = modality_column
         self.pb_group_column = pb_group_column
         self.paired_column = paired_column if (
             paired_column is not None and paired_column in self.obs.columns
         ) else None
 
-        # print(f"MemMap ({str(self.data_dir.memmap_path)}) rows: {self.memmap.number_of_rows()}")
-        # print(f"OBS parquet ({self.data_dir.obs_path}) rows: {self.obs.shape[0]}")
+        # if self.verbose:
+        #     print(f"MemMap ({str(self.data_dir.memmap_path)}) rows: {self.memmap.number_of_rows()}")
+        # if self.verbose:
+        #     print(f"OBS parquet ({self.data_dir.obs_path}) rows: {self.obs.shape[0]}")
         assert self.memmap.number_of_rows() == self.obs.shape[0]
         assert modality_column in self.obs.columns
 
@@ -151,7 +155,7 @@ class BulkSCDataset(Dataset):
         tags for the different conditions accounted for."""
         try: 
             exp, genes, _ = self.memmap.get_row_padded(
-                index, return_var_features=True, var_feature_names=[self.GENE_ID]
+                index, return_features=True, feature_vars=[self.GENE_ID]
             )
         except IndexError as e:
             obs_row = self.obs.iloc[index] if hasattr(self, "obs") else "N/A"
@@ -351,6 +355,7 @@ class BulkSCSampler(Sampler[list[int]]):
         epoch_size: Optional[int] = None,
         paired_sampling: bool = False,
         paired_every_n: int = 10,
+        verbose: bool = False,
     ):
         # Account for the Subset resulting from random_split.
         # SubsetReindexer builds a LUT once; each remap() call also returns a
@@ -390,6 +395,7 @@ class BulkSCSampler(Sampler[list[int]]):
         else:
             self.sc_groups = None
 
+        self.verbose = verbose
         self.batch_size = batch_size
         self.epoch_size = epoch_size
         self.bulk_ratio = bulk_ratio
@@ -407,15 +413,14 @@ class BulkSCSampler(Sampler[list[int]]):
         self.rng = np.random.default_rng()
 
         # Confirm batch composition
-        """
-        print("Batch composition at the sampler level:")
-        print("batch_size:", self.batch_size)
-        print("n_bulk:", self.n_bulk)
-        print("n_pb:", self.n_pb)
-        print("n_sc:", self.n_sc)
-        print("raw_batch_size:", self.raw_batch_size)
-        print("sum logical:", self.n_bulk + self.n_pb + self.n_sc)
-        """
+        # if self.verbose:
+        #     print("Batch composition at the sampler level:")
+        #     print("batch_size:", self.batch_size)
+        #     print("n_bulk:", self.n_bulk)
+        #     print("n_pb:", self.n_pb)
+        #     print("n_sc:", self.n_sc)
+        #     print("raw_batch_size:", self.raw_batch_size)
+        #     print("sum logical:", self.n_bulk + self.n_pb + self.n_sc)
 
         if self.n_bulk <= 0:
             raise ValueError(f"n_bulk_samples must be positive, got {self.n_bulk}.")
@@ -451,7 +456,8 @@ class BulkSCSampler(Sampler[list[int]]):
                 "bulk": self.base_dataset.labels["bulk"] if bulk_mask is None else self.base_dataset.labels["bulk"][bulk_mask],
             }
 
-            print("Computing label weights...")
+            if self.verbose:
+                print("Computing label weights...")
             counts = {key: np.bincount(labels[key]) for key in labels}
             label_weights = {
                 key: (weight_scaler * counts[key]) / (counts[key] + weight_scaler)
@@ -462,7 +468,8 @@ class BulkSCSampler(Sampler[list[int]]):
                 for key in label_weights
             }
 
-            print("Building class indices...")
+            if self.verbose:
+                print("Building class indices...")
             self.klass_indices = {}
             self.klass_offsets = {}
             # Key corresponds to modality in this case
@@ -471,7 +478,8 @@ class BulkSCSampler(Sampler[list[int]]):
                 self.klass_indices[key] = idx_t
                 self.klass_offsets[key] = off_t
             n_classes = {key: int(len(self.klass_offsets[key]) - 1) for key in self.klass_offsets}
-            print(f"Done: {len(self.klass_offsets)} modalities, max class label per modality: {n_classes}")
+            if self.verbose:
+                print(f"Done: {len(self.klass_offsets)} modalities, max class label per modality: {n_classes}")
 
         # Paired sampling — match precomputed PB rows to bulk rows via the "paired" obs column.
         # paired == 0  → unpaired;  paired == k (k > 0)  → belongs to pair k.
@@ -561,7 +569,8 @@ class BulkSCSampler(Sampler[list[int]]):
 
             # Sample paired or unpaired batches            
             if is_paired:
-                print("Sampling paired batch!")
+                if self.verbose:
+                    print("Sampling paired batch!")
                 yield self.sample_paired_batch()
             else:
                 yield self.sample_standard_batch()

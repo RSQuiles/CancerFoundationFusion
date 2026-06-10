@@ -85,6 +85,12 @@ class CancerFoundation(pl.LightningModule):
         esm_emb_finetune: bool = False,
         dat_columns: Optional[List[str]] = [],
         paired_alignment: bool = False,
+        verbose: bool = False,
+        weight_mvc: float = 1.0,
+        weight_contrastive: float = 1.0,
+        weight_paired: float = 1.0,
+        weight_agg: float = 1.0,
+        weight_dat: float = 1.0,
     ):
         """Initializes the CancerFoundation LightningModule.
 
@@ -176,6 +182,12 @@ class CancerFoundation(pl.LightningModule):
         self.esm_emb = esm_emb
         self.esm_emb_path = esm_emb_path
         self.esm_emb_finetune = esm_emb_finetune
+        self.verbose = verbose
+        self.weight_mvc = weight_mvc
+        self.weight_contrastive = weight_contrastive
+        self.weight_paired = weight_paired
+        self.weight_agg = weight_agg
+        self.weight_dat = weight_dat
 
         # Training configuration
         self.pad_token = "<pad>"
@@ -318,6 +330,12 @@ class CancerFoundation(pl.LightningModule):
                 vocab=self.vocab,
                 gene_embeddings_path=self.esm_emb_path if self.esm_emb else None,
                 gene_embeddings_freeze=not self.esm_emb_finetune,
+                verbose=self.verbose,
+                weight_mvc=self.weight_mvc,
+                weight_contrastive=self.weight_contrastive,
+                weight_paired=self.weight_paired,
+                weight_agg=self.weight_agg,
+                weight_dat=self.weight_dat,
             )
         if self.compile_model:
             self.model = torch.compile(self.model)
@@ -393,7 +411,7 @@ class CancerFoundation(pl.LightningModule):
             dict: The dictionary of losses for the validation batch.
         """
 
-        if batch_idx == 0:
+        if batch_idx == 0 and self.verbose:
             print(
                 f"Rank {self.trainer.global_rank}: Starting validation with {len(self.trainer.val_dataloaders)} batches"
             )

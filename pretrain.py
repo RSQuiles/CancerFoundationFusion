@@ -32,6 +32,7 @@ def train_model(
     log_interval: int,
     save_every: bool,
     ckpt_every_n_steps: Optional[int] = None,
+    verbose: bool = False,
 ):
     """
     Train the model using PyTorch Lightning Trainer
@@ -82,7 +83,8 @@ def train_model(
     # logger = None
     global_rank = int(os.environ.get("GLOBAL_RANK", "0"))
     if wandb_project and global_rank == 0:
-        print("\n\nSetting up WANDB logger...\n\n")
+        if verbose:
+            print("\n\nSetting up WANDB logger...\n\n")
         logger = WandbLogger(
             entity=wandb_entity,
             project=wandb_project,
@@ -280,6 +282,12 @@ def main(input_args=None):
             esm_emb=args.esm_emb,
             esm_emb_path=args.esm_emb_path,
             esm_emb_finetune=args.esm_finetune,
+            verbose=args.verbose,
+            weight_mvc=args.loss_weight_mvc,
+            weight_contrastive=args.loss_weight_contrastive,
+            weight_paired=args.loss_weight_paired,
+            weight_agg=args.loss_weight_agg,
+            weight_dat=args.loss_weight_dat,
         )
 
     if args.pretrained:
@@ -312,6 +320,7 @@ def main(input_args=None):
         log_interval=args.log_interval,
         save_every=args.save_every,
         ckpt_every_n_steps=args.ckpt_every_n_steps,
+        verbose=args.verbose,
     )
 
     # Return latest model checkpoint

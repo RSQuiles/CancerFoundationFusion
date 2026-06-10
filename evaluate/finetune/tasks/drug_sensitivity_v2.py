@@ -75,6 +75,51 @@ METADATA_ROWS = {
 ENSEMBL_ROWS = ("ensembl_gene_id", "gene_id")
 
 
+class PrecomputedEmbedder:
+    """Drop-in embedder backed by a pre-computed embedding matrix.
+
+    Satisfies the ``embed(adata, ...)`` interface used by ``_embed_adata`` so
+    that the runner and task code require no changes per job.  The embeddings
+    are looked up by ``adata.obs_names`` instead of running a transformer
+    forward pass.
+    """
+
+    def __init__(self, embeddings: pd.DataFrame) -> None:
+        # index = obs_name (cell-line ID), columns = embedding dimensions
+        self._embeddings = embeddings
+        self.embsize = embeddings.shape[1]
+
+    def eval(self) -> "PrecomputedEmbedder":
+        return self
+
+    def cuda(self) -> "PrecomputedEmbedder":
+        return self
+
+    def embed(self, adata: ad.AnnData, **kwargs) -> pd.DataFrame:
+        return self._embeddings.loc[adata.obs_names]
+
+
+def precompute_embeddings(embedder: Any, task_cfg: DictConfig) -> pd.DataFrame:
+    """Embed every cell line in the expression CSV once.
+
+    Returns a DataFrame indexed by obs_name with one column per embedding
+    dimension.  Pass the result to ``PrecomputedEmbedder`` so downstream
+    jobs can look up pre-computed vectors instead of re-running the model.
+    """
+    x_path = hydra.utils.to_absolute_path(str(getattr(task_cfg, "x_path", DEFAULT_X_PATH)))
+    full_adata = load_expression_csv(x_path)
+    batch_size = int(getattr(task_cfg, "embed_batch_size", 64))
+    normalized = bool(getattr(task_cfg, "normalized", True))
+
+    embedder.eval()
+    if torch.cuda.is_available() and hasattr(embedder, "cuda"):
+        embedder.cuda()
+
+    result = embedder.embed(full_adata, batch_size=batch_size, normalized=normalized)
+    df = result[0] if isinstance(result, tuple) else result
+    return df
+
+
 class DrugSensitivityV2EmbeddingDataset(Dataset):
     """Embedding dataset for one drug and one endpoint."""
 
@@ -469,5 +514,13 @@ def aggregate_drug_sensitivity_results(
         for col in numeric.columns:
             if not col.startswith("n_"):
                 out[f"{endpoint}_mean_{col}"] = float(numeric[col].mean())
+
+    # Cross-endpoint summary aliases for plot_ablation_benchmark.py compatibility
+    rho_vals = [v for k, v in out.items() if k.endswith("_mean_pearson_rho")]
+    if rho_vals:
+        out["mean_pearson_r"] = float(np.mean(rho_vals))
+    auroc_vals = [v for k, v in out.items() if k.endswith("_mean_auroc")]
+    if auroc_vals:
+        out["mean_auroc"] = float(np.mean(auroc_vals))
 
     return out

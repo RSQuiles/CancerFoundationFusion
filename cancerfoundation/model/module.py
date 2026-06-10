@@ -64,6 +64,12 @@ class TransformerModule(nn.Module):
         gene_embeddings_path: Optional[Union[str, os.PathLike, Path]] = None,
         gene_embeddings_freeze: bool = True,
         dat_columns: Optional[list[str]] = [],
+        verbose: bool = False,
+        weight_mvc: float = 1.0,
+        weight_contrastive: float = 1.0,
+        weight_paired: float = 1.0,
+        weight_agg: float = 1.0,
+        weight_dat: float = 1.0,
     ):
         """Initializes the TransformerModule.
 
@@ -118,6 +124,12 @@ class TransformerModule(nn.Module):
         self.vocab = vocab
         self.gene_embeddings_path = gene_embeddings_path
         self.gene_embeddings_freeze = gene_embeddings_freeze
+        self.verbose = verbose
+        self.weight_mvc = weight_mvc
+        self.weight_contrastive = weight_contrastive
+        self.weight_paired = weight_paired
+        self.weight_agg = weight_agg
+        self.weight_dat = weight_dat
 
         self.n_input_bins = n_input_bins
         # if self.input_emb_style not in ["category", "continuous", "scaling"]:
@@ -160,11 +172,10 @@ class TransformerModule(nn.Module):
             for cond_name, cond_num in self.conditions.items():
                 self.condition_encoders[cond_name] = ConditionEncoder(cond_num, d_model)
             # Check condition encoders
-            """
-            print("Condition Encoders Inspection:")
-            print(f"Conditions: {self.conditions}")
-            print(f"Encoders: {self.condition_encoders}")
-            """
+            # if self.verbose:
+            #     print("Condition Encoders Inspection:")
+            #     print(f"Conditions: {self.conditions}")
+            #     print(f"Encoders: {self.condition_encoders}")
 
             if do_dat:
                 self.grad_reverse_discriminators = nn.ModuleDict({})
@@ -319,6 +330,7 @@ class TransformerModule(nn.Module):
             vocab=self.vocab,
             weights_file=self.gene_embeddings_path,
             freeze=self.gene_embeddings_freeze,
+            verbose=self.verbose,
         )
 
     # def init_weights(self) -> None:
@@ -814,7 +826,7 @@ class TransformerModule(nn.Module):
                 loss_mvc = self.criterion(
                     mvc_preds_for_gen, gen_expr_target, positions_to_match
                 )
-                loss = loss + loss_mvc
+                loss = loss + self.weight_mvc * loss_mvc
                 loss_dict["loss_mvc"] = loss_mvc
 
             previous_cell_embs = output_dict["cell_emb"].detach()
@@ -871,7 +883,7 @@ class TransformerModule(nn.Module):
                 loss_mvc = self.criterion(
                     output_dict["mvc_output"], target_values, positions_to_match
                 )
-                loss = loss + loss_mvc
+                loss = loss + self.weight_mvc * loss_mvc
                 loss_dict["loss_mvc"] = loss_mvc
 
         # Resolve paired-batch flag before any loss blocks that branch on it
@@ -913,7 +925,7 @@ class TransformerModule(nn.Module):
                         .mean()
                     )
 
-                    loss += condition_loss / len(self.grad_reverse_discriminators)
+                    loss += self.weight_dat * condition_loss / len(self.grad_reverse_discriminators)
                     loss_dict["condition_" + condition] = condition_loss.detach() / len(
                         self.grad_reverse_discriminators
                     )
@@ -939,12 +951,13 @@ class TransformerModule(nn.Module):
                 modalities[tensors["is_sc_for_pb"] == 1] = -1
 
             loss_contrastive = self.modality_contrastive_loss(embeddings, modalities)
-            loss = loss + loss_contrastive
+            loss = loss + self.weight_contrastive * loss_contrastive
             loss_dict["loss_contrastive"] = loss_contrastive.detach()
 
         # Paired alignment loss: MSE between matched bulk–pseudobulk CLS embeddings
         if self.paired_alignment and is_paired_batch:
-            print("Applying paired alignment loss!")
+            if self.verbose:
+                print("Applying paired alignment loss!")
             modality = tensors["conditions"]["modality"]
             cell_emb = output_dict["cell_emb"]
             bulk_mask = modality == 0
@@ -954,7 +967,7 @@ class TransformerModule(nn.Module):
                 bulk_embs = cell_emb[bulk_mask][pb_bulk_local_idx]
                 pb_embs   = cell_emb[pb_mask]
                 loss_paired = self._paired_alignment_loss(bulk_embs, pb_embs)
-                loss = loss + loss_paired
+                loss = loss + self.weight_paired * loss_paired
                 loss_dict["loss_paired_alignment"] = loss_paired.detach()
 
         # Aggregation consistency loss: skip for paired batches (SC cells are unrelated to the PBs)
@@ -990,7 +1003,7 @@ class TransformerModule(nn.Module):
                 loss_agg = loss_agg + F.mse_loss(pb_embedding, sc_embedding_agg)
 
             if sc_assignment:
-                loss = loss + loss_agg
+                loss = loss + self.weight_agg * loss_agg
                 loss_dict["loss_agg"] = loss_agg.detach()
 
         loss_dict["total_loss"] = loss
@@ -1330,6 +1343,7 @@ class GeneEncoder(nn.Module):
         weights: Optional[Tensor] = None,
         weights_file: Optional[Union[str, os.PathLike, Path]] = None,
         freeze: bool = False,
+        verbose: bool = False,
     ):
         """Initializes the gene encoder.
 
@@ -1341,6 +1355,7 @@ class GeneEncoder(nn.Module):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.padding_idx = padding_idx
+        self.verbose = verbose
         self.enc_norm = nn.LayerNorm(embedding_dim)
 
         pretrained_weights = self._load_pretrained_weights(
@@ -1413,7 +1428,8 @@ class GeneEncoder(nn.Module):
                     if token is None:
                         continue
                     if token in weight_frame.index:
-                        # print(f"{token} in pretrained weights!")
+                        # if self.verbose:
+                        #     print(f"{token} in pretrained weights!")
                         row = np.asarray(weight_frame.loc[token], dtype=np.float32)
                         weight_tensor[idx] = torch.tensor(row, dtype=torch.float32)
                     elif token == "<cls>":

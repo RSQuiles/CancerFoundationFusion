@@ -27,7 +27,12 @@ from evaluate.finetune.tasks import (
 )
 from evaluate.finetune.downstream_task import TaskRegistry
 from evaluate.finetune.base_downstream_runner import BaseDownstreamRunner
-from evaluate.finetune.tasks.drug_sensitivity_v2 import aggregate_drug_sensitivity_results, make_drug_endpoint_configs
+from evaluate.finetune.tasks.drug_sensitivity_v2 import (
+    PrecomputedEmbedder,
+    aggregate_drug_sensitivity_results,
+    make_drug_endpoint_configs,
+    precompute_embeddings,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -149,12 +154,28 @@ def main(
     if task_name == "drug_sensitivity_v2":
         save_dir = Path(output_dir) if output_dir is not None else Path(cfg.finetune[task_name].pretrained_model_path).parent / "metrics"
         save_dir.mkdir(parents=True, exist_ok=True)
+
+        # Load the model once and embed all cell lines once; every job then
+        # performs a fast index lookup instead of re-running the transformer.
+        if embedder is None:
+            sys.path.insert(0, "../")
+            from cancerfoundation.model.model import CancerFoundation
+            checkpoint_path = str(cfg.finetune[task_name].pretrained_model_path)
+            real_embedder = CancerFoundation.load_from_checkpoint(checkpoint_path, strict=False)
+            real_embedder.eval()
+        else:
+            real_embedder = embedder
+        log.info("Pre-computing cell-line embeddings for drug sensitivity (runs once)...")
+        emb_df = precompute_embeddings(real_embedder, cfg.finetune[task_name])
+        log.info("Pre-computation done: %d cell lines x %d dims", *emb_df.shape)
+        precomputed = PrecomputedEmbedder(emb_df)
+
         results = []
         for job in make_drug_endpoint_configs(cfg.finetune[task_name]):
             job_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
             job_cfg.finetune[task_name].drug = job["drug"]
             job_cfg.finetune[task_name].endpoint = job["endpoint"]
-            runner = BaseDownstreamRunner(job_cfg, TaskRegistry.get_task(task_name), embedder=embedder)
+            runner = BaseDownstreamRunner(job_cfg, TaskRegistry.get_task(task_name), embedder=precomputed)
             result = runner.run()
             results.append(result)
             if runner.is_master:

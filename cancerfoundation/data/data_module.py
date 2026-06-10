@@ -149,6 +149,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         paired_sampling: bool = False,
         paired_every_n: int = 10,
         paired_column: Optional[str] = "paired",
+        verbose: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -177,6 +178,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         self.paired_sampling = paired_sampling
         self.paired_every_n = paired_every_n
         self.paired_column = paired_column
+        self.verbose = verbose
 
         # Setup token values based on embedding style
         if self.input_style == "category":
@@ -208,6 +210,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                 pb_group_column=self.pb_group_column,
                 pb_label=self.pb_label,
                 paired_column=self.paired_column,
+                verbose=self.verbose,
             )
 
         # Set condition cardinalities
@@ -256,10 +259,12 @@ class BulkSCDataModule(pl.LightningDataModule):
                 epoch_size=self.epoch_size,
                 paired_sampling=self.paired_sampling,
                 paired_every_n=self.paired_every_n,
+                verbose=self.verbose,
             )
 
         if self.trainer.world_size > 1:
-            print(f"Rank: {self.trainer.global_rank} init DistributedSampler.")
+            if self.verbose:
+                print(f"Rank: {self.trainer.global_rank} init DistributedSampler.")
             if not self.unified_fm:
                 sampler = DistributedSamplerWrapper(
                     sampler,
@@ -317,12 +322,14 @@ class BulkSCDataModule(pl.LightningDataModule):
                 bulk_ratio=self.hparams.bulk_ratio,
                 pb_ratio=self.hparams.pb_ratio,
                 n_sc_per_pseudobulk=self.hparams.n_sc_per_pseudobulk,
-                agg_consistency = self.agg_consistency,
-                paired_column = "paired" if self.paired_sampling else None,
+                agg_consistency=self.agg_consistency,
+                paired_column="paired" if self.paired_sampling else None,
+                verbose=self.verbose,
             )
 
         batch_size = self.batch_size if train else self.batch_size
-        print(f"Using {self.num_workers} workers.")
+        if self.verbose:
+            print(f"Using {self.num_workers} workers.")
         if not self.unified_fm:
             return DataLoader(
                 dataset,

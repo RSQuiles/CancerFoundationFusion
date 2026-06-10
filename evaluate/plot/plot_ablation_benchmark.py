@@ -57,7 +57,7 @@ TASK_PRIMARY_METRIC: dict[str, str] = {
     "deconv":           "mae",
     "survival":         "c_index",
     "proteome_pred":    "mean_pearson_r",
-    "drug_sensitivity": "mean_pearson_r",
+    "drug_sensitivity_v2": "mean_pearson_r",
 }
 
 # Metrics where lower is better — shown with a ↓ indicator.
@@ -78,7 +78,7 @@ TASK_LABELS: dict[str, str] = {
     "deconv":           "Cell-Type\nDeconvolution",
     "survival":         "Survival\nPrediction",
     "proteome_pred":    "Proteome\nPrediction",
-    "drug_sensitivity": "Drug Sensitivity\nPrediction",
+    "drug_sensitivity_v2": "Drug Sensitivity\nPrediction",
 }
 
 METRIC_LABELS: dict[str, str] = {
@@ -92,6 +92,7 @@ METRIC_LABELS: dict[str, str] = {
     "c_index":           "C-index",
     "mean_pearson_r":    "Mean Pearson r",
     "median_pearson_r":  "Median Pearson r",
+    "mean_auroc":        "Mean AUROC",
 }
 
 # Background colour for the primary-metric subplot.
@@ -132,7 +133,11 @@ def collect_metrics(ablation_dir: Path) -> dict[str, dict[str, dict[str, float]]
             task_name = jf.stem[len("results_"):]
             try:
                 with open(jf) as fh:
-                    results[model_name][task_name] = json.load(fh)
+                    data = json.load(fh)
+                    # Unwrap {"jobs": [...], "aggregate": {...}} format (drug_sensitivity_v2)
+                    if isinstance(data, dict) and "aggregate" in data:
+                        data = data["aggregate"]
+                    results[model_name][task_name] = data
             except Exception as exc:
                 print(f"[warning] Could not read {jf}: {exc}", file=sys.stderr)
 

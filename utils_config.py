@@ -586,6 +586,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Print debug information during training (batch composition, paired pipeline, etc.).",
+    )
+
+    parser.add_argument("--loss-weight-mvc",        type=float, default=1.0, help="Weight for MVC loss.")
+    parser.add_argument("--loss-weight-contrastive", type=float, default=1.0, help="Weight for contrastive loss.")
+    parser.add_argument("--loss-weight-paired",      type=float, default=1.0, help="Weight for paired alignment loss.")
+    parser.add_argument("--loss-weight-agg",         type=float, default=1.0, help="Weight for aggregation consistency loss.")
+    parser.add_argument("--loss-weight-dat",         type=float, default=1.0, help="Weight for DAT condition loss.")
+
     return parser
 
 CONFIG_SECTIONS = {"trainer", "model", "features", "data"}

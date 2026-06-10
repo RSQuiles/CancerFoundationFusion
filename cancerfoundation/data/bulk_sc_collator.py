@@ -52,6 +52,7 @@ class BulkSCCollator(AnnDataCollator):
     match_fn: Optional[Callable] = None
     agg_consistency: bool = False # Determines whether to include the sc_for_pb samples in the batch
     paired_column: Optional[str] = None  # obs column carrying pair IDs; enables is_paired_batch detection
+    verbose: bool = False
 
     def __post_init__(self):
         """
@@ -128,7 +129,8 @@ class BulkSCCollator(AnnDataCollator):
                 and set(nonzero_pb) == set(nonzero_bulk)
                 and all(p == b for p, b in zip(pb_pair_ids, bulk_pair_ids))):
                 is_paired = True
-                print(f"Sampled paired indexes:\n- PB: {pb_pair_ids}\n- Bulk: {bulk_pair_ids}")
+                if self.verbose:
+                    print(f"Sampled paired indexes:\n- PB: {pb_pair_ids}\n- Bulk: {bulk_pair_ids}")
 
         pseudobulk_samples: List[Dict[str, Any]] = []
         sc_pseudobulk_index: List[int] = []
