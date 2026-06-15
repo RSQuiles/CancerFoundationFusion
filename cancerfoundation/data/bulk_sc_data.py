@@ -85,10 +85,10 @@ class BulkSCDataset(Dataset):
             paired_column is not None and paired_column in self.obs.columns
         ) else None
 
-        # if self.verbose:
-        #     print(f"MemMap ({str(self.data_dir.memmap_path)}) rows: {self.memmap.number_of_rows()}")
-        # if self.verbose:
-        #     print(f"OBS parquet ({self.data_dir.obs_path}) rows: {self.obs.shape[0]}")
+        if self.verbose:
+            print(f"MemMap ({str(self.data_dir.memmap_path)}) rows: {self.memmap.number_of_rows()}")
+        if self.verbose:
+            print(f"OBS parquet ({self.data_dir.obs_path}) rows: {self.obs.shape[0]}")
         assert self.memmap.number_of_rows() == self.obs.shape[0]
         assert modality_column in self.obs.columns
 
@@ -154,7 +154,7 @@ class BulkSCDataset(Dataset):
         """Return a single sample with ``genes``, ``expressions``, and a
         tags for the different conditions accounted for."""
         try: 
-            exp, genes, _ = self.memmap.get_row_padded(
+            exp, genes = self.memmap.get_row_padded(
                 index, return_features=True, feature_vars=[self.GENE_ID]
             )
         except IndexError as e:

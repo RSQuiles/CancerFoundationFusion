@@ -1,13 +1,13 @@
 #!/bin/bash -l
-#SBATCH --time=4:00:00
+#SBATCH --time=20:00:00
 #SBATCH --job-name=plot_umap
 #SBATCH --output=./slurm_outputs/%x_%j.out
-#SBATCH --partition=gpu
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:rtx4090:1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem-per-cpu=64G
 
+# --gres=gpu:rtx4090:1
+# --partition=gpu
 
 set -euo pipefail
 
@@ -22,8 +22,8 @@ for arg in "$@"; do
 done
 
 SCRIPT_ARGS=(
-    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison
-    --adata-dir /cluster/work/boeva/rquiles/data/cellxgene_bulk/pipeline_ready/h5ads
+    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_aggfix
+    --adata-dir /cluster/work/boeva/rquiles/data/paired_dataset/pipeline_ready/h5ads
     --color tissue_general assay
     --sample-size 75_000
     --skip-unknown

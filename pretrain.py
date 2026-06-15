@@ -210,6 +210,7 @@ def main(input_args=None):
         paired_sampling=args.paired_sampling,
         paired_every_n=args.paired_every_n,
         paired_column=args.paired_column,
+        verbose=args.verbose,
     )
     datamodule.setup(stage="fit")
 

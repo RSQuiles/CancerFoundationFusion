@@ -131,15 +131,31 @@ def collect_metrics(ablation_dir: Path) -> dict[str, dict[str, dict[str, float]]
 
         for jf in json_files:
             task_name = jf.stem[len("results_"):]
-            try:
-                with open(jf) as fh:
-                    data = json.load(fh)
-                    # Unwrap {"jobs": [...], "aggregate": {...}} format (drug_sensitivity_v2)
-                    if isinstance(data, dict) and "aggregate" in data:
-                        data = data["aggregate"]
-                    results[model_name][task_name] = data
-            except Exception as exc:
-                print(f"[warning] Could not read {jf}: {exc}", file=sys.stderr)
+            if task_name in TASK_LABELS.keys():
+                try:
+                    with open(jf) as fh:
+                        data = json.load(fh)
+                        # Deal with drug_sensitivity_v2
+                        if task_name == "drug_sensitivity_v2":
+                            if isinstance(data, dict) and "aggregate" in data:
+                                data = data["aggregate"]
+                            # Separate Cmax classification and IC50 regression
+                            data_cmax = {
+                                metric.replace("cmax_classification_mean_", "") : value
+                                for metric, value in data.items()
+                                if "cmax_classification_mean_" in metric and value > 0
+                            }
+                            data_ic50 = {
+                                metric.replace("ic50_regression_mean_", "") : value
+                                for metric, value in data.items()
+                                if "ic50_regression_mean_" in metric and value > 0
+                            }
+                            results[model_name]["Drug Sensitivity Prediction (Cmax Classification)"] = data_cmax
+                            results[model_name]["Drug Sensitivity Prediction (IC50 Regression)"] = data_ic50
+                        else :
+                            results[model_name][task_name] = data
+                except Exception as exc:
+                    print(f"[warning] Could not read {jf}: {exc}", file=sys.stderr)
 
     return results
 
@@ -426,9 +442,9 @@ def main() -> None:
     n_models = len(results)
     n_tasks  = len({t for m in results.values() for t in m})
     print(f"Found {n_models} model(s) and {n_tasks} task(s).")
-    for model, tasks in results.items():
-        for task, metrics in tasks.items():
-            print(f"  {model}/{task}: {metrics}")
+    # for model, tasks in results.items():
+    #     for task, metrics in tasks.items():
+    #         print(f"  {model}/{task}: {metrics}")
 
     figsize = tuple(args.figsize) if args.figsize else None
     plot_benchmark(

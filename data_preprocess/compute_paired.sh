@@ -11,5 +11,5 @@ conda activate bulkFM
 
 python -u pseudobulk_paired_generation.py \
     --input-h5ad /cluster/work/boeva/bulkFM/data/processed/paired_samples.h5ad \
-    --output-dir /cluster/work/boeva/rquiles/data/paired_dataset \
+    --output-dir /cluster/work/boeva/rquiles/data/paired_cpm \
     --extra-obs-columns dataset \

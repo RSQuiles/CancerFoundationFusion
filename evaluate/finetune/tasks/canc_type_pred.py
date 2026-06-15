@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 #
 # Data: TCGA (The Cancer Genome Atlas)
 #   Default cohorts: BRCA, BLCA, GBM, LGG, LUAD, UCEC (configurable).
-#   - Single h5ad file with obs column 'project_id' (e.g. "TCGA-BRCA").
+#   - Single h5ad file with obs column 'project' (e.g. "TCGA-BRCA").
 #
 #   GBM and LGG are optionally merged into a single "GBM_LGG" class (default:
 #   True) because they represent histologically related glioma subtypes and the
@@ -117,19 +117,19 @@ class CancTypeClassTask(DownstreamTask):
         log.info(f"Loaded TCGA data: {adata.shape}")
 
         # Filter by cohorts
-        if "project_id" not in adata.obs:
-            raise ValueError("TCGA data must have 'project_id' in obs")
+        if "project" not in adata.obs:
+            raise ValueError("TCGA data must have 'project' in obs")
 
         cohorts = list(getattr(task_cfg, "cohorts", DEFAULT_COHORTS))
-        selected_projects = {f"TCGA-{cohort}" for cohort in cohorts}
-        keep_mask = adata.obs["project_id"].astype(str).isin(selected_projects).to_numpy()
+        selected_projects = cohorts
+        keep_mask = adata.obs["project"].astype(str).isin(selected_projects).to_numpy()
         adata = adata[keep_mask].copy()
 
         if adata.n_obs == 0:
             raise ValueError(f"No samples found for cohorts: {cohorts}")
 
         # Add cancer type annotation
-        adata.obs["cancer_type"] = adata.obs["project_id"].astype(str).str.removeprefix("TCGA-")
+        adata.obs["cancer_type"] = adata.obs["project"].astype(str)
         adata.obs_names_make_unique()
         adata.var_names_make_unique()
 

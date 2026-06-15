@@ -31,7 +31,7 @@ finetune:
     dropout: 0.1
 
     # ===== TRAINING HYPERPARAMETERS =====
-    epochs: 30
+    epochs: 100
     batch_size: 64
     embed_batch_size: 64
     normalized: true

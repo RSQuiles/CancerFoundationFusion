@@ -1,21 +1,25 @@
 #!/bin/bash -l
-#SBATCH --time=4:00:00
+#SBATCH --time=16:00:00
 #SBATCH --job-name=benchmark
 #SBATCH --output=./slurm_outputs/%x_%j.out
-#SBATCH --partition=gpu
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:rtx4090:1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=32G
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:rtx4090:1
+
+# Include with preceding #SBATCH if GPU wanted
+# --partition=gpu
+# --gres=gpu:rtx4090:1
 
 set -euo pipefail
 
 # Default: use singularity
 USE_LOCAL=0
 # Set to 1 to run SurvBoard metric evaluation after downstream tasks
-RUN_SURV=0
+RUN_SURV=1
 # Set to 1 to plot the benchmark results
-PLOT=0
+PLOT=1
 
 # Parse args
 for arg in "$@"; do
@@ -31,17 +35,17 @@ for arg in "$@"; do
 done
 
 # Must match survival_pred_config.yaml
-ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison"
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_aggfix"
 
 SCRIPT_ARGS=(
     --ablation-dir $ABLATION_DIR
-    --tasks drug_sensitivity_v2
+    --tasks canc_type_class survival
     --pca-baseline
     --config-dir /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/configs
 )
 
-echo "=== GPU status ==="
-nvidia-smi
+# echo "=== GPU status ==="
+# nvidia-smi
 
 # ---- Run downstream tasks -------------------------------- #
 echo "=== Running Downstream tasks ==="

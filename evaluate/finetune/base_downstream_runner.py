@@ -432,7 +432,7 @@ class BaseDownstreamRunner:
             self.optimizer.step()
             self.optimizer.zero_grad(set_to_none=True)
 
-            running_loss += loss.item()
+            running_loss += loss.detach().item()
 
             # Task-specific metric computation during training
             step_metrics = self._compute_train_metrics(logits, targets)

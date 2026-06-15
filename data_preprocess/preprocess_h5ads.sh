@@ -33,6 +33,6 @@ else
     srun singularity run \
         --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess \
         --bind /cluster/work/boeva/rquiles:/cluster/work/boeva/rquiles \
-        /cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif \
+        /cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif \
         python -u bulk_sc_data_preprocessing.py "${SCRIPT_ARGS[@]}"
 fi

@@ -117,7 +117,7 @@ def _submit_runs_to_slurm(
 		project_root = usr_dir / "CancerFoundationFusion"
 		current_dir = project_root / "ablate"
 		train_dir = Path(run_model_cfg["data"]["train_path"])
-		singularity_image = "/cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif"
+		singularity_image = "/cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif"
 
 		worker_inner_cmd = shlex.join(
 			[

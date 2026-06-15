@@ -569,7 +569,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dat-start-step",
         type=int,
-        default=100_000,
+        default=50_000,
         help=(
             "Global training step at which DAT becomes active. "
             "0 = active from the start (default, backward-compatible)."

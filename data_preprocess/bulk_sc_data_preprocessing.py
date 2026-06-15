@@ -211,10 +211,10 @@ def h5_to_h5ad(
             # Store raw counts
             X_counts = X_dense.copy()
 
-            # Library-size normalize (CP10K) to target_sum=1e4, then log1p
+            # Library-size normalize (CP10K or CPM) to target_sum=1e4, then log1p
             library_size = X_dense.sum(axis=1, keepdims=True)
             library_size[library_size == 0] = 1.0
-            X_dense = X_dense / library_size * 1e4
+            X_dense = X_dense / library_size * 1e6
             X_dense = np.log1p(X_dense)
 
             X_sparse = sp.csr_matrix(X_dense.astype(np.float32))

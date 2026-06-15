@@ -94,6 +94,7 @@ def plot_paired_umap(
     cell_line_col: str,
     title: str | None = None,
     max_legend_cols: int = 4,
+    show_sc: bool = True,
 ) -> plt.Figure:
     """Render the three-modality UMAP coloured by cell line."""
     umap_coords = combined.obsm["X_umap"]
@@ -107,14 +108,12 @@ def plot_paired_umap(
     palette = _cell_line_palette(paired_cls)
     colors = np.array([palette[cl] for cl in cell_line], dtype=np.float64)
 
-    # Reduce alpha for SC scatter so larger markers remain visible
-    sc_colors = colors[sc_mask].copy()
-    sc_colors[:, 3] = 0.35
-
     fig, ax = plt.subplots(figsize=(9.0, 7.0))
 
-    # SC cells — small x
-    if sc_mask.any():
+    # SC cells — small x (only when show_sc is True)
+    if show_sc and sc_mask.any():
+        sc_colors = colors[sc_mask].copy()
+        sc_colors[:, 3] = 0.35
         ax.scatter(
             umap_coords[sc_mask, 0], umap_coords[sc_mask, 1],
             c=sc_colors,
@@ -175,9 +174,13 @@ def plot_paired_umap(
     ax.add_artist(cl_legend)
 
     # ---- Modality marker legend ----
-    marker_handles = [
-        mlines.Line2D([], [], marker="x", color="grey", markersize=6, alpha=0.5,
-                      linestyle="None", label="SC cell"),
+    marker_handles = []
+    if show_sc:
+        marker_handles.append(
+            mlines.Line2D([], [], marker="x", color="grey", markersize=6, alpha=0.5,
+                          linestyle="None", label="SC cell"),
+        )
+    marker_handles += [
         mlines.Line2D([], [], marker="o", color="grey", markersize=7, alpha=0.9,
                       markeredgecolor="black", markeredgewidth=0.4,
                       linestyle="None", label="bulk (per cell line)"),
@@ -240,15 +243,32 @@ def _umap_and_plot_one(
     min_dist: float,
     seed: int,
     dpi: int,
+    show_sc: bool = True,
 ) -> None:
     """Run UMAP on obsm_key, save the plot and persist UMAP coords under X_umap_{prefix}."""
+    if show_sc:
+        plot_data = combined
+    else:
+        plot_data = combined[combined.obs["modality"] != "sc"].copy()
+        print(f"  --no-sc: dropped {(combined.obs['modality'] == 'sc').sum()} SC cells from UMAP")
+
     print("Computing UMAP...")
-    sc.pp.neighbors(combined, use_rep=obsm_key, n_neighbors=min(n_neighbors, combined.n_obs - 1))
-    sc.tl.umap(combined, min_dist=min_dist, random_state=seed)
-    combined.obsm[f"X_umap_{prefix}"] = combined.obsm["X_umap"].copy()
+    sc.pp.neighbors(plot_data, use_rep=obsm_key, n_neighbors=min(n_neighbors, plot_data.n_obs - 1))
+    sc.tl.umap(plot_data, min_dist=min_dist, random_state=seed)
+    plot_data.obsm[f"X_umap_{prefix}"] = plot_data.obsm["X_umap"].copy()
+
+    if not show_sc:
+        # Write UMAP coords back into combined (SC rows stay NaN)
+        umap_full = np.full((combined.n_obs, 2), np.nan, dtype=np.float32)
+        idx = combined.obs_names.get_indexer(plot_data.obs_names)
+        umap_full[idx] = plot_data.obsm["X_umap"]
+        combined.obsm[f"X_umap_{prefix}"] = umap_full
 
     print("Plotting...")
-    fig = plot_paired_umap(combined, paired_cls=paired_cls, cell_line_col=cell_line_col, title=prefix)
+    fig = plot_paired_umap(
+        plot_data, paired_cls=paired_cls, cell_line_col=cell_line_col,
+        title=prefix, show_sc=show_sc,
+    )
     out_png = out_dir / f"{prefix}_paired_umap.png"
     fig.savefig(out_png, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
@@ -275,6 +295,7 @@ def run(
     max_sc_per_line: int | None,
     device: str | None,
     dpi: int,
+    show_sc: bool = True,
 ) -> None:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -296,7 +317,7 @@ def run(
         model = _load_model(ckpt, device=device)
         combined.obsm["X_cf"] = _embed(model, combined, batch_size=batch_size, normalized=normalized)
 
-    _umap_and_plot_one(combined, paired_cls, cell_line_col, "X_cf", out_dir, out_prefix, n_neighbors, min_dist, seed, dpi)
+    _umap_and_plot_one(combined, paired_cls, cell_line_col, "X_cf", out_dir, out_prefix, n_neighbors, min_dist, seed, dpi, show_sc=show_sc)
 
     out_h5ad = out_dir / f"{out_prefix}_paired_umap.h5ad"
     combined.write_h5ad(out_h5ad)
@@ -316,6 +337,7 @@ def run_ablation(
     seed: int,
     device: str | None,
     dpi: int,
+    show_sc: bool = True,
 ) -> None:
     """Embed with every checkpoint in ablation_dir, generate one UMAP plot per checkpoint."""
     out_dir = Path(out_dir)
@@ -351,7 +373,7 @@ def run_ablation(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        _umap_and_plot_one(combined, paired_cls, cell_line_col, obsm_key, out_dir, prefix, n_neighbors, min_dist, seed, dpi)
+        _umap_and_plot_one(combined, paired_cls, cell_line_col, obsm_key, out_dir, prefix, n_neighbors, min_dist, seed, dpi, show_sc=show_sc)
 
     out_h5ad = out_dir / "ablation_combined.h5ad"
     combined.write_h5ad(out_h5ad)
@@ -387,6 +409,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Max SC cells to keep per cell line (randomly subsampled; default: all).")
     p.add_argument("--device", default=None, help="Torch device: cuda, cpu, cuda:0, … (auto).")
     p.add_argument("--dpi", type=int, default=200, help="Output image DPI.")
+    p.add_argument("--no-sc", action="store_true",
+                   help="Exclude SC cells from UMAP computation and plot (bulk + pseudobulk only).")
     return p
 
 
@@ -410,6 +434,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             seed=args.seed,
             device=args.device,
             dpi=args.dpi,
+            show_sc=not args.no_sc,
         )
     else:
         run(
@@ -432,6 +457,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             max_sc_per_line=args.max_sc_per_line,
             device=args.device,
             dpi=args.dpi,
+            show_sc=not args.no_sc,
         )
     return 0
 

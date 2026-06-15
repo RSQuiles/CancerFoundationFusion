@@ -454,6 +454,7 @@ def _generate_pseudobulk_adata(
     agg_method: str = "mean",
     n_pb: int | None = None,
     seed: int = 0,
+    is_log1p: bool = True,
 ) -> sc.AnnData | None:
     """Aggregate SC expression within tissue groups to create pseudobulk profiles.
 
@@ -498,7 +499,17 @@ def _generate_pseudobulk_adata(
         pool    = group_to_idx[g]
         sel_idx = rng.choice(pool, size=n_sc_per_pb, replace=len(pool) < n_sc_per_pb)
         expr    = X[sel_idx].toarray() if is_sparse else np.asarray(X[sel_idx])
-        pb_rows.append(expr.sum(axis=0) if agg_method == "sum" else expr.mean(axis=0))
+        # Map back to linear (count-like) space before aggregating
+        if is_log1p:
+            expr = np.expm1(expr)
+        agg = expr.sum(axis=0) if agg_method == "sum" else expr.mean(axis=0)
+        # Re-normalize: CP10K + log1p (matches downstream expectations)
+        if is_log1p:
+            total = agg.sum()
+            if total > 0:
+                agg = agg / total * 1e4
+            agg = np.log1p(agg)
+        pb_rows.append(agg)
 
     pb_X = np.array(pb_rows, dtype=np.float32)
     pb_obs = pd.DataFrame(
