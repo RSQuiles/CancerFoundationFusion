@@ -356,6 +356,7 @@ class BulkSCSampler(Sampler[list[int]]):
         paired_sampling: bool = False,
         paired_every_n: int = 10,
         verbose: bool = False,
+        seed: Optional[int] = None,
     ):
         # Account for the Subset resulting from random_split.
         # SubsetReindexer builds a LUT once; each remap() call also returns a
@@ -409,8 +410,9 @@ class BulkSCSampler(Sampler[list[int]]):
         self.n_sc_per_pb = n_sc_per_pb
         self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pb
 
-        # Define RNG
-        self.rng = np.random.default_rng()
+        # Define RNG — seeded for reproducibility and correct DDP sharding
+        self._seed = seed
+        self.rng = np.random.default_rng(seed)
 
         # Confirm batch composition
         # if self.verbose:
@@ -552,6 +554,13 @@ class BulkSCSampler(Sampler[list[int]]):
 
     def __len__(self) -> int:
         return self._n_batches
+
+    def set_epoch(self, epoch: int) -> None:
+        """Reseed the RNG so each epoch produces a different shuffle while
+        remaining identical across all DDP ranks (given the same base seed)."""
+        self.rng = np.random.default_rng(
+            self._seed + epoch if self._seed is not None else None
+        )
 
     def __iter__(self):
         """

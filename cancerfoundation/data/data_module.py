@@ -1,3 +1,4 @@
+import torch
 import pytorch_lightning as pl
 from typing import List, Optional
 from typing import Iterator
@@ -5,7 +6,13 @@ from operator import itemgetter
 import math
 import itertools
 from .data_sampler import get_balanced_sampler
-from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, random_split
+from torch.utils.data import (
+    DataLoader,
+    RandomSampler,
+    SequentialSampler,
+    BatchSampler,
+    random_split,
+)
 
 from .data_collator import AnnDataCollator
 from .dataset import SingleCellDataset
@@ -224,7 +231,9 @@ class BulkSCDataModule(pl.LightningDataModule):
 
         # Create train/validation split
         self.train_dataset, self.val_dataset = random_split(
-            self.dataset, [1 - 0.05, 0.05]
+            self.dataset,
+            [0.95, 0.05],
+            generator=torch.Generator().manual_seed(42),
         )
         self.vocab = self.dataset.vocab
 
@@ -249,18 +258,28 @@ class BulkSCDataModule(pl.LightningDataModule):
         else:
             from .bulk_sc_data import BulkSCSampler
 
-            sampler = BulkSCSampler(
-                dataset=dataset,
-                batch_size=self.batch_size,
-                bulk_ratio=self.hparams.bulk_ratio,
-                pb_ratio=self.hparams.pb_ratio,
-                n_sc_per_pb=self.hparams.n_sc_per_pseudobulk,
-                balance=self.balance,
-                epoch_size=self.epoch_size,
-                paired_sampling=self.paired_sampling,
-                paired_every_n=self.paired_every_n,
-                verbose=self.verbose,
-            )
+            if train:
+                sampler = BulkSCSampler(
+                    dataset=dataset,
+                    batch_size=self.batch_size,
+                    bulk_ratio=self.hparams.bulk_ratio,
+                    pb_ratio=self.hparams.pb_ratio,
+                    n_sc_per_pb=self.hparams.n_sc_per_pseudobulk,
+                    balance=self.balance,
+                    epoch_size=self.epoch_size,
+                    paired_sampling=self.paired_sampling,
+                    paired_every_n=self.paired_every_n,
+                    verbose=self.verbose,
+                    seed=0,
+                )
+            else:
+                # Val: deterministic sequential batches so all ranks see
+                # consistent, non-overlapping partitions of the val set.
+                sampler = BatchSampler(
+                    SequentialSampler(dataset),
+                    batch_size=self.batch_size,
+                    drop_last=True,
+                )
 
         if self.trainer.world_size > 1:
             if self.verbose:
@@ -339,6 +358,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                 drop_last=True,
                 num_workers=self.num_workers,
                 pin_memory=True,
+                persistent_workers=self.num_workers > 0,
             )
         else:
             return DataLoader(
@@ -347,6 +367,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                 collate_fn=collator,
                 num_workers=self.num_workers,
                 pin_memory=True,
+                persistent_workers=self.num_workers > 0,
             )
 
     def train_dataloader(self):
