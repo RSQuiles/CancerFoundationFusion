@@ -1,11 +1,11 @@
 #!/bin/bash -l
 #SBATCH --job-name=test_run
-#SBATCH --output=./outputs/%x_%j.out
-#SBATCH --time=04:00:00
+#SBATCH --output=./slurm_outputs/%x_%j.out
+#SBATCH --time=00:10:00
 #SBATCH --partition=gpu
-#SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:rtx4090:1
-#SBATCH --cpus-per-task=4
+#SBATCH --ntasks-per-node=2
+#SBATCH --gres=gpu:rtx4090:2
+#SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=16G
 
 set -e
@@ -20,20 +20,25 @@ for arg in "$@"; do
     fi
 done
 
+# DDP setting
+export MASTER_ADDR=127.0.0.1
+export MASTER_PORT=$((20000 + RANDOM % 10000))
+# export NCCL_SOCKET_FAMILY=AF_INET
+
 SCRIPT_ARGS=(
     --config ./config_test.json
 )
 
 if [[ "$USE_LOCAL" -eq 1 ]]; then
-    echo "Running locally (no singularity)"
-    CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py "${SCRIPT_ARGS[@]}"
+    echo "Running locally"
+    python -u ../pretrain.py "${SCRIPT_ARGS[@]}"
 else
     echo "Running with singularity"
     srun singularity run \
-        --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/plot \
+        --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/submits_biomed \
         --bind /cluster/work/boeva/rquiles:/cluster/work/boeva/rquiles \
-        --nv /cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif \
-        CUDA_LAUNCH_BLOCKING=1 python -u ../pretrain.py "${SCRIPT_ARGS[@]}"
+        --nv /cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif \
+        python -u ../pretrain.py "${SCRIPT_ARGS[@]}"
 fi
 
 

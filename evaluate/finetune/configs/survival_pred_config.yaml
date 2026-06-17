@@ -23,7 +23,7 @@ finetune:
     survboard_data_dir: /cluster/work/boeva/bulkFM/data/processed/survboard
 
     # Ablation directory where results will be written to
-    ablation_dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison
+    ablation_dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_aggfix
 
     # Cohorts and cancer types to include.  Every combination that has a
     # matching parquet file is loaded and concatenated before training.

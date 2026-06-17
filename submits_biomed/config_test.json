@@ -1,9 +1,9 @@
 {
   "trainer": {
-    "gpus": 0,
+    "gpus": 2,
     "num_workers": 1,
     "precision": 32,
-    "strategy": "auto",
+    "strategy": "ddp",
     "epochs": 1,
     "seed": 0,
     "val_check_interval": 0.5,

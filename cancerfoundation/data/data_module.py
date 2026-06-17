@@ -271,6 +271,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                     paired_every_n=self.paired_every_n,
                     verbose=self.verbose,
                     seed=0,
+                    world_size=self.trainer.world_size
                 )
             else:
                 # Val: deterministic sequential batches so all ranks see

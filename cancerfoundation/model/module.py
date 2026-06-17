@@ -827,7 +827,7 @@ class TransformerModule(nn.Module):
                     mvc_preds_for_gen, gen_expr_target, positions_to_match
                 )
                 loss = loss + self.weight_mvc * loss_mvc
-                loss_dict["loss_mvc"] = loss_mvc
+                loss_dict["loss_mvc"] = loss_mvc * self.weight_mvc
 
             previous_cell_embs = output_dict["cell_emb"].detach()
             preds = self.generative_forward(
@@ -884,7 +884,7 @@ class TransformerModule(nn.Module):
                     output_dict["mvc_output"], target_values, positions_to_match
                 )
                 loss = loss + self.weight_mvc * loss_mvc
-                loss_dict["loss_mvc"] = loss_mvc
+                loss_dict["loss_mvc"] = loss_mvc * self.weight_mvc
 
         # Resolve paired-batch flag before any loss blocks that branch on it
         is_paired_batch = tensors.get("is_paired_batch", False)
@@ -926,9 +926,7 @@ class TransformerModule(nn.Module):
                     )
 
                     loss += self.weight_dat * condition_loss / len(self.grad_reverse_discriminators)
-                    loss_dict["condition_" + condition] = condition_loss.detach() / len(
-                        self.grad_reverse_discriminators
-                    )
+                    loss_dict["condition_" + condition] = condition_loss.detach() / len(self.grad_reverse_discriminators) * self.weight_dat
 
         # Contrastive loss: if enabled, it brings the pseudobulk and real bulk samples closer together in the embedding space.
         # Skipped for paired batches: the all-positive InfoNCE treats every (bulk[i], pb[j])
@@ -952,7 +950,7 @@ class TransformerModule(nn.Module):
 
             loss_contrastive = self.modality_contrastive_loss(embeddings, modalities)
             loss = loss + self.weight_contrastive * loss_contrastive
-            loss_dict["loss_contrastive"] = loss_contrastive.detach()
+            loss_dict["loss_contrastive"] = loss_contrastive.detach() * self.weight_contrastive
 
         # Paired alignment loss: MSE between matched bulk–pseudobulk CLS embeddings
         if self.paired_alignment and is_paired_batch:
@@ -968,7 +966,7 @@ class TransformerModule(nn.Module):
                 pb_embs   = cell_emb[pb_mask]
                 loss_paired = self._paired_alignment_loss(bulk_embs, pb_embs)
                 loss = loss + self.weight_paired * loss_paired
-                loss_dict["loss_paired_alignment"] = loss_paired.detach()
+                loss_dict["paired_alignment_loss"] = loss_paired.detach() * self.weight_paired
 
         # Aggregation consistency loss: skip for paired batches (SC cells are unrelated to the PBs)
         if self.aggregation and not is_paired_batch:
@@ -1004,7 +1002,7 @@ class TransformerModule(nn.Module):
 
             if sc_assignment:
                 loss = loss + self.weight_agg * loss_agg
-                loss_dict["loss_agg"] = loss_agg.detach()
+                loss_dict["loss_agg"] = loss_agg.detach() * self.weight_agg
 
         loss_dict["total_loss"] = loss
         return loss_dict

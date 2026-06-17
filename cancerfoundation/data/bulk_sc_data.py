@@ -357,6 +357,7 @@ class BulkSCSampler(Sampler[list[int]]):
         paired_every_n: int = 10,
         verbose: bool = False,
         seed: Optional[int] = None,
+        world_size: int = 1,
     ):
         # Account for the Subset resulting from random_split.
         # SubsetReindexer builds a LUT once; each remap() call also returns a
@@ -397,6 +398,7 @@ class BulkSCSampler(Sampler[list[int]]):
             self.sc_groups = None
 
         self.verbose = verbose
+        self.world_size = max(1, world_size)
         self.batch_size = batch_size
         self.epoch_size = epoch_size
         self.bulk_ratio = bulk_ratio
@@ -568,11 +570,11 @@ class BulkSCSampler(Sampler[list[int]]):
         The number of batches per epoch is defined by the number of bulk samples.
         In paired batches there is a one-to-one correspondence between bulk and pseudobulk samples
         """
-        batch_order = np.arange(self._n_batches)
-
-        for batch_i in batch_order:
+        for batch_i in range(self._n_batches):
             self.count += 1
-            is_paired = (batch_i % self.paired_every_n == 0) \
+            # Group world_size consecutive global positions together so that
+            # every rank sees a paired batch at the same local step frequency.
+            is_paired = ((batch_i // self.world_size) % self.paired_every_n == 0) \
                         and self.paired_sampling \
                         and self.paired_pb_indices is not None
 

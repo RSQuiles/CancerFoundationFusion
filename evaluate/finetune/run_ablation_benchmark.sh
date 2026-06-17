@@ -5,8 +5,6 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=32G
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:rtx4090:1
 
 # Include with preceding #SBATCH if GPU wanted
 # --partition=gpu
@@ -17,7 +15,7 @@ set -euo pipefail
 # Default: use singularity
 USE_LOCAL=0
 # Set to 1 to run SurvBoard metric evaluation after downstream tasks
-RUN_SURV=1
+RUN_SURV=0
 # Set to 1 to plot the benchmark results
 PLOT=1
 
@@ -39,7 +37,7 @@ ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_aggfi
 
 SCRIPT_ARGS=(
     --ablation-dir $ABLATION_DIR
-    --tasks canc_type_class survival
+    --tasks deconv
     --pca-baseline
     --config-dir /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/configs
 )
