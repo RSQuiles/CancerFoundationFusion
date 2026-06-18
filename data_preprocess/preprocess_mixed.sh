@@ -13,6 +13,9 @@ python -u bulk_sc_data_preprocessing.py \
     --mixed \
     --bulk-path /cluster/work/boeva/rquiles/bulkFM-data/data/processed/archs4 \
     --normalize-bulk-tissues \
-    --h5ad-path /cluster/work/boeva/rquiles/data/cellxgene_bulk \
-    --data-path /cluster/work/boeva/rquiles/data/cellxgene_bulk/pipeline_ready \
-    --obs-columns tissue_general assay \
+    --use-counts \
+    --paired-h5ad /cluster/work/boeva/bulkFM/data/processed/paired_samples.h5ad \
+    --paired-extra-obs-columns dataset \
+    --h5ad-path /cluster/work/boeva/rquiles/data/paired_dataset_counts \
+    --data-path /cluster/work/boeva/rquiles/data/paired_dataset_counts/pipeline_ready \
+    --obs-columns tissue_general assay paired \

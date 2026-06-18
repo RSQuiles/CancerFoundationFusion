@@ -194,6 +194,7 @@ def main(input_args=None):
         n_sc_per_pseudobulk=args.n_sc_per_pseudobulk,
         max_seq_len=args.max_seq_len,
         input_style=args.input_style,
+        input_data=args.input_data,
         mask_ratio=args.mask_ratio,
         TRUNC_BY_SAMPLE=args.trunc_by_sample,
         training_tasks=args.training_tasks,

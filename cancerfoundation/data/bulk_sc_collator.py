@@ -52,6 +52,7 @@ class BulkSCCollator(AnnDataCollator):
     match_fn: Optional[Callable] = None
     agg_consistency: bool = False # Determines whether to include the sc_for_pb samples in the batch
     paired_column: Optional[str] = None  # obs column carrying pair IDs; enables is_paired_batch detection
+    input_data: str,
     verbose: bool = False
 
     def __post_init__(self):
@@ -148,7 +149,7 @@ class BulkSCCollator(AnnDataCollator):
                 range(0, len(sc_for_pb_samples), n_sc_per_pb)
             ):
                 chunk = sc_for_pb_samples[start : start + n_sc_per_pb]
-                pb_genes, pb_expr = self._aggregate_sc(chunk)
+                pb_genes, pb_expr = self._aggregate_sc(chunk, input_data=self.input_data)
                 pb_sample = {"genes": pb_genes, "expressions": pb_expr}
                 self._fill_missing_conditions(pb_sample, chunk)
                 pseudobulk_samples.append(pb_sample)
@@ -260,6 +261,7 @@ class BulkSCCollator(AnnDataCollator):
     def _aggregate_sc(
         self,
         sc_samples: List[Dict[str, Any]],
+        input_data: str,
         counts: bool = False,
         rank_normalise: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -317,11 +319,12 @@ class BulkSCCollator(AnnDataCollator):
             # Sums by gene index and stores sum at corresponding position in expr_sum
             expr_sum = np.bincount(all_genes, weights=all_exprs, minlength=n_bins)
 
-            # Re-normalize to CP10K → log1p
-            total = expr_sum.sum()
-            if total > 0:
-                expr_sum = expr_sum / total * 1e4
-            expr_sum = np.log1p(expr_sum)
+            # Re-normalize to CPM → log1p
+            if not input_data == "counts":
+                total = expr_sum.sum()
+                if total > 0:
+                    expr_sum = expr_sum / total * 1e6
+                expr_sum = np.log1p(expr_sum)
 
             expressed = expr_sum != 0
             gene_ids  = np.where(expressed)[0].astype(np.int64)

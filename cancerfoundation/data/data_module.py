@@ -139,6 +139,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         n_sc_per_pseudobulk: int,
         max_seq_len: int,
         input_style: str,
+        input_data: str,
         mask_ratio: float,
         TRUNC_BY_SAMPLE: bool,
         training_tasks: str,
@@ -166,6 +167,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         self.balance_secondary = balance_secondary
         self.max_seq_len = max_seq_len
         self.input_style = input_style
+        self.input_data = input_data
         self.mask_ratio = mask_ratio
         self.TRUNC_BY_SAMPLE = TRUNC_BY_SAMPLE
         self.training_tasks = training_tasks
@@ -329,6 +331,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                 do_mlm=True,
                 do_binning=self.input_style == "binned",
                 normalise_bins=self.normalise_bins,
+                input_data=self.input_data,
                 mask_ratio=self.mask_ratio,
                 mask_value=self.mask_value,
                 max_length=self.max_seq_len,

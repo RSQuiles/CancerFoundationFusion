@@ -37,7 +37,11 @@ def read_anndata(file_path):
     return adata
 
 
-def get_normalized_metadata_bulk(bulk_metadata_path: Path, meta_fields=["characteristics", "extract_protocol", "source_name", "title"]):
+def get_normalized_metadata_bulk(
+    bulk_metadata_path: Path, 
+    meta_fields=["characteristics", "extract_protocol", "source_name", "title"],
+    tissue_map_path: str | None = "/cluster/work/boeva/rquiles/data/sample_id_to_tissue.json"
+    ):
     """
     Generate a metadata pd.Dataframe with a normalized tissue column from other specified fields.
 
@@ -52,6 +56,13 @@ def get_normalized_metadata_bulk(bulk_metadata_path: Path, meta_fields=["charact
     print("Normalizing bulk tissue names...")
 
     bulk_obs = pd.read_csv(bulk_metadata_path)
+    # print(bulk_obs.columns)
+
+    tissue_map: dict[str, str] = {}
+    if tissue_map_path is not None and Path(tissue_map_path).is_file():
+        with open(tissue_map_path) as f:
+            tissue_map = json.load(f)
+        print(f"Loaded {len(tissue_map)} cached tissue labels")
     
     def check_name(name, index, meta, meta_fields):
         def normalize(s):
@@ -81,9 +92,26 @@ def get_normalized_metadata_bulk(bulk_metadata_path: Path, meta_fields=["charact
                 continue
         return False
 
-    tissues = []
-    for i in tqdm.tqdm(range(bulk_obs.shape[0]), miniters=1000):
-        tissues.append(walk_tissue_names(check_name, i, bulk_obs, meta_fields))
+    # Index as sample_id, resolved once
+    index_ids = bulk_obs["sample_id"].astype(str)
+    tissues = index_ids.map(tissue_map)
+
+    # Only the cache MISSES need inference
+    missing_mask = tissues.isna()
+    n_missing = int(missing_mask.sum())
+    n_cached = len(tissues) - n_missing
+    print(f"Tissues from cache: {n_cached}, to infer: {n_missing}")
+
+    if n_missing > 0:
+        missing_positions = np.where(missing_mask)[0]
+        inferred = {}
+        for i in tqdm.tqdm(missing_positions, miniters=1000, maxinterval=float("inf")):
+            inferred[i] = walk_tissue_names(check_name, i, bulk_obs, meta_fields)
+        # Fill the misses by position
+        tissues = tissues.copy()
+        tissues.iloc[missing_positions] = [inferred[i] for i in missing_positions]
+
+    bulk_obs["tissue"] = tissues.values
 
     # Include tissues in bulk_obs
     bulk_obs["tissue"] = tissues
@@ -93,22 +121,17 @@ def get_normalized_metadata_bulk(bulk_metadata_path: Path, meta_fields=["charact
 
 def h5_to_h5ad(
     bulk_dir: Path | str,
-    obs_columns: list[
-        str
-    ],  # Metadata columns to include in obs.parquet (must exist in metadata.csv)
+    obs_columns: list[str],  # Metadata columns to include in obs.parquet (must exist in metadata.csv)
     normalize_tissues: bool = False,  # Whether to normalize bulk tissue names
     chunk_size: int = 10_000,
     expr_key: str = "expression",  # Key in the h5 file where the expression matrix is stored
-    h5ad_dir: Optional[
-        Path
-    ] = None,  # Directory to save the generated h5ad files (defaults to bulk_dir/h5ads)
-    existing_vocab_path: Optional[
-        Path
-    ] = None,  #  path to an existing vocab.json to reuse (set to None to generate from gene_list.txt)
+    h5ad_dir: Optional[Path] = None,  # Directory to save the generated h5ad files (defaults to bulk_dir/h5ads)
+    existing_vocab_path: Optional[Path] = None,  #  path to an existing vocab.json to reuse (set to None to generate from gene_list.txt)
+    use_counts: bool = False # Wether to normalize the data
 ):
     """
     Transform original .h5 file with counts in h5ad chunks.
-    Applies CP10K and log1p normalization
+    Applies CPM and log1p normalization if use_counts == False
     """
     # --- INPUT: bulk data files (in the same directory) ---
     BULK_DIR = Path(bulk_dir)
@@ -147,11 +170,14 @@ def h5_to_h5ad(
         "instrument": "assay"
     })
     metadata_columns = list(metadata.columns)
-        
+    
+    available_obs_columns = []
     for col_name in obs_columns:
-        assert (
-            col_name in metadata_columns
-        ), f"{col_name} not found in metadata columns: {metadata_columns}"
+        if col_name not in metadata_columns:
+            print(f"WARNING (bulk preprocessing): {col_name} not found in metadata columns: {metadata_columns}")
+        else:
+            available_obs_columns.append(col_name)
+    obs_columns = available_obs_columns
     
     print(f"Samples in metadata: {len(metadata)}")
     print(f"Columns: {list(metadata.columns)}")
@@ -208,14 +234,12 @@ def h5_to_h5ad(
                 else expr_ds[start:end, :]
             )
 
-            # Store raw counts
-            X_counts = X_dense.copy()
-
-            # Library-size normalize (CP10K or CPM) to target_sum=1e4, then log1p
-            library_size = X_dense.sum(axis=1, keepdims=True)
-            library_size[library_size == 0] = 1.0
-            X_dense = X_dense / library_size * 1e6
-            X_dense = np.log1p(X_dense)
+            if not use_counts:
+                # Library-size normalize (CP10K or CPM), then log1p
+                library_size = X_dense.sum(axis=1, keepdims=True)
+                library_size[library_size == 0] = 1.0
+                X_dense = X_dense / library_size * 1e6
+                X_dense = np.log1p(X_dense)
 
             X_sparse = sp.csr_matrix(X_dense.astype(np.float32))
 
@@ -357,6 +381,7 @@ def main(args):
             expr_key=args.bulk_expr_key,
             h5ad_dir=h5ad_path,
             existing_vocab_path=args.vocab_path,
+            use_counts=args.use_counts
         )
 
     # Paired SC + bulk dataset preprocessing (generates pseudobulk chunks)
@@ -379,6 +404,7 @@ def main(args):
             min_cells=args.paired_min_cells,
             chunk_prefix="paired",
             seed=args.seed,
+            use_counts=args.use_counts
         )
 
     data_path = DatasetDir(args.data_path)
@@ -524,7 +550,7 @@ def get_args():
     parser.add_argument(
         "--n-pseudobulk",
         type=int,
-        default=10,
+        default=1,
         help="Pseudobulk samples to generate per cell_line (default: 10)",
     )
     parser.add_argument(
@@ -608,7 +634,11 @@ def get_args():
         default=42,
         help="Random seed for pseudobulk sampling (default: 42)",
     )
-
+    parser.add_argument(
+        "--use-counts",
+        action="store_true",
+        help="Skip normalization and use counts"
+    )
     return parser.parse_args()
 
 

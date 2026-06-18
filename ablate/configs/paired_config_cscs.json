@@ -1,6 +1,6 @@
 {
-  "experiment_name": "paired_ablation",
-  "output_dir": "ablation_runs/paired_dataset",
+  "experiment_name": "paired_counts",
+  "output_dir": "ablation_runs/paired_counts",
   "dry_run": false,
   "train_entrypoint": "pretrain:main",
   "base_config": {
@@ -13,15 +13,15 @@
       "seed": 0,
       "val_check_interval": 0.5,
       "log_interval": 50,
-      "save_dir": "${work}/outputs_rquiles/save_CFF/ablation_paired_dataset",
+      "save_dir": "${work}/outputs_rquiles/save_CFF/ablation_paired_counts",
       "wandb_entity": "rquiles",
-      "wandb": "ablation_paired_dataset",
+      "wandb": "ablation_paired_counts",
       "compile": true,
       "ckpt_every_n_steps": 10000,
       "resume_from_checkpoint": "last"
     },
     "data": {
-      "train_path": "${data_dir}/paired_dataset/pipeline_ready",
+      "train_path": "${data_dir}/paired_dataset_counts/pipeline_ready",
       "conditions": ["tissue_general", "assay", "paired"],
       "zero_percentages": [0.2, 0.4, 0.6],
       "bulk_ratio": 0.45,
@@ -42,6 +42,7 @@
       "max_seq_len": 600,
       "batch_size": 32,
       "input_style": "binned",
+      "input_data": "counts",
       "loss": "mse",
       "training_tasks": "both",
       "do_mvc": true,
@@ -60,11 +61,11 @@
       "name": "bulk_baseline",
       "overrides": {
         "trainer": {
-          "save_dir": "${data_dir}/outputs_rquiles/save_CFF/ablation_paired_dataset/bulk_baseline",
+          "save_dir": "${data_dir}/outputs_rquiles/save_CFF/ablation_paired_counts/bulk_baseline",
           "wandb_name": "bulk_baseline"
         },
         "data": {
-          "train_path": "/cluster/work/boeva/rquiles/data/bulk_cpm/pipeline_ready"
+          "train_path": "/cluster/work/boeva/rquiles/data/bulk_counts/pipeline_ready"
         },
         "model": {},
         "features": {}
@@ -74,7 +75,7 @@
       "name": "unified",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs_rquiles/save_CFF/ablation_paired_dataset/unified",
+          "save_dir": "${work}/outputs_rquiles/save_CFF/ablation_paired_counts/unified",
           "wandb_name": "unified"
         },
         "data": {},
@@ -89,7 +90,7 @@
       "name": "dat",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs_rquiles/save_CFF/ablation_paired_dataset/dat",
+          "save_dir": "${work}/outputs_rquiles/save_CFF/ablation_paired_counts/dat",
           "wandb_name": "dat"
         },
         "data": {},
@@ -106,7 +107,7 @@
       "name": "contrastive",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs_rquiles/save_CFF/ablation_paired_dataset/contrastive",
+          "save_dir": "${work}/outputs_rquiles/save_CFF/ablation_paired_counts/contrastive",
           "wandb_name": "contrastive"
         },
         "data": {},
@@ -115,6 +116,22 @@
           "unified": true,
 	        "paired_sampling": true,
           "contrastive_training": true
+        }
+      }
+    },
+    {
+      "name": "aggregation",
+      "overrides": {
+        "trainer": {
+          "save_dir": "${work}/outputs_rquiles/save_CFF/ablation_paired_counts/aggregation",
+          "wandb_name": "aggregation"
+        },
+        "data": {},
+        "model": {},
+        "features": {
+          "unified": true,
+	        "paired_sampling": true,
+          "agg_consistency": true
         }
       }
     }

@@ -42,6 +42,13 @@ def cpm_to_cp10k_log1p(X: np.ndarray) -> np.ndarray:
     """CP10K-normalize each row then apply log1p. Input must be a dense 2-D array."""
     return np.log1p(X / 100)
 
+def cpm_log1p(X: np.ndarray) -> np.ndarray:
+    """CPM-normalize each row then apply log1p. Input must be a dense 2-D array."""
+    library_size = X.sum(axis=1, keepdims=True)
+    library_size[library_size == 0] = 1.0
+    X_cpm = X / library_size * 1e6
+    return np.log1p(X_cpm)
+
 def _log1p(X: np.ndarray) -> np.ndarray:
     """Apply log1p normalization to a dense 2-D array."""
     return np.log1p(X)
@@ -71,7 +78,8 @@ def generate_pseudobulk_chunks(
     chunk_prefix: str = "paired",
     seed: int = 42,
     flush_every: int = 50,
-    return_adata: bool = False
+    return_adata: bool = False,
+    use_counts: bool = False,
 ) -> None:
     """
     Read a paired h5ad and write pseudobulk + bulk (+ optionally SC) h5ad files
@@ -230,7 +238,11 @@ def generate_pseudobulk_chunks(
                     idxs = rng.choice(n_sc, size=n_draw, replace=(n_draw > n_sc))
                     pb_X[pb_i] = X_sc_cnt[idxs].mean(axis=0)
 
-            pb_X_parts.append(_log1p(pb_X).astype(np.float32))
+            if not use_counts:
+                pb_X_parts.append(cpm_log1p(pb_X).astype(np.float32))
+            else:
+                pb_X_parts.append(pb_X.astype(np.float32))
+
             obs_dict = {
                 "modality":    ["pseudobulk"] * n_pseudobulk,
                 cell_line_col: [cl]           * n_pseudobulk,
@@ -249,7 +261,12 @@ def generate_pseudobulk_chunks(
             X_bulk = _to_dense(adata.X[bulk_sel])
             if is_log1p:
                 X_bulk = np.expm1(X_bulk)
-            bulk_X_parts.append(_log1p(X_bulk).astype(np.float32))
+
+            if not use_counts:
+                bulk_X_parts.append(cpm_log1p(X_bulk).astype(np.float32))
+            else:
+                bulk_X_parts.append(X_bulk.astype(np.float32))
+                
             n_bulk_rows = int(bulk_sel.sum())
             obs_dict = {
                 "modality":    ["bulk"]   * n_bulk_rows,
@@ -335,6 +352,8 @@ def _get_args():
     parser.add_argument("--chunk-prefix", type=str, default="paired",
                         help="Output filename prefix (default: paired)")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--use-counts", action="store_true",
+                        help="Whether to normalize the data (CPM + log1p)")
     return parser.parse_args()
 
 
@@ -357,4 +376,5 @@ if __name__ == "__main__":
         min_cells=args.min_cells,
         chunk_prefix=args.chunk_prefix,
         seed=args.seed,
+        use_counts=args.use_counts
     )

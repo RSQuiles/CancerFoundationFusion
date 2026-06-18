@@ -20,8 +20,8 @@ for arg in "$@"; do
 done
 
 SCRIPT_ARGS=(
-    --h5ad-path /cluster/work/boeva/rquiles/data/paired_dataset
-    --data-path /cluster/work/boeva/rquiles/data/paired_dataset/pipeline_ready
+    --h5ad-path /cluster/work/boeva/rquiles/data/paired_dataset_counts
+    --data-path /cluster/work/boeva/rquiles/data/paired_dataset_counts/pipeline_ready
     --obs-columns tissue_general assay paired
 )
 

@@ -99,6 +99,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="The style of the input data. Default is binned.",
     )
     parser.add_argument(
+        "--input-data",
+        type=str,
+        choices=["log1p", "counts"],
+        default="counts",
+        help="Type of data before binning",
+    )
+    parser.add_argument(
         "--input-emb-style",
         type=str,
         choices=["mine", "theirs"],
@@ -504,7 +511,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--agg-fn",
         type=str,
         choices=["mean", "sum"],
-        default="mean",
+        default="sum",
         help="The function to use for aggregating single-cell embeddings into pseudobulk embeddings. Default is 'mean'.",
     )
 
