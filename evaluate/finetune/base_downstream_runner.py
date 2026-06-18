@@ -117,6 +117,9 @@ class BaseDownstreamRunner:
         # Task-specific state (subclasses can add more)
         self.task_state: dict[str, Any] = {}
 
+        # Gene names selected during finetune-mode HVG preprocessing (set in _build_loaders)
+        self.finetune_gene_names: list[str] | None = None
+
         # Detrmine finetuning status (end-to-end or just head)
         self.finetune = bool(getattr(self.task_cfg, "finetune_embedder", False)) and not isinstance(self.embedder, PCAEmbedder)
 
@@ -228,6 +231,7 @@ class BaseDownstreamRunner:
             )
 
             gene_ids = torch.LongTensor([self.embedder.vocab[g] for g in kept_genes])
+            self.finetune_gene_names = kept_genes
 
             train_expr = processed_train.X if isinstance(processed_train.X, np.ndarray) else processed_train.X.toarray()
             test_expr = processed_test.X if isinstance(processed_test.X, np.ndarray) else processed_test.X.toarray()
@@ -515,24 +519,35 @@ class BaseDownstreamRunner:
         train_metrics: dict[str, float],
         test_metrics: dict[str, float],
     ) -> Path | None:
-        """Save model checkpoint."""
+        """Save final model checkpoint (head + optionally finetuned embedder)."""
         if not self.is_master:
             return None
 
         save_dir = Path(getattr(self.task_cfg, "save_dir", "./checkpoints"))
         save_dir.mkdir(parents=True, exist_ok=True)
 
+        # Strip DDP wrapper from head state dict
+        raw_model = self.model.module if isinstance(self.model, DDP) else self.model
+        head_state = raw_model.state_dict()
+
         checkpoint = {
             "epoch": epoch,
-            "model_state": self.model.state_dict(),
+            "model_state": head_state,
             "optimizer_state": self.optimizer.state_dict(),
             "config": OmegaConf.to_container(self.task_cfg),
             "train_metrics": train_metrics,
             "test_metrics": test_metrics,
             "task": self.task.task_name,
+            "output_dim": self._get_output_dim(),
+            "embedding_dim": self.embedding_dim,
+            "finetuned_embedder": self.finetune,
         }
 
-        checkpoint_path = save_dir / f"epoch_epoch={epoch:02d}.ckpt"
+        if self.finetune and self.embedder is not None:
+            checkpoint["embedder_state"] = self.embedder.state_dict()
+            checkpoint["gene_names"] = self.finetune_gene_names
+
+        checkpoint_path = save_dir / "final.ckpt"
         torch.save(checkpoint, checkpoint_path)
         log.info(f"Saved checkpoint to {checkpoint_path}")
 
@@ -567,23 +582,21 @@ class BaseDownstreamRunner:
         epochs = int(getattr(self.task_cfg, "epochs", 10))
         best_metrics = {}
 
+        train_metrics: dict[str, float] = {}
+        test_metrics: dict[str, float] = {}
+
         for epoch in range(epochs):
             if self.is_master:
                 log.info(f"Starting epoch {epoch + 1}/{epochs}")
 
-            # Train
             train_metrics = self._train_one_epoch(epoch)
             if self.is_master:
                 log.info(f"Train metrics: {train_metrics}")
 
-            # Evaluate
             test_metrics = self._evaluate()
             if self.is_master:
                 log.info(f"Evaluation metrics: {test_metrics}")
 
-            # Save checkpoint
-            # self._save_checkpoint(epoch, train_metrics, test_metrics)
+        self._save_checkpoint(epochs - 1, train_metrics, test_metrics)
 
-            best_metrics = test_metrics
-
-        return best_metrics
+        return test_metrics
