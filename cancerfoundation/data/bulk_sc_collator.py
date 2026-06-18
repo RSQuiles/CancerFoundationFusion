@@ -262,10 +262,9 @@ class BulkSCCollator(AnnDataCollator):
         self,
         sc_samples: List[Dict[str, Any]],
         input_data: str,
-        counts: bool = False,
+        sc_counts: bool = False, # The SC data we are using is always log1p normalized by default
         rank_normalise: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        k = self.keep_first_n_tokens
         """
         Aggregate a list of single-cell token sequences into a single pseudobulk
         in the same sparse (gene_ids, expressions) format used by individual cells.
@@ -276,6 +275,7 @@ class BulkSCCollator(AnnDataCollator):
         The result is re-normalised to log1p(CPM) to match the model's input
         format. Zero entries are dropped and the CLS token is prepended.
         """
+        k = self.keep_first_n_tokens
 
         # Per-cell mapping to count space and normalization
         genes_list = []
@@ -294,7 +294,7 @@ class BulkSCCollator(AnnDataCollator):
                 continue
 
             # Map to count space: log1p → expm1
-            if not counts:
+            if not sc_counts:
                 exprs = np.expm1(exprs)
 
             # Rank normalize: expm1 → normalize to proportions

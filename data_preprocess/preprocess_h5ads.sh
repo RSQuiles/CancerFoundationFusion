@@ -20,9 +20,9 @@ for arg in "$@"; do
 done
 
 SCRIPT_ARGS=(
-    --h5ad-path /cluster/work/boeva/rquiles/data/paired_dataset_counts
-    --data-path /cluster/work/boeva/rquiles/data/paired_dataset_counts/pipeline_ready
-    --obs-columns tissue_general assay paired
+    --h5ad-path /cluster/work/boeva/rquiles/data/bulk_counts
+    --data-path /cluster/work/boeva/rquiles/data/bulk_counts/pipeline_ready
+    --obs-columns tissue_general assay
 )
 
 if [[ "$USE_LOCAL" -eq 1 ]]; then
