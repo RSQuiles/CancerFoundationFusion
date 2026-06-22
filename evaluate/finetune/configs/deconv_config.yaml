@@ -14,7 +14,7 @@ finetune:
     # Path to pseudobulk/bulk data (H5AD format).
     # Expected: pseudo_bulk_RAW.h5ad — raw summed counts, normalized internally
     # via CP10K + log1p before embedding (see normalize_input below).
-    pseudo_bulk_data_path: /cluster/work/boeva/eheiss/datasets/pseudo_bulk/pseudo_bulk_RAW.h5ad
+    pseudo_bulk_data_path: /cluster/work/boeva/rquiles/data/pseudobulk_deconv/pseudo_bulk_RAW_subset.h5ad
     
     # Learning rate for the head
     head_learning_rate: 0.001
@@ -61,7 +61,7 @@ finetune:
     
     # ===== TRAINING HYPERPARAMETERS =====
     # Number of training epochs
-    epochs: 10
+    epochs: 30
     
     # Batch size for training and evaluation
     batch_size: 16

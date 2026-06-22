@@ -5,10 +5,10 @@
   "train_entrypoint": "pretrain:main",
   "base_config": {
     "trainer": {
-      "gpus": 2,
+      "gpus": 1,
       "num_workers": 4,
       "precision": "bf16-mixed",
-      "strategy": "ddp_find_unused_parameters_true",
+      "strategy": "auto",
       "epochs": 5,
       "seed": 0,
       "val_check_interval": 0.5,
@@ -16,12 +16,12 @@
       "save_dir": "${work}/outputs_rquiles/save_CFF/ablation_paired_counts",
       "wandb_entity": "rquiles",
       "wandb": "ablation_paired_counts",
-      "compile": true,
+      "compile": false,
       "ckpt_every_n_steps": 10000,
       "resume_from_checkpoint": "last"
     },
     "data": {
-      "train_path": "${data_dir}/paired_dataset_counts/pipeline_ready",
+      "train_path": "/cluster/work/boeva/rquiles/data/paired_dataset_counts/pipeline_ready",
       "conditions": ["tissue_general", "assay", "paired"],
       "zero_percentages": [0.2, 0.4, 0.6],
       "bulk_ratio": 0.45,
@@ -52,7 +52,7 @@
     "features": {
       "loss_weight_paired": 100,
       "loss_weight_dat": 100,
-      "loss_weight_agg": 100
+      "loss_weight_agg": 10
     }
   },
   "base_overrides": {},
@@ -65,7 +65,8 @@
           "wandb_name": "bulk_baseline"
         },
         "data": {
-          "train_path": "${data_dir}/bulk_counts/pipeline_ready"
+          "train_path": "/cluster/work/boeva/rquiles/data/bulk_counts/pipeline_ready",
+          "conditions": ["tissue_general", "assay"]
         },
         "model": {},
         "features": {}

@@ -90,8 +90,8 @@ finetune:
     dropout: 0.1
 
     # ===== TRAINING HYPERPARAMETERS =====
-    epochs: 10
-    batch_size: 16
+    epochs: 30
+    batch_size: 32
     # Cox batches should be large enough to contain multiple observed events.
 
     min_lr: 0.000001

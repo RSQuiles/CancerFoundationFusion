@@ -52,7 +52,7 @@ class BulkSCCollator(AnnDataCollator):
     match_fn: Optional[Callable] = None
     agg_consistency: bool = False # Determines whether to include the sc_for_pb samples in the batch
     paired_column: Optional[str] = None  # obs column carrying pair IDs; enables is_paired_batch detection
-    input_data: str,
+    input_data: Optional[str] = "counts" 
     verbose: bool = False
 
     def __post_init__(self):
@@ -292,6 +292,11 @@ class BulkSCCollator(AnnDataCollator):
 
             if len(genes) == 0:
                 continue
+
+            # if self.verbose:
+            #     print(f"expr max before expm1: {exprs.max()}, min: {exprs.min()}")
+            #     if exprs.max() > 20:
+            #         print(f"WARNING: suspiciously large log1p value: {exprs.max()}")
 
             # Map to count space: log1p → expm1
             if not sc_counts:

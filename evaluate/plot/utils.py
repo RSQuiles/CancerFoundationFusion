@@ -49,6 +49,7 @@ def _select_representative_files(
     files: list[Path],
     max_files: int,
     seed: int | None,
+    exclude_prefix: Optional[str] | None = "paired"
 ) -> list[Path]:
     """
     Select up to ``max_files`` h5ad files with equal representation per group.
@@ -73,7 +74,11 @@ def _select_representative_files(
     for f in files:
         groups.setdefault(_file_group(f), []).append(f)
 
+    if exclude_prefix is not None:
+        print(f"WARNING: Excluding expression files with prefix: {exclude_prefix}")
+
     group_names = list(groups.keys())
+    group_names = [name for name in group_names if exclude_prefix not in name] if exclude_prefix is not None else group_names
     n_groups = len(group_names)
 
     base = max_files // n_groups

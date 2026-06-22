@@ -451,10 +451,11 @@ def _generate_pseudobulk_adata(
     sc_adata: sc.AnnData,
     group_column: str = "tissue_general",
     n_sc_per_pb: int = 10,
-    agg_method: str = "mean",
+    agg_method: str = "sum",
     n_pb: int | None = None,
     seed: int = 0,
     is_log1p: bool = True,
+    normalize: bool = False,
 ) -> sc.AnnData | None:
     """Aggregate SC expression within tissue groups to create pseudobulk profiles.
 
@@ -504,7 +505,7 @@ def _generate_pseudobulk_adata(
             expr = np.expm1(expr)
         agg = expr.sum(axis=0) if agg_method == "sum" else expr.mean(axis=0)
         # Re-normalize: CP10K + log1p (matches downstream expectations)
-        if is_log1p:
+        if is_log1p and normalize:
             total = agg.sum()
             if total > 0:
                 agg = agg / total * 1e4
@@ -1084,7 +1085,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument(
         "--pb-agg-method",
         type=str,
-        default="mean",
+        default="sum",
         choices=["mean", "sum"],
         help=(
             "Aggregation method for combining SC expression into a pseudobulk "

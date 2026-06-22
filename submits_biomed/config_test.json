@@ -2,19 +2,20 @@
   "trainer": {
     "gpus": 2,
     "num_workers": 1,
-    "precision": 32,
-    "strategy": "ddp",
+    "precision": "bf16-mixed",
+    "strategy": "ddp_find_unused_parameters_true",
     "epochs": 1,
     "seed": 0,
     "val_check_interval": 0.5,
     "log_interval": 1,
     "save_dir": "${work}/outputs/save_CFF/dummy_test",
     "ckpt_every_n_steps": 5,
+    "compile": false,
     "verbose": true
   },
   "data": {
-    "train_path": "/cluster/work/boeva/rquiles/data/minimal_paired/pipeline_ready",
-    "conditions": ["tissue_general", "assay"],
+    "train_path": "/cluster/work/boeva/rquiles/data/paired_dataset_counts/pipeline_ready",
+    "conditions": ["tissue_general", "assay", "paired"],
     "zero_percentages": [0.2, 0.4, 0.6],
     "bulk_ratio": 0.45,
     "pb_ratio": 0.45,
@@ -23,7 +24,6 @@
     "trunc_by_sample": true,
     "balanced_sampler": true,
     "balanced_labels": ["tissue_general", "assay"],
-    "paired_sampling": true,
     "paired_every_n": 5
   },
 
@@ -37,6 +37,7 @@
     "max_seq_len": 600,
     "batch_size": 4,
     "input_style": "binned",
+    "input_data": "counts",
     "loss": "mse",
     "training_tasks": "both",
     "do_mvc": true,
@@ -45,6 +46,7 @@
   },
   
   "features": {
-    "unified": true
+    "unified": true,
+    "paired_sampling": true
   }
 }

@@ -5,6 +5,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem-per-cpu=64G
+#SBATCH --gres=gpu:rtx4090:1
+#SBATCH --partition=gpu
 
 # --gres=gpu:rtx4090:1
 # --partition=gpu
@@ -22,8 +24,8 @@ for arg in "$@"; do
 done
 
 SCRIPT_ARGS=(
-    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_aggfix
-    --adata-dir /cluster/work/boeva/rquiles/data/paired_dataset/pipeline_ready/h5ads
+    --ablation-dir /cluster/work/boeva/rquiles/outputs_rquiles/save_CFF/ablation_paired_counts
+    --adata-dir /cluster/work/boeva/rquiles/data/paired_dataset_counts/pipeline_ready/h5ads
     --color tissue_general assay
     --sample-size 75_000
     --skip-unknown
