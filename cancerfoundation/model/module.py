@@ -765,6 +765,7 @@ class TransformerModule(nn.Module):
         use_cell_embedding: bool = False,
         noise: float = None,
         apply_dat: bool = True,
+        skip_unified_losses: bool = False, # Necessary for validation loss
     ) -> Mapping[str, Tensor]:
         """Main forward pass that dispatches to generative or perceptual mode.
 
@@ -896,7 +897,7 @@ class TransformerModule(nn.Module):
             return loss_dict["loss_expr"]
 
         # Domain adversarial training
-        if self.do_dat and apply_dat:
+        if self.do_dat and apply_dat and not skip_unified_losses:
             if self.conditions:
                 modality = conditions_batch.get("modality")
                 for condition in self.grad_reverse_discriminators:
@@ -933,7 +934,7 @@ class TransformerModule(nn.Module):
         # pair as a positive, which contradicts the 1-to-1 pairing enforced by the paired
         # alignment loss. VICReg collapse-prevention is still applied via modality_contrastive_loss
         # in non-paired batches; paired batches rely solely on the paired alignment loss for signal.
-        if self.contrastive and not is_paired_batch:
+        if self.contrastive and not is_paired_batch and not skip_unified_losses:
             embeddings = output_dict["embeddings"]
             modalities = tensors["conditions"]["modality"]
             assert len(embeddings) == len(
@@ -953,7 +954,7 @@ class TransformerModule(nn.Module):
             loss_dict["loss_contrastive"] = loss_contrastive.detach() * self.weight_contrastive
 
         # Paired alignment loss: MSE between matched bulk–pseudobulk CLS embeddings
-        if self.paired_alignment and is_paired_batch:
+        if self.paired_alignment and is_paired_batch and not skip_unified_losses:
             if self.verbose:
                 print("Applying paired alignment loss!")
             modality = tensors["conditions"]["modality"]
@@ -969,7 +970,7 @@ class TransformerModule(nn.Module):
                 loss_dict["paired_alignment_loss"] = loss_paired.detach() * self.weight_paired
 
         # Aggregation consistency loss: skip for paired batches (SC cells are unrelated to the PBs)
-        if self.aggregation and not is_paired_batch:
+        if self.aggregation and not is_paired_batch and not skip_unified_losses:
             embeddings = output_dict["embeddings"]
             assert len(embeddings) == len(
                 tensors["is_sc_for_pb"]

@@ -340,7 +340,13 @@ class CancerFoundation(pl.LightningModule):
         if self.compile_model:
             self.model = torch.compile(self.model)
 
-    def forward(self, data_dict, use_cell_embedding=None, apply_dat: bool = True):
+    def forward(
+            self, 
+            data_dict, 
+            use_cell_embedding=None, 
+            apply_dat: bool = True, 
+            skip_unified_losses: bool = False
+            ) -> dict:
         """Performs a forward pass through the underlying `TransformerModule`.
 
         Args:
@@ -356,7 +362,7 @@ class CancerFoundation(pl.LightningModule):
             use_cell_embedding = self.use_cell_embedding
 
         # First pass without noising
-        loss_dict = self.model(data_dict, use_cell_embedding=use_cell_embedding, apply_dat=apply_dat)
+        loss_dict = self.model(data_dict, use_cell_embedding=use_cell_embedding, apply_dat=apply_dat, skip_unified_losses=skip_unified_losses)
 
         # DENOISING TASK
         if self.denoise:
@@ -415,7 +421,7 @@ class CancerFoundation(pl.LightningModule):
             print(
                 f"Rank {self.trainer.global_rank}: Starting validation with {len(self.trainer.val_dataloaders)} batches"
             )
-        loss_dict = self.forward(batch, use_cell_embedding=True)
+        loss_dict = self.forward(batch, use_cell_embedding=True, skip_unified_losses=True)
 
         # Log validation metrics
         for key, value in loss_dict.items():
