@@ -250,7 +250,7 @@ def _agg_from_paired_sc(
         pb_mask = pb_ids == pid
         if not sc_mask.any() or not pb_mask.any():
             continue
-        mean_sc = paired_sc_emb[sc_mask].mean(axis=0)
+        mean_sc = paired_sc_emb[sc_mask].sum(axis=0)
         pb_e    = paired_pb_emb[pb_mask][0]
         pb_n    = pb_e    / (np.linalg.norm(pb_e)    + 1e-8)
         sc_n    = mean_sc / (np.linalg.norm(mean_sc) + 1e-8)

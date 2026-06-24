@@ -1,6 +1,6 @@
 #!/bin/bash -l
-#SBATCH --time=4:00:00
-#SBATCH --job-name=build_adata
+#SBATCH --time=1:00:00
+#SBATCH --job-name=check_models
 #SBATCH --output=./slurm_outputs/%x_%j.out
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
@@ -11,8 +11,7 @@
 ABLATION_DIR="/cluster/work/boeva/rquiles/outputs_rquiles/save_CFF/ablation_paired_counts"
 
 SCRIPT_ARGS=(
-    --adata-dir /cluster/work/boeva/rquiles/data/paired_dataset_counts/pipeline_ready/h5ads
-    --out $ABLATION_DIR/eval.h5ad
+    --eval-adata $ABLATION_DIR/eval.h5ad
     --ablation-dir $ABLATION_DIR
 )
 
@@ -21,4 +20,4 @@ singularity run \
     --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/check \
     --bind /cluster \
     --nv /cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif \
-    python -u build_eval_adata.py "${SCRIPT_ARGS[@]}"
+    python -u unified_metrics.py "${SCRIPT_ARGS[@]}"
