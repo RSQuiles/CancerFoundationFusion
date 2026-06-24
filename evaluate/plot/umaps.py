@@ -423,13 +423,13 @@ def _plot_three_modality_umap(
         ax.scatter(
             umap_coords[pb_mask, 0], umap_coords[pb_mask, 1],
             color="#4dac26", s=30, marker="^", linewidths=0.5,
-            edgecolors="black", alpha=0.85, rasterized=True, label="Pseudobulk",
+            edgecolors="black", alpha=0.4, rasterized=True, label="Pseudobulk",
         )
     if bulk_mask.any():
         ax.scatter(
             umap_coords[bulk_mask, 0], umap_coords[bulk_mask, 1],
             color="#d6604d", s=30, marker="D", linewidths=0.5,
-            edgecolors="black", alpha=0.85, rasterized=True, label="Bulk",
+            edgecolors="black", alpha=0.4, rasterized=True, label="Bulk",
         )
 
     ax.set_xlabel("UMAP 1", fontsize=9)
@@ -642,6 +642,7 @@ def _save_modality_split_umaps(
     agg_method: str = "mean",
     embed_batch_size: int = 64,
     flavor: str = "seurat",
+    only_pseudobulk: bool = True,
 ) -> None:
     """Compute and save separate UMAP plots for SC-only and bulk-only subsets.
 
@@ -659,40 +660,41 @@ def _save_modality_split_umaps(
     if "modality" not in adata.obs.columns:
         return
 
-    modality_vals = adata.obs["modality"].astype(str).replace("nan", "sc").to_numpy()
-    sc_mask   = np.array([_is_sc_modality(v) for v in modality_vals])
-    bulk_mask = ~sc_mask
+    if not only_pseudobulk:
+        modality_vals = adata.obs["modality"].astype(str).replace("nan", "sc").to_numpy()
+        sc_mask   = np.array([_is_sc_modality(v) for v in modality_vals])
+        bulk_mask = ~sc_mask
 
-    stem = joint_out_png.stem
-    suffix = joint_out_png.suffix
-    out_dir = joint_out_png.parent
+        stem = joint_out_png.stem
+        suffix = joint_out_png.suffix
+        out_dir = joint_out_png.parent
 
-    for label, mask in [("sc", sc_mask), ("bulk", bulk_mask)]:
-        n = int(mask.sum())
-        if n == 0:
-            continue
+        for label, mask in [("sc", sc_mask), ("bulk", bulk_mask)]:
+            n = int(mask.sum())
+            if n == 0:
+                continue
 
-        subset = adata[mask].copy()
-        out_png = out_dir / f"{stem}_{label}{suffix}"
-        try:
-            compute_umap(
-                subset,
-                use_rep="X_cf",
-                n_neighbors=min(n_neighbors, n - 1),
-                min_dist=min_dist,
-                random_state=seed,
-            )
-            save_umap_plot(
-                subset,
-                out_png=out_png,
-                color=color,
-                title=f"{stem} ({label})",
-                dpi=dpi,
-                skip_unknown=skip_unknown,
-            )
-            print(f"  saved → {out_png}")
-        except Exception as exc:
-            print(f"  [warn] {label}-only UMAP failed: {exc}")
+            subset = adata[mask].copy()
+            out_png = out_dir / f"{stem}_{label}{suffix}"
+            try:
+                compute_umap(
+                    subset,
+                    use_rep="X_cf",
+                    n_neighbors=min(n_neighbors, n - 1),
+                    min_dist=min_dist,
+                    random_state=seed,
+                )
+                save_umap_plot(
+                    subset,
+                    out_png=out_png,
+                    color=color,
+                    title=f"{stem} ({label})",
+                    dpi=dpi,
+                    skip_unknown=skip_unknown,
+                )
+                print(f"  saved → {out_png}")
+            except Exception as exc:
+                print(f"  [warn] {label}-only UMAP failed: {exc}")
 
     if model is not None:
         _save_pseudobulk_umap(

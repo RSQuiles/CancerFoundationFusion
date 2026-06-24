@@ -91,7 +91,7 @@ finetune:
 
     # ===== TRAINING HYPERPARAMETERS =====
     epochs: 30
-    batch_size: 32
+    batch_size: 16
     # Cox batches should be large enough to contain multiple observed events.
 
     min_lr: 0.000001

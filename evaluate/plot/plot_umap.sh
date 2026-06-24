@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --time=20:00:00
+#SBATCH --time=1:00:00
 #SBATCH --job-name=plot_umap
 #SBATCH --output=./slurm_outputs/%x_%j.out
 #SBATCH --ntasks-per-node=1
