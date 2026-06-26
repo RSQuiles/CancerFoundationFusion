@@ -89,7 +89,7 @@ def _load_model(ckpt_path: Path, device: str) -> CancerFoundation:
 @torch.no_grad()
 def compute_reconstruction_metrics(
     model: CancerFoundation,
-    sc_adata: ad.AnnData,
+    adata: ad.AnnData,
     batch_size: int = 64,
     mask_ratio: float = 0.15,
     n_cells: int = 1000,
@@ -100,7 +100,7 @@ def compute_reconstruction_metrics(
     device = next(model.model.parameters()).device
     rng = np.random.default_rng(seed)
 
-    data = model.preprocess_for_embedding(sc_adata, normalized=normalized)
+    data = model.preprocess_for_embedding(adata, normalized=normalized)
     if data.n_obs == 0:
         return {}
 
@@ -137,7 +137,9 @@ def compute_reconstruction_metrics(
         genes_full = torch.cat([cls_g, batch_genes], dim=1)
         expr_full  = torch.cat([cls_e, batch_expr],  dim=1)
 
-        gene_mask = torch.rand(bs, n_genes, device=device) < mask_ratio
+        nonzero_mask = batch_expr > 0
+        gene_mask = (torch.rand(bs, n_genes, device=device) < mask_ratio)
+        # gene_mask = (torch.rand(bs, n_genes, device=device) < mask_ratio) & nonzero_mask
         masked_expr = expr_full.clone()
         masked_expr[:, 1:][gene_mask] = eff_mask
 
@@ -167,7 +169,9 @@ def compute_reconstruction_metrics(
             if m.sum() < 2:
                 continue
             p = pred[i][m].float().cpu().numpy()
+            # print(p)
             t = target[i][m].float().cpu().numpy()
+            # print(t)
             if np.std(p) < 1e-8 or np.std(t) < 1e-8:
                 continue
             r = float(np.corrcoef(p, t)[0, 1])
@@ -404,7 +408,7 @@ def run_single_model(
     out_dir: Path,
     ckpt_path: Path | None = None,
     batch_size: int = 64,
-    mask_ratio: float = 0.15,
+    mask_ratio: float = 0.4,
     n_sc_per_pb: int = 10,
     n_synth_pb: int = 200,
     group_column: str = "tissue_general",
@@ -460,7 +464,7 @@ def run_single_model(
         log.info("  Computing reconstruction metrics (%d SC cells) ...", sc_adata.n_obs)
         metrics.update(
             compute_reconstruction_metrics(
-                model, sc_adata,
+                model, bulk_adata,
                 batch_size=batch_size,
                 mask_ratio=mask_ratio,
                 n_cells=min(sc_adata.n_obs, 1000),

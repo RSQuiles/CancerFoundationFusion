@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --time=4:00:00
+#SBATCH --time=1:00:00
 #SBATCH --job-name=build_adata
 #SBATCH --output=./slurm_outputs/%x_%j.out
 #SBATCH --ntasks-per-node=1
@@ -8,10 +8,10 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:rtx4090:1
 
-ABLATION_DIR="/cluster/work/boeva/rquiles/outputs_rquiles/save_CFF/ablation_paired_counts"
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison"
 
 SCRIPT_ARGS=(
-    --adata-dir /cluster/work/boeva/rquiles/data/paired_dataset_counts/pipeline_ready/h5ads
+    --adata-dir /cluster/work/boeva/rquiles/data/cellxgene_bulk/pipeline_ready/h5ads
     --out $ABLATION_DIR/eval.h5ad
     --ablation-dir $ABLATION_DIR
 )

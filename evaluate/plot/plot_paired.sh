@@ -22,11 +22,13 @@ for arg in "$@"; do
     fi
 done
 
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts"
+
 SCRIPT_ARGS=(
     --input-h5ad /cluster/work/boeva/bulkFM/data/processed/paired_samples.h5ad
-    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_aggfix
+    --ablation-dir $ABLATION_DIR
     --n-cell-lines 10
-    --out-dir ./umap_outputs
+    --out-dir $ABLATION_DIR/paired_umaps
     --out-prefix pca)
 
 # --no-sc
@@ -36,7 +38,7 @@ if [[ "$USE_LOCAL" -eq 1 ]]; then
     python -u plot_paired_umap.py "${SCRIPT_ARGS[@]}"
 else
     echo "Running with singularity"
-    srun singularity run \
+    singularity run \
         --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/plot \
         --bind /cluster \
         --nv /cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif \

@@ -1,9 +1,9 @@
 {
   "trainer": {
-    "gpus": 2,
+    "gpus": 1,
     "num_workers": 1,
     "precision": "bf16-mixed",
-    "strategy": "ddp_find_unused_parameters_true",
+    "strategy": "auto",
     "epochs": 1,
     "seed": 0,
     "val_check_interval": 0.5,
@@ -11,14 +11,18 @@
     "save_dir": "${work}/outputs/save_CFF/dummy_test",
     "ckpt_every_n_steps": 5,
     "compile": false,
-    "verbose": true
+    "verbose": true,
+    "wandb_entity": "rquiles",
+    "wandb": "tests",
+    "wandb_name": "corn_loss"
+
   },
   "data": {
     "train_path": "/cluster/work/boeva/rquiles/data/paired_dataset_counts/pipeline_ready",
     "conditions": ["tissue_general", "assay", "paired"],
     "zero_percentages": [0.2, 0.4, 0.6],
-    "bulk_ratio": 0.45,
-    "pb_ratio": 0.45,
+    "bulk_ratio": 0.3,
+    "pb_ratio": 0.3,
     "n_sc_per_pseudobulk": 5,
     "pb_group_column": "tissue_general",
     "trunc_by_sample": true,
@@ -35,10 +39,10 @@
     "lr": 0.0001,
     "warmup_ratio_or_step": 10000,
     "max_seq_len": 600,
-    "batch_size": 4,
+    "batch_size": 16,
     "input_style": "binned",
     "input_data": "counts",
-    "loss": "mse",
+    "loss": "corn",
     "training_tasks": "both",
     "do_mvc": true,
     "where_condition": "none",
@@ -47,6 +51,11 @@
   
   "features": {
     "unified": true,
-    "paired_sampling": true
+    "paired_sampling": true,
+    "contrastive_training": true,
+    "agg_consistency": true,
+    "do_dat": true,
+    "dat_columns": ["modality", "assay"]
+
   }
 }

@@ -79,7 +79,7 @@ def generate_pseudobulk_chunks(
     seed: int = 42,
     flush_every: int = 50,
     return_adata: bool = False,
-    use_counts: bool = False,
+    use_counts: bool = True,
 ) -> None:
     """
     Read a paired h5ad and write pseudobulk + bulk (+ optionally SC) h5ad files

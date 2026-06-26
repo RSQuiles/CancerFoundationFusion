@@ -533,6 +533,7 @@ def _save_pseudobulk_umap(
     embed_batch_size: int = 64,
     flavor: str = "seurat",
     dpi: int = 200,
+    use_sc: bool = False,
 ) -> None:
     """Compute and save a UMAP with SC, bulk, and pseudobulk observations.
 
@@ -591,12 +592,19 @@ def _save_pseudobulk_umap(
         else np.empty((0, sc_emb.shape[1]), dtype=np.float32)
     )
 
-    combined_emb = np.vstack([sc_emb, pb_emb, bulk_emb])
-    modality_col = (
-        ["sc"]           * sc_adata.n_obs
-        + ["pseudobulk"] * pb_adata.n_obs
-        + ["bulk"]       * bulk_adata.n_obs
-    )
+    if use_sc:
+        combined_emb = np.vstack([sc_emb, pb_emb, bulk_emb])
+        modality_col = (
+            ["sc"]           * sc_adata.n_obs
+            + ["pseudobulk"] * pb_adata.n_obs
+            + ["bulk"]       * bulk_adata.n_obs
+        )
+    else:
+        combined_emb = np.vstack([pb_emb, bulk_emb])
+        modality_col = (
+            ["pseudobulk"] * pb_adata.n_obs
+            + ["bulk"]       * bulk_adata.n_obs
+        )
 
     combined = AnnData(obs=pd.DataFrame({"modality": modality_col}))
     combined.obsm["X_cf"] = combined_emb
@@ -605,7 +613,7 @@ def _save_pseudobulk_umap(
     try:
         compute_umap(
             combined,
-            use_rep="X_cf",
+            use_rep="X_cf" if use_sc else None,
             n_neighbors=min(n_neighbors, n_cells - 1),
             min_dist=min_dist,
             random_state=seed,
