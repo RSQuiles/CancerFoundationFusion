@@ -957,19 +957,46 @@ class TransformerModule(nn.Module):
             loss = loss + self.weight_contrastive * loss_contrastive
             loss_dict["loss_contrastive"] = loss_contrastive.detach() * self.weight_contrastive
 
-        # Paired alignment loss: MSE between matched bulk–pseudobulk CLS embeddings
+        # Paired alignment loss: MSE between matched bulk–pseudobulk–SC_mean CLS embeddings
         if self.paired_alignment and is_paired_batch and not skip_unified_losses:
             if self.verbose:
                 print("Applying paired alignment loss!")
             modality = tensors["conditions"]["modality"]
             cell_emb = output_dict["cell_emb"]
+            sc_pb_idx = tensors["sample_pseudobulk_index"]
             bulk_mask = modality == 0
             pb_mask   = modality == 2
+            sc_mask   = (modality == 1) & (sc_pb_idx >= 0)
             if bulk_mask.any() and pb_mask.any():
-                pb_bulk_local_idx = tensors["sample_pseudobulk_index"][pb_mask]
+                pb_bulk_local_idx = sc_pb_idx[pb_mask]
                 bulk_embs = cell_emb[bulk_mask][pb_bulk_local_idx]
                 pb_embs   = cell_emb[pb_mask]
+                n_pb, d_model = pb_embs.shape
+
                 loss_paired = self._paired_alignment_loss(bulk_embs, pb_embs)
+
+                # Per-pair mean SC embedding via scatter_add (fully differentiable)
+                if sc_mask.any():
+                    sc_embs = cell_emb[sc_mask]
+                    sc_local = sc_pb_idx[sc_mask]
+                    idx_exp = sc_local.unsqueeze(1).expand(-1, d_model)
+                    sc_sums = torch.zeros(n_pb, d_model, device=cell_emb.device, dtype=cell_emb.dtype)
+                    sc_sums = sc_sums.scatter_add(0, idx_exp, sc_embs)
+                    sc_counts = torch.zeros(n_pb, device=cell_emb.device, dtype=cell_emb.dtype)
+                    sc_counts = sc_counts.scatter_add(
+                        0, sc_local,
+                        torch.ones(sc_embs.shape[0], device=cell_emb.device, dtype=cell_emb.dtype),
+                    )
+                    has_sc = sc_counts > 0
+                    if has_sc.any():
+                        sc_means = sc_sums[has_sc] / sc_counts[has_sc].unsqueeze(1)
+                        loss_paired_sc = (
+                            self._paired_alignment_loss(sc_means, bulk_embs[has_sc])
+                            + self._paired_alignment_loss(sc_means, pb_embs[has_sc])
+                        )
+                        loss_paired = loss_paired + loss_paired_sc
+                        loss_dict["paired_alignment_loss_sc"] = loss_paired_sc.detach() * self.weight_paired
+
                 loss = loss + self.weight_paired * loss_paired
                 loss_dict["paired_alignment_loss"] = loss_paired.detach() * self.weight_paired
 
