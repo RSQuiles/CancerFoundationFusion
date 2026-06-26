@@ -11,11 +11,7 @@
     "save_dir": "${work}/outputs/save_CFF/dummy_test",
     "ckpt_every_n_steps": 5,
     "compile": false,
-    "verbose": true,
-    "wandb_entity": "rquiles",
-    "wandb": "tests",
-    "wandb_name": "corn_loss"
-
+    "verbose": true
   },
   "data": {
     "train_path": "/cluster/work/boeva/rquiles/data/paired_dataset_counts/pipeline_ready",
@@ -32,14 +28,14 @@
   },
 
   "model": {
-    "nlayers": 2,
-    "nheads": 2,
-    "embsize": 32,
-    "d_hid": 32,
+    "nlayers": 6,
+    "nheads": 8,
+    "embsize": 128,
+    "d_hid": 256,
     "lr": 0.0001,
     "warmup_ratio_or_step": 10000,
     "max_seq_len": 600,
-    "batch_size": 16,
+    "batch_size": 32,
     "input_style": "binned",
     "input_data": "counts",
     "loss": "corn",

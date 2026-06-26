@@ -651,9 +651,9 @@ class BulkSCSampler(Sampler[list[int]]):
                 balanced=self.sample_balanced,
             )
 
-        indices.extend(sc_idx or [])
-        indices.extend(pb_idx or [])
-        indices.extend(bulk_idx or [])
+        indices.extend(sc_idx)
+        indices.extend(pb_idx)
+        indices.extend(bulk_idx)
         return indices
 
 
