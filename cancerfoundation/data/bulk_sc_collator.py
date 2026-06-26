@@ -72,6 +72,9 @@ class BulkSCCollator(AnnDataCollator):
         self.raw_batch_size = (
             self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pseudobulk
         )
+        # Paired batches carry n_sc_per_pseudobulk matched SC cells per pair
+        # instead of the usual n_sc free SC cells.
+        self.paired_batch_size = self.n_bulk + self.n_pb * (1 + self.n_sc_per_pseudobulk)
 
         # Confirm batch composition
         print("\nBatch composition at the collator level")
@@ -80,6 +83,7 @@ class BulkSCCollator(AnnDataCollator):
         print("n_pb:", self.n_pb)
         print("n_sc:", self.n_sc)
         print("raw_batch_size:", self.raw_batch_size)
+        print("paired_batch_size:", self.paired_batch_size)
         print("sum_logical:", self.n_bulk + self.n_pb + self.n_sc)
 
         if self.n_bulk <= 0:
@@ -93,24 +97,30 @@ class BulkSCCollator(AnnDataCollator):
     def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, Any]:
         if len(examples) == self.raw_batch_size:
             n_sc_per_pb = self.n_sc_per_pseudobulk
+            n_sc_actual = self.n_sc
+        elif len(examples) == self.paired_batch_size:
+            # Paired batch: n_sc_per_pseudobulk matched SC cells per pair,
+            # followed by n_pb precomputed PB rows and n_bulk bulk rows.
+            n_sc_per_pb = 1
+            n_sc_actual = self.n_pb * self.n_sc_per_pseudobulk
         elif len(examples) == self.batch_size:
-            n_sc_per_pb = 1  # paired batch: one precomputed PB row per slot
+            # Legacy paired batch (one free SC slot per pair, kept for compat).
+            n_sc_per_pb = 1
+            n_sc_actual = self.n_sc
         else:
             raise ValueError(
-                f"Expected {self.raw_batch_size} or {self.batch_size} samples, "
-                f"got {len(examples)}."
+                f"Expected {self.raw_batch_size}, {self.paired_batch_size}, or "
+                f"{self.batch_size} samples, got {len(examples)}."
             )
 
-        sc_samples = [dict(sample) for sample in examples[: self.n_sc]]
+        sc_samples = [dict(sample) for sample in examples[:n_sc_actual]]
         sc_for_pb_samples = [
             dict(sample)
-            for sample in examples[
-                self.n_sc : self.n_sc + self.n_pb * n_sc_per_pb
-            ]
+            for sample in examples[n_sc_actual : n_sc_actual + self.n_pb * n_sc_per_pb]
         ]
         bulk_samples = [
             dict(sample)
-            for sample in examples[self.n_sc + self.n_pb * n_sc_per_pb :]
+            for sample in examples[n_sc_actual + self.n_pb * n_sc_per_pb :]
         ]
 
         # Detect paired batch: in paired sampling, sc_for_pb_samples holds precomputed

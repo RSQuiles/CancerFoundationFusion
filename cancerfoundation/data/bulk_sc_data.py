@@ -627,29 +627,26 @@ class BulkSCSampler(Sampler[list[int]]):
         pb_idx = self.paired_pb_indices[pair_positions].tolist()
         bulk_idx = self.paired_bulk_indices[pair_positions].tolist()
 
-        # Replace unpaired SC with cells drawn from the same biological samples as the
-        # selected pairs so the entire batch is paired.
-        if self.sc_pair_to_indices and self.paired_common_ids is not None:
-            paired_sc_pool = np.concatenate([
-                self.sc_pair_to_indices.get(int(self.paired_common_ids[pos]), np.empty(0, dtype=np.int64))
-                for pos in pair_positions
-            ])
-        else:
-            paired_sc_pool = np.empty(0, dtype=np.int64)
-
-        if len(paired_sc_pool) > 0:
-            sc_idx = self.rng.choice(
-                paired_sc_pool,
-                size=self.n_sc,
-                replace=len(paired_sc_pool) < self.n_sc,
-            )
-        else:
-            sc_idx = self.sample(
-                self.sc_indices,
-                size=self.n_sc,
-                modality="sc",
-                balanced=self.sample_balanced,
-            )
+        # Sample exactly n_sc_per_pb SC cells per selected pair (stratified).
+        # Falls back to the global SC pool for pairs with no matched SC cells.
+        sc_idx = []
+        for pos in pair_positions:
+            pid = int(self.paired_common_ids[pos])
+            pair_pool = self.sc_pair_to_indices.get(pid, np.empty(0, dtype=np.int64))
+            if len(pair_pool) > 0:
+                chosen = self.rng.choice(
+                    pair_pool,
+                    size=self.n_sc_per_pb,
+                    replace=len(pair_pool) < self.n_sc_per_pb,
+                )
+            else:
+                chosen = self.sample(
+                    self.sc_indices,
+                    size=self.n_sc_per_pb,
+                    modality="sc",
+                    balanced=self.sample_balanced,
+                )
+            sc_idx.extend(chosen.tolist())
 
         indices.extend(sc_idx)
         indices.extend(pb_idx)
