@@ -290,6 +290,7 @@ def main(input_args=None):
             weight_paired=args.loss_weight_paired,
             weight_agg=args.loss_weight_agg,
             weight_dat=args.loss_weight_dat,
+            weight_reconstruction=args.loss_weight_reconstruction,
         )
 
     if args.pretrained:

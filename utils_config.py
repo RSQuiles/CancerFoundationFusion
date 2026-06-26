@@ -599,11 +599,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print debug information during training (batch composition, paired pipeline, etc.).",
     )
 
-    parser.add_argument("--loss-weight-mvc",        type=float, default=1.0, help="Weight for MVC loss.")
-    parser.add_argument("--loss-weight-contrastive", type=float, default=1.0, help="Weight for contrastive loss.")
-    parser.add_argument("--loss-weight-paired",      type=float, default=1.0, help="Weight for paired alignment loss.")
-    parser.add_argument("--loss-weight-agg",         type=float, default=1.0, help="Weight for aggregation consistency loss.")
-    parser.add_argument("--loss-weight-dat",         type=float, default=1.0, help="Weight for DAT condition loss.")
+    parser.add_argument("--loss-weight-mvc",            type=float, default=1.0, help="Weight for MVC loss.")
+    parser.add_argument("--loss-weight-contrastive",    type=float, default=1.0, help="Weight for contrastive loss.")
+    parser.add_argument("--loss-weight-paired",         type=float, default=1.0, help="Weight for paired alignment loss.")
+    parser.add_argument("--loss-weight-agg",            type=float, default=1.0, help="Weight for aggregation consistency loss.")
+    parser.add_argument("--loss-weight-dat",            type=float, default=1.0, help="Weight for DAT condition loss.")
+    parser.add_argument("--loss-weight-reconstruction", type=float, default=1.0, help="Weight applied to all reconstruction losses (loss_expr, loss_mvc, loss_gen).")
 
     return parser
 

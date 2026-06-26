@@ -131,7 +131,13 @@ class BulkSCCollator(AnnDataCollator):
                 and all(p == b for p, b in zip(pb_pair_ids, bulk_pair_ids))):
                 is_paired = True
                 if self.verbose:
-                    print(f"Sampled paired indexes:\n- PB: {pb_pair_ids}\n- Bulk: {bulk_pair_ids}")
+                    sc_pair_ids = [int(s.get(self.paired_column, 0)) for s in sc_samples]
+                    print(
+                        f"Sampled paired indexes:\n"
+                        f"- PB:   {pb_pair_ids}\n"
+                        f"- Bulk: {bulk_pair_ids}\n"
+                        f"- SC:   {sc_pair_ids}"
+                    )
 
         pseudobulk_samples: List[Dict[str, Any]] = []
         sc_pseudobulk_index: List[int] = []
@@ -156,6 +162,15 @@ class BulkSCCollator(AnnDataCollator):
                 pseudobulk_sizes.append(len(chunk))
                 sc_pseudobulk_index.extend([pb_idx] * len(chunk))
 
+        # In paired batches, build a pair_id → local-PB-index lookup so SC cells
+        # can be assigned to their corresponding pseudobulk row.
+        pb_pair_id_to_local: dict[int, int] = {}
+        if is_paired and self.paired_column is not None:
+            for local_pb_idx, pb_s in enumerate(pseudobulk_samples):
+                pid = int(pb_s.get(self.paired_column, 0))
+                if pid != 0:
+                    pb_pair_id_to_local[pid] = local_pb_idx
+
         unified_samples: List[Dict[str, Any]] = []
         unified_modalities: List[int] = []
         unified_is_real: List[int] = []
@@ -170,12 +185,18 @@ class BulkSCCollator(AnnDataCollator):
             unified_pseudobulk_index.append(-1)
             unified_is_sc_for_pb.append(0)
 
-        # 1 -> sc
+        # 1 -> sc  (in paired batches these are drawn from the matched SC pool;
+        #            sample_pseudobulk_index carries the local PB index when matched)
         for sc_idx, sample in enumerate(sc_samples):
             unified_samples.append(sample)
             unified_modalities.append(1)
             unified_is_real.append(1)
-            unified_pseudobulk_index.append(-1)
+            if pb_pair_id_to_local:
+                pid = int(sample.get(self.paired_column, 0))
+                pb_local = pb_pair_id_to_local.get(pid, -1)
+            else:
+                pb_local = -1
+            unified_pseudobulk_index.append(pb_local)
             unified_is_sc_for_pb.append(0)
 
         # 2 -> pseudobulk (aggregated SC or precomputed; real only when paired)

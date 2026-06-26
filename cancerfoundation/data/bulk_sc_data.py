@@ -117,6 +117,17 @@ class BulkSCDataset(Dataset):
         else:
             self.pb_indices = np.empty(0, dtype=np.int64)
 
+        # Build mapping: pair_id → SC indices of constituent cells.
+        # Enables matched-SC sampling in paired batches.
+        self.sc_pair_to_indices: dict[int, np.ndarray] = {}
+        if self.paired_column is not None and self.paired_column in self._obs_arrays:
+            paired_arr = self._obs_arrays[self.paired_column]
+            sc_pair_ids = paired_arr[self.sc_indices]
+            for pid in np.unique(sc_pair_ids[sc_pair_ids != 0]):
+                self.sc_pair_to_indices[int(pid)] = self.sc_indices[sc_pair_ids == pid]
+            if self.verbose and self.sc_pair_to_indices:
+                print(f"Found {len(self.sc_pair_to_indices)} pair IDs with matched SC cells.")
+
         # SC-only group index pools for tissue-aware pseudobulk sampling
         if pb_group_column is not None:
             assert pb_group_column in self.obs.columns, (
@@ -377,6 +388,11 @@ class BulkSCSampler(Sampler[list[int]]):
                 if self.base_dataset.sc_group_to_indices is not None
                 else None
             )
+            self.sc_pair_to_indices = (
+                reindexer.remap_dict(self.base_dataset.sc_pair_to_indices)
+                if getattr(self.base_dataset, "sc_pair_to_indices", None)
+                else {}
+            )
             del reindexer
 
         else:
@@ -388,6 +404,7 @@ class BulkSCSampler(Sampler[list[int]]):
             self.sc_indices = self.dataset.sc_indices
             self.pb_indices = self.dataset.pb_indices
             self.sc_group_to_indices = self.base_dataset.sc_group_to_indices
+            self.sc_pair_to_indices = getattr(self.base_dataset, "sc_pair_to_indices", {})
 
         # Pre-compute sorted group keys (drop any group that became empty after Subset)
         if self.sc_group_to_indices is not None:
@@ -492,6 +509,7 @@ class BulkSCSampler(Sampler[list[int]]):
         self.paired_every_n = paired_every_n
         self.paired_pb_indices: Optional[np.ndarray] = None
         self.paired_bulk_indices: Optional[np.ndarray] = None
+        self.paired_common_ids: Optional[np.ndarray] = None
 
         if paired_sampling:
             paired_col_name = self.base_dataset.paired_column
@@ -525,6 +543,7 @@ class BulkSCSampler(Sampler[list[int]]):
                     self.paired_bulk_indices = np.array(
                         [bulk_by_id[k] for k in common_ids], dtype=np.int64
                     )
+                    self.paired_common_ids = np.array(common_ids, dtype=np.int64)
                     print(f"Paired sampling: {len(common_ids)} PB–bulk pairs found.")
                 else:
                     print("Warning: no matching pair IDs between PB and bulk rows — paired batches will be skipped.")
@@ -608,13 +627,29 @@ class BulkSCSampler(Sampler[list[int]]):
         pb_idx = self.paired_pb_indices[pair_positions].tolist()
         bulk_idx = self.paired_bulk_indices[pair_positions].tolist()
 
-        # Add unpaired sc samples to fill the batch
-        sc_idx = self.sample(
-            self.sc_indices,
-            size=self.n_sc,
-            modality="sc",
-            balanced=self.sample_balanced,
-        )
+        # Replace unpaired SC with cells drawn from the same biological samples as the
+        # selected pairs so the entire batch is paired.
+        if self.sc_pair_to_indices and self.paired_common_ids is not None:
+            paired_sc_pool = np.concatenate([
+                self.sc_pair_to_indices.get(int(self.paired_common_ids[pos]), np.empty(0, dtype=np.int64))
+                for pos in pair_positions
+            ])
+        else:
+            paired_sc_pool = np.empty(0, dtype=np.int64)
+
+        if len(paired_sc_pool) > 0:
+            sc_idx = self.rng.choice(
+                paired_sc_pool,
+                size=self.n_sc,
+                replace=len(paired_sc_pool) < self.n_sc,
+            )
+        else:
+            sc_idx = self.sample(
+                self.sc_indices,
+                size=self.n_sc,
+                modality="sc",
+                balanced=self.sample_balanced,
+            )
 
         indices.extend(sc_idx or [])
         indices.extend(pb_idx or [])

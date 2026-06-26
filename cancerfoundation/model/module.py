@@ -70,6 +70,7 @@ class TransformerModule(nn.Module):
         weight_paired: float = 1.0,
         weight_agg: float = 1.0,
         weight_dat: float = 1.0,
+        weight_reconstruction: float = 1.0,
     ):
         """Initializes the TransformerModule.
 
@@ -129,6 +130,7 @@ class TransformerModule(nn.Module):
         self.weight_contrastive = weight_contrastive
         self.weight_paired = weight_paired
         self.weight_agg = weight_agg
+        self.weight_reconstruction = weight_reconstruction
         self.weight_dat = weight_dat
 
         self.n_input_bins = n_input_bins
@@ -817,9 +819,10 @@ class TransformerModule(nn.Module):
             positions_to_match = (~gen_key_padding_mask) & keep_samples.unsqueeze(1)
 
             # print(f"Gene expression output dimensions: {gen_expr_preds.shape}")
-            loss = loss_expr = self.criterion(
+            loss_expr = self.criterion(
                 gen_expr_preds, gen_expr_target, positions_to_match
             )
+            loss = self.weight_reconstruction * loss_expr
             loss_dict["loss_expr"] = loss_expr
 
             if self.do_mvc:
@@ -827,7 +830,7 @@ class TransformerModule(nn.Module):
                 loss_mvc = self.criterion(
                     mvc_preds_for_gen, gen_expr_target, positions_to_match
                 )
-                loss = loss + self.weight_mvc * loss_mvc
+                loss = loss + self.weight_reconstruction * self.weight_mvc * loss_mvc
                 loss_dict["loss_mvc"] = loss_mvc * self.weight_mvc
 
             previous_cell_embs = output_dict["cell_emb"].detach()
@@ -844,7 +847,7 @@ class TransformerModule(nn.Module):
             )["gen_preds"]
 
             loss_gen = self.criterion(preds, gen_expr_target, positions_to_match)
-            loss = loss + use_cell_embedding * loss_gen
+            loss = loss + use_cell_embedding * self.weight_reconstruction * loss_gen
             loss_dict["loss_gen"] = loss_gen
 
         # Perceptual training
@@ -875,16 +878,17 @@ class TransformerModule(nn.Module):
                 & (target_values != -2)
                 & keep_samples.unsqueeze(1)
             )
-            loss = loss_expr = self.criterion(
+            loss_expr = self.criterion(
                 output_values, target_values, positions_to_match
             )
+            loss = self.weight_reconstruction * loss_expr
             loss_dict["loss_expr"] = loss_expr
 
             if self.do_mvc:
                 loss_mvc = self.criterion(
                     output_dict["mvc_output"], target_values, positions_to_match
                 )
-                loss = loss + self.weight_mvc * loss_mvc
+                loss = loss + self.weight_reconstruction * self.weight_mvc * loss_mvc
                 loss_dict["loss_mvc"] = loss_mvc * self.weight_mvc
 
         # Resolve paired-batch flag before any loss blocks that branch on it

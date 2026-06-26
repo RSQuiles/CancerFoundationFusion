@@ -91,6 +91,7 @@ class CancerFoundation(pl.LightningModule):
         weight_paired: float = 1.0,
         weight_agg: float = 1.0,
         weight_dat: float = 1.0,
+        weight_reconstruction: float = 1.0,
     ):
         """Initializes the CancerFoundation LightningModule.
 
@@ -188,6 +189,7 @@ class CancerFoundation(pl.LightningModule):
         self.weight_paired = weight_paired
         self.weight_agg = weight_agg
         self.weight_dat = weight_dat
+        self.weight_reconstruction = weight_reconstruction
 
         # Training configuration
         self.pad_token = "<pad>"
@@ -336,6 +338,7 @@ class CancerFoundation(pl.LightningModule):
                 weight_paired=self.weight_paired,
                 weight_agg=self.weight_agg,
                 weight_dat=self.weight_dat,
+                weight_reconstruction=self.weight_reconstruction,
             )
         if self.compile_model:
             self.model = torch.compile(self.model)
