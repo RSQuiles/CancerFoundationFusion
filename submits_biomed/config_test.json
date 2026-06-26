@@ -1,7 +1,7 @@
 {
   "trainer": {
     "gpus": 1,
-    "num_workers": 1,
+    "num_workers": 4,
     "precision": "bf16-mixed",
     "strategy": "auto",
     "epochs": 1,
@@ -11,7 +11,10 @@
     "save_dir": "${work}/outputs/save_CFF/dummy_test",
     "ckpt_every_n_steps": 5,
     "compile": false,
-    "verbose": true
+    "verbose": true,
+    "wandb_entity": "rquiles",
+    "wandb": "tests",
+    "wandb_name": "test_joint"
   },
   "data": {
     "train_path": "/cluster/work/boeva/rquiles/data/paired_dataset_counts/pipeline_ready",
@@ -19,7 +22,7 @@
     "zero_percentages": [0.2, 0.4, 0.6],
     "bulk_ratio": 0.3,
     "pb_ratio": 0.3,
-    "n_sc_per_pseudobulk": 5,
+    "n_sc_per_pseudobulk": 25,
     "pb_group_column": "tissue_general",
     "trunc_by_sample": true,
     "balanced_sampler": true,
@@ -35,7 +38,7 @@
     "lr": 0.0001,
     "warmup_ratio_or_step": 10000,
     "max_seq_len": 600,
-    "batch_size": 32,
+    "batch_size": 16,
     "input_style": "binned",
     "input_data": "counts",
     "loss": "corn",
@@ -51,7 +54,11 @@
     "contrastive_training": true,
     "agg_consistency": true,
     "do_dat": true,
-    "dat_columns": ["modality", "assay"]
-
+    "dat_columns": ["modality", "assay"],
+    "dat_start_step": 0,
+    "loss_weight_paired": 100,
+    "loss_weight_dat": 10,
+    "loss_weight_agg": 0.01,
+    "loss_weight_reconstruction": 100
   }
 }

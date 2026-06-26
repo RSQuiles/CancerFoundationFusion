@@ -17,6 +17,7 @@ from cancerfoundation.loss import LossType
 from pytorch_lightning.utilities.types import OptimizerLRSchedulerConfig
 import torch.nn.functional as F
 from tqdm import tqdm
+import time
 
 
 class CancerFoundation(pl.LightningModule):
@@ -392,6 +393,16 @@ class CancerFoundation(pl.LightningModule):
         self.use_cell_embedding = (
             self.USE_GENERATIVE_TRAINING and self.global_step > 1000
         )
+
+        # Assess time speedup
+        if not hasattr(self, "_step_timer_start"):
+            self._step_timer_start = None
+        if self.global_step == 5:
+            self._step_timer_start = time.perf_counter()
+        if self.global_step == 15 and self._step_timer_start is not None and self.verbose:
+            elapsed = time.perf_counter() - self._step_timer_start
+            print(f"\n\n[timing] 10 steps took {elapsed:.2f}s \n\n"
+                  f"({elapsed / 10:.3f}s/step, {10 / elapsed:.2f} it/s)")
 
         apply_dat = (
             self.do_dat

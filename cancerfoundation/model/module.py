@@ -823,7 +823,7 @@ class TransformerModule(nn.Module):
                 gen_expr_preds, gen_expr_target, positions_to_match
             )
             loss = self.weight_reconstruction * loss_expr
-            loss_dict["loss_expr"] = loss_expr
+            loss_dict["loss_expr"] = loss_expr * self.weight_reconstruction
 
             if self.do_mvc:
                 mvc_preds_for_gen = output_dict["mvc_output"][:, pcpt_gene.shape[1] :]
@@ -831,7 +831,7 @@ class TransformerModule(nn.Module):
                     mvc_preds_for_gen, gen_expr_target, positions_to_match
                 )
                 loss = loss + self.weight_reconstruction * self.weight_mvc * loss_mvc
-                loss_dict["loss_mvc"] = loss_mvc * self.weight_mvc
+                loss_dict["loss_mvc"] = loss_mvc * self.weight_mvc * self.weight_reconstruction
 
             previous_cell_embs = output_dict["cell_emb"].detach()
             preds = self.generative_forward(
@@ -848,7 +848,7 @@ class TransformerModule(nn.Module):
 
             loss_gen = self.criterion(preds, gen_expr_target, positions_to_match)
             loss = loss + use_cell_embedding * self.weight_reconstruction * loss_gen
-            loss_dict["loss_gen"] = loss_gen
+            loss_dict["loss_gen"] = loss_gen * self.weight_reconstruction
 
         # Perceptual training
         else:
@@ -882,14 +882,14 @@ class TransformerModule(nn.Module):
                 output_values, target_values, positions_to_match
             )
             loss = self.weight_reconstruction * loss_expr
-            loss_dict["loss_expr"] = loss_expr
+            loss_dict["loss_expr"] = loss_expr * self.weight_reconstruction
 
             if self.do_mvc:
                 loss_mvc = self.criterion(
                     output_dict["mvc_output"], target_values, positions_to_match
                 )
                 loss = loss + self.weight_reconstruction * self.weight_mvc * loss_mvc
-                loss_dict["loss_mvc"] = loss_mvc * self.weight_mvc
+                loss_dict["loss_mvc"] = loss_mvc * self.weight_reconstruction* self.weight_mvc
 
         # Resolve paired-batch flag before any loss blocks that branch on it
         is_paired_batch = tensors.get("is_paired_batch", False)
