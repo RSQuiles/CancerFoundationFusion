@@ -55,6 +55,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from cancerfoundation.model.model import CancerFoundation
+from utils_config import LossType
 
 logging.basicConfig(
     level=logging.INFO,
@@ -95,8 +96,9 @@ def compute_reconstruction_metrics(
     n_cells: int = 1000,
     seed: int = 0,
     normalized: bool = True,
+    loss: LossType | None = None,
 ) -> dict:
-    """Pearson R and MSE between predicted and actual expression at masked positions."""
+    """Pearson R and mean absolute bin error between predicted and actual expression at masked positions."""
     device = next(model.model.parameters()).device
     rng = np.random.default_rng(seed)
 
@@ -124,8 +126,10 @@ def compute_reconstruction_metrics(
     else:
         eff_mask = float(model.mask_value)  # -1 for continuous
 
+    effective_loss = loss if loss is not None else model.loss_type
+
     pearson_rs: list[float] = []
-    mse_vals: list[float] = []
+    mae_vals: list[float] = []
 
     for start in range(0, n, batch_size):
         batch_expr = torch.from_numpy(X[start : start + batch_size]).to(device)
@@ -137,9 +141,7 @@ def compute_reconstruction_metrics(
         genes_full = torch.cat([cls_g, batch_genes], dim=1)
         expr_full  = torch.cat([cls_e, batch_expr],  dim=1)
 
-        nonzero_mask = batch_expr > 0
         gene_mask = (torch.rand(bs, n_genes, device=device) < mask_ratio)
-        # gene_mask = (torch.rand(bs, n_genes, device=device) < mask_ratio) & nonzero_mask
         masked_expr = expr_full.clone()
         masked_expr[:, 1:][gene_mask] = eff_mask
 
@@ -157,11 +159,18 @@ def compute_reconstruction_metrics(
             )
 
         decoder_out = model.model.decoder(transformer_out)
-        pred = decoder_out["pred"]
-        if pred.dim() == 3:
-            pred = pred[:, 1:, 0]
+        raw_pred = decoder_out["pred"]
+
+        if effective_loss == LossType.CORN:
+            # CORN logits (batch, seq, num_classes-1): decode to expected bin via
+            # cumulative product of conditional sigmoid probabilities P(Y>k | Y>=k).
+            pred = torch.cumprod(torch.sigmoid(raw_pred[:, 1:, :]), dim=-1).sum(dim=-1)
+        elif effective_loss == LossType.ORDINALCROSSENTROPY:
+            # Each logit is P(Y > k) directly; expected bin = sum of sigmoids.
+            pred = torch.sigmoid(raw_pred[:, 1:, :]).sum(dim=-1)
         else:
-            pred = pred[:, 1:]
+            # MSE / ZINB: decoder emits a scalar (or mu as first channel) per gene.
+            pred = raw_pred[:, 1:, 0] if raw_pred.dim() == 3 else raw_pred[:, 1:]
 
         target = batch_expr
         for i in range(bs):
@@ -169,20 +178,18 @@ def compute_reconstruction_metrics(
             if m.sum() < 2:
                 continue
             p = pred[i][m].float().cpu().numpy()
-            # print(p)
             t = target[i][m].float().cpu().numpy()
-            # print(t)
+            mae_vals.append(float(np.mean(np.abs(p - t))))
             if np.std(p) < 1e-8 or np.std(t) < 1e-8:
                 continue
             r = float(np.corrcoef(p, t)[0, 1])
             if not np.isnan(r):
                 pearson_rs.append(r)
-            mse_vals.append(float(np.mean((p - t) ** 2)))
 
     return {
         "recon_pearson_r":     float(np.mean(pearson_rs)) if pearson_rs else float("nan"),
         "recon_pearson_r_std": float(np.std(pearson_rs))  if pearson_rs else float("nan"),
-        "recon_mse":           float(np.mean(mse_vals))   if mse_vals   else float("nan"),
+        "recon_mae_bins":      float(np.mean(mae_vals))   if mae_vals   else float("nan"),
         "recon_n_cells":       len(pearson_rs),
     }
 
@@ -619,7 +626,7 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path) -> None:
 
     metric_meta = [
         ("recon_pearson_r",                    "Reconstruction\nPearson R ↑"),
-        ("recon_mse",                          "Reconstruction\nMSE ↓"),
+        ("recon_mae_bins",                     "Reconstruction\nMAE Bins ↓"),
         ("paired_cosine_sim_mean",             "Paired Alignment\nCosine Sim ↑"),
         ("paired_rank_mean",                   "Paired Alignment\nRank ↓"),
         ("agg_paired_cosine_pb_to_mean_sc",    "Agg Consistency\n(paired) ↑"),
