@@ -989,13 +989,15 @@ class TransformerModule(nn.Module):
                     )
                     has_sc = sc_counts > 0
                     if has_sc.any():
+                        if self.verbose:
+                            print("Using paired SC samples!")
                         sc_means = sc_sums[has_sc] / sc_counts[has_sc].unsqueeze(1)
                         loss_paired_sc = (
                             self._paired_alignment_loss(sc_means, bulk_embs[has_sc])
                             + self._paired_alignment_loss(sc_means, pb_embs[has_sc])
                         )
                         loss_paired = loss_paired + loss_paired_sc
-                        loss_dict["paired_alignment_loss_sc"] = loss_paired_sc.detach() * self.weight_paired
+                        # loss_dict["paired_alignment_loss_sc"] = loss_paired_sc.detach() * self.weight_paired
 
                 loss = loss + self.weight_paired * loss_paired
                 loss_dict["paired_alignment_loss"] = loss_paired.detach() * self.weight_paired

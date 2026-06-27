@@ -424,6 +424,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--num-workers",
         type=int,
+        default=4,
         help="How many workers to use for the DataLoader.",
     )
 
@@ -511,7 +512,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--agg-fn",
         type=str,
         choices=["mean", "sum"],
-        default="sum",
+        default="mean",
         help="The function to use for aggregating single-cell embeddings into pseudobulk embeddings. Default is 'mean'.",
     )
 

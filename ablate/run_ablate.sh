@@ -1,4 +1,4 @@
 #!/bin/bash -l
 
 python -u ablate.py \
-	--config ./configs/paired_counts.json \
+	--config ./configs/paired_corn.json \
