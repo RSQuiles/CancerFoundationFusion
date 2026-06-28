@@ -650,7 +650,7 @@ def _save_modality_split_umaps(
     agg_method: str = "mean",
     embed_batch_size: int = 64,
     flavor: str = "seurat",
-    only_pseudobulk: bool = True,
+    only_pseudobulk: bool = False,
 ) -> None:
     """Compute and save separate UMAP plots for SC-only and bulk-only subsets.
 

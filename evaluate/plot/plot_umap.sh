@@ -24,7 +24,7 @@ for arg in "$@"; do
 done
 
 SCRIPT_ARGS=(
-    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts
+    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn
     --adata-dir /cluster/work/boeva/rquiles/data/paired_dataset_counts/pipeline_ready/h5ads
     --color tissue_general assay
     --sample-size 75_000
@@ -36,7 +36,7 @@ if [[ "$USE_LOCAL" -eq 1 ]]; then
     python -u umaps.py "${SCRIPT_ARGS[@]}"
 else
     echo "Running with singularity"
-    srun singularity run \
+    singularity run \
         --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/plot \
         --bind /cluster/work/boeva/rquiles:/cluster/work/boeva/rquiles \
         --nv /cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif \

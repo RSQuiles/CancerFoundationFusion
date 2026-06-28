@@ -8,7 +8,7 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:rtx4090:1
 
-ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison"
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts"
 
 SCRIPT_ARGS=(
     --eval-adata $ABLATION_DIR/eval.h5ad
