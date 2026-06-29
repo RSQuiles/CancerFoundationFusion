@@ -373,13 +373,31 @@ def _mmd(X: np.ndarray, Y: np.ndarray) -> float:
     return _rbf_kernel(X, X, bw) + _rbf_kernel(Y, Y, bw) - 2 * _rbf_kernel(X, Y, bw)
 
 
+def _sliced_wasserstein(
+    X: np.ndarray, Y: np.ndarray, n_projections: int = 50, seed: int = 0
+) -> float:
+    """Sliced Wasserstein Distance: average 1-D Wasserstein over random unit projections.
+
+    Exact Wasserstein is intractable in high dimensions; slicing gives an
+    unbiased estimator that is a proper metric and converges quickly with ~50
+    projections for embeddings of ~128 dims.
+    """
+    from scipy.stats import wasserstein_distance
+
+    rng = np.random.default_rng(seed)
+    directions = rng.standard_normal((n_projections, X.shape[1]))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    dists = [wasserstein_distance(X @ d, Y @ d) for d in directions]
+    return float(np.mean(dists))
+
+
 def compute_contrastive_metrics(
     bulk_emb: np.ndarray,
     pb_emb: np.ndarray,
     n_max: int = 500,
     seed: int = 0,
 ) -> dict:
-    """Cross-modal cosine similarity and MMD between bulk and pseudobulk distributions."""
+    """Cross-modal cosine similarity, MMD, and Sliced Wasserstein between bulk and pseudobulk distributions."""
     rng = np.random.default_rng(seed)
     if len(bulk_emb) > n_max:
         bulk_emb = bulk_emb[rng.choice(len(bulk_emb), n_max, replace=False)]
@@ -400,6 +418,7 @@ def compute_contrastive_metrics(
         "contrastive_within_bulk_cosine":  _within(bn),
         "contrastive_within_pb_cosine":    _within(pn),
         "contrastive_mmd":                 _mmd(bulk_emb, pb_emb),
+        "contrastive_wasserstein":         _sliced_wasserstein(bulk_emb, pb_emb, seed=seed),
         "contrastive_n_bulk":              len(bulk_emb),
         "contrastive_n_pb":                len(pb_emb),
     }
@@ -633,6 +652,7 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path) -> None:
         ("agg_synth_cosine_pb_to_mean_sc",     "Agg Consistency\n(synth) ↑"),
         ("contrastive_cross_cosine_mean",      "Contrastive\nCross Cosine ↑"),
         ("contrastive_mmd",                    "Contrastive\nMMD ↓"),
+        ("contrastive_wasserstein",            "Contrastive\nSliced-W ↓"),
     ]
     available = [(col, lbl) for col, lbl in metric_meta if col in df.columns]
     if not available:
