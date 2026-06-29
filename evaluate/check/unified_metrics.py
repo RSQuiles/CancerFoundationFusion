@@ -392,6 +392,7 @@ def _rbf_kernel(X: np.ndarray, Y: np.ndarray, bw: float) -> float:
 
 
 def _mmd(X: np.ndarray, Y: np.ndarray) -> float:
+    # Sets the kernel width to the median pairwise distance of the combined cloud
     XY   = np.vstack([X, Y])
     diff = XY[:, None, :] - XY[None, :, :]
     sq   = (diff ** 2).sum(axis=2)
@@ -411,11 +412,15 @@ def _sliced_wasserstein(
     """
     from scipy.stats import wasserstein_distance
 
-    rng = np.random.default_rng(seed)
-    directions = rng.standard_normal((n_projections, X.shape[1]))
-    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
-    dists = [wasserstein_distance(X @ d, Y @ d) for d in directions]
-    return float(np.mean(dists))
+    # Generate 50 random unit-vector directions in embedding space
+    # Project, compute W and average over directions
+    # rng = np.random.default_rng(seed)
+    # directions = rng.standard_normal((n_projections, X.shape[1]))
+    # directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    # dists = [wasserstein_distance(X @ d, Y @ d) for d in directions]
+    # dist = float(np.mean(dists))
+    dist = wasserstein_distance(X, Y)
+    return dist
 
 
 def compute_contrastive_metrics(
@@ -683,9 +688,11 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path) -> None:
         ("paired_rank_mean",                   "Paired Alignment\nRank ↓"),
         ("agg_paired_cosine_pb_to_mean_sc",    "Agg Consistency\n(paired) ↑"),
         ("agg_synth_cosine_pb_to_mean_sc",     "Agg Consistency\n(synth) ↑"),
-        ("contrastive_cross_cosine_mean",      "Contrastive\nCross Cosine ↑"),
-        ("contrastive_mmd",                    "Contrastive\nMMD ↓"),
-        ("contrastive_wasserstein",            "Contrastive\nSliced-W ↓"),
+        ("contrastive_cross_cosine_mean",      "Cross Cosine Sim ↑"),
+        ("contrastive_within_bulk_cosine",     "Within-Bulk\n Cosine Sim ↑"),
+        ("contrastive_within_pb_cosine",       "Within-PB\n Cosine Sim ↑"),
+        ("contrastive_mmd",                    "Maximum Mean\nDiscrepancy ↓"),
+        ("contrastive_wasserstein",            "Wasserstein distance ↓"),
     ]
     available = [(col, lbl) for col, lbl in metric_meta if col in df.columns]
     if not available:
