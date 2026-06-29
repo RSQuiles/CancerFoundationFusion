@@ -37,10 +37,20 @@ the pre-computed embeddings in the eval AnnData.
 
 from __future__ import annotations
 
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+log = logging.getLogger(__name__)
+
+import warnings
+warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore", category=FutureWarning)
+
 import argparse
 import gc
 import json
-import logging
 import sys
 import traceback
 from pathlib import Path
@@ -54,14 +64,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from cancerfoundation.model.model import CancerFoundation
-from utils_config import LossType
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-log = logging.getLogger(__name__)
+try:
+    from cancerfoundation.model.model import CancerFoundation
+    from utils_config import LossType
+except ImportError:
+    log.warning("Could not load CancerFoundation")
 
 _MODALITY_COL = "_eval_modality"
 
@@ -217,7 +224,7 @@ def compute_reconstruction_metrics(
         "recon_n_cells":       len(pearson_rs),
     }
 
-    print(out_dict)
+    # print(out_dict)
     return out_dict
 
 
@@ -524,7 +531,7 @@ def compute_scib_metrics(
         If omitted, only iLISI is computed.
     """
     try:
-        import scib
+        import scib_metrics
         import scanpy as sc
     except ImportError:
         log.warning("scib or scanpy not installed — skipping scIB metrics.")
@@ -567,7 +574,7 @@ def compute_scib_metrics(
     # Batch ASW: 1 - mean |ASW_batch| per label group, scaled to [0,1]. Higher = better mixing.
     if has_labels:
         try:
-            asw = scib.metrics.silhouette_batch(
+            asw = scib_metrics.silhouette_batch(
                 adata, batch_key="modality", label_key="label",
                 embed="X_emb", scale=True,
             )
@@ -577,7 +584,7 @@ def compute_scib_metrics(
 
     # iLISI: higher values = better batch mixing.
     try:
-        ilisi = scib.metrics.ilisi_graph(
+        ilisi = scib_metrics.ilisi_graph(
             adata, batch_key="modality", type_="embed",
             use_rep="X_emb", scale=True,
         )
@@ -588,7 +595,7 @@ def compute_scib_metrics(
     # Graph connectivity on biological label: higher = better preservation.
     if has_labels:
         try:
-            gc = scib.metrics.graph_connectivity(adata, label_key="label")
+            gc = scib_metrics.graph_connectivity(adata, label_key="label")
             out["scib_graph_connectivity"] = float(gc)
         except Exception as exc:
             log.warning("scib graph_connectivity failed: %s", exc)
@@ -629,7 +636,8 @@ def run_single_model(
     if skip_existing and metrics_file.exists():
         with metrics_file.open() as f:
             cached = json.load(f)
-        scib_already_done = any(k.startswith("scib_") for k in cached)
+        # scib_already_done = any(k.startswith("scib_") for k in cached)
+        scib_already_done = False
         if not do_scib or scib_already_done:
             log.info("  Cached — loading %s", metrics_file)
             return cached
@@ -760,7 +768,7 @@ def run_single_model(
     if ckpt_path is not None:
         metrics["checkpoint"] = str(ckpt_path)
 
-    print(metrics)
+    # print(metrics)
 
     with metrics_file.open("w") as f:
         json.dump(metrics, f, indent=2)

@@ -16,10 +16,15 @@ for arg in "$@"; do
     fi
 done
 
-ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn"
+SCIB_ONLY=0
+# Parse args
+for arg in "$@"; do
+    if [[ "$arg" == "--scib" ]]; then
+        SCIB_ONLY=1
+    fi
+done
 
-# Python from the bulkFM conda env — has scib + scanpy installed.
-CONDA_PYTHON="/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/bin/python"
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts"
 
 SCRIPT_ARGS=(
     --eval-adata $ABLATION_DIR/eval.h5ad
@@ -30,9 +35,9 @@ SCRIPT_ARGS=(
 # ── Step 1: main metrics (no scIB) ───────────────────────────────────────────
 # Runs inside the singularity container (or locally) which does not need scib.
 echo "=== Step 1: computing main metrics ==="
-if [[ "$USE_LOCAL" -eq 1 ]]; then
+if [[ "$USE_LOCAL" -eq 1 && "$SCIB_ONLY" -eq 0 ]]; then
     python -u unified_metrics.py "${SCRIPT_ARGS[@]}"
-else
+elif [[ "$SCIB_ONLY" -eq 0 ]]; then
     singularity run \
         --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/check \
         --bind /cluster \
@@ -45,4 +50,6 @@ fi
 # recomputing metrics 1-4; --scib appends scIB keys to each cached JSON
 # and writes batch_integration.png.
 echo "=== Step 2: computing scIB batch integration metrics ==="
-$CONDA_PYTHON -u unified_metrics.py "${SCRIPT_ARGS[@]}" --scib --skip-existing
+source ~/.bashrc
+conda activate bulkFM
+python -u unified_metrics.py "${SCRIPT_ARGS[@]}" --scib --skip-existing
