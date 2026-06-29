@@ -145,6 +145,7 @@ def compute_reconstruction_metrics(
         bs = batch_expr.shape[0]
         batch_genes = gene_ids.unsqueeze(0).expand(bs, -1)
 
+        # Prepend CLS token
         cls_g = torch.full((bs, 1), model.cls_token_id, dtype=torch.long, device=device)
         cls_e = torch.full((bs, 1), float(model.pad_value), device=device)
         genes_full = torch.cat([cls_g, batch_genes], dim=1)
@@ -173,7 +174,10 @@ def compute_reconstruction_metrics(
         if effective_loss == LossType.CORN:
             # CORN logits (batch, seq, num_classes-1): decode to expected bin via
             # cumulative product of conditional sigmoid probabilities P(Y>k | Y>=k).
-            pred = torch.cumprod(torch.sigmoid(raw_pred[:, 1:, :]), dim=-1).sum(dim=-1)
+            logits = raw_pred[:, 1:, :]
+            hard_pred = (torch.cumprod(torch.sigmoid(logits), -1) > 0.5).sum(-1)  # integer
+            soft_pred = torch.cumprod(torch.sigmoid(logits), -1).sum(-1)          # expected
+            pred = hard_pred
         elif effective_loss == LossType.ORDINALCROSSENTROPY:
             # Each logit is P(Y > k) directly; expected bin = sum of sigmoids.
             pred = torch.sigmoid(raw_pred[:, 1:, :]).sum(dim=-1)
@@ -193,6 +197,7 @@ def compute_reconstruction_metrics(
             for lo, hi, suffix in _BIN_STRATA:
                 stratum = (t >= lo) & (t < hi)
                 if stratum.any():
+                    # print("Adding stratified MAE")
                     strat_mae[suffix].append(float(abs_err[stratum].mean()))
             if np.std(p) < 1e-8 or np.std(t) < 1e-8:
                 continue
@@ -200,7 +205,7 @@ def compute_reconstruction_metrics(
             if not np.isnan(r):
                 pearson_rs.append(r)
 
-    return {
+    out_dict = {
         "recon_pearson_r":     float(np.mean(pearson_rs)) if pearson_rs else float("nan"),
         "recon_pearson_r_std": float(np.std(pearson_rs))  if pearson_rs else float("nan"),
         "recon_mae_bins":      float(np.mean(mae_vals))   if mae_vals   else float("nan"),
@@ -211,6 +216,9 @@ def compute_reconstruction_metrics(
         },
         "recon_n_cells":       len(pearson_rs),
     }
+
+    print(out_dict)
+    return out_dict
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +288,7 @@ def _agg_from_paired_sc(
         pb_mask = pb_ids == pid
         if not sc_mask.any() or not pb_mask.any():
             continue
-        mean_sc = paired_sc_emb[sc_mask].sum(axis=0)
+        mean_sc = paired_sc_emb[sc_mask].mean(axis=0)
         pb_e    = paired_pb_emb[pb_mask][0]
         pb_n    = pb_e    / (np.linalg.norm(pb_e)    + 1e-8)
         sc_n    = mean_sc / (np.linalg.norm(mean_sc) + 1e-8)
@@ -575,6 +583,8 @@ def run_single_model(
     # ── Save ──────────────────────────────────────────────────────────────
     if ckpt_path is not None:
         metrics["checkpoint"] = str(ckpt_path)
+
+    print(metrics)
 
     with metrics_file.open("w") as f:
         json.dump(metrics, f, indent=2)

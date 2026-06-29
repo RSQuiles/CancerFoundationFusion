@@ -8,11 +8,12 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:rtx4090:1
 
-ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts"
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn"
 
 SCRIPT_ARGS=(
     --eval-adata $ABLATION_DIR/eval.h5ad
     --ablation-dir $ABLATION_DIR
+    --batch-size 64
 )
 
 echo "Running with singularity"

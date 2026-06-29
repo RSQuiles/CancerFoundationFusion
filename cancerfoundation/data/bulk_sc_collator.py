@@ -331,7 +331,12 @@ class BulkSCCollator(AnnDataCollator):
 
             # Map to count space: log1p → expm1
             if not sc_counts:
-                exprs = np.expm1(exprs)
+                # exprs = np.expm1(exprs)
+                # Avoid potential overflows
+                exprs = np.clip(                                                                                                              
+                    np.expm1(exprs.astype(np.float64)),                                                                                       
+                    0, np.finfo(np.float32).max,                                                                                              
+                ).astype(np.float32)
 
             # Rank normalize: expm1 → normalize to proportions
             # This way each cell contributes equally to the pseudobulk, regardless of sequencing depth or previous normalization
