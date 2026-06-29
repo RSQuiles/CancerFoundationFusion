@@ -698,6 +698,8 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path) -> None:
     models = df.index.tolist()
     colors = plt.cm.tab10(np.linspace(0, 0.9, max(len(models), 1)))
 
+    _BASELINE_COL = "paired_random_baseline_cosine"
+
     for ax, (col, lbl) in zip(axes, available):
         vals = df[col].to_numpy(dtype=float)
         ax.bar(range(len(models)), vals, color=colors[: len(models)])
@@ -707,6 +709,15 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path) -> None:
         ax.tick_params(axis="y", labelsize=7)
         for spine in ("top", "right"):
             ax.spines[spine].set_visible(False)
+
+        if col == "paired_cosine_sim_mean" and _BASELINE_COL in df.columns:
+            baseline = df[_BASELINE_COL].to_numpy(dtype=float)
+            ax.scatter(
+                range(len(models)), baseline,
+                color="black", marker="_", s=300, linewidths=2.5,
+                zorder=5, label="random baseline",
+            )
+            ax.legend(fontsize=6, loc="lower right")
 
     fig.suptitle("Unified FM evaluation metrics", fontsize=10, fontweight="bold")
     fig.tight_layout()
@@ -725,14 +736,18 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("--eval-adata", type=Path, required=True,
-                   help="Pre-built evaluation AnnData from build_eval_adata.py.")
+    p.add_argument("--eval-adata", type=Path, default=None,
+                   help="Pre-built evaluation AnnData from build_eval_adata.py. "
+                        "Not required when using --plot-csv.")
 
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--ckpt", type=Path, default=None,
                       help="Checkpoint for a single model (used for reconstruction metric).")
     mode.add_argument("--ablation-dir", type=Path, default=None,
                       help="Ablation root; evaluates every model sub-directory.")
+    mode.add_argument("--plot-csv", type=Path, default=None,
+                      help="Re-plot directly from an existing unified_metrics.csv "
+                           "without recomputing any metrics.")
 
     p.add_argument("--name", type=str, default=None,
                    help="Model name (obsm key = X_cf_<name>). "
@@ -763,6 +778,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = _build_parser().parse_args(argv)
+
+    # ── Plot-only shortcut ────────────────────────────────────────────────────
+    if args.plot_csv is not None:
+        csv_path = args.plot_csv.expanduser().resolve()
+        if not csv_path.exists():
+            log.error("--plot-csv not found: %s", csv_path)
+            return 1
+        df = pd.read_csv(csv_path, index_col=0)
+        out_png = csv_path.with_suffix(".png")
+        log.info("Plotting %d models from %s ...", len(df), csv_path)
+        _plot_metrics(df, out_png)
+        log.info("Plot → %s", out_png)
+        return 0
+
+    if args.eval_adata is None:
+        log.error("--eval-adata is required unless using --plot-csv.")
+        return 1
 
     if args.device is None:
         args.device = "cuda" if torch.cuda.is_available() else "cpu"
