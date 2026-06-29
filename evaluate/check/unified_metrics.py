@@ -231,7 +231,7 @@ def compute_paired_alignment_metrics(
     pb_pair_ids: np.ndarray,
     bulk_pair_ids: np.ndarray,
 ) -> dict:
-    """Cosine similarity and retrieval rank between matched pseudobulk–bulk pairs."""
+    """Cosine similarity, L2 distance, and retrieval rank between matched pseudobulk–bulk pairs."""
     common = sorted(set(pb_pair_ids.tolist()) & set(bulk_pair_ids.tolist()) - {0})
     if not common:
         log.warning("No common pair IDs — skipping paired alignment metrics.")
@@ -247,21 +247,37 @@ def compute_paired_alignment_metrics(
     bulk_arr = np.stack([bulk_dict[p] for p in common])
     N = len(common)
 
+    # ── Cosine similarity (unit-sphere projected) ──────────────────────────
     pb_n   = pb_arr   / (np.linalg.norm(pb_arr,   axis=1, keepdims=True) + 1e-8)
     bulk_n = bulk_arr / (np.linalg.norm(bulk_arr, axis=1, keepdims=True) + 1e-8)
 
-    sim = pb_n @ bulk_n.T
-    paired_sims = np.diag(sim)
-    ranks = [int((sim[i] > sim[i, i]).sum()) + 1 for i in range(N)]
+    cos_sim = pb_n @ bulk_n.T
+    paired_sims = np.diag(cos_sim)
+    ranks_cos = [int((cos_sim[i] > cos_sim[i, i]).sum()) + 1 for i in range(N)]
 
     off = ~np.eye(N, dtype=bool)
+
+    # ── L2 distance (raw embedding space) ─────────────────────────────────
+    # Pairwise squared distances via ||a-b||² = ||a||² + ||b||² - 2a·b
+    sq_a = (pb_arr   ** 2).sum(axis=1)
+    sq_b = (bulk_arr ** 2).sum(axis=1)
+    sq_dist_mat = np.clip(sq_a[:, None] + sq_b[None, :] - 2 * (pb_arr @ bulk_arr.T), 0, None)
+    l2_mat = np.sqrt(sq_dist_mat)
+    paired_l2 = np.diag(l2_mat)
+    # rank by L2: 1 = matched pair is the nearest bulk neighbour for this PB
+    ranks_l2 = [int((l2_mat[i] < l2_mat[i, i]).sum()) + 1 for i in range(N)]
+
     return {
-        "paired_cosine_sim_mean":       float(paired_sims.mean()),
-        "paired_cosine_sim_std":        float(paired_sims.std()),
-        "paired_rank_mean":             float(np.mean(ranks)),
-        "paired_rank_median":           float(np.median(ranks)),
-        "paired_n_pairs":               N,
-        "paired_random_baseline_cosine": float(sim[off].mean()) if N > 1 else float("nan"),
+        "paired_cosine_sim_mean":        float(paired_sims.mean()),
+        "paired_cosine_sim_std":         float(paired_sims.std()),
+        "paired_rank_mean":              float(np.mean(ranks_cos)),
+        "paired_rank_median":            float(np.median(ranks_cos)),
+        "paired_l2_mean":                float(paired_l2.mean()),
+        "paired_l2_std":                 float(paired_l2.std()),
+        "paired_rank_l2_mean":           float(np.mean(ranks_l2)),
+        "paired_rank_l2_median":         float(np.median(ranks_l2)),
+        "paired_n_pairs":                N,
+        "paired_random_baseline_cosine": float(cos_sim[off].mean()) if N > 1 else float("nan"),
     }
 
 
@@ -283,6 +299,7 @@ def _agg_from_paired_sc(
         return {}
 
     sims: list[float] = []
+    l2s:  list[float] = []
     for pid in common:
         sc_mask = sc_ids == pid
         pb_mask = pb_ids == pid
@@ -293,12 +310,15 @@ def _agg_from_paired_sc(
         pb_n    = pb_e    / (np.linalg.norm(pb_e)    + 1e-8)
         sc_n    = mean_sc / (np.linalg.norm(mean_sc) + 1e-8)
         sims.append(float(np.dot(pb_n, sc_n)))
+        l2s.append(float(np.linalg.norm(pb_e - mean_sc)))
 
     if not sims:
         return {}
     return {
         "agg_paired_cosine_pb_to_mean_sc":     float(np.mean(sims)),
         "agg_paired_cosine_pb_to_mean_sc_std": float(np.std(sims)),
+        "agg_paired_l2_pb_to_mean_sc":         float(np.mean(l2s)),
+        "agg_paired_l2_pb_to_mean_sc_std":     float(np.std(l2s)),
         "agg_paired_n_pairs":                  len(sims),
     }
 
@@ -336,6 +356,7 @@ def compute_aggregation_metrics(
 
     n_pb = min(n_pb, max(1, len(valid) * 5))
     sims: list[float] = []
+    l2s:  list[float] = []
 
     for g in rng.choice(valid, size=n_pb, replace=True).tolist():
         pool = group_idx[g]
@@ -371,12 +392,15 @@ def compute_aggregation_metrics(
         pb_n = pb_emb  / (np.linalg.norm(pb_emb)  + 1e-8)
         sc_n = mean_sc / (np.linalg.norm(mean_sc) + 1e-8)
         sims.append(float(np.dot(pb_n, sc_n)))
+        l2s.append(float(np.linalg.norm(pb_emb - mean_sc)))
 
     if not sims:
         return {}
     return {
         "agg_synth_cosine_pb_to_mean_sc":     float(np.mean(sims)),
         "agg_synth_cosine_pb_to_mean_sc_std": float(np.std(sims)),
+        "agg_synth_l2_pb_to_mean_sc":         float(np.mean(l2s)),
+        "agg_synth_l2_pb_to_mean_sc_std":     float(np.std(l2s)),
         "agg_synth_n_pseudobulks":            len(sims),
     }
 
@@ -402,25 +426,42 @@ def _mmd(X: np.ndarray, Y: np.ndarray) -> float:
 
 
 def _sliced_wasserstein(
-    X: np.ndarray, Y: np.ndarray, n_projections: int = 50, seed: int = 0
+    X: np.ndarray, 
+    Y: np.ndarray,
+    project: bool = False,
+    n_projections: int = 50, 
+    seed: int = 0
 ) -> float:
-    """Sliced Wasserstein Distance: average 1-D Wasserstein over random unit projections.
-
-    Exact Wasserstein is intractable in high dimensions; slicing gives an
-    unbiased estimator that is a proper metric and converges quickly with ~50
-    projections for embeddings of ~128 dims.
+    """Wasserstein distance between X and Y. Optionally projects onto random 1D directions and averages the 1D Wasserstein distances.
     """
     from scipy.stats import wasserstein_distance
 
-    # Generate 50 random unit-vector directions in embedding space
-    # Project, compute W and average over directions
-    # rng = np.random.default_rng(seed)
-    # directions = rng.standard_normal((n_projections, X.shape[1]))
-    # directions /= np.linalg.norm(directions, axis=1, keepdims=True)
-    # dists = [wasserstein_distance(X @ d, Y @ d) for d in directions]
-    # dist = float(np.mean(dists))
-    dist = wasserstein_distance(X, Y)
-    return dist
+    if project:
+        rng = np.random.default_rng(seed)
+        directions = rng.standard_normal((n_projections, X.shape[1]))
+        directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+        dists = [wasserstein_distance(X @ d, Y @ d) for d in directions]
+        return float(np.mean(dists))
+    else:
+        return float(wasserstein_distance(X.flatten(), Y.flatten()))
+
+
+def _pairwise_l2_mean(X: np.ndarray) -> float:
+    """Mean pairwise L2 distance between all rows of X, excluding self-pairs."""
+    if len(X) < 2:
+        return float("nan")
+    sq = (X ** 2).sum(axis=1)
+    sq_dist = np.clip(sq[:, None] + sq[None, :] - 2 * (X @ X.T), 0, None)
+    mask = ~np.eye(len(X), dtype=bool)
+    return float(np.sqrt(sq_dist[mask]).mean())
+
+
+def _cross_l2_mean(X: np.ndarray, Y: np.ndarray) -> float:
+    """Mean L2 distance between all pairs (x_i, y_j) across two sets."""
+    sq_x = (X ** 2).sum(axis=1)
+    sq_y = (Y ** 2).sum(axis=1)
+    sq_dist = np.clip(sq_x[:, None] + sq_y[None, :] - 2 * (X @ Y.T), 0, None)
+    return float(np.sqrt(sq_dist).mean())
 
 
 def compute_contrastive_metrics(
@@ -429,7 +470,7 @@ def compute_contrastive_metrics(
     n_max: int = 500,
     seed: int = 0,
 ) -> dict:
-    """Cross-modal cosine similarity, MMD, and Sliced Wasserstein between bulk and pseudobulk distributions."""
+    """Cosine similarity, L2 distances, MMD, and Sliced Wasserstein between bulk and pseudobulk distributions."""
     rng = np.random.default_rng(seed)
     if len(bulk_emb) > n_max:
         bulk_emb = bulk_emb[rng.choice(len(bulk_emb), n_max, replace=False)]
@@ -439,21 +480,120 @@ def compute_contrastive_metrics(
     bn = bulk_emb / (np.linalg.norm(bulk_emb, axis=1, keepdims=True) + 1e-8)
     pn = pb_emb   / (np.linalg.norm(pb_emb,   axis=1, keepdims=True) + 1e-8)
 
-    def _within(e: np.ndarray) -> float:
+    def _within_cos(e: np.ndarray) -> float:
         if len(e) < 2:
             return float("nan")
         s = e @ e.T
         return float(s[~np.eye(len(e), dtype=bool)].mean())
 
     return {
+        # cosine-based (unit-sphere projected)
         "contrastive_cross_cosine_mean":   float((bn @ pn.T).mean()),
-        "contrastive_within_bulk_cosine":  _within(bn),
-        "contrastive_within_pb_cosine":    _within(pn),
+        "contrastive_within_bulk_cosine":  _within_cos(bn),
+        "contrastive_within_pb_cosine":    _within_cos(pn),
+        # L2-based (raw embedding space)
+        "contrastive_cross_l2_mean":       _cross_l2_mean(bulk_emb, pb_emb),
+        "contrastive_within_bulk_l2":      _pairwise_l2_mean(bulk_emb),
+        "contrastive_within_pb_l2":        _pairwise_l2_mean(pb_emb),
+        # distributional
         "contrastive_mmd":                 _mmd(bulk_emb, pb_emb),
         "contrastive_wasserstein":         _sliced_wasserstein(bulk_emb, pb_emb, seed=seed),
         "contrastive_n_bulk":              len(bulk_emb),
         "contrastive_n_pb":                len(pb_emb),
     }
+
+
+# ---------------------------------------------------------------------------
+# Metric 5: scIB batch integration (bulk vs pseudobulk)
+# ---------------------------------------------------------------------------
+
+def compute_scib_metrics(
+    bulk_emb: np.ndarray,
+    pb_emb: np.ndarray,
+    bulk_labels: np.ndarray | None = None,
+    pb_labels: np.ndarray | None = None,
+    label_col: str = "tissue_general",
+    n_neighbors: int = 15,
+    n_max: int = 2000,
+    seed: int = 0,
+) -> dict:
+    """scIB batch integration metrics treating modality (bulk vs PB) as the batch variable.
+
+    bulk_labels / pb_labels : per-cell biological group (e.g. tissue type).
+        Required for silhouette_batch (which conditions on the biological label).
+        If omitted, only iLISI is computed.
+    """
+    try:
+        import scib
+        import scanpy as sc
+    except ImportError:
+        log.warning("scib or scanpy not installed — skipping scIB metrics.")
+        return {}
+
+    rng = np.random.default_rng(seed)
+    if len(bulk_emb) > n_max:
+        bulk_emb = bulk_emb[rng.choice(len(bulk_emb), n_max, replace=False)]
+        if bulk_labels is not None:
+            bulk_labels = bulk_labels[rng.choice(len(bulk_labels), n_max, replace=False)]
+    if len(pb_emb) > n_max:
+        pb_emb = pb_emb[rng.choice(len(pb_emb), n_max, replace=False)]
+        if pb_labels is not None:
+            pb_labels = pb_labels[rng.choice(len(pb_labels), n_max, replace=False)]
+
+    combined = np.vstack([bulk_emb, pb_emb]).astype(np.float32)
+    n_bulk, n_pb = len(bulk_emb), len(pb_emb)
+    batch_col = np.array(["bulk"] * n_bulk + ["pb"] * n_pb)
+
+    adata = ad.AnnData(np.zeros((n_bulk + n_pb, 1), dtype=np.float32))
+    adata.obs["modality"] = pd.Categorical(batch_col)
+    adata.obsm["X_emb"]   = combined
+
+    has_labels = bulk_labels is not None and pb_labels is not None
+    if has_labels:
+        adata.obs["label"] = pd.Categorical(
+            np.concatenate([bulk_labels.astype(str), pb_labels.astype(str)])
+        )
+    else:
+        adata.obs["label"] = adata.obs["modality"].copy()
+
+    try:
+        sc.pp.neighbors(adata, use_rep="X_emb", n_neighbors=n_neighbors, random_state=seed)
+    except Exception as exc:
+        log.warning("scIB: scanpy neighbors failed (%s) — skipping scIB metrics.", exc)
+        return {}
+
+    out: dict = {}
+
+    # Batch ASW: 1 - mean |ASW_batch| per label group, scaled to [0,1]. Higher = better mixing.
+    if has_labels:
+        try:
+            asw = scib.metrics.silhouette_batch(
+                adata, batch_key="modality", label_key="label",
+                embed="X_emb", scale=True,
+            )
+            out["scib_batch_asw"] = float(asw)
+        except Exception as exc:
+            log.warning("scib silhouette_batch failed: %s", exc)
+
+    # iLISI: higher values = better batch mixing.
+    try:
+        ilisi = scib.metrics.ilisi_graph(
+            adata, batch_key="modality", type_="embed",
+            use_rep="X_emb", scale=True,
+        )
+        out["scib_ilisi"] = float(ilisi)
+    except Exception as exc:
+        log.warning("scib ilisi_graph failed: %s", exc)
+
+    # Graph connectivity on biological label: higher = better preservation.
+    if has_labels:
+        try:
+            gc = scib.metrics.graph_connectivity(adata, label_key="label")
+            out["scib_graph_connectivity"] = float(gc)
+        except Exception as exc:
+            log.warning("scib graph_connectivity failed: %s", exc)
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -578,12 +718,32 @@ def run_single_model(
         )
 
     # ── Metric 4: contrastive / distributional alignment ──────────────────
+    bulk_adata_for_contrast = bulk_adata if bulk_emb is not None else paired_bulk_adata
     pb_for_contrast   = paired_pb_emb
     bulk_for_contrast = bulk_emb if bulk_emb is not None else paired_bulk_emb
 
     if pb_for_contrast is not None and bulk_for_contrast is not None:
         log.info("  Computing contrastive alignment metrics ...")
         metrics.update(compute_contrastive_metrics(bulk_for_contrast, pb_for_contrast, seed=seed))
+
+    # ── Metric 5: scIB batch integration (bulk vs pseudobulk) ────────────
+    if pb_for_contrast is not None and bulk_for_contrast is not None:
+        log.info("  Computing scIB batch integration metrics ...")
+        bulk_labels_scib = None
+        pb_labels_scib   = None
+        if bulk_adata_for_contrast is not None and group_column in bulk_adata_for_contrast.obs.columns:
+            bulk_labels_scib = bulk_adata_for_contrast.obs[group_column].to_numpy().astype(str)
+        if paired_pb_adata is not None and group_column in paired_pb_adata.obs.columns:
+            pb_labels_scib   = paired_pb_adata.obs[group_column].to_numpy().astype(str)
+        metrics.update(
+            compute_scib_metrics(
+                bulk_for_contrast, pb_for_contrast,
+                bulk_labels=bulk_labels_scib,
+                pb_labels=pb_labels_scib,
+                label_col=group_column,
+                seed=seed,
+            )
+        )
 
     # ── Save ──────────────────────────────────────────────────────────────
     if ckpt_path is not None:
@@ -672,42 +832,71 @@ def run_ablation(
 # Plotting
 # ---------------------------------------------------------------------------
 
-def _plot_metrics(df: pd.DataFrame, out_png: Path) -> None:
+def _plot_metrics(df: pd.DataFrame, out_png: Path, ncols: int = 5) -> None:
+    import math
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     metric_meta = [
+        # ── Reconstruction ─────────────────────────────────────────────────
         ("recon_pearson_r",                    "Reconstruction\nPearson R ↑"),
         ("recon_mae_bins",                     "Reconstruction\nMAE Bins ↓"),
-        ("recon_mae_bins_0_5",                 "MAE Bins\n[0–5] ↓"),
-        ("recon_mae_bins_5_15",                "MAE Bins\n[5–15] ↓"),
-        ("recon_mae_bins_15_30",               "MAE Bins\n[15–30] ↓"),
-        ("recon_mae_bins_30_50",               "MAE Bins\n[30–50] ↓"),
-        ("paired_cosine_sim_mean",             "Paired Alignment\nCosine Sim ↑"),
-        ("paired_rank_mean",                   "Paired Alignment\nRank ↓"),
-        ("agg_paired_cosine_pb_to_mean_sc",    "Agg Consistency\n(paired) ↑"),
-        ("agg_synth_cosine_pb_to_mean_sc",     "Agg Consistency\n(synth) ↑"),
-        ("contrastive_cross_cosine_mean",      "Cross Cosine Sim ↑"),
-        ("contrastive_within_bulk_cosine",     "Within-Bulk\n Cosine Sim ↑"),
-        ("contrastive_within_pb_cosine",       "Within-PB\n Cosine Sim ↑"),
-        ("contrastive_mmd",                    "Maximum Mean\nDiscrepancy ↓"),
-        ("contrastive_wasserstein",            "Wasserstein distance ↓"),
+        ("recon_mae_bins_0_5",                 "MAE Bins [0–5] ↓"),
+        ("recon_mae_bins_5_15",                "MAE Bins [5–15] ↓"),
+        ("recon_mae_bins_15_30",               "MAE Bins [15–30] ↓"),
+        ("recon_mae_bins_30_50",               "MAE Bins [30–50] ↓"),
+        # ── Paired alignment — cosine ───────────────────────────────────────
+        ("paired_cosine_sim_mean",             "Paired Cosine Sim ↑"),
+        ("paired_rank_mean",                   "Paired Rank\n(cosine) ↓"),
+        # ── Paired alignment — L2 ──────────────────────────────────────────
+        ("paired_l2_mean",                     "Paired L2 Dist ↓"),
+        ("paired_rank_l2_mean",                "Paired Rank\n(L2) ↓"),
+        # ── Aggregation — cosine ───────────────────────────────────────────
+        ("agg_paired_cosine_pb_to_mean_sc",    "Agg Consistency\n(paired, cosine) ↑"),
+        ("agg_synth_cosine_pb_to_mean_sc",     "Agg Consistency\n(synth, cosine) ↑"),
+        # ── Aggregation — L2 ───────────────────────────────────────────────
+        ("agg_paired_l2_pb_to_mean_sc",        "Agg Consistency\n(paired, L2) ↓"),
+        ("agg_synth_l2_pb_to_mean_sc",         "Agg Consistency\n(synth, L2) ↓"),
+        # ── Contrastive — cosine ────────────────────────────────────────────
+        ("contrastive_cross_cosine_mean",      "Cross Cosine\nSim ↑"),
+        ("contrastive_within_bulk_cosine",     "Within-Bulk\nCosine Sim"),
+        ("contrastive_within_pb_cosine",       "Within-PB\nCosine Sim"),
+        # ── Contrastive — L2 ───────────────────────────────────────────────
+        ("contrastive_cross_l2_mean",          "Cross L2 Dist ↓"),
+        ("contrastive_within_bulk_l2",         "Within-Bulk\nL2 Spread ↑"),
+        ("contrastive_within_pb_l2",           "Within-PB\nL2 Spread ↑"),
+        # ── Distributional ─────────────────────────────────────────────────
+        ("contrastive_mmd",                    "MMD ↓"),
+        ("contrastive_wasserstein",            "Wasserstein ↓"),
+        # ── scIB ───────────────────────────────────────────────────────────
+        ("scib_batch_asw",                     "scIB Batch\nASW ↑"),
+        ("scib_ilisi",                         "scIB iLISI ↑"),
+        ("scib_graph_connectivity",            "scIB Graph\nConnectivity ↑"),
     ]
+
     available = [(col, lbl) for col, lbl in metric_meta if col in df.columns]
     if not available:
         log.warning("No plottable metrics found.")
         return
 
     n = len(available)
-    fig, axes = plt.subplots(1, n, figsize=(3.2 * n, 5), squeeze=False)
-    axes = axes[0]
+    nrows = math.ceil(n / ncols)
     models = df.index.tolist()
     colors = plt.cm.tab10(np.linspace(0, 0.9, max(len(models), 1)))
 
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(3.0 * ncols, 4.0 * nrows),
+        squeeze=False,
+    )
+
     _BASELINE_COL = "paired_random_baseline_cosine"
 
-    for ax, (col, lbl) in zip(axes, available):
+    for idx, (col, lbl) in enumerate(available):
+        row, col_idx = divmod(idx, ncols)
+        ax = axes[row][col_idx]
+
         vals = df[col].to_numpy(dtype=float)
         ax.bar(range(len(models)), vals, color=colors[: len(models)])
         ax.set_title(lbl, fontsize=8, fontweight="bold")
@@ -726,7 +915,12 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path) -> None:
             )
             ax.legend(fontsize=6, loc="lower right")
 
-    fig.suptitle("Unified FM evaluation metrics", fontsize=10, fontweight="bold")
+    # Hide unused subplot cells in the last row
+    for idx in range(n, nrows * ncols):
+        row, col_idx = divmod(idx, ncols)
+        axes[row][col_idx].set_visible(False)
+
+    fig.suptitle("Unified FM evaluation metrics", fontsize=11, fontweight="bold")
     fig.tight_layout()
     fig.savefig(out_png, dpi=150, bbox_inches="tight")
     plt.close(fig)

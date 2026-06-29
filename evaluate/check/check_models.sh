@@ -8,6 +8,14 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:rtx4090:1
 
+USE_LOCAL=0
+# Parse args
+for arg in "$@"; do
+    if [[ "$arg" == "--local" ]]; then
+        USE_LOCAL=1
+    fi
+done
+
 ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn"
 
 SCRIPT_ARGS=(
@@ -15,9 +23,14 @@ SCRIPT_ARGS=(
     --batch-size 64
 )
 
-echo "Running with singularity"
-singularity run \
-    --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/check \
-    --bind /cluster \
-    --nv /cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif \
+if [[ "$USE_LOCAL" -eq 1 ]]; then
+    echo "Running locally"
     python -u unified_metrics.py "${SCRIPT_ARGS[@]}"
+else
+    echo "Running with singularity"
+    singularity run \
+        --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/check \
+        --bind /cluster \
+        --nv /cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif \
+        python -u unified_metrics.py "${SCRIPT_ARGS[@]}"
+fi
