@@ -53,7 +53,7 @@
       "loss_weight_paired": 10,
       "loss_weight_dat": 10,
       "loss_weight_agg": 1,
-      "loss_weight_reconstruction": 10
+      "loss_weight_reconstruction": 50
     }
   },
   "base_overrides": {},
@@ -77,8 +77,8 @@
       "name": "dat_agg",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_paired_mix/dat",
-          "wandb_name": "dat"
+          "save_dir": "${work}/outputs/save_CFF/ablation_paired_mix/dat_agg",
+          "wandb_name": "dat_agg"
         },
         "data": {},
         "model": {},
@@ -98,7 +98,7 @@
     "enabled": true,
     "python_executable": "python",
     "sbatch_args": [
-      "--time=72:00:00",
+      "--time=48:00:00",
       "--partition=gpu",
       "--ntasks-per-node=1",
       "--gres=gpu:rtx4090:1",

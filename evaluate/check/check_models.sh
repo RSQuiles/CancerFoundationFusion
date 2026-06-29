@@ -17,11 +17,18 @@ for arg in "$@"; do
 done
 
 ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn"
+CONDA_SITE="/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/lib/python3.14/site-packages/scib_metrics/__init__.py"
 
 SCRIPT_ARGS=(
-    --plot-csv $ABLATION_DIR/unified_metrics.csv
+    --eval-adata $ABLATION_DIR/eval.h5ad
+    --ablation-dir $ABLATION_DIR
     --batch-size 64
 )
+
+# Arguments
+# --plot-csv $ABLATION_DIR/unified_metrics.csv
+# --eval-adata $ABLATION_DIR/eval.h5ad
+# --ablation-dir $ABLATION_DIR
 
 if [[ "$USE_LOCAL" -eq 1 ]]; then
     echo "Running locally"
