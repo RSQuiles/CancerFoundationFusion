@@ -828,6 +828,7 @@ def run_ablation(
     df.to_csv(csv_path)
     log.info("Summary CSV → %s", csv_path)
     _plot_metrics(df, ablation_dir / "unified_metrics.png")
+    _plot_batch_integration(df, ablation_dir / "batch_integration.png")
 
 
 # ---------------------------------------------------------------------------
@@ -871,10 +872,6 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path, ncols: int = 5) -> None:
         # ── Distributional ─────────────────────────────────────────────────
         ("contrastive_mmd",                    "MMD ↓"),
         ("contrastive_wasserstein",            "Wasserstein ↓"),
-        # ── scIB ───────────────────────────────────────────────────────────
-        ("scib_batch_asw",                     "scIB Batch\nASW ↑"),
-        ("scib_ilisi",                         "scIB iLISI ↑"),
-        ("scib_graph_connectivity",            "scIB Graph\nConnectivity ↑"),
     ]
 
     # Groups of columns that must share the same Y-axis for direct comparison.
@@ -968,6 +965,51 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path, ncols: int = 5) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Batch integration plot (scIB metrics — separate figure)
+# ---------------------------------------------------------------------------
+
+def _plot_batch_integration(df: pd.DataFrame, out_png: Path) -> None:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    metric_meta = [
+        ("scib_batch_asw",          "Batch ASW ↑\n(higher = better mixing)"),
+        ("scib_ilisi",              "iLISI ↑\n(higher = better mixing)"),
+        ("scib_graph_connectivity", "Graph Connectivity ↑\n(biological preservation)"),
+    ]
+
+    available = [(col, lbl) for col, lbl in metric_meta if col in df.columns]
+    if not available:
+        log.warning("No scIB metrics found — skipping batch_integration.png.")
+        return
+
+    n = len(available)
+    models = df.index.tolist()
+    colors = plt.cm.tab10(np.linspace(0, 0.9, max(len(models), 1)))
+
+    fig, axes = plt.subplots(1, n, figsize=(3.5 * n, 4.5), squeeze=False)
+    axes = axes[0]
+
+    for ax, (col, lbl) in zip(axes, available):
+        vals = df[col].to_numpy(dtype=float)
+        ax.bar(range(len(models)), vals, color=colors[: len(models)])
+        ax.set_title(lbl, fontsize=9, fontweight="bold")
+        ax.set_xticks(range(len(models)))
+        ax.set_xticklabels(models, rotation=45, ha="right", fontsize=8)
+        ax.tick_params(axis="y", labelsize=8)
+        ax.set_ylim(0, 1)
+        for spine in ("top", "right"):
+            ax.spines[spine].set_visible(False)
+
+    fig.suptitle("scIB batch integration: bulk vs pseudobulk", fontsize=11, fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    log.info("Batch integration plot → %s", out_png)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -1030,7 +1072,7 @@ def main(argv=None) -> int:
         out_png = csv_path.with_suffix(".png")
         log.info("Plotting %d models from %s ...", len(df), csv_path)
         _plot_metrics(df, out_png)
-        log.info("Plot → %s", out_png)
+        _plot_batch_integration(df, csv_path.parent / "batch_integration.png")
         return 0
 
     if args.eval_adata is None:
