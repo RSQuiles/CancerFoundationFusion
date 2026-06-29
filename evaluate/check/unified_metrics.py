@@ -50,8 +50,6 @@ import numpy as np
 import pandas as pd
 import torch
 
-import scib
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -616,15 +614,28 @@ def run_single_model(
     seed: int = 0,
     skip_existing: bool = False,
     normalized: bool = True,
+    do_scib: bool = False,
 ) -> dict:
     """Compute all unified FM metrics for one model. Returns a flat metric dict."""
     out_dir.mkdir(parents=True, exist_ok=True)
     metrics_file = out_dir / "unified_metrics.json"
 
+    # Decide whether to use a cached JSON.
+    # When --scib is active and scIB keys are absent from the cache, fall
+    # through so we can append them without recomputing everything else.
+    _from_cache = False
+    metrics: dict = {}
+
     if skip_existing and metrics_file.exists():
-        log.info("  Cached — loading %s", metrics_file)
         with metrics_file.open() as f:
-            return json.load(f)
+            cached = json.load(f)
+        scib_already_done = any(k.startswith("scib_") for k in cached)
+        if not do_scib or scib_already_done:
+            log.info("  Cached — loading %s", metrics_file)
+            return cached
+        log.info("  Cached (scIB missing) — computing scIB on top of %s", metrics_file)
+        metrics = cached
+        _from_cache = True
 
     obsm_key = f"X_cf_{model_name}"
     if obsm_key not in eval_adata.obsm:
@@ -648,11 +659,9 @@ def run_single_model(
     paired_pb_adata,   paired_pb_emb   = _get("paired_pb")
     paired_bulk_adata, paired_bulk_emb = _get("paired_bulk")
 
-    metrics: dict = {}
-
     # ── Load model (needed for reconstruction + synthetic aggregation) ────
     model = None
-    if ckpt_path is not None:
+    if not _from_cache and ckpt_path is not None:
         log.info("  Loading model from %s ...", ckpt_path.name)
         try:
             model = _load_model(ckpt_path, device)
@@ -660,7 +669,7 @@ def run_single_model(
             log.error("  Failed to load model:\n%s", traceback.format_exc())
 
     # ── Metric 1: reconstruction ──────────────────────────────────────────
-    if model is not None and sc_adata is not None:
+    if not _from_cache and model is not None and sc_adata is not None:
         log.info("  Computing reconstruction metrics (%d SC cells) ...", sc_adata.n_obs)
         metrics.update(
             compute_reconstruction_metrics(
@@ -674,7 +683,7 @@ def run_single_model(
         )
 
     # ── Metric 2: paired alignment ────────────────────────────────────────
-    if paired_pb_emb is not None and paired_bulk_emb is not None:
+    if not _from_cache and paired_pb_emb is not None and paired_bulk_emb is not None:
         pb_pairs   = paired_pb_adata.obs.get("paired",   None)
         bulk_pairs = paired_bulk_adata.obs.get("paired", None)
         if pb_pairs is not None and bulk_pairs is not None:
@@ -690,7 +699,7 @@ def run_single_model(
             log.warning("  'paired' column missing — skipping paired alignment.")
 
     # ── Metric 3a: aggregation consistency from paired data ───────────────
-    if (
+    if not _from_cache and (
         paired_sc_emb is not None
         and paired_pb_emb is not None
         and "paired" in paired_sc_adata.obs.columns
@@ -705,7 +714,7 @@ def run_single_model(
         )
 
     # ── Metric 3b: aggregation consistency from synthetic pseudobulks ─────
-    if model is not None and sc_adata is not None and group_column in sc_adata.obs.columns:
+    if not _from_cache and model is not None and sc_adata is not None and group_column in sc_adata.obs.columns:
         log.info("  Computing aggregation consistency (synthetic) ...")
         metrics.update(
             compute_aggregation_metrics(
@@ -724,12 +733,12 @@ def run_single_model(
     pb_for_contrast   = paired_pb_emb
     bulk_for_contrast = bulk_emb if bulk_emb is not None else paired_bulk_emb
 
-    if pb_for_contrast is not None and bulk_for_contrast is not None:
+    if not _from_cache and pb_for_contrast is not None and bulk_for_contrast is not None:
         log.info("  Computing contrastive alignment metrics ...")
         metrics.update(compute_contrastive_metrics(bulk_for_contrast, pb_for_contrast, seed=seed))
 
     # ── Metric 5: scIB batch integration (bulk vs pseudobulk) ────────────
-    if pb_for_contrast is not None and bulk_for_contrast is not None:
+    if do_scib and pb_for_contrast is not None and bulk_for_contrast is not None:
         log.info("  Computing scIB batch integration metrics ...")
         bulk_labels_scib = None
         pb_labels_scib   = None
@@ -782,6 +791,7 @@ def run_ablation(
     seed: int,
     skip_existing: bool,
     normalized: bool,
+    do_scib: bool = False,
 ) -> None:
     model_dirs = sorted(
         d for d in ablation_dir.iterdir()
@@ -814,6 +824,7 @@ def run_ablation(
             seed=seed,
             skip_existing=skip_existing,
             normalized=normalized,
+            do_scib=do_scib,
         )
         if m:
             m["model"] = model_dir.name
@@ -828,7 +839,8 @@ def run_ablation(
     df.to_csv(csv_path)
     log.info("Summary CSV → %s", csv_path)
     _plot_metrics(df, ablation_dir / "unified_metrics.png")
-    _plot_batch_integration(df, ablation_dir / "batch_integration.png")
+    if do_scib:
+        _plot_batch_integration(df, ablation_dir / "batch_integration.png")
 
 
 # ---------------------------------------------------------------------------
@@ -1056,6 +1068,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Skip models that already have unified_metrics.json.")
     p.add_argument("--not-normalized", action="store_true",
                    help="h5ad files contain raw counts (not log1p-normalised).")
+    p.add_argument("--scib", action="store_true",
+                   help="Compute scIB batch integration metrics (requires scib + scanpy). "
+                        "Intended for a second pass after the main metrics have been cached "
+                        "with --skip-existing, using an environment that has scib installed.")
     return p
 
 
@@ -1102,6 +1118,7 @@ def main(argv=None) -> int:
         seed=args.seed,
         skip_existing=args.skip_existing,
         normalized=normalized,
+        do_scib=args.scib,
     )
 
     if args.ablation_dir is not None:
