@@ -875,6 +875,25 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path, ncols: int = 5) -> None:
         ("scib_graph_connectivity",            "scIB Graph\nConnectivity ↑"),
     ]
 
+    # Groups of columns that must share the same Y-axis for direct comparison.
+    # Each entry is a frozenset of column names; any subset that appears in the
+    # data will have its Y limits unified.
+    _SHARED_YLIM_GROUPS: list[frozenset] = [
+        frozenset({
+            "recon_mae_bins",
+            "recon_mae_bins_0_5",
+            "recon_mae_bins_5_15",
+            "recon_mae_bins_15_30",
+            "recon_mae_bins_30_50",
+        }),
+        frozenset({
+            "paired_rank_mean",
+            "paired_rank_median",
+            "paired_rank_l2_mean",
+            "paired_rank_l2_median",
+        }),
+    ]
+
     available = [(col, lbl) for col, lbl in metric_meta if col in df.columns]
     if not available:
         log.warning("No plottable metrics found.")
@@ -892,10 +911,12 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path, ncols: int = 5) -> None:
     )
 
     _BASELINE_COL = "paired_random_baseline_cosine"
+    col_to_ax: dict[str, object] = {}
 
     for idx, (col, lbl) in enumerate(available):
         row, col_idx = divmod(idx, ncols)
         ax = axes[row][col_idx]
+        col_to_ax[col] = ax
 
         vals = df[col].to_numpy(dtype=float)
         ax.bar(range(len(models)), vals, color=colors[: len(models)])
@@ -914,6 +935,23 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path, ncols: int = 5) -> None:
                 zorder=5, label="random baseline",
             )
             ax.legend(fontsize=6, loc="lower right")
+
+    # Apply shared Y-limits across comparable metric groups
+    for group in _SHARED_YLIM_GROUPS:
+        group_cols = [c for c in group if c in col_to_ax]
+        if len(group_cols) < 2:
+            continue
+        all_vals = np.concatenate([
+            df[c].to_numpy(dtype=float) for c in group_cols
+        ])
+        finite = all_vals[np.isfinite(all_vals)]
+        if len(finite) == 0:
+            continue
+        lo, hi = float(finite.min()), float(finite.max())
+        pad = (hi - lo) * 0.08 if hi > lo else 0.5
+        ymin, ymax = lo - pad, hi + pad
+        for c in group_cols:
+            col_to_ax[c].set_ylim(ymin, ymax)
 
     # Hide unused subplot cells in the last row
     for idx in range(n, nrows * ncols):
