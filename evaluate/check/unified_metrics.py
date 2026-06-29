@@ -65,6 +65,14 @@ log = logging.getLogger(__name__)
 
 _MODALITY_COL = "_eval_modality"
 
+# (lo_inclusive, hi_exclusive, label_suffix)
+_BIN_STRATA = [
+    (0,  5,  "0_5"),
+    (5,  15, "5_15"),
+    (15, 30, "15_30"),
+    (30, 51, "30_50"),  # hi=51 to include bin 50
+]
+
 
 # ---------------------------------------------------------------------------
 # Checkpoint helpers
@@ -130,6 +138,7 @@ def compute_reconstruction_metrics(
 
     pearson_rs: list[float] = []
     mae_vals: list[float] = []
+    strat_mae: dict[str, list[float]] = {s: [] for _, _, s in _BIN_STRATA}
 
     for start in range(0, n, batch_size):
         batch_expr = torch.from_numpy(X[start : start + batch_size]).to(device)
@@ -179,7 +188,12 @@ def compute_reconstruction_metrics(
                 continue
             p = pred[i][m].float().cpu().numpy()
             t = target[i][m].float().cpu().numpy()
-            mae_vals.append(float(np.mean(np.abs(p - t))))
+            abs_err = np.abs(p - t)
+            mae_vals.append(float(abs_err.mean()))
+            for lo, hi, suffix in _BIN_STRATA:
+                stratum = (t >= lo) & (t < hi)
+                if stratum.any():
+                    strat_mae[suffix].append(float(abs_err[stratum].mean()))
             if np.std(p) < 1e-8 or np.std(t) < 1e-8:
                 continue
             r = float(np.corrcoef(p, t)[0, 1])
@@ -190,6 +204,11 @@ def compute_reconstruction_metrics(
         "recon_pearson_r":     float(np.mean(pearson_rs)) if pearson_rs else float("nan"),
         "recon_pearson_r_std": float(np.std(pearson_rs))  if pearson_rs else float("nan"),
         "recon_mae_bins":      float(np.mean(mae_vals))   if mae_vals   else float("nan"),
+        **{
+            f"recon_mae_bins_{s}": float(np.mean(v)) if v else float("nan")
+            for _, _, s in _BIN_STRATA
+            for v in [strat_mae[s]]
+        },
         "recon_n_cells":       len(pearson_rs),
     }
 
@@ -646,6 +665,10 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path) -> None:
     metric_meta = [
         ("recon_pearson_r",                    "Reconstruction\nPearson R ↑"),
         ("recon_mae_bins",                     "Reconstruction\nMAE Bins ↓"),
+        ("recon_mae_bins_0_5",                 "MAE Bins\n[0–5] ↓"),
+        ("recon_mae_bins_5_15",                "MAE Bins\n[5–15] ↓"),
+        ("recon_mae_bins_15_30",               "MAE Bins\n[15–30] ↓"),
+        ("recon_mae_bins_30_50",               "MAE Bins\n[30–50] ↓"),
         ("paired_cosine_sim_mean",             "Paired Alignment\nCosine Sim ↑"),
         ("paired_rank_mean",                   "Paired Alignment\nRank ↓"),
         ("agg_paired_cosine_pb_to_mean_sc",    "Agg Consistency\n(paired) ↑"),
