@@ -511,97 +511,102 @@ def compute_contrastive_metrics(
 
 
 # ---------------------------------------------------------------------------
-# Metric 5: scIB batch integration (bulk vs pseudobulk)
+# Metric 5: scIB batch integration benchmark (ablation-level, all models at once)
 # ---------------------------------------------------------------------------
 
-def compute_scib_metrics(
-    bulk_emb: np.ndarray,
-    pb_emb: np.ndarray,
-    bulk_labels: np.ndarray | None = None,
-    pb_labels: np.ndarray | None = None,
-    label_col: str = "tissue_general",
-    n_neighbors: int = 15,
-    n_max: int = 2000,
-    seed: int = 0,
-) -> dict:
-    """scIB batch integration metrics treating modality (bulk vs PB) as the batch variable.
+def run_scib_benchmark(
+    eval_adata: ad.AnnData,
+    model_names: list[str],
+    group_column: str = "tissue_general",
+    out_png: Path | None = None,
+    out_csv: Path | None = None,
+) -> "pd.DataFrame | None":
+    """Run scib_metrics Benchmarker comparing bulk vs PB integration across all models.
 
-    bulk_labels / pb_labels : per-cell biological group (e.g. tissue type).
-        Required for silhouette_batch (which conditions on the biological label).
-        If omitted, only iLISI is computed.
+    Each model's pre-computed embedding (obsm key ``X_cf_<name>``) is treated as
+    one integration method.  batch_key = modality (bulk vs PB);
+    label_key = group_column (biological label for bio-conservation metrics).
+
+    Writes batch_integration.png (plot_results_table) and scib_benchmark.csv.
     """
     try:
-        import scib
-        import scanpy as sc
+        from scib_metrics.benchmark import Benchmarker, BioConservation, BatchCorrection
     except ImportError:
-        log.warning("scib or scanpy not installed — skipping scIB metrics.")
-        return {}
+        log.warning("scib_metrics not installed — skipping batch integration benchmark.")
+        return None
 
-    # Downsample if necessary
-    rng = np.random.default_rng(seed)
-    if len(bulk_emb) > n_max:
-        bulk_emb = bulk_emb[rng.choice(len(bulk_emb), n_max, replace=False)]
-        if bulk_labels is not None:
-            bulk_labels = bulk_labels[rng.choice(len(bulk_labels), n_max, replace=False)]
-    if len(pb_emb) > n_max:
-        pb_emb = pb_emb[rng.choice(len(pb_emb), n_max, replace=False)]
-        if pb_labels is not None:
-            pb_labels = pb_labels[rng.choice(len(pb_labels), n_max, replace=False)]
+    # ── Select cells: bulk (or paired_bulk) + paired_pb ───────────────────
+    mod_col   = eval_adata.obs.get(_MODALITY_COL, pd.Series(dtype=str, index=eval_adata.obs_names))
+    bulk_mask = (mod_col == "bulk").values | (mod_col == "paired_bulk").values
+    pb_mask   = (mod_col == "paired_pb").values
+    combined  = bulk_mask | pb_mask
 
-    combined = np.vstack([bulk_emb, pb_emb]).astype(np.float32)
-    n_bulk, n_pb = len(bulk_emb), len(pb_emb)
-    batch_col = np.array(["bulk"] * n_bulk + ["pb"] * n_pb)
+    if not combined.any():
+        log.warning("No bulk or paired_pb cells found in eval_adata — skipping scIB benchmark.")
+        return None
 
-    adata = ad.AnnData(np.zeros((n_bulk + n_pb, 1), dtype=np.float32))
-    adata.obs["modality"] = pd.Categorical(batch_col)
-    adata.obsm["X_emb"]   = combined
+    sub = eval_adata[combined].copy()
+    sub.obs["modality"] = pd.Categorical(
+        np.where(bulk_mask[combined], "bulk", "pb")
+    )
 
-    has_labels = bulk_labels is not None and pb_labels is not None
-    if has_labels:
-        adata.obs["label"] = pd.Categorical(
-            np.concatenate([bulk_labels.astype(str), pb_labels.astype(str)])
-        )
-    else:
-        adata.obs["label"] = adata.obs["modality"].copy()
+    if group_column not in sub.obs.columns:
+        log.warning("group_column '%s' not in obs — skipping scIB benchmark.", group_column)
+        return None
 
-    try:
-        sc.pp.neighbors(adata, use_rep="X_emb", n_neighbors=n_neighbors, random_state=seed)
-    except Exception as exc:
-        log.warning("scIB: scanpy neighbors failed (%s) — skipping scIB metrics.", exc)
-        return {}
+    # ── Gather valid embedding keys ────────────────────────────────────────
+    embedding_keys = [f"X_cf_{n}" for n in model_names if f"X_cf_{n}" in sub.obsm]
+    if not embedding_keys:
+        log.warning("No model embedding keys found in eval_adata obsm — skipping scIB benchmark.")
+        return None
 
-    out: dict = {}
+    log.info(
+        "Running scIB Benchmarker: %d models × %d cells ...",
+        len(embedding_keys), sub.n_obs,
+    )
 
-    # Batch ASW: 1 - mean |ASW_batch| per label group, scaled to [0,1]. Higher = better mixing.
-    if has_labels:
-        try:
-            asw = scib.metrics.silhouette_batch(
-                adata, batch_key="modality", label_key="label",
-                embed="X_emb", scale=True,
-            )
-            out["scib_batch_asw"] = float(asw)
-        except Exception as exc:
-            log.warning("scib silhouette_batch failed: %s", exc)
+    # ── Benchmarker ────────────────────────────────────────────────────────
+    bm = Benchmarker(
+        sub,
+        batch_key="modality",
+        label_key=group_column,
+        embedding_obsm_keys=embedding_keys,
+        bio_conservation_metrics=BioConservation(
+            isolated_labels=True,
+            nmi_ari_cluster_labels_leiden=False,
+            nmi_ari_cluster_labels_kmeans=True,
+            silhouette_label=True,
+            clisi_knn=True,
+        ),
+        batch_correction_metrics=BatchCorrection(
+            bras=True,
+            ilisi_knn=True,
+            kbet_per_label=True,
+            graph_connectivity=True,
+            pcr_comparison=True,
+        ),
+        pre_integrated_embedding_obsm_key=None,
+        n_jobs=1,
+    )
 
-    # iLISI: higher values = better batch mixing.
-    try:
-        ilisi = scib.metrics.ilisi_graph(
-            adata, batch_key="modality", type_="embed",
-            use_rep="X_emb", scale=True,
-        )
-        out["scib_ilisi"] = float(ilisi)
-    except Exception as exc:
-        log.warning("scib ilisi_graph failed: %s", exc)
+    bm.benchmark()
+    results = bm.get_results(min_max_scale=True, clean_names=True)
+    log.info("scIB benchmark complete.\n%s", results.to_string())
 
-    # Graph connectivity on biological label: higher = better preservation.
-    if has_labels:
-        try:
-            gc = scib.metrics.graph_connectivity(adata, label_key="label")
-            out["scib_graph_connectivity"] = float(gc)
-        except Exception as exc:
-            log.warning("scib graph_connectivity failed: %s", exc)
+    if out_csv is not None:
+        results.to_csv(out_csv)
+        log.info("scIB results CSV → %s", out_csv)
 
-    return out
+    if out_png is not None:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        fig = bm.plot_results_table(min_max_scale=True, show=False)
+        fig.savefig(out_png, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        log.info("Batch integration plot → %s", out_png)
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -622,29 +627,17 @@ def run_single_model(
     seed: int = 0,
     skip_existing: bool = False,
     normalized: bool = True,
-    do_scib: bool = False,
 ) -> dict:
     """Compute all unified FM metrics for one model. Returns a flat metric dict."""
     out_dir.mkdir(parents=True, exist_ok=True)
     metrics_file = out_dir / "unified_metrics.json"
 
-    # Decide whether to use a cached JSON.
-    # When --scib is active and scIB keys are absent from the cache, fall
-    # through so we can append them without recomputing everything else.
-    _from_cache = False
-    metrics: dict = {}
-
     if skip_existing and metrics_file.exists():
+        log.info("  Cached — loading %s", metrics_file)
         with metrics_file.open() as f:
-            cached = json.load(f)
-        # scib_already_done = any(k.startswith("scib_") for k in cached)
-        scib_already_done = False
-        if not do_scib or scib_already_done:
-            log.info("  Cached — loading %s", metrics_file)
-            return cached
-        log.info("  Cached (scIB missing) — computing scIB on top of %s", metrics_file)
-        metrics = cached
-        _from_cache = True
+            return json.load(f)
+
+    metrics: dict = {}
 
     obsm_key = f"X_cf_{model_name}"
     if obsm_key not in eval_adata.obsm:
@@ -670,7 +663,7 @@ def run_single_model(
 
     # ── Load model (needed for reconstruction + synthetic aggregation) ────
     model = None
-    if not _from_cache and ckpt_path is not None:
+    if ckpt_path is not None:
         log.info("  Loading model from %s ...", ckpt_path.name)
         try:
             model = _load_model(ckpt_path, device)
@@ -678,7 +671,7 @@ def run_single_model(
             log.error("  Failed to load model:\n%s", traceback.format_exc())
 
     # ── Metric 1: reconstruction ──────────────────────────────────────────
-    if not _from_cache and model is not None and sc_adata is not None:
+    if model is not None and sc_adata is not None:
         log.info("  Computing reconstruction metrics (%d SC cells) ...", sc_adata.n_obs)
         metrics.update(
             compute_reconstruction_metrics(
@@ -692,7 +685,7 @@ def run_single_model(
         )
 
     # ── Metric 2: paired alignment ────────────────────────────────────────
-    if not _from_cache and paired_pb_emb is not None and paired_bulk_emb is not None:
+    if paired_pb_emb is not None and paired_bulk_emb is not None:
         pb_pairs   = paired_pb_adata.obs.get("paired",   None)
         bulk_pairs = paired_bulk_adata.obs.get("paired", None)
         if pb_pairs is not None and bulk_pairs is not None:
@@ -708,7 +701,7 @@ def run_single_model(
             log.warning("  'paired' column missing — skipping paired alignment.")
 
     # ── Metric 3a: aggregation consistency from paired data ───────────────
-    if not _from_cache and (
+    if (
         paired_sc_emb is not None
         and paired_pb_emb is not None
         and "paired" in paired_sc_adata.obs.columns
@@ -723,7 +716,7 @@ def run_single_model(
         )
 
     # ── Metric 3b: aggregation consistency from synthetic pseudobulks ─────
-    if not _from_cache and model is not None and sc_adata is not None and group_column in sc_adata.obs.columns:
+    if model is not None and sc_adata is not None and group_column in sc_adata.obs.columns:
         log.info("  Computing aggregation consistency (synthetic) ...")
         metrics.update(
             compute_aggregation_metrics(
@@ -738,32 +731,12 @@ def run_single_model(
         )
 
     # ── Metric 4: contrastive / distributional alignment ──────────────────
-    bulk_adata_for_contrast = bulk_adata if bulk_emb is not None else paired_bulk_adata
     pb_for_contrast   = paired_pb_emb
     bulk_for_contrast = bulk_emb if bulk_emb is not None else paired_bulk_emb
 
-    if not _from_cache and pb_for_contrast is not None and bulk_for_contrast is not None:
+    if pb_for_contrast is not None and bulk_for_contrast is not None:
         log.info("  Computing contrastive alignment metrics ...")
         metrics.update(compute_contrastive_metrics(bulk_for_contrast, pb_for_contrast, seed=seed))
-
-    # ── Metric 5: scIB batch integration (bulk vs pseudobulk) ────────────
-    if do_scib and pb_for_contrast is not None and bulk_for_contrast is not None:
-        log.info("  Computing scIB batch integration metrics ...")
-        bulk_labels_scib = bulk_adata_for_contrast.obs[group_column]
-        pb_labels_scib   = paired_pb_adata.obs[group_column]
-        if bulk_adata_for_contrast is not None and group_column in bulk_adata_for_contrast.obs.columns:
-            bulk_labels_scib = bulk_adata_for_contrast.obs[group_column].to_numpy().astype(str)
-        if paired_pb_adata is not None and group_column in paired_pb_adata.obs.columns:
-            pb_labels_scib   = paired_pb_adata.obs[group_column].to_numpy().astype(str)
-        metrics.update(
-            compute_scib_metrics(
-                bulk_for_contrast, pb_for_contrast,
-                bulk_labels=bulk_labels_scib,
-                pb_labels=pb_labels_scib,
-                label_col=group_column,
-                seed=seed,
-            )
-        )
 
     # ── Save ──────────────────────────────────────────────────────────────
     if ckpt_path is not None:
@@ -833,7 +806,6 @@ def run_ablation(
             seed=seed,
             skip_existing=skip_existing,
             normalized=normalized,
-            do_scib=do_scib,
         )
         if m:
             m["model"] = model_dir.name
@@ -849,7 +821,13 @@ def run_ablation(
     log.info("Summary CSV → %s", csv_path)
     _plot_metrics(df, ablation_dir / "unified_metrics.png")
     if do_scib:
-        _plot_batch_integration(df, ablation_dir / "batch_integration.png")
+        run_scib_benchmark(
+            eval_adata,
+            model_names=[d.name for d in model_dirs],
+            group_column=group_column,
+            out_png=ablation_dir / "batch_integration.png",
+            out_csv=ablation_dir / "scib_benchmark.csv",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -985,50 +963,6 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path, ncols: int = 5) -> None:
     log.info("Plot → %s", out_png)
 
 
-# ---------------------------------------------------------------------------
-# Batch integration plot (scIB metrics — separate figure)
-# ---------------------------------------------------------------------------
-
-def _plot_batch_integration(df: pd.DataFrame, out_png: Path) -> None:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    metric_meta = [
-        ("scib_batch_asw",          "Batch ASW ↑\n(higher = better mixing)"),
-        ("scib_ilisi",              "iLISI ↑\n(higher = better mixing)"),
-        ("scib_graph_connectivity", "Graph Connectivity ↑\n(biological preservation)"),
-    ]
-
-    available = [(col, lbl) for col, lbl in metric_meta if col in df.columns]
-    if not available:
-        log.warning("No scIB metrics found — skipping batch_integration.png.")
-        return
-
-    n = len(available)
-    models = df.index.tolist()
-    colors = plt.cm.tab10(np.linspace(0, 0.9, max(len(models), 1)))
-
-    fig, axes = plt.subplots(1, n, figsize=(3.5 * n, 4.5), squeeze=False)
-    axes = axes[0]
-
-    for ax, (col, lbl) in zip(axes, available):
-        vals = df[col].to_numpy(dtype=float)
-        ax.bar(range(len(models)), vals, color=colors[: len(models)])
-        ax.set_title(lbl, fontsize=9, fontweight="bold")
-        ax.set_xticks(range(len(models)))
-        ax.set_xticklabels(models, rotation=45, ha="right", fontsize=8)
-        ax.tick_params(axis="y", labelsize=8)
-        ax.set_ylim(0, 1)
-        for spine in ("top", "right"):
-            ax.spines[spine].set_visible(False)
-
-    fig.suptitle("scIB batch integration: bulk vs pseudobulk", fontsize=11, fontweight="bold")
-    fig.tight_layout()
-    fig.savefig(out_png, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    log.info("Batch integration plot → %s", out_png)
-
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -1097,7 +1031,6 @@ def main(argv=None) -> int:
         out_png = csv_path.with_suffix(".png")
         log.info("Plotting %d models from %s ...", len(df), csv_path)
         _plot_metrics(df, out_png)
-        _plot_batch_integration(df, csv_path.parent / "batch_integration.png")
         return 0
 
     if args.eval_adata is None:
@@ -1117,6 +1050,7 @@ def main(argv=None) -> int:
     log.info("  %d cells, obsm keys: %s", eval_adata.n_obs, list(eval_adata.obsm.keys()))
 
     normalized = not args.not_normalized
+    # Common kwargs for run_single_model (do_scib is ablation-level only)
     kwargs = dict(
         batch_size=args.batch_size,
         mask_ratio=args.mask_ratio,
@@ -1127,7 +1061,6 @@ def main(argv=None) -> int:
         seed=args.seed,
         skip_existing=args.skip_existing,
         normalized=normalized,
-        do_scib=args.scib,
     )
 
     if args.ablation_dir is not None:
@@ -1135,7 +1068,7 @@ def main(argv=None) -> int:
         if not ablation_dir.is_dir():
             log.error("--ablation-dir not found: %s", ablation_dir)
             return 1
-        run_ablation(ablation_dir=ablation_dir, eval_adata=eval_adata, **kwargs)
+        run_ablation(ablation_dir=ablation_dir, eval_adata=eval_adata, do_scib=args.scib, **kwargs)
 
     else:
         ckpt = args.ckpt.expanduser().resolve()
