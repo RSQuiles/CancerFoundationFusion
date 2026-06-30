@@ -50,10 +50,10 @@
       "gen_method": "theirs"
     },
     "features": {
-      "loss_weight_paired": 10,
-      "loss_weight_dat": 10,
-      "loss_weight_agg": 1,
-      "loss_weight_reconstruction": 50
+      "loss_weight_paired": 100,
+      "loss_weight_dat": 100,
+      "loss_weight_agg": 100,
+      "loss_weight_reconstruction": 0.1
     }
   },
   "base_overrides": {},

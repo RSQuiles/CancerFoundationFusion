@@ -531,12 +531,13 @@ def compute_scib_metrics(
         If omitted, only iLISI is computed.
     """
     try:
-        import scib_metrics
+        import scib
         import scanpy as sc
     except ImportError:
         log.warning("scib or scanpy not installed — skipping scIB metrics.")
         return {}
 
+    # Downsample if necessary
     rng = np.random.default_rng(seed)
     if len(bulk_emb) > n_max:
         bulk_emb = bulk_emb[rng.choice(len(bulk_emb), n_max, replace=False)]
@@ -574,7 +575,7 @@ def compute_scib_metrics(
     # Batch ASW: 1 - mean |ASW_batch| per label group, scaled to [0,1]. Higher = better mixing.
     if has_labels:
         try:
-            asw = scib_metrics.silhouette_batch(
+            asw = scib.metrics.silhouette_batch(
                 adata, batch_key="modality", label_key="label",
                 embed="X_emb", scale=True,
             )
@@ -584,7 +585,7 @@ def compute_scib_metrics(
 
     # iLISI: higher values = better batch mixing.
     try:
-        ilisi = scib_metrics.ilisi_graph(
+        ilisi = scib.metrics.ilisi_graph(
             adata, batch_key="modality", type_="embed",
             use_rep="X_emb", scale=True,
         )
@@ -595,7 +596,7 @@ def compute_scib_metrics(
     # Graph connectivity on biological label: higher = better preservation.
     if has_labels:
         try:
-            gc = scib_metrics.graph_connectivity(adata, label_key="label")
+            gc = scib.metrics.graph_connectivity(adata, label_key="label")
             out["scib_graph_connectivity"] = float(gc)
         except Exception as exc:
             log.warning("scib graph_connectivity failed: %s", exc)
@@ -748,8 +749,8 @@ def run_single_model(
     # ── Metric 5: scIB batch integration (bulk vs pseudobulk) ────────────
     if do_scib and pb_for_contrast is not None and bulk_for_contrast is not None:
         log.info("  Computing scIB batch integration metrics ...")
-        bulk_labels_scib = None
-        pb_labels_scib   = None
+        bulk_labels_scib = bulk_adata_for_contrast.obs[group_column]
+        pb_labels_scib   = paired_pb_adata.obs[group_column]
         if bulk_adata_for_contrast is not None and group_column in bulk_adata_for_contrast.obs.columns:
             bulk_labels_scib = bulk_adata_for_contrast.obs[group_column].to_numpy().astype(str)
         if paired_pb_adata is not None and group_column in paired_pb_adata.obs.columns:
