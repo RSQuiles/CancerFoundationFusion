@@ -461,6 +461,54 @@ def compute_aggregation_metrics(
     }
 
 
+def _agg_metrics_from_precomputed(
+    sc_emb: np.ndarray,
+    sc_groups: np.ndarray,
+    synth_pb_emb: np.ndarray,
+    synth_pb_groups: np.ndarray,
+    n_sc_per_pb: int = 10,
+    seed: int = 0,
+) -> dict:
+    """Aggregation consistency from precomputed SC and synth_pb embeddings.
+
+    For each synth_pb, randomly samples ``n_sc_per_pb`` SC embeddings from
+    the same group, takes their mean, and measures cosine similarity and L2
+    distance to the pseudobulk embedding.  Returns the same keys as
+    ``compute_aggregation_metrics``.
+    """
+    rng = np.random.default_rng(seed)
+
+    group_to_sc_idx: dict[str, np.ndarray] = {}
+    for g in np.unique(sc_groups):
+        group_to_sc_idx[g] = np.where(sc_groups == g)[0]
+
+    sims: list[float] = []
+    l2s:  list[float] = []
+
+    for pb_emb_i, g in zip(synth_pb_emb, synth_pb_groups):
+        sc_idx = group_to_sc_idx.get(str(g))
+        if sc_idx is None or len(sc_idx) == 0:
+            continue
+        chosen  = rng.choice(sc_idx, size=min(n_sc_per_pb, len(sc_idx)),
+                             replace=len(sc_idx) < n_sc_per_pb)
+        mean_sc = sc_emb[chosen].mean(axis=0)
+
+        pb_n = pb_emb_i / (np.linalg.norm(pb_emb_i) + 1e-8)
+        sc_n = mean_sc   / (np.linalg.norm(mean_sc)  + 1e-8)
+        sims.append(float(np.dot(pb_n, sc_n)))
+        l2s.append(float(np.linalg.norm(pb_emb_i - mean_sc)))
+
+    if not sims:
+        return {}
+    return {
+        "agg_synth_cosine_pb_to_mean_sc":     float(np.mean(sims)),
+        "agg_synth_cosine_pb_to_mean_sc_std": float(np.std(sims)),
+        "agg_synth_l2_pb_to_mean_sc":         float(np.mean(l2s)),
+        "agg_synth_l2_pb_to_mean_sc_std":     float(np.std(l2s)),
+        "agg_synth_n_pseudobulks":            len(sims),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Metric 4: contrastive / distribution-level alignment
 # ---------------------------------------------------------------------------
@@ -788,6 +836,7 @@ def run_single_model(
     paired_sc_adata,   paired_sc_emb   = _get("paired_sc")
     paired_pb_adata,   paired_pb_emb   = _get("paired_pb")
     paired_bulk_adata, paired_bulk_emb = _get("paired_bulk")
+    synth_pb_adata,    synth_pb_emb    = _get("synth_pb")
 
     # ── Metric 1: reconstruction ──────────────────────────────────────────
     recon_cache_key = f"recon_{model_name}"
@@ -800,9 +849,19 @@ def run_single_model(
         recon_done = False
 
     # ── Load model if still needed (reconstruction not cached, or synth agg) ─
+    has_precomputed_agg = (
+        synth_pb_emb is not None
+        and sc_emb is not None
+        and sc_adata is not None
+        and synth_pb_adata is not None
+        and group_column in sc_adata.obs.columns
+        and group_column in synth_pb_adata.obs.columns
+    )
     model = None
     need_model = (not recon_done and bulk_adata is not None) or (
-        sc_adata is not None and group_column in sc_adata.obs.columns
+        not has_precomputed_agg
+        and sc_adata is not None
+        and group_column in sc_adata.obs.columns
     )
     if need_model and ckpt_path is not None:
         log.info("  Loading model from %s ...", ckpt_path.name)
@@ -856,8 +915,20 @@ def run_single_model(
         )
 
     # ── Metric 3b: aggregation consistency from synthetic pseudobulks ─────
-    if model is not None and sc_adata is not None and group_column in sc_adata.obs.columns:
-        log.info("  Computing aggregation consistency (synthetic) ...")
+    if has_precomputed_agg:
+        log.info("  Computing aggregation consistency from precomputed synth_pb embeddings ...")
+        metrics.update(
+            _agg_metrics_from_precomputed(
+                sc_emb=sc_emb,
+                sc_groups=sc_adata.obs[group_column].astype(str).to_numpy(),
+                synth_pb_emb=synth_pb_emb,
+                synth_pb_groups=synth_pb_adata.obs[group_column].astype(str).to_numpy(),
+                n_sc_per_pb=n_sc_per_pb,
+                seed=seed,
+            )
+        )
+    elif model is not None and sc_adata is not None and group_column in sc_adata.obs.columns:
+        log.info("  Computing aggregation consistency (synthetic, live embedding) ...")
         metrics.update(
             compute_aggregation_metrics(
                 model, sc_adata,
