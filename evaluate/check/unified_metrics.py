@@ -70,6 +70,8 @@ try:
 except ImportError:
     log.warning("Could not load CancerFoundation")
 
+from evaluate.utils import generate_pseudobulk_adata
+
 _MODALITY_COL = "_eval_modality"
 
 # (lo_inclusive, hi_exclusive, label_suffix)
@@ -101,6 +103,53 @@ def _load_model(ckpt_path: Path, device: str) -> CancerFoundation:
 # ---------------------------------------------------------------------------
 # Metric 1: masked reconstruction
 # ---------------------------------------------------------------------------
+
+def _recon_metrics_from_arrays(
+    pred: np.ndarray,
+    target: np.ndarray,
+    mask: np.ndarray,
+) -> dict:
+    """Compute reconstruction metrics from cached (pred, target, mask) arrays.
+
+    Identical aggregation logic to the model-forward path in
+    ``compute_reconstruction_metrics``; used when ``build_eval_adata.py`` has
+    already run the forward pass and stored the raw arrays in
+    ``eval_adata.uns["recon_{model_name}"]``.
+    """
+    pearson_rs: list[float] = []
+    mae_vals: list[float] = []
+    strat_mae: dict[str, list[float]] = {s: [] for _, _, s in _BIN_STRATA}
+
+    for i in range(len(pred)):
+        m = mask[i]
+        if m.sum() < 2:
+            continue
+        p = pred[i][m].astype(np.float32)
+        t = target[i][m].astype(np.float32)
+        abs_err = np.abs(p - t)
+        mae_vals.append(float(abs_err.mean()))
+        for lo, hi, suffix in _BIN_STRATA:
+            stratum = (t >= lo) & (t < hi)
+            if stratum.any():
+                strat_mae[suffix].append(float(abs_err[stratum].mean()))
+        if np.std(p) < 1e-8 or np.std(t) < 1e-8:
+            continue
+        r = float(np.corrcoef(p, t)[0, 1])
+        if not np.isnan(r):
+            pearson_rs.append(r)
+
+    return {
+        "recon_pearson_r":     float(np.mean(pearson_rs)) if pearson_rs else float("nan"),
+        "recon_pearson_r_std": float(np.std(pearson_rs))  if pearson_rs else float("nan"),
+        "recon_mae_bins":      float(np.mean(mae_vals))   if mae_vals   else float("nan"),
+        **{
+            f"recon_mae_bins_{s}": float(np.mean(v)) if v else float("nan")
+            for _, _, s in _BIN_STRATA
+            for v in [strat_mae[s]]
+        },
+        "recon_n_cells": len(pearson_rs),
+    }
+
 
 @torch.no_grad()
 def compute_reconstruction_metrics(
@@ -518,88 +567,174 @@ def run_scib_benchmark(
     eval_adata: ad.AnnData,
     model_names: list[str],
     group_column: str = "tissue_general",
-    out_png: Path | None = None,
-    out_csv: Path | None = None,
-) -> "pd.DataFrame | None":
-    """Run scib_metrics Benchmarker comparing bulk vs PB integration across all models.
+    n_max: int = 500,
+    out_dir: Path | None = None,
+    seed: int = 0,
+) -> None:
+    """Run four scIB batch integration benchmarks across all models.
 
-    Each model's pre-computed embedding (obsm key ``X_cf_<name>``) is treated as
-    one integration method.  batch_key = modality (bulk vs PB);
-    label_key = group_column (biological label for bio-conservation metrics).
+    Synthetic pseudobulks (``_eval_modality = "synth_pb"``) are expected to be
+    already present in ``eval_adata`` with their embeddings pre-computed by
+    ``build_eval_adata.py``; no model loading happens here.
 
-    Writes batch_integration.png (plot_results_table) and scib_benchmark.csv.
+    Benchmarks
+    ----------
+    1. **bulk_vs_pb** — all bulk (bulk + paired_bulk) vs all pseudobulk
+       (paired_pb + synth_pb).  batch_key = "modality_type".
+    2. **paired_vs_nonpaired** — paired samples (paired_bulk + paired_pb) vs
+       non-paired samples (bulk + synth_pb).  batch_key = "pairing".
+    3. **paired_bulk_vs_paired_pb** — paired_bulk vs paired_pb only.
+       batch_key = "modality_type".
+    4. **nonpaired_bulk_vs_synth_pb** — non-paired bulk vs synth_pb only.
+       batch_key = "modality_type".
     """
     try:
-        from scib_metrics.benchmark import Benchmarker, BioConservation, BatchCorrection
+        from scib_metrics.benchmark import Benchmarker, BatchCorrection
     except ImportError:
         log.warning("scib_metrics not installed — skipping batch integration benchmark.")
-        return None
+        return
 
-    # ── Select cells: bulk (or paired_bulk) + paired_pb ───────────────────
-    mod_col   = eval_adata.obs.get(_MODALITY_COL, pd.Series(dtype=str, index=eval_adata.obs_names))
-    bulk_mask = (mod_col == "bulk").values | (mod_col == "paired_bulk").values
-    pb_mask   = (mod_col == "paired_pb").values
-    combined  = bulk_mask | pb_mask
+    rng = np.random.default_rng(seed)
 
-    if not combined.any():
-        log.warning("No bulk or paired_pb cells found in eval_adata — skipping scIB benchmark.")
-        return None
-
-    sub = eval_adata[combined].copy()
-    sub.obs["modality"] = pd.Categorical(
-        np.where(bulk_mask[combined], "bulk", "pb")
+    # ── Modality masks ──────────────────────────────────────────────────────
+    mod_col = eval_adata.obs.get(
+        _MODALITY_COL, pd.Series("", index=eval_adata.obs_names, dtype=str)
     )
+    bulk_mask        = (mod_col == "bulk").values
+    paired_bulk_mask = (mod_col == "paired_bulk").values
+    paired_pb_mask   = (mod_col == "paired_pb").values
+    synth_pb_mask    = (mod_col == "synth_pb").values
+    all_bulk_mask    = bulk_mask | paired_bulk_mask
+    all_pb_mask      = paired_pb_mask | synth_pb_mask
 
-    if group_column not in sub.obs.columns:
-        log.warning("group_column '%s' not in obs — skipping scIB benchmark.", group_column)
-        return None
+    # ── Helper: subsample a boolean mask to at most n indices ───────────────
+    def _sample_idx(mask: np.ndarray, n: int) -> np.ndarray:
+        idx = np.where(mask)[0]
+        if len(idx) > n:
+            idx = rng.choice(idx, size=n, replace=False)
+        return np.sort(idx)
 
-    sub.obs[group_column] = sub.obs[group_column].fillna("unknown").astype(str)
+    # ── Helper: build a minimal AnnData for scIB from eval_adata subsets ───
+    # part_specs: list of (row_indices_into_eval_adata, batch_label)
+    def _build_sub(
+        part_specs: list[tuple[np.ndarray, str]],
+        batch_col: str,
+    ) -> ad.AnnData | None:
+        obs_rows: list[dict] = []
+        emb_accum: dict[str, list[np.ndarray]] = {}
+        emb_counts: dict[str, int] = {}
 
-    # ── Gather valid embedding keys ────────────────────────────────────────
-    embedding_keys = [f"X_cf_{n}" for n in model_names if f"X_cf_{n}" in sub.obsm]
-    if not embedding_keys:
-        log.warning("No model embedding keys found in eval_adata obsm — skipping scIB benchmark.")
-        return None
+        for idx, label in part_specs:
+            if len(idx) == 0:
+                continue
+            grp = (
+                eval_adata.obs[group_column].iloc[list(idx)].astype(str).values
+                if group_column in eval_adata.obs.columns
+                else np.full(len(idx), "unknown")
+            )
+            for g in grp:
+                obs_rows.append({group_column: g, batch_col: label})
+            for name in model_names:
+                key = f"X_cf_{name}"
+                if key in eval_adata.obsm:
+                    emb_accum.setdefault(key, []).append(eval_adata.obsm[key][list(idx)])
+                    emb_counts[key] = emb_counts.get(key, 0) + len(idx)
 
-    log.info(
-        "Running scIB Benchmarker: %d models × %d cells ...",
-        len(embedding_keys), sub.n_obs,
-    )
+        if not obs_rows:
+            return None
 
-    # ── Benchmarker ────────────────────────────────────────────────────────
-    bm = Benchmarker(
-        sub,
-        batch_key="modality",
-        label_key=group_column,
-        embedding_obsm_keys=embedding_keys,
-        bio_conservation_metrics=None,
-        batch_correction_metrics=BatchCorrection(
-            bras=True,
-            ilisi_knn=True,
-            pcr_comparison=True,
-            graph_connectivity=False
-        ),
-        pre_integrated_embedding_obsm_key=None,
-        n_jobs=1,
-    )
+        n_total = len(obs_rows)
+        sub = ad.AnnData(obs=pd.DataFrame(obs_rows))
+        for key, arrs in emb_accum.items():
+            if emb_counts[key] == n_total:
+                sub.obsm[key] = np.vstack(arrs).astype(np.float32)
 
-    bm.benchmark()
-    results = bm.get_results(min_max_scale=True, clean_names=True)
-    log.info("scIB benchmark complete.\n%s", results.to_string())
+        return sub if sub.obsm else None
 
-    if out_csv is not None:
-        results.to_csv(out_csv)
-        log.info("scIB results CSV → %s", out_csv)
+    # ── Helper: run one Benchmarker and save results ────────────────────────
+    def _run_one(sub: ad.AnnData, batch_col: str, tag: str) -> None:
+        sub.obs[group_column] = sub.obs[group_column].fillna("unknown").astype(str)
+        embedding_keys = [k for k in sub.obsm if k.startswith("X_cf_")]
+        if not embedding_keys:
+            log.warning("[scIB %s] No valid embedding keys — skipping.", tag)
+            return
+        if sub.obs[batch_col].nunique() < 2:
+            log.warning("[scIB %s] Only 1 batch value — skipping.", tag)
+            return
 
-    if out_png is not None:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        fig = bm.plot_results_table(min_max_scale=False, show=False, save_dir=out_png)
-        log.info("Batch integration plot → %s", out_png)
+        log.info(
+            "[scIB %s] %d cells, %d models, batch_key='%s' %s ...",
+            tag, sub.n_obs, len(embedding_keys), batch_col,
+            dict(sub.obs[batch_col].value_counts().items()),
+        )
+        bm = Benchmarker(
+            sub,
+            batch_key=batch_col,
+            label_key=group_column,
+            embedding_obsm_keys=embedding_keys,
+            bio_conservation_metrics=None,
+            batch_correction_metrics=BatchCorrection(
+                bras=True,
+                ilisi_knn=True,
+                pcr_comparison=True,
+                graph_connectivity=False,
+            ),
+            pre_integrated_embedding_obsm_key=None,
+            n_jobs=1,
+        )
+        bm.benchmark()
+        results = bm.get_results(min_max_scale=True, clean_names=True)
+        log.info("[scIB %s] complete.\n%s", tag, results.to_string())
 
-    return results
+        if out_dir is not None:
+            (out_dir / f"scib_{tag}.csv").parent.mkdir(parents=True, exist_ok=True)
+            results.to_csv(out_dir / f"scib_{tag}.csv")
+            png_dir = out_dir / f"scib_{tag}"
+            png_dir.mkdir(parents=True, exist_ok=True)
+            bm.plot_results_table(min_max_scale=False, show=False, save_dir=png_dir)
+            log.info("[scIB %s] → %s/", tag, png_dir)
+
+    # ── Benchmark 1: all bulk vs all pseudobulk ─────────────────────────────
+    sub1 = _build_sub([
+        (_sample_idx(all_bulk_mask, n_max), "bulk"),
+        (_sample_idx(all_pb_mask,   n_max), "pseudobulk"),
+    ], "modality_type")
+    if sub1 is not None:
+        _run_one(sub1, "modality_type", "bulk_vs_pb")
+    else:
+        log.warning("[scIB] bulk_vs_pb: could not build sub-adata — skipping.")
+
+    # ── Benchmark 2: paired vs non-paired ──────────────────────────────────
+    paired_mask    = paired_bulk_mask | paired_pb_mask
+    nonpaired_mask = bulk_mask | synth_pb_mask
+    sub2 = _build_sub([
+        (_sample_idx(paired_mask,    n_max), "paired"),
+        (_sample_idx(nonpaired_mask, n_max), "non_paired"),
+    ], "pairing")
+    if sub2 is not None:
+        _run_one(sub2, "pairing", "paired_vs_nonpaired")
+    else:
+        log.warning("[scIB] paired_vs_nonpaired: could not build sub-adata — skipping.")
+
+    # ── Benchmark 3: paired bulk vs paired pseudobulk ──────────────────────
+    sub3 = _build_sub([
+        (_sample_idx(paired_bulk_mask, n_max), "bulk"),
+        (_sample_idx(paired_pb_mask,   n_max), "pseudobulk"),
+    ], "modality_type")
+    if sub3 is not None:
+        _run_one(sub3, "modality_type", "paired_bulk_vs_paired_pb")
+    else:
+        log.warning("[scIB] paired_bulk_vs_paired_pb: could not build sub-adata — skipping.")
+
+    # ── Benchmark 4: non-paired bulk vs synthetic pseudobulk ───────────────
+    sub4 = _build_sub([
+        (_sample_idx(bulk_mask,      n_max), "bulk"),
+        (_sample_idx(synth_pb_mask,  n_max), "pseudobulk"),
+    ], "modality_type")
+    if sub4 is not None:
+        _run_one(sub4, "modality_type", "nonpaired_bulk_vs_synth_pb")
+    else:
+        log.warning("[scIB] nonpaired_bulk_vs_synth_pb: could not build sub-adata — skipping.")
 
 
 # ---------------------------------------------------------------------------
@@ -654,24 +789,36 @@ def run_single_model(
     paired_pb_adata,   paired_pb_emb   = _get("paired_pb")
     paired_bulk_adata, paired_bulk_emb = _get("paired_bulk")
 
-    # ── Load model (needed for reconstruction + synthetic aggregation) ────
+    # ── Metric 1: reconstruction ──────────────────────────────────────────
+    recon_cache_key = f"recon_{model_name}"
+    if recon_cache_key in eval_adata.uns:
+        log.info("  Using cached reconstruction arrays from eval_adata.uns ...")
+        c = eval_adata.uns[recon_cache_key]
+        metrics.update(_recon_metrics_from_arrays(c["pred"], c["target"], c["mask"]))
+        recon_done = True
+    else:
+        recon_done = False
+
+    # ── Load model if still needed (reconstruction not cached, or synth agg) ─
     model = None
-    if ckpt_path is not None:
+    need_model = (not recon_done and bulk_adata is not None) or (
+        sc_adata is not None and group_column in sc_adata.obs.columns
+    )
+    if need_model and ckpt_path is not None:
         log.info("  Loading model from %s ...", ckpt_path.name)
         try:
             model = _load_model(ckpt_path, device)
         except Exception:
             log.error("  Failed to load model:\n%s", traceback.format_exc())
 
-    # ── Metric 1: reconstruction ──────────────────────────────────────────
-    if model is not None and sc_adata is not None:
-        log.info("  Computing reconstruction metrics (%d SC cells) ...", sc_adata.n_obs)
+    if not recon_done and model is not None and bulk_adata is not None:
+        log.info("  Computing reconstruction metrics (%d bulk cells) ...", bulk_adata.n_obs)
         metrics.update(
             compute_reconstruction_metrics(
                 model, bulk_adata,
                 batch_size=batch_size,
                 mask_ratio=mask_ratio,
-                n_cells=min(sc_adata.n_obs, 1000),
+                n_cells=min(bulk_adata.n_obs, 1000),
                 seed=seed,
                 normalized=normalized,
             )
@@ -818,8 +965,8 @@ def run_ablation(
             eval_adata,
             model_names=[d.name for d in model_dirs],
             group_column=group_column,
-            out_png=ablation_dir,
-            out_csv=ablation_dir / "scib_benchmark.csv",
+            out_dir=ablation_dir,
+            seed=seed,
         )
 
 

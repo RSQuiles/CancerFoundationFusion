@@ -294,6 +294,7 @@ def main(input_args=None):
         weight_agg=args.loss_weight_agg,
         weight_dat=args.loss_weight_dat,
         weight_reconstruction=args.loss_weight_reconstruction,
+        n_sc_per_pseudobulk=args.n_sc_per_pseudobulk,
     )
 
     if args.pretrained:

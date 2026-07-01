@@ -93,6 +93,7 @@ class CancerFoundation(pl.LightningModule):
         weight_agg: float = 1.0,
         weight_dat: float = 1.0,
         weight_reconstruction: float = 1.0,
+        n_sc_per_pseudobulk: int = 10,
     ):
         """Initializes the CancerFoundation LightningModule.
 
@@ -191,6 +192,7 @@ class CancerFoundation(pl.LightningModule):
         self.weight_agg = weight_agg
         self.weight_dat = weight_dat
         self.weight_reconstruction = weight_reconstruction
+        self.n_sc_per_pseudobulk = n_sc_per_pseudobulk
 
         # Training configuration
         self.pad_token = "<pad>"
