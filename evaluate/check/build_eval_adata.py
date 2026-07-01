@@ -282,6 +282,7 @@ def build(
     seed: int = 0,
     normalized: bool = True,
     group_column: str = "tissue_general",
+    n_pca_components: int = 50,
 ) -> ad.AnnData:
     """
     Load data, generate synthetic pseudobulks, embed with each model,
@@ -347,6 +348,26 @@ def build(
             "(sc_cells=%d, n_synth_target=%d, group_column_present=%s)",
             sc_mask.sum(), n_synth, group_column in combined.obs.columns,
         )
+
+    # ── PCA baseline (model-independent) ────────────────────────────────────
+    log.info("Computing PCA baseline (%d components) ...", n_pca_components)
+    try:
+        import scipy.sparse as sp
+        from sklearn.decomposition import PCA
+
+        X_expr = combined.X
+        if sp.issparse(X_expr):
+            X_expr = X_expr.toarray()
+        X_expr = np.nan_to_num(X_expr.astype(np.float32))
+        n_components = min(n_pca_components, X_expr.shape[0] - 1, X_expr.shape[1])
+        pca = PCA(n_components=n_components, random_state=seed)
+        combined.obsm["X_pca"] = pca.fit_transform(X_expr).astype(np.float32)
+        log.info(
+            "  X_pca stored (%d cells × %d components)",
+            combined.n_obs, combined.obsm["X_pca"].shape[1],
+        )
+    except Exception:
+        log.warning("PCA computation failed:\n%s", traceback.format_exc())
 
     # ── Per-model: embed all cells + cache masked forward pass ───────────────
     for ckpt_path, name in ckpt_name_pairs:
@@ -426,6 +447,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         "generation (default: tissue_general).")
     p.add_argument("--not-normalized", action="store_true",
                    help="h5ad files contain raw counts (not log1p-normalised).")
+    p.add_argument("--n-pca-components", type=int, default=50,
+                   help="Number of PCA components for the baseline embedding (default: 50).")
     return p
 
 
@@ -467,6 +490,7 @@ def main(argv=None) -> int:
         seed=args.seed,
         normalized=not args.not_normalized,
         group_column=args.group_column,
+        n_pca_components=args.n_pca_components,
     )
     return 0
 

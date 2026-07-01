@@ -687,6 +687,9 @@ def run_scib_benchmark(
                 if key in eval_adata.obsm:
                     emb_accum.setdefault(key, []).append(eval_adata.obsm[key][list(idx)])
                     emb_counts[key] = emb_counts.get(key, 0) + len(idx)
+            if "X_pca" in eval_adata.obsm:
+                emb_accum.setdefault("X_pca", []).append(eval_adata.obsm["X_pca"][list(idx)])
+                emb_counts["X_pca"] = emb_counts.get("X_pca", 0) + len(idx)
 
         if not obs_rows:
             return None
@@ -720,6 +723,8 @@ def run_scib_benchmark(
         print(f"sub.n_obs: {sub.n_obs}")
         print(f"sub.X: {sub.X.shape}")
 
+        pre_integrated_key = "X_pca" if "X_pca" in sub.obsm else None
+
         bm = Benchmarker(
             sub,
             batch_key=batch_col,
@@ -729,10 +734,10 @@ def run_scib_benchmark(
             batch_correction_metrics=BatchCorrection(
                 bras=True,
                 ilisi_knn=True,
-                pcr_comparison=True, # requires expression data?
+                pcr_comparison=pre_integrated_key is not None,
                 graph_connectivity=False,
             ),
-            pre_integrated_embedding_obsm_key=None,
+            pre_integrated_embedding_obsm_key=pre_integrated_key,
             n_jobs=1,
         )
         bm.benchmark()
