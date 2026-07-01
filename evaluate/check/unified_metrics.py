@@ -554,6 +554,8 @@ def run_scib_benchmark(
         log.warning("group_column '%s' not in obs — skipping scIB benchmark.", group_column)
         return None
 
+    sub.obs[group_column] = sub.obs[group_column].fillna("unknown").astype(str)
+
     # ── Gather valid embedding keys ────────────────────────────────────────
     embedding_keys = [f"X_cf_{n}" for n in model_names if f"X_cf_{n}" in sub.obsm]
     if not embedding_keys:
@@ -571,19 +573,12 @@ def run_scib_benchmark(
         batch_key="modality",
         label_key=group_column,
         embedding_obsm_keys=embedding_keys,
-        bio_conservation_metrics=BioConservation(
-            isolated_labels=True,
-            nmi_ari_cluster_labels_leiden=False,
-            nmi_ari_cluster_labels_kmeans=True,
-            silhouette_label=True,
-            clisi_knn=True,
-        ),
+        bio_conservation_metrics=None,
         batch_correction_metrics=BatchCorrection(
             bras=True,
             ilisi_knn=True,
-            kbet_per_label=True,
-            graph_connectivity=True,
             pcr_comparison=True,
+            graph_connectivity=False
         ),
         pre_integrated_embedding_obsm_key=None,
         n_jobs=1,
@@ -601,9 +596,7 @@ def run_scib_benchmark(
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        fig = bm.plot_results_table(min_max_scale=True, show=False)
-        fig.savefig(out_png, dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        fig = bm.plot_results_table(min_max_scale=False, show=False, save_dir=out_png)
         log.info("Batch integration plot → %s", out_png)
 
     return results
@@ -825,7 +818,7 @@ def run_ablation(
             eval_adata,
             model_names=[d.name for d in model_dirs],
             group_column=group_column,
-            out_png=ablation_dir / "batch_integration.png",
+            out_png=ablation_dir,
             out_csv=ablation_dir / "scib_benchmark.csv",
         )
 

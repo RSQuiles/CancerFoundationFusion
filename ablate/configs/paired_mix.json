@@ -18,6 +18,7 @@
       "wandb": "ablation_paired_mix",
       "compile": false,
       "ckpt_every_n_steps": 10000,
+      "save_every": true,
       "resume_from_checkpoint": "last"
     },
     "data": {
@@ -52,8 +53,8 @@
     "features": {
       "loss_weight_paired": 100,
       "loss_weight_dat": 100,
-      "loss_weight_agg": 100,
-      "loss_weight_reconstruction": 0.1
+      "loss_weight_agg": 10,
+      "loss_weight_reconstruction": 10
     }
   },
   "base_overrides": {},
@@ -87,6 +88,7 @@
 	        "paired_sampling": true,
           "do_dat": true,
           "dat_columns": ["modality", "assay"],
+          "dat_interval_steps": 3,
           "agg_consistency": true,
           "agg_fn": "mean"
         }
