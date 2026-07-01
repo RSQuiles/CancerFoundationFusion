@@ -39,6 +39,34 @@ def _digitize(x: np.ndarray, bins: np.ndarray, side="both") -> np.ndarray:
     return digits
 
 
+def binning_with_edges(
+    row: np.ndarray, n_bins: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Same as binning() but also returns the (n_bins-1,) quantile edge array.
+
+    Returns ``(binned_row, edges)`` where ``edges`` has shape ``(n_bins-1,)``.
+    ``edges`` is all-zeros when the row is all-zero.  The edges are the
+    expression-space quantile breakpoints used to assign bin indices, so two
+    bin indices that share the same edge value represent the same expression
+    level (repeated-quantile case).
+    """
+    if row.size == 0 or row.max() == 0:
+        return np.zeros_like(row, dtype=np.int64), np.zeros(n_bins - 1, dtype=np.float32)
+
+    if row.min() <= 0:
+        non_zero_ids = row.nonzero()
+        non_zero_row = row[non_zero_ids]
+        edges = np.quantile(non_zero_row, np.linspace(0, 1, n_bins - 1)).astype(np.float32)
+        non_zero_digits = _digitize(non_zero_row, edges)
+        binned_row = np.zeros_like(row, dtype=np.int64)
+        binned_row[non_zero_ids] = non_zero_digits
+    else:
+        edges = np.quantile(row, np.linspace(0, 1, n_bins - 1)).astype(np.float32)
+        binned_row = _digitize(row, edges).astype(np.int64)
+
+    return binned_row, edges
+
+
 def binning(
     row: Union[np.ndarray, torch.Tensor], n_bins: int
 ) -> Union[np.ndarray, torch.Tensor]:

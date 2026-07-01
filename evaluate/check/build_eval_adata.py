@@ -175,7 +175,15 @@ def _run_masked_forward(
     device = next(model.model.parameters()).device
     rng = np.random.default_rng(seed)
 
-    data = model.preprocess_for_embedding(sc_adata, normalized=normalized)
+    use_edges = model.input_style == "binned"
+    if use_edges:
+        preprocess_result = model.preprocess_for_embedding(
+            sc_adata, normalized=normalized, return_edges=True
+        )
+        data, orig_X_full, bin_edges_full = preprocess_result
+    else:
+        data = model.preprocess_for_embedding(sc_adata, normalized=normalized)
+
     if data.n_obs == 0:
         return None
 
@@ -185,6 +193,10 @@ def _run_masked_forward(
 
     X = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
     X = X.astype(np.float32)
+
+    if use_edges:
+        all_orig_expr = orig_X_full[list(idx)].astype(np.float32)
+        all_bin_edges = bin_edges_full[list(idx)]
     gene_ids = torch.LongTensor([model.vocab[g] for g in data.var.index]).to(device)
     n_genes = X.shape[1]
 
@@ -246,7 +258,12 @@ def _run_masked_forward(
         all_pred[start:end] = pred.float().cpu().numpy()
         all_mask[start:end] = gene_mask.cpu().numpy()
 
-    return {"pred": all_pred, "target": all_target, "mask": all_mask}
+    cache: dict = {"pred": all_pred, "target": all_target, "mask": all_mask}
+    if use_edges:
+        cache["orig_expr"] = all_orig_expr
+        cache["bin_edges"] = all_bin_edges
+        cache["n_bins"]    = model.n_bins
+    return cache
 
 
 # ---------------------------------------------------------------------------

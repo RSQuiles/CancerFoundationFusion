@@ -736,6 +736,7 @@ class CancerFoundation(pl.LightningModule):
         adata,
         normalized: bool = False,
         gene_subset: list | None = None,
+        return_edges: bool = False,
     ):
         """Normalize, intersect vocab, select HVGs, and optionally bin — without running the forward pass.
 
@@ -809,14 +810,25 @@ class CancerFoundation(pl.LightningModule):
             data = data[:, top_idx].copy()
 
         if self.input_style == "binned":
+            from cancerfoundation.data.preprocess import binning_with_edges
             normalise = self.model.decoder.normalise_bins
             X = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
-            for idx in range(data.n_obs):
-                X[idx] = binning(X[idx], self.n_bins)
-                if normalise:
-                    X[idx] = X[idx] / self.n_bins
+            if return_edges:
+                orig_X = X.copy()
+                all_edges = np.zeros((data.n_obs, self.n_bins - 1), dtype=np.float32)
+                for idx in range(data.n_obs):
+                    binned, edges = binning_with_edges(X[idx], self.n_bins)
+                    all_edges[idx] = edges
+                    X[idx] = binned / self.n_bins if normalise else binned
+            else:
+                for idx in range(data.n_obs):
+                    X[idx] = binning(X[idx], self.n_bins)
+                    if normalise:
+                        X[idx] = X[idx] / self.n_bins
             data.X = X
 
+        if return_edges and self.input_style == "binned":
+            return data, orig_X, all_edges
         return data
 
     def embed_for_finetune(

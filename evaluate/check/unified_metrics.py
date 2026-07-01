@@ -74,15 +74,6 @@ from evaluate.utils import generate_pseudobulk_adata
 
 _MODALITY_COL = "_eval_modality"
 
-# (lo_inclusive, hi_exclusive, label_suffix)
-_BIN_STRATA = [
-    (0,  5,  "0_5"),
-    (5,  15, "5_15"),
-    (15, 30, "15_30"),
-    (30, 51, "30_50"),  # hi=51 to include bin 50
-]
-
-
 # ---------------------------------------------------------------------------
 # Checkpoint helpers
 # ---------------------------------------------------------------------------
@@ -104,50 +95,103 @@ def _load_model(ckpt_path: Path, device: str) -> CancerFoundation:
 # Metric 1: masked reconstruction
 # ---------------------------------------------------------------------------
 
+def _bin_to_expr(bin_idx: np.ndarray, edges: np.ndarray) -> np.ndarray:
+    """Map integer bin indices → log1p expression values using per-cell quantile edges.
+
+    bin 0       → 0.0  (zero-expression genes)
+    bin k > 0   → edges[k-1]  (left quantile boundary of that bin)
+
+    When edges are repeated (edges[k-1] == edges[j-1]), different bin indices
+    that share the same edge value map to the same expression level, so the
+    resulting error contribution is correctly 0.
+    """
+    bin_idx = np.asarray(bin_idx, dtype=np.int64)
+    out = np.zeros(len(bin_idx), dtype=np.float32)
+    pos = bin_idx > 0
+    if pos.any():
+        k = bin_idx[pos]
+        # Clip to valid edge range (bin k maps to edges[k-1], max index = len(edges)-1)
+        k_clipped = np.clip(k - 1, 0, len(edges) - 1)
+        out[pos] = edges[k_clipped]
+    return out
+
+
 def _recon_metrics_from_arrays(
     pred: np.ndarray,
     target: np.ndarray,
     mask: np.ndarray,
+    bin_edges: np.ndarray | None = None,
+    orig_expr: np.ndarray | None = None,
+    n_bins: int | None = None,
 ) -> dict:
     """Compute reconstruction metrics from cached (pred, target, mask) arrays.
 
-    Identical aggregation logic to the model-forward path in
-    ``compute_reconstruction_metrics``; used when ``build_eval_adata.py`` has
-    already run the forward pass and stored the raw arrays in
-    ``eval_adata.uns["recon_{model_name}"]``.
+    When ``bin_edges`` and ``orig_expr`` are provided (written by the updated
+    ``build_eval_adata.py``), MAE is computed in log1p expression space with
+    repeated-edge awareness: two bin indices that share the same quantile edge
+    value contribute zero error.
+
+    Falls back to bin-space MAE when the edge arrays are absent (older caches).
+
+    Per-5-bin MAE is always accumulated for the line plot (``recon_mae_per_bin``).
     """
+    use_edges = bin_edges is not None and orig_expr is not None
+
     pearson_rs: list[float] = []
-    mae_vals: list[float] = []
-    strat_mae: dict[str, list[float]] = {s: [] for _, _, s in _BIN_STRATA}
+    mae_vals:   list[float] = []
+    # per-bin-group accumulator: window_start (0, 5, 10, …) → list of per-gene errors
+    per_bin: dict[int, list[float]] = {}
 
     for i in range(len(pred)):
         m = mask[i]
         if m.sum() < 2:
             continue
+
         p = pred[i][m].astype(np.float32)
         t = target[i][m].astype(np.float32)
-        abs_err = np.abs(p - t)
+
+        # Pearson R (bin space — unchanged)
+        if np.std(p) >= 1e-8 and np.std(t) >= 1e-8:
+            r = float(np.corrcoef(p, t)[0, 1])
+            if not np.isnan(r):
+                pearson_rs.append(r)
+
+        # MAE
+        if use_edges:
+            edges = bin_edges[i]
+            # De-normalise if targets are in [0,1] (normalise_bins=True)
+            if n_bins is not None and t.max() <= 1.0 and t.max() > 0:
+                p_bins = np.round(p * n_bins).astype(np.int64)
+                t_bins = np.round(t * n_bins).astype(np.int64)
+            else:
+                p_bins = np.round(p).astype(np.int64)
+                t_bins = t.astype(np.int64)
+
+            p_expr = _bin_to_expr(p_bins, edges)
+            t_expr = orig_expr[i][m].astype(np.float32)
+            abs_err = np.abs(p_expr - t_expr)
+        else:
+            abs_err = np.abs(p - t)
+            t_bins  = np.round(t).astype(np.int64)
+
         mae_vals.append(float(abs_err.mean()))
-        for lo, hi, suffix in _BIN_STRATA:
-            stratum = (t >= lo) & (t < hi)
-            if stratum.any():
-                strat_mae[suffix].append(float(abs_err[stratum].mean()))
-        if np.std(p) < 1e-8 or np.std(t) < 1e-8:
-            continue
-        r = float(np.corrcoef(p, t)[0, 1])
-        if not np.isnan(r):
-            pearson_rs.append(r)
+
+        # Per-5-bin accumulation (stratify by true bin index)
+        for err_val, tb in zip(abs_err, t_bins):
+            window = int((tb // 5) * 5)
+            per_bin.setdefault(window, []).append(float(err_val))
+
+    per_bin_means = {
+        str(w + 2): float(np.mean(v))   # store centre of each 5-bin window
+        for w, v in sorted(per_bin.items()) if v
+    }
 
     return {
         "recon_pearson_r":     float(np.mean(pearson_rs)) if pearson_rs else float("nan"),
         "recon_pearson_r_std": float(np.std(pearson_rs))  if pearson_rs else float("nan"),
-        "recon_mae_bins":      float(np.mean(mae_vals))   if mae_vals   else float("nan"),
-        **{
-            f"recon_mae_bins_{s}": float(np.mean(v)) if v else float("nan")
-            for _, _, s in _BIN_STRATA
-            for v in [strat_mae[s]]
-        },
-        "recon_n_cells": len(pearson_rs),
+        "recon_mae_expr":      float(np.mean(mae_vals))   if mae_vals   else float("nan"),
+        "recon_mae_per_bin":   per_bin_means,
+        "recon_n_cells":       len(pearson_rs),
     }
 
 
@@ -194,7 +238,6 @@ def compute_reconstruction_metrics(
 
     pearson_rs: list[float] = []
     mae_vals: list[float] = []
-    strat_mae: dict[str, list[float]] = {s: [] for _, _, s in _BIN_STRATA}
 
     for start in range(0, n, batch_size):
         batch_expr = torch.from_numpy(X[start : start + batch_size]).to(device)
@@ -228,17 +271,11 @@ def compute_reconstruction_metrics(
         raw_pred = decoder_out["pred"]
 
         if effective_loss == LossType.CORN:
-            # CORN logits (batch, seq, num_classes-1): decode to expected bin via
-            # cumulative product of conditional sigmoid probabilities P(Y>k | Y>=k).
             logits = raw_pred[:, 1:, :]
-            hard_pred = (torch.cumprod(torch.sigmoid(logits), -1) > 0.5).sum(-1)  # integer
-            soft_pred = torch.cumprod(torch.sigmoid(logits), -1).sum(-1)          # expected
-            pred = hard_pred
+            pred = (torch.cumprod(torch.sigmoid(logits), -1) > 0.5).sum(-1)
         elif effective_loss == LossType.ORDINALCROSSENTROPY:
-            # Each logit is P(Y > k) directly; expected bin = sum of sigmoids.
             pred = torch.sigmoid(raw_pred[:, 1:, :]).sum(dim=-1)
         else:
-            # MSE / ZINB: decoder emits a scalar (or mu as first channel) per gene.
             pred = raw_pred[:, 1:, 0] if raw_pred.dim() == 3 else raw_pred[:, 1:]
 
         target = batch_expr
@@ -248,33 +285,19 @@ def compute_reconstruction_metrics(
                 continue
             p = pred[i][m].float().cpu().numpy()
             t = target[i][m].float().cpu().numpy()
-            abs_err = np.abs(p - t)
-            mae_vals.append(float(abs_err.mean()))
-            for lo, hi, suffix in _BIN_STRATA:
-                stratum = (t >= lo) & (t < hi)
-                if stratum.any():
-                    # print("Adding stratified MAE")
-                    strat_mae[suffix].append(float(abs_err[stratum].mean()))
+            mae_vals.append(float(np.abs(p - t).mean()))
             if np.std(p) < 1e-8 or np.std(t) < 1e-8:
                 continue
             r = float(np.corrcoef(p, t)[0, 1])
             if not np.isnan(r):
                 pearson_rs.append(r)
 
-    out_dict = {
+    return {
         "recon_pearson_r":     float(np.mean(pearson_rs)) if pearson_rs else float("nan"),
         "recon_pearson_r_std": float(np.std(pearson_rs))  if pearson_rs else float("nan"),
-        "recon_mae_bins":      float(np.mean(mae_vals))   if mae_vals   else float("nan"),
-        **{
-            f"recon_mae_bins_{s}": float(np.mean(v)) if v else float("nan")
-            for _, _, s in _BIN_STRATA
-            for v in [strat_mae[s]]
-        },
+        "recon_mae_expr":      float(np.mean(mae_vals))   if mae_vals   else float("nan"),
         "recon_n_cells":       len(pearson_rs),
     }
-
-    # print(out_dict)
-    return out_dict
 
 
 # ---------------------------------------------------------------------------
@@ -853,7 +876,12 @@ def run_single_model(
     if recon_cache_key in eval_adata.uns:
         log.info("  Using cached reconstruction arrays from eval_adata.uns ...")
         c = eval_adata.uns[recon_cache_key]
-        metrics.update(_recon_metrics_from_arrays(c["pred"], c["target"], c["mask"]))
+        metrics.update(_recon_metrics_from_arrays(
+            c["pred"], c["target"], c["mask"],
+            bin_edges=c.get("bin_edges"),
+            orig_expr=c.get("orig_expr"),
+            n_bins=c.get("n_bins"),
+        ))
         recon_done = True
     else:
         recon_done = False
@@ -1037,10 +1065,24 @@ def run_ablation(
         return
 
     df = pd.DataFrame(all_metrics).set_index("model")
+    # recon_mae_per_bin is a nested dict — keep it out of the CSV
+    per_bin_col = "recon_mae_per_bin"
+    per_model_per_bin: dict[str, dict] = {}
+    for row in all_metrics:
+        name = row.get("model", "")
+        if per_bin_col in row and isinstance(row[per_bin_col], dict):
+            per_model_per_bin[name] = row[per_bin_col]
+    if per_bin_col in df.columns:
+        df = df.drop(columns=[per_bin_col])
+
     csv_path = ablation_dir / "unified_metrics.csv"
     df.to_csv(csv_path)
     log.info("Summary CSV → %s", csv_path)
     _plot_metrics(df, ablation_dir / "unified_metrics.png")
+
+    if per_model_per_bin:
+        plot_reconstruction_error(per_model_per_bin, ablation_dir / "reconstruction_error.png")
+
     if do_scib:
         run_scib_benchmark(
             eval_adata,
@@ -1055,6 +1097,40 @@ def run_ablation(
 # Plotting
 # ---------------------------------------------------------------------------
 
+def plot_reconstruction_error(
+    per_model_per_bin: dict[str, dict],
+    out_path: Path,
+) -> None:
+    """Line plot of per-5-bin edge-aware MAE for all models on one axes.
+
+    Args:
+        per_model_per_bin: ``{model_name: {bin_centre_str: mean_mae, ...}, ...}``
+        out_path: destination PNG path
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    for model_name, bin_dict in per_model_per_bin.items():
+        if not bin_dict:
+            continue
+        xs = sorted(int(k) for k in bin_dict)
+        ys = [bin_dict[str(x)] for x in xs]
+        ax.plot(xs, ys, marker="o", markersize=4, label=model_name)
+
+    ax.set_xlabel("True bin index (group centre, every 5 bins)")
+    ax.set_ylabel("Mean expression-space MAE (log1p)")
+    ax.set_title("Reconstruction error by bin group")
+    if per_model_per_bin:
+        ax.legend(fontsize="small", loc="upper left")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    log.info("Reconstruction error line plot → %s", out_path)
+
+
 def _plot_metrics(df: pd.DataFrame, out_png: Path, ncols: int = 5) -> None:
     import math
     import matplotlib
@@ -1064,11 +1140,7 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path, ncols: int = 5) -> None:
     metric_meta = [
         # ── Reconstruction ─────────────────────────────────────────────────
         ("recon_pearson_r",                    "Reconstruction\nPearson R ↑"),
-        ("recon_mae_bins",                     "Reconstruction\nMAE Bins ↓"),
-        ("recon_mae_bins_0_5",                 "MAE Bins [0–5] ↓"),
-        ("recon_mae_bins_5_15",                "MAE Bins [5–15] ↓"),
-        ("recon_mae_bins_15_30",               "MAE Bins [15–30] ↓"),
-        ("recon_mae_bins_30_50",               "MAE Bins [30–50] ↓"),
+        ("recon_mae_expr",                     "Reconstruction\nMAE (expr) ↓"),
         # ── Paired alignment — cosine ───────────────────────────────────────
         ("paired_cosine_sim_mean",             "Paired Cosine Sim ↑"),
         ("paired_rank_mean",                   "Paired Rank\n(cosine) ↓"),
@@ -1099,13 +1171,7 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path, ncols: int = 5) -> None:
     # data will have its Y limits unified.
     _SHARED_YLIM_GROUPS: list[frozenset] = [
         frozenset({
-            "recon_mae_bins",
-            "recon_mae_bins_0_5",
-            "recon_mae_bins_5_15",
-            "recon_mae_bins_15_30",
-            "recon_mae_bins_30_50",
-        }),
-        frozenset({
+            "paired_rank_mean",
             "paired_rank_mean",
             "paired_rank_median",
             "paired_rank_l2_mean",
