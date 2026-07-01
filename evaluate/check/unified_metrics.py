@@ -715,6 +715,11 @@ def run_scib_benchmark(
             tag, sub.n_obs, len(embedding_keys), batch_col,
             dict(sub.obs[batch_col].value_counts().items()),
         )
+
+        print(f"sub.n_vars: {sub.n_vars}")
+        print(f"sub.n_obs: {sub.n_obs}")
+        print(f"sub.X: {sub.X.shape}")
+
         bm = Benchmarker(
             sub,
             batch_key=batch_col,
@@ -724,14 +729,14 @@ def run_scib_benchmark(
             batch_correction_metrics=BatchCorrection(
                 bras=True,
                 ilisi_knn=True,
-                pcr_comparison=True,
+                pcr_comparison=True, # requires expression data?
                 graph_connectivity=False,
             ),
             pre_integrated_embedding_obsm_key=None,
             n_jobs=1,
         )
         bm.benchmark()
-        results = bm.get_results(min_max_scale=True, clean_names=True)
+        results = bm.get_results(min_max_scale=False, clean_names=True)
         log.info("[scIB %s] complete.\n%s", tag, results.to_string())
 
         if out_dir is not None:
