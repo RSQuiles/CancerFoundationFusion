@@ -113,66 +113,16 @@ class DeconvTask(DownstreamTask):
         return DeconvEmbeddingDataset
 
     def get_loss_fn(self, device: torch.device) -> nn.Module:
-        """
-        Use MSE on softmax-normalized predictions.
-        Wraps softmax inside the loss so the base runner can pass raw logits directly.
+        """MSE loss on masked-softmax predictions.
+
+        The masked softmax forces predictions to 0 for absent cell types, so
+        those entries contribute (0 - 0)² = 0 to the MSE automatically.
+        Gradient signal is clean and purely over the present cell types.
         """
         class DeconvLoss(nn.Module):
-            def __init__(self, alpha: float = 0.5):
-                super().__init__()
-                self.alpha = alpha
-
             def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-                # Masked softmax: restrict predictions to cell types present in each sample.
-                # The presence mask (targets > 0) is also concatenated as model input, so
-                # the head already has explicit access to it; applying it here forces absent
-                # types to exactly 0 probability and keeps gradients focused on present types.
-                presence = targets > 0
-                pred = _masked_softmax(logits, presence)
-
-                # --- Jensen-Shannon divergence --------------------------------
-                M = 0.5 * (pred + targets)
-                # KL(target ‖ M): 0·log(0/M) = 0 handled via torch.where
-                kl_pm = torch.where(
-                    presence,
-                    targets * (targets.clamp(min=1e-10).log() - M.clamp(min=1e-30).log()),
-                    torch.zeros_like(targets),
-                ).sum(dim=-1)
-                # KL(pred ‖ M): absent types have pred == 0, and 0·log(0/M) = 0.
-                # Use torch.where to avoid 0 * (-inf) = NaN when M == 0.
-                kl_qm = torch.where(
-                    pred > 0,
-                    pred * (pred.log() - M.clamp(min=1e-30).log()),
-                    torch.zeros_like(pred),
-                ).sum(dim=-1)
-                jsd = (0.5 * kl_pm + 0.5 * kl_qm).mean()
-
-                # --- Masked per-cell-type Pearson correlation -----------------
-                # For each cell type c, correlate predictions vs. targets only
-                # over the batch samples where target[:, c] > 0.  This avoids
-                # rewarding the model for near-zero predictions on absent types.
-                active = (targets > 0).float()          # (B, C)
-                n_active = active.sum(dim=0)            # (C,)
-
-                # Masked means (over active samples only)
-                mean_t = (targets * active).sum(dim=0) / n_active.clamp(min=1)
-                mean_p = (pred    * active).sum(dim=0) / n_active.clamp(min=1)
-
-                tc_c = (targets - mean_t.unsqueeze(0)) * active  # (B, C)
-                pc_c = (pred    - mean_p.unsqueeze(0)) * active
-
-                num   = (tc_c * pc_c).sum(dim=0)
-                denom = (tc_c.norm(dim=0) * pc_c.norm(dim=0)).clamp(min=1e-8)
-                corr  = num / denom  # (C,)
-
-                # Only use cell types with enough active samples and non-zero variance
-                valid = (n_active >= 2) & (targets.std(dim=0) > 0)
-                if valid.any():
-                    corr_loss = 1.0 - corr[valid].mean()
-                else:
-                    corr_loss = pred.new_tensor(0.0)
-
-                return self.alpha * jsd + (1.0 - self.alpha) * corr_loss
+                pred = _masked_softmax(logits, targets > 0)
+                return F.mse_loss(pred, targets)
 
         return DeconvLoss().to(device)
 
