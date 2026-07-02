@@ -116,7 +116,10 @@ class PCAEmbedder:
         return pd.DataFrame(X_emb, index=adata.obs_names)
 
     def eval(self):
-        return
+        return self
 
     def cuda(self):
-        return
+        return self
+
+    def to(self, *args, **kwargs):
+        return self

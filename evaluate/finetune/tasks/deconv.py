@@ -22,6 +22,13 @@ from evaluate.finetune.downstream_task import DownstreamTask, TaskRegistry
 log = logging.getLogger(__name__)
 
 
+def _masked_softmax(logits: torch.Tensor, presence: torch.Tensor) -> torch.Tensor:
+    """Softmax restricted to present cell types; absent positions receive probability 0."""
+    masked = logits.masked_fill(~(presence > 0), float("-inf"))
+    out = F.softmax(masked, dim=-1)
+    return torch.nan_to_num(out, nan=0.0)
+
+
 # ============================================================================
 # Deconvolution Task (Pseudobulk)
 # ============================================================================
@@ -48,10 +55,16 @@ log = logging.getLogger(__name__)
 
 
 class DeconvEmbeddingDataset(Dataset):
-    """Dataset for deconvolution (cell type proportion prediction)."""
+    """Dataset for deconvolution (cell type proportion prediction).
+
+    A binary presence mask (1 if the cell type is present in this sample, else 0)
+    is concatenated to the embedding so the head can condition its predictions on
+    which cell types actually occur.  The concatenated tensor has shape
+    (embedding_dim + n_cell_types,).
+    """
 
     def __init__(self, embeddings: np.ndarray, targets: np.ndarray) -> None:
-        self.embeddings = np.asarray(embeddings, dtype=np.float32)
+        embeddings = np.asarray(embeddings, dtype=np.float32)
         targets = np.asarray(targets, dtype=np.float32)
 
         target_sums = targets.sum(axis=1)
@@ -59,10 +72,14 @@ class DeconvEmbeddingDataset(Dataset):
         n_dropped = (~valid_mask).sum()
         if n_dropped > 0:
             log.warning(f"Dropping {n_dropped} samples with non-positive target sums.")
-            self.embeddings = self.embeddings[valid_mask]
+            embeddings = embeddings[valid_mask]
             targets = targets[valid_mask]
             target_sums = target_sums[valid_mask]
 
+        self.embeddings = embeddings
+        # Presence mask: 1 where cell type is truly present (proportion > 0), else 0.
+        # Derived from raw (pre-normalization) targets so zeros are exact.
+        self.presence_mask = (targets > 0).astype(np.float32)
         self.targets = targets / target_sums[:, np.newaxis]
 
     def __len__(self) -> int:
@@ -70,8 +87,10 @@ class DeconvEmbeddingDataset(Dataset):
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         emb = torch.from_numpy(self.embeddings[index]).float()
+        mask = torch.from_numpy(self.presence_mask[index]).float()
         target = torch.from_numpy(self.targets[index]).float()
-        return emb, target
+        # Concatenate presence mask so the head knows which cell types are present.
+        return torch.cat([emb, mask], dim=0), target
 
 
 @TaskRegistry.register
@@ -104,18 +123,28 @@ class DeconvTask(DownstreamTask):
                 self.alpha = alpha
 
             def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-                pred = F.softmax(logits, dim=-1)
+                # Masked softmax: restrict predictions to cell types present in each sample.
+                # The presence mask (targets > 0) is also concatenated as model input, so
+                # the head already has explicit access to it; applying it here forces absent
+                # types to exactly 0 probability and keeps gradients focused on present types.
+                presence = targets > 0
+                pred = _masked_softmax(logits, presence)
 
                 # --- Jensen-Shannon divergence --------------------------------
                 M = 0.5 * (pred + targets)
                 # KL(target ‖ M): 0·log(0/M) = 0 handled via torch.where
                 kl_pm = torch.where(
-                    targets > 0,
-                    targets * (targets.clamp(min=1e-10).log() - M.log()),
+                    presence,
+                    targets * (targets.clamp(min=1e-10).log() - M.clamp(min=1e-30).log()),
                     torch.zeros_like(targets),
                 ).sum(dim=-1)
-                # KL(pred ‖ M): softmax guarantees pred > 0
-                kl_qm = (pred * (pred.clamp(min=1e-10).log() - M.log())).sum(dim=-1)
+                # KL(pred ‖ M): absent types have pred == 0, and 0·log(0/M) = 0.
+                # Use torch.where to avoid 0 * (-inf) = NaN when M == 0.
+                kl_qm = torch.where(
+                    pred > 0,
+                    pred * (pred.log() - M.clamp(min=1e-30).log()),
+                    torch.zeros_like(pred),
+                ).sum(dim=-1)
                 jsd = (0.5 * kl_pm + 0.5 * kl_qm).mean()
 
                 # --- Masked per-cell-type Pearson correlation -----------------
@@ -373,17 +402,20 @@ class DeconvTask(DownstreamTask):
         if train_embeddings.shape[1] != test_embeddings.shape[1]:
             raise ValueError("Train/test embedding dimensions do not match.")
 
-        embedding_dim = int(train_embeddings.shape[1])
+        model_embedding_dim = int(train_embeddings.shape[1])
+        n_cell_types = train_targets.shape[1]
+        # Head receives [embedding; presence_mask], so its input dim is augmented.
+        total_input_dim = model_embedding_dim + n_cell_types
 
         train_dataset = DeconvEmbeddingDataset(train_embeddings, train_targets)
         test_dataset = DeconvEmbeddingDataset(test_embeddings, test_targets)
 
         log.info(
-            f"Created deconv datasets: embedding_dim={embedding_dim}, "
-            f"num_cell_types={len(self.cell_types)}"
+            f"Created deconv datasets: model_embedding_dim={model_embedding_dim}, "
+            f"n_cell_types={n_cell_types}, total_input_dim={total_input_dim}"
         )
 
-        return train_dataset, test_dataset, embedding_dim
+        return train_dataset, test_dataset, total_input_dim
 
     def _embed_adata(self, embedder: Any, adata: ad.AnnData) -> np.ndarray:
         """Normalize raw counts (CP10K + log1p) then embed with the frozen model."""
@@ -430,7 +462,9 @@ class DeconvTask(DownstreamTask):
                                sample, averaged — captures whether the predicted
                                composition profile is correctly shaped.
         """
-        pred_props = F.softmax(torch.from_numpy(predictions), dim=-1).numpy()
+        # Apply masked softmax: restrict each sample's predictions to its present cell types.
+        presence = torch.from_numpy(targets > 0)
+        pred_props = _masked_softmax(torch.from_numpy(predictions), presence).numpy()
         cell_types = getattr(self, "cell_types", [str(i) for i in range(targets.shape[1])])
 
         # --- Per-cell-type breakdown (present samples only) ------------------
