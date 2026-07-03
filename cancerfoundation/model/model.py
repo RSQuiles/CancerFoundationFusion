@@ -547,14 +547,15 @@ class CancerFoundation(pl.LightningModule):
 
     @torch.no_grad()
     def embed(
-        self, 
-        adata, 
-        batch_size: int = 64, 
-        normalized=False, 
+        self,
+        adata,
+        batch_size: int = 64,
+        normalized=False,
         log1p_only=False,
         hvg_select=True,
-        gene_subset=None, 
-        flavor="seurat"):
+        gene_subset=None,
+        flavor="seurat",
+        sparse_embed: bool = False):
         """Embeds an AnnData object into cell embeddings.
 
         Handles all preprocessing: gene intersection with vocab, HVG selection,
@@ -651,78 +652,98 @@ class CancerFoundation(pl.LightningModule):
         # Retrieve gene set
         gene_set_used = data.var_names.tolist()
 
-        # Bin expression values if required
-        if self.input_style == "binned":
-            normalise = self.model.decoder.normalise_bins
-            for idx in range(data.n_obs):
-                data.X[idx] = binning(data.X[idx], self.n_bins)
-                if normalise:
-                    data.X[idx] = data.X[idx] / self.n_bins
-
-        # Build gene ID tensor
-        gene_ids = torch.LongTensor([self.vocab[g] for g in data.var.index])
-        count_matrix = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
-
-        # Embed in batches
         n_batches = (len(data) + batch_size - 1) // batch_size
         embeddings = []
-        for i in tqdm(
-            range(0, len(data), batch_size), total=n_batches, desc="Embedding cells"
-        ):
-            batch_expr = torch.FloatTensor(count_matrix[i : i + batch_size]).to(device)
-            batch_genes = (
-                gene_ids.unsqueeze(0).expand(batch_expr.shape[0], -1).to(device)
-            )
 
-            # Prepend CLS token
-            batch_genes = torch.cat(
-                [
-                    torch.full(
-                        (batch_expr.shape[0], 1),
-                        self.cls_token_id,
-                        dtype=torch.long,
-                        device=device,
-                    ),
-                    batch_genes,
-                ],
-                dim=1,
-            )
-            batch_expr = torch.cat(
-                [
-                    torch.full(
-                        (batch_expr.shape[0], 1),
-                        self.pad_value,
-                        dtype=batch_expr.dtype,
-                        device=device,
-                    ),
-                    batch_expr,
-                ],
-                dim=1,
-            )
+        if sparse_embed:
+            # Sparse path: mirrors BulkSCDataset + AnnDataCollator used during training.
+            # Each sample sees only its own non-zero genes (up to max_seq_len-1),
+            # binned per-sample on those non-zero values — no shared gene set across
+            # the batch, no dense zeros injected for unexpressed genes.
+            vocab_ids = np.array([self.vocab[g] for g in gene_set_used], dtype=np.int64)
+            X_all = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
+            max_genes = self.max_seq_len - 1  # one slot reserved for CLS
 
-            padding_mask = torch.zeros(
-                batch_genes.shape, dtype=torch.bool, device=device
-            )
+            for i in tqdm(range(0, len(data), batch_size), total=n_batches, desc="Embedding cells"):
+                batch_X = X_all[i : i + batch_size]
+                genes_list, expr_list = [], []
 
-            if self.model.use_generative_training:
-                # Returns (pcpt_output, gen_output) tuple
-                output = self.model.embed(
-                    src=batch_genes,
-                    values=batch_expr,
-                    src_key_padding_mask=padding_mask,
+                for row in batch_X:
+                    nz = np.nonzero(row)[0]
+                    nz_expr = row[nz].astype(np.float32)
+                    nz_ids = vocab_ids[nz]
+
+                    # Random truncation to max_genes (mirrors AnnDataCollator._sample)
+                    if len(nz_ids) > max_genes:
+                        sel = np.random.choice(len(nz_ids), size=max_genes, replace=False)
+                        nz_ids = nz_ids[sel]
+                        nz_expr = nz_expr[sel]
+
+                    # Per-sample binning on non-zero values only (same as collator)
+                    if self.input_style == "binned":
+                        nz_expr = binning(nz_expr, self.n_bins).astype(np.float32)
+                        if self.model.decoder.normalise_bins:
+                            nz_expr = nz_expr / self.n_bins
+
+                    genes_list.append(np.insert(nz_ids.astype(np.int64), 0, self.cls_token_id))
+                    expr_list.append(np.insert(nz_expr, 0, self.pad_value))
+
+                # Pad within the batch to the longest sequence
+                max_len = max(len(g) for g in genes_list)
+                pad_genes = torch.full((len(genes_list), max_len), self.pad_token_id, dtype=torch.long, device=device)
+                pad_expr  = torch.full((len(expr_list),  max_len), self.pad_value,    dtype=torch.float32, device=device)
+                for j, (g, e) in enumerate(zip(genes_list, expr_list)):
+                    pad_genes[j, :len(g)] = torch.from_numpy(g)
+                    pad_expr [j, :len(e)] = torch.from_numpy(e)
+
+                padding_mask = pad_genes.eq(self.pad_token_id)
+
+                if self.model.use_generative_training:
+                    output = self.model.embed(src=pad_genes, values=pad_expr, src_key_padding_mask=padding_mask)
+                    transformer_output = output[0]
+                else:
+                    transformer_output = self.model.encode(src=pad_genes, values=pad_expr, src_key_padding_mask=padding_mask, check_conditions=False)
+
+                embeddings.append(transformer_output[:, 0, :].cpu())
+
+        else:
+            # Dense path (original): all samples in a batch share the same gene columns.
+            # Only practical after HVG selection has reduced the gene count.
+
+            # Bin expression values if required
+            if self.input_style == "binned":
+                normalise = self.model.decoder.normalise_bins
+                for idx in range(data.n_obs):
+                    data.X[idx] = binning(data.X[idx], self.n_bins)
+                    if normalise:
+                        data.X[idx] = data.X[idx] / self.n_bins
+
+            gene_ids = torch.LongTensor([self.vocab[g] for g in data.var.index])
+            count_matrix = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
+
+            for i in tqdm(range(0, len(data), batch_size), total=n_batches, desc="Embedding cells"):
+                batch_expr  = torch.FloatTensor(count_matrix[i : i + batch_size]).to(device)
+                batch_genes = gene_ids.unsqueeze(0).expand(batch_expr.shape[0], -1).to(device)
+
+                # Prepend CLS token
+                batch_genes = torch.cat(
+                    [torch.full((batch_expr.shape[0], 1), self.cls_token_id, dtype=torch.long, device=device), batch_genes],
+                    dim=1,
                 )
-                transformer_output = output[0]
-            else:
-                # Returns a single tensor
-                transformer_output = self.model.encode(
-                    src=batch_genes,
-                    values=batch_expr,
-                    src_key_padding_mask=padding_mask,
-                    check_conditions=False
+                batch_expr = torch.cat(
+                    [torch.full((batch_expr.shape[0], 1), self.pad_value, dtype=batch_expr.dtype, device=device), batch_expr],
+                    dim=1,
                 )
 
-            cell_emb = transformer_output[:, 0, :]  # CLS token
-            embeddings.append(cell_emb.cpu())
+                padding_mask = torch.zeros(batch_genes.shape, dtype=torch.bool, device=device)
+
+                if self.model.use_generative_training:
+                    output = self.model.embed(src=batch_genes, values=batch_expr, src_key_padding_mask=padding_mask)
+                    transformer_output = output[0]
+                else:
+                    transformer_output = self.model.encode(src=batch_genes, values=batch_expr, src_key_padding_mask=padding_mask, check_conditions=False)
+
+                embeddings.append(transformer_output[:, 0, :].cpu())
 
         emb = torch.cat(embeddings, dim=0).numpy()
         return pd.DataFrame(

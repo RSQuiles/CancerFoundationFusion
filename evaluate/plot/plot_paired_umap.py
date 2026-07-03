@@ -68,7 +68,13 @@ def _load_model(ckpt_path: str | Path, device: str | None = None) -> CancerFound
 
 def _embed(model: CancerFoundation, adata: ad.AnnData, batch_size: int, normalized: bool) -> np.ndarray:
     """Return (N, D) embedding array for all cells in adata."""
-    result = model.embed(adata, batch_size=batch_size, normalized=normalized)
+    result = model.embed(
+        adata,
+        batch_size=batch_size,
+        normalized=normalized,
+        hvg_select=False,
+        sparse_embed=True,
+    )
     emb_df = result[0] if isinstance(result, tuple) else result
     return emb_df.to_numpy(dtype=np.float32)
 
