@@ -34,7 +34,7 @@ if [[ "$USE_LOCAL" -eq 1 ]]; then
     python -u ../pretrain.py "${SCRIPT_ARGS[@]}"
 else
     echo "Running with singularity"
-    srun singularity run \
+    singularity run \
         --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/submits_biomed \
         --bind /cluster/work/boeva/rquiles:/cluster/work/boeva/rquiles \
         --nv /cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif \

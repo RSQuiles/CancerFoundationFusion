@@ -22,22 +22,22 @@
     "zero_percentages": [0.2, 0.4, 0.6],
     "bulk_ratio": 0.3,
     "pb_ratio": 0.3,
-    "n_sc_per_pseudobulk": 25,
+    "n_sc_per_pseudobulk": 10,
     "pb_group_column": "tissue_general",
     "trunc_by_sample": true,
     "balanced_sampler": true,
     "balanced_labels": ["tissue_general", "assay"],
-    "paired_every_n": 5
+    "paired_every_n": 10
   },
 
   "model": {
-    "nlayers": 6,
+    "nlayers": 8,
     "nheads": 8,
-    "embsize": 128,
-    "d_hid": 256,
+    "embsize": 256,
+    "d_hid": 512,
     "lr": 0.0001,
     "warmup_ratio_or_step": 10000,
-    "max_seq_len": 600,
+    "max_seq_len":1200,
     "batch_size": 16,
     "input_style": "binned",
     "input_data": "counts",

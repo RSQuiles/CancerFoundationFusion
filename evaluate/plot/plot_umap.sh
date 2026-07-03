@@ -24,7 +24,7 @@ for arg in "$@"; do
 done
 
 SCRIPT_ARGS=(
-    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_mix
+    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts
     --adata-dir /cluster/work/boeva/rquiles/data/paired_dataset_counts/pipeline_ready/h5ads
     --color tissue_general assay
     --sample-size 75_000
