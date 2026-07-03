@@ -17,7 +17,7 @@ set -euo pipefail
 # Default: use singularity
 USE_LOCAL=0
 # Set to 1 to run SurvBoard metric evaluation after downstream tasks
-RUN_SURV=0
+RUN_SURV=1
 # Set to 1 to plot the benchmark results
 PLOT=1
 
@@ -35,11 +35,11 @@ for arg in "$@"; do
 done
 
 # Must match survival_pred_config.yaml
-ABLATION_DIR="/cluster/work/boeva/rquiles/outputs_rquiles/save_CFF/ablation_paired_counts"
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_mix"
 
 SCRIPT_ARGS=(
     --ablation-dir $ABLATION_DIR
-    --tasks survival
+    --tasks deconv canc_type_class drug_sensitivity_v2
     --pca-baseline
     --config-dir /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/configs
 )

@@ -24,12 +24,13 @@ for arg in "$@"; do
     fi
 done
 
-ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_mix"
 
 SCRIPT_ARGS=(
     --eval-adata $ABLATION_DIR/eval.h5ad
     --ablation-dir $ABLATION_DIR
     --batch-size 64
+    --skip-existing
 )
 
 # ── Step 1: main metrics (no scIB) ───────────────────────────────────────────

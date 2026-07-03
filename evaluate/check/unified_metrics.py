@@ -1163,7 +1163,6 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path, ncols: int = 5) -> None:
         ("contrastive_within_bulk_l2",         "Within-Bulk\nL2 Spread ↑"),
         ("contrastive_within_pb_l2",           "Within-PB\nL2 Spread ↑"),
         # ── Distributional ─────────────────────────────────────────────────
-        ("contrastive_mmd",                    "MMD ↓"),
         ("contrastive_wasserstein",            "Wasserstein ↓"),
     ]
 
