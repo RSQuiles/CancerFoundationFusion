@@ -112,19 +112,38 @@ class DeconvTask(DownstreamTask):
     def get_dataset_class(self) -> type[Dataset]:
         return DeconvEmbeddingDataset
 
-    def get_loss_fn(self, device: torch.device) -> nn.Module:
-        """MSE loss on masked-softmax predictions.
+    def get_loss_fn(self, device: torch.device, loss_type: str = "mse") -> nn.Module:
+        """Return the deconvolution loss.
 
-        The masked softmax forces predictions to 0 for absent cell types, so
-        those entries contribute (0 - 0)² = 0 to the MSE automatically.
-        Gradient signal is clean and purely over the present cell types.
+        Parameters
+        ----------
+        loss_type : {"mse", "kl"}
+            "mse" — MSE on masked-softmax predictions. Absent cell types
+                    contribute (0 − 0)² = 0 automatically.
+            "kl"  — KL divergence: KL(targets ‖ softmax(logits)). No masking
+                    needed; absent types have target = 0 so they contribute
+                    0 · log(0 / p) = 0 to the sum. Focuses gradient on
+                    dominant cell types (log-scale relative errors).
         """
         class DeconvLoss(nn.Module):
-            def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-                pred = _masked_softmax(logits, targets > 0)
-                return F.mse_loss(pred, targets)
+            def __init__(self, loss_type: str) -> None:
+                super().__init__()
+                self._loss_type = loss_type
 
-        return DeconvLoss().to(device)
+            def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+                if self._loss_type == "mse":
+                    pred = _masked_softmax(logits, targets > 0)
+                    return F.mse_loss(pred, targets)
+
+                # KL divergence: KL(targets ‖ softmax(logits))
+                # nan_to_num clears the 0 * log(0) = NaN for absent types.
+                log_pred = F.log_softmax(logits, dim=-1)
+                kl = torch.nan_to_num(
+                    F.kl_div(log_pred, targets, reduction="none"), nan=0.0
+                )
+                return kl.sum(dim=-1).mean()
+
+        return DeconvLoss(loss_type).to(device)
 
     def validate_config(self, task_cfg: DictConfig) -> None:
         super().validate_config(task_cfg)

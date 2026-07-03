@@ -372,7 +372,8 @@ class BaseDownstreamRunner:
                     )
 
         # Optimizer
-        self.optimizer = Adam(param_groups)
+        weight_decay = float(getattr(self.task_cfg, "weight_decay", 0.0))
+        self.optimizer = Adam(param_groups, weight_decay=weight_decay)
 
         # Scheduler
         max_lrs = [head_learning_rate]
