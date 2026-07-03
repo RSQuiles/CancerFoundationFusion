@@ -744,7 +744,7 @@ def run_scib_benchmark(
 
         print(f"sub.n_vars: {sub.n_vars}")
         print(f"sub.n_obs: {sub.n_obs}")
-        print(f"sub.X: {sub.X.shape}")
+        # print(f"sub.X: {sub.X.shape}")
 
         pre_integrated_key = "X_pca" if "X_pca" in sub.obsm else None
 
@@ -768,9 +768,10 @@ def run_scib_benchmark(
         log.info("[scIB %s] complete.\n%s", tag, results.to_string())
 
         if out_dir is not None:
-            (out_dir / f"scib_{tag}.csv").parent.mkdir(parents=True, exist_ok=True)
-            results.to_csv(out_dir / f"scib_{tag}.csv")
-            png_dir = out_dir / f"scib_{tag}"
+            scib_out_dir = out_dir / "_scib_metrics"
+            scib_out_dir.mkdir(parents=True, exist_ok=True)
+            results.to_csv(scib_out_dir / f"scib_{tag}.csv")
+            png_dir = scib_out_dir / f"scib_{tag}"
             png_dir.mkdir(parents=True, exist_ok=True)
             bm.plot_results_table(min_max_scale=False, show=False, save_dir=png_dir)
             log.info("[scIB %s] → %s/", tag, png_dir)

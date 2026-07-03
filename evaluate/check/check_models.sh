@@ -24,7 +24,7 @@ for arg in "$@"; do
     fi
 done
 
-ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts"
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn
 
 SCRIPT_ARGS=(
     --eval-adata $ABLATION_DIR/eval.h5ad

@@ -9,7 +9,7 @@ finetune:
 
     # ===== REQUIRED =====
     # Path to pretrained model checkpoint
-    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/unified_baseline/step_step=900000_epoch_epoch=01.ckpt
+    pretrained_model_path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts/unified/step_step=200000_epoch_epoch=00.ckpt
     
     # Path to pseudobulk/bulk data (H5AD format).
     # Expected: pseudo_bulk_RAW.h5ad — raw summed counts, normalized internally
@@ -61,7 +61,7 @@ finetune:
     
     # ===== TRAINING HYPERPARAMETERS =====
     # Number of training epochs
-    epochs: 30
+    epochs: 100
     
     # Batch size for training and evaluation
     batch_size: 16
