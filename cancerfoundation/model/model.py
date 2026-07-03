@@ -574,7 +574,7 @@ class CancerFoundation(pl.LightningModule):
 
         # Work on a copy to avoid mutating the input
         data = adata.copy()
-        if hasattr(data.X, "toarray"):
+        if not sparse_embed and hasattr(data.X, "toarray"):
             data.X = data.X.toarray()
 
         data = self._maybe_fix_negative(data)
@@ -604,7 +604,7 @@ class CancerFoundation(pl.LightningModule):
             available = [g for g in gene_subset if g in available_set]
             data = data[:, available].copy()
         # RAFA: adapt HVG selection wihout scanpy to avoid library issues
-        elif hvg_select and data.n_vars > self.n_top_genes:
+        elif hvg_select and not sparse_embed and data.n_vars > self.n_top_genes:
             print("Reducing to Highly Variable Genes before embedding!")
 
             X = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
@@ -656,42 +656,84 @@ class CancerFoundation(pl.LightningModule):
         embeddings = []
 
         if sparse_embed:
-            # Sparse path: mirrors BulkSCDataset + AnnDataCollator used during training.
-            # Each sample sees only its own non-zero genes (up to max_seq_len-1),
-            # binned per-sample on those non-zero values — no shared gene set across
-            # the batch, no dense zeros injected for unexpressed genes.
+            # Sparse path: mirrors AnnDataCollator._sample with zero_percentage.
+            # Per sample:
+            #   1. Non-zero genes are identified from the sparse matrix (no densification).
+            #   2. ~ZERO_PCT * max_genes zero-expression genes are stochastically included,
+            #      exactly as AnnDataCollator does when zero_percentage is set.
+            #   3. Remaining slots are filled with randomly-permuted non-zero genes.
+            #   4. Binning is applied to the combined vector; zeros keep bin 0 naturally.
+            ZERO_PCT = 0.2
             vocab_ids = np.array([self.vocab[g] for g in gene_set_used], dtype=np.int64)
-            X_all = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
+            n_genes = len(gene_set_used)
+            all_cols = np.arange(n_genes, dtype=np.int64)
+            X_all = data.X  # kept sparse — rows accessed one at a time
+            is_sparse_X = hasattr(X_all, "toarray")
             max_genes = self.max_seq_len - 1  # one slot reserved for CLS
 
             for i in tqdm(range(0, len(data), batch_size), total=n_batches, desc="Embedding cells"):
                 batch_X = X_all[i : i + batch_size]
+                n_in_batch = batch_X.shape[0]
                 genes_list, expr_list = [], []
 
-                for row in batch_X:
-                    nz = np.nonzero(row)[0]
-                    nz_expr = row[nz].astype(np.float32)
-                    nz_ids = vocab_ids[nz]
+                for j in range(n_in_batch):
+                    # Extract non-zero genes without materialising the full dense row
+                    if is_sparse_X:
+                        row = batch_X.getrow(j)
+                        nz_cols = row.indices.copy().astype(np.int64)
+                        nz_expr = row.data.copy().astype(np.float32)
+                    else:
+                        row_dense = batch_X[j]
+                        nz_cols = np.nonzero(row_dense)[0].astype(np.int64)
+                        nz_expr = row_dense[nz_cols].astype(np.float32)
 
-                    # Random truncation to max_genes (mirrors AnnDataCollator._sample)
-                    if len(nz_ids) > max_genes:
-                        sel = np.random.choice(len(nz_ids), size=max_genes, replace=False)
-                        nz_ids = nz_ids[sel]
-                        nz_expr = nz_expr[sel]
+                    # Stochastically sample zero-expression genes (~ZERO_PCT * max_genes),
+                    # mirroring AnnDataCollator._sample: each zero gene is included
+                    # independently with p = n_zero_target / n_zero_genes.
+                    zero_mask = np.ones(n_genes, dtype=bool)
+                    if len(nz_cols):
+                        zero_mask[nz_cols] = False
+                    zero_cols = all_cols[zero_mask]
 
-                    # Per-sample binning on non-zero values only (same as collator)
+                    n_zero_target = int(ZERO_PCT * max_genes)
+                    if len(zero_cols) > 0 and n_zero_target > 0:
+                        p = n_zero_target / len(zero_cols)
+                        sel_zero_cols = zero_cols[np.random.rand(len(zero_cols)) <= p]
+                    else:
+                        sel_zero_cols = np.empty(0, dtype=np.int64)
+
+                    # Fill remaining slots with randomly-permuted non-zero genes
+                    n_nz_slots = max_genes - len(sel_zero_cols)
+                    if len(nz_cols) > n_nz_slots:
+                        perm = np.random.permutation(len(nz_cols))[:n_nz_slots]
+                        sel_nz_cols = nz_cols[perm]
+                        sel_nz_expr = nz_expr[perm]
+                    else:
+                        sel_nz_cols = nz_cols
+                        sel_nz_expr = nz_expr
+
+                    # Combine: sampled zeros first, then non-zeros
+                    combined_cols = np.concatenate([sel_zero_cols, sel_nz_cols])
+                    combined_expr = np.concatenate([
+                        np.zeros(len(sel_zero_cols), dtype=np.float32),
+                        sel_nz_expr,
+                    ])
+
+                    # Per-sample binning: binning() handles mixed zero/non-zero arrays
+                    # correctly — zeros stay at bin 0, non-zeros get quantile bins 1..n_bins
                     if self.input_style == "binned":
-                        nz_expr = binning(nz_expr, self.n_bins).astype(np.float32)
+                        combined_expr = binning(combined_expr, self.n_bins).astype(np.float32)
                         if self.model.decoder.normalise_bins:
-                            nz_expr = nz_expr / self.n_bins
+                            combined_expr = combined_expr / self.n_bins
 
-                    genes_list.append(np.insert(nz_ids.astype(np.int64), 0, self.cls_token_id))
-                    expr_list.append(np.insert(nz_expr, 0, self.pad_value))
+                    gene_ids_sample = vocab_ids[combined_cols]
+                    genes_list.append(np.insert(gene_ids_sample.astype(np.int64), 0, self.cls_token_id))
+                    expr_list.append(np.insert(combined_expr, 0, self.pad_value))
 
-                # Pad within the batch to the longest sequence
+                # Pad within batch to the longest sequence in this batch
                 max_len = max(len(g) for g in genes_list)
-                pad_genes = torch.full((len(genes_list), max_len), self.pad_token_id, dtype=torch.long, device=device)
-                pad_expr  = torch.full((len(expr_list),  max_len), self.pad_value,    dtype=torch.float32, device=device)
+                pad_genes = torch.full((n_in_batch, max_len), self.pad_token_id, dtype=torch.long, device=device)
+                pad_expr  = torch.full((n_in_batch, max_len), self.pad_value,    dtype=torch.float32, device=device)
                 for j, (g, e) in enumerate(zip(genes_list, expr_list)):
                     pad_genes[j, :len(g)] = torch.from_numpy(g)
                     pad_expr [j, :len(e)] = torch.from_numpy(e)
