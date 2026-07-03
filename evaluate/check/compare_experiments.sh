@@ -16,9 +16,11 @@ BASE="/cluster/work/boeva/rquiles/outputs/save_CFF"
 SCRIPT_ARGS=(
     --csvs
         $BASE/ablation_paired_counts/unified_metrics.csv
+        $BASE/ablation_paired_corn/unified_metrics.csv
         $BASE/ablation_paired_mix/unified_metrics.csv
     --names
         "Paired counts"
+        "Paired CORN"
         "Paired mix"
     --out $BASE/experiment_comparison.png
     --ncols 5

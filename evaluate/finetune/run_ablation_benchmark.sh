@@ -35,7 +35,7 @@ for arg in "$@"; do
 done
 
 # Must match survival_pred_config.yaml
-ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_mix"
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn"
 
 SCRIPT_ARGS=(
     --ablation-dir $ABLATION_DIR
