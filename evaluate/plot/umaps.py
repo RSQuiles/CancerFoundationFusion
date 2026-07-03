@@ -170,7 +170,14 @@ def embed_adata(
     normalized: bool = True,
 ) -> sc.AnnData:
     """Compute embeddings and store them in `adata.obsm[obsm_key]`."""
-    result = model.embed(adata, flavor=flavor, batch_size=batch_size, normalized=normalized)
+    result = model.embed(
+        adata, 
+        flavor=flavor, 
+        batch_size=batch_size, 
+        normalized=normalized,
+        hvg_select=False,
+        sparse_embed=True,
+        )
     emb_df = result[0] if isinstance(result, tuple) else result
     adata.obsm[obsm_key] = emb_df.to_numpy(dtype=np.float32)
     return adata

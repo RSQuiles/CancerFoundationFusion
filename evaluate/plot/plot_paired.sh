@@ -22,12 +22,12 @@ for arg in "$@"; do
     fi
 done
 
-ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_mix"
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn"
 
 SCRIPT_ARGS=(
     --input-h5ad /cluster/work/boeva/bulkFM/data/processed/paired_samples.h5ad
     --ablation-dir $ABLATION_DIR
-    --n-cell-lines 10
+    --n-cell-lines 20
     --out-dir $ABLATION_DIR/paired_umaps
     --out-prefix pca)
 
