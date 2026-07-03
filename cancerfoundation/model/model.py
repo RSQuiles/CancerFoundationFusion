@@ -19,6 +19,37 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import time
 
+# ---------------------------------------------------------------------------
+# Module-level helpers for modality-aware HVG selection
+# ---------------------------------------------------------------------------
+_SC_MODALITY_NORM: frozenset = frozenset({
+    "sc", "singlecell", "scrna", "scrnaseq", "subsampled", "pairedsc",
+})
+_PB_MODALITY_NORM: frozenset = frozenset({
+    "pseudobulk", "synthpb", "pairedpb", "pseudo",
+})
+
+# Default scanpy HVG flavor per modality kind.
+# SC is always log1p-normalised → "seurat" (bin-normalised dispersion).
+# Bulk and pseudobulk are raw counts in this pipeline → "seurat_v3"
+# (regularised NB mean-variance model, designed for count data).
+# Override per-run via the hvg_flavor_by_modality argument to embed().
+_DEFAULT_HVG_FLAVOR: dict = {
+    "sc": "seurat",
+    "pseudobulk": "seurat_v3",
+    "bulk": "seurat_v3",
+}
+
+
+def _classify_modality(val: str) -> str:
+    """Map a raw modality label to 'sc', 'pseudobulk', or 'bulk'."""
+    norm = val.lower().replace(" ", "").replace("-", "").replace("_", "")
+    if norm in _SC_MODALITY_NORM or norm.startswith("sc"):
+        return "sc"
+    if "pseudo" in norm or norm in _PB_MODALITY_NORM:
+        return "pseudobulk"
+    return "bulk"
+
 
 class CancerFoundation(pl.LightningModule):
     """The main PyTorch Lightning module for the Cancer Foundation model.
@@ -545,6 +576,108 @@ class CancerFoundation(pl.LightningModule):
             data.X = X - min_val
         return data
 
+    def _run_dense_embed(self, data, batch_size: int, device) -> torch.Tensor:
+        """Embed a fully-preprocessed (post-HVG) AnnData using the dense path.
+
+        Applies binning if required, then runs batched forward passes and returns
+        a (n_obs, d_model) CPU tensor of CLS-token embeddings.
+        """
+        if self.input_style == "binned":
+            normalise = self.model.decoder.normalise_bins
+            for idx in range(data.n_obs):
+                data.X[idx] = binning(data.X[idx], self.n_bins)
+                if normalise:
+                    data.X[idx] = data.X[idx] / self.n_bins
+
+        gene_ids = torch.LongTensor([self.vocab[g] for g in data.var.index])
+        count_matrix = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
+        n_batches = (len(data) + batch_size - 1) // batch_size
+        embeddings = []
+
+        for i in tqdm(range(0, len(data), batch_size), total=n_batches, desc="Embedding cells"):
+            batch_expr = torch.FloatTensor(count_matrix[i : i + batch_size]).to(device)
+            batch_genes = gene_ids.unsqueeze(0).expand(batch_expr.shape[0], -1).to(device)
+            batch_genes = torch.cat(
+                [torch.full((batch_expr.shape[0], 1), self.cls_token_id, dtype=torch.long, device=device), batch_genes],
+                dim=1,
+            )
+            batch_expr = torch.cat(
+                [torch.full((batch_expr.shape[0], 1), self.pad_value, dtype=batch_expr.dtype, device=device), batch_expr],
+                dim=1,
+            )
+            padding_mask = torch.zeros(batch_genes.shape, dtype=torch.bool, device=device)
+
+            if self.model.use_generative_training:
+                output = self.model.embed(src=batch_genes, values=batch_expr, src_key_padding_mask=padding_mask)
+                transformer_output = output[0]
+            else:
+                transformer_output = self.model.encode(src=batch_genes, values=batch_expr, src_key_padding_mask=padding_mask, check_conditions=False)
+
+            embeddings.append(transformer_output[:, 0, :].cpu())
+
+        return torch.cat(embeddings, dim=0)
+
+    def _embed_by_modality(
+        self,
+        data,
+        modality_col: str,
+        hvg_select: bool,
+        batch_size: int,
+        device,
+        gene_subsets: Optional[dict] = None,
+        hvg_flavor_by_modality: Optional[dict] = None,
+    ) -> tuple:
+        """Embed each modality group independently with its own HVG gene set.
+
+        The scanpy HVG flavor is chosen per modality kind via _DEFAULT_HVG_FLAVOR
+        (seurat for SC, seurat_v3 for bulk/pseudobulk count data) and can be
+        overridden with hvg_flavor_by_modality.
+
+        Args:
+            data: AnnData already vocab-intersected and normalised.
+            modality_col: obs column holding modality labels.
+            hvg_select: whether to run HVG per modality (ignored when gene_subsets given).
+            batch_size: forward-pass batch size.
+            device: torch device.
+            gene_subsets: if provided, a dict mapping modality label → gene list; skips HVG.
+            hvg_flavor_by_modality: optional dict mapping modality kind ('sc', 'bulk',
+                'pseudobulk') to a scanpy HVG flavor string, overriding _DEFAULT_HVG_FLAVOR.
+
+        Returns:
+            (emb_array: np.ndarray of shape (n_obs, d_model),
+             gene_set_used: dict[str, list[str]])
+        """
+        flavor_map = {**_DEFAULT_HVG_FLAVOR, **(hvg_flavor_by_modality or {})}
+        mod_vals = data.obs[modality_col].astype(str)
+        unique_mods = mod_vals.unique()
+
+        emb_array = np.zeros((len(data), self.embsize), dtype=np.float32)
+        gene_set_used: dict = {}
+        obs_pos = {name: i for i, name in enumerate(data.obs_names)}
+
+        for mod_val in unique_mods:
+            mod_mask = (mod_vals == mod_val).values
+            mod_data = data[mod_mask].copy()
+            kind = _classify_modality(mod_val)
+            flavor = flavor_map.get(kind, "seurat")
+            print(f"Modality '{mod_val}' ({kind}): {mod_data.n_obs} cells, {mod_data.n_vars} genes")
+
+            if gene_subsets is not None and mod_val in gene_subsets:
+                avail = [g for g in gene_subsets[mod_val] if g in mod_data.var.index]
+                mod_data = mod_data[:, avail].copy()
+            elif hvg_select and mod_data.n_vars > self.n_top_genes:
+                print(f"  Selecting {self.n_top_genes} HVGs (flavor='{flavor}') for modality '{mod_val}'")
+                sc.pp.highly_variable_genes(mod_data, n_top_genes=self.n_top_genes, flavor=flavor)
+                mod_data = mod_data[:, mod_data.var["highly_variable"]].copy()
+
+            gene_set_used[mod_val] = mod_data.var_names.tolist()
+            mod_emb = self._run_dense_embed(mod_data, batch_size, device)
+
+            positions = [obs_pos[name] for name in mod_data.obs_names]
+            emb_array[positions] = mod_emb.numpy()
+
+        return emb_array, gene_set_used
+
     @torch.no_grad()
     def embed(
         self,
@@ -555,7 +688,9 @@ class CancerFoundation(pl.LightningModule):
         hvg_select=True,
         gene_subset=None,
         flavor="seurat",
-        sparse_embed: bool = False):
+        sparse_embed: bool = False,
+        modality_col: Optional[str] = None,
+        hvg_flavor_by_modality: Optional[dict] = None):
         """Embeds an AnnData object into cell embeddings.
 
         Handles all preprocessing: gene intersection with vocab, HVG selection,
@@ -565,9 +700,21 @@ class CancerFoundation(pl.LightningModule):
             adata: AnnData object (h5ad). X should contain expression values
                 (dense or sparse).
             batch_size: Batch size for inference.
+            modality_col: If provided, name of an obs column holding modality labels
+                (e.g. "modality" or "_eval_modality"). When set, HVG selection and
+                dense embedding are performed independently per modality group so that
+                each modality's variance structure drives its own gene selection.
+                ``gene_set_used`` is then returned as a ``dict[str, list[str]]``
+                instead of a flat list. ``gene_subset`` can also be passed as such a
+                dict to skip re-fitting HVG.
+            hvg_flavor_by_modality: optional dict mapping modality kind ('sc', 'bulk',
+                'pseudobulk') to a scanpy HVG flavor string, overriding the defaults
+                in _DEFAULT_HVG_FLAVOR (seurat for SC, seurat_v3 for bulk/pseudobulk).
+                Only used when modality_col is set.
 
         Returns:
-            pd.DataFrame with cell IDs as index and columns dim_0, dim_1, ...
+            Tuple of (pd.DataFrame with cell IDs as index and columns dim_0, dim_1, ...,
+            gene_set_used as list[str] or dict[str, list[str]] when modality_col is set).
         """
         self.model.eval()
         device = next(self.model.parameters()).device
@@ -594,60 +741,46 @@ class CancerFoundation(pl.LightningModule):
         print(f"Common genes: {len(common_genes)} / {data.n_vars}")
         data = data[:, common_genes].copy()
 
-        # Select highly variable genes (RAFA removed, HVG libraries gave many problems)
-        # sc.pp.highly_variable_genes(data, n_top_genes=self.n_top_genes, layer=None, flavor=flavor)
-        # data = data[:, data.var["highly_variable"]].copy()
-
         if gene_subset is not None:
-            # Apply supplied gene set (e.g. from train preprocessing) — no HVG re-fit
-            available_set = set(adata.var.index)
-            available = [g for g in gene_subset if g in available_set]
-            data = data[:, available].copy()
-        # RAFA: adapt HVG selection wihout scanpy to avoid library issues
+            if isinstance(gene_subset, dict):
+                # Per-modality gene subset — requires modality_col
+                if modality_col is None or modality_col not in data.obs.columns:
+                    raise ValueError(
+                        "gene_subset as dict requires modality_col to be provided and present in adata.obs."
+                    )
+                emb_array, gs_used = self._embed_by_modality(
+                    data, modality_col, hvg_select=False,
+                    batch_size=batch_size, device=device, gene_subsets=gene_subset,
+                    hvg_flavor_by_modality=hvg_flavor_by_modality,
+                )
+                return pd.DataFrame(
+                    emb_array,
+                    index=adata.obs_names,
+                    columns=[f"dim_{i}" for i in range(emb_array.shape[1])],
+                ), gs_used
+            else:
+                # Apply supplied gene set (e.g. from train preprocessing) — no HVG re-fit
+                available_set = set(data.var.index)
+                available = [g for g in gene_subset if g in available_set]
+                data = data[:, available].copy()
+
+        elif modality_col is not None and modality_col in data.obs.columns and hvg_select and not sparse_embed:
+            # Per-modality HVG: fit and embed each modality group independently
+            emb_array, gs_used = self._embed_by_modality(
+                data, modality_col, hvg_select=True,
+                batch_size=batch_size, device=device,
+                hvg_flavor_by_modality=hvg_flavor_by_modality,
+            )
+            return pd.DataFrame(
+                emb_array,
+                index=adata.obs_names,
+                columns=[f"dim_{i}" for i in range(emb_array.shape[1])],
+            ), gs_used
+
         elif hvg_select and not sparse_embed and data.n_vars > self.n_top_genes:
             print("Reducing to Highly Variable Genes before embedding!")
-
-            X = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
-            mean = X.mean(axis=0)
-            var = X.var(axis=0)
-            
-            # Clip means to avoid log(0), same as scanpy
-            mean[mean == 0] = 1e-12
-            dispersion = var / mean
-            
-            # Log-transform dispersion, same as scanpy seurat flavor
-            dispersion[dispersion == 0] = np.nan
-            dispersion = np.log(dispersion)
-            
-            # Bin genes by mean expression and normalize dispersion within bins
-            n_bins = 20  # scanpy default
-            mean_log = np.log1p(mean)
-            bins = np.percentile(mean_log, np.linspace(0, 100, n_bins + 1))
-            bins = np.unique(bins)  # remove duplicate bin edges (common in sparse data)
-            bin_indices = np.digitize(mean_log, bins) - 1
-            bin_indices = np.clip(bin_indices, 0, len(bins) - 2)
-            
-            disp_norm = np.zeros_like(dispersion)
-            for b in range(len(bins) - 1):
-                mask = bin_indices == b
-                if mask.sum() < 2:
-                    # Not enough genes in bin to normalize, keep raw dispersion
-                    disp_norm[mask] = dispersion[mask]
-                    continue
-                bin_disp = dispersion[mask]
-                # Ignore NaNs when computing bin stats, same as scanpy
-                bin_mean = np.nanmean(bin_disp)
-                bin_std = np.nanstd(bin_disp)
-                if bin_std == 0:
-                    disp_norm[mask] = 0.0
-                else:
-                    disp_norm[mask] = (bin_disp - bin_mean) / bin_std
-            
-            # NaN genes (zero dispersion) get lowest score
-            disp_norm = np.nan_to_num(disp_norm, nan=-np.inf)
-            
-            top_idx = np.argsort(disp_norm)[-self.n_top_genes:]
-            data = data[:, top_idx].copy()
+            sc.pp.highly_variable_genes(data, n_top_genes=self.n_top_genes, flavor=flavor)
+            data = data[:, data.var["highly_variable"]].copy()
 
         # Retrieve gene set
         gene_set_used = data.var_names.tolist()
@@ -749,43 +882,8 @@ class CancerFoundation(pl.LightningModule):
                 embeddings.append(transformer_output[:, 0, :].cpu())
 
         else:
-            # Dense path (original): all samples in a batch share the same gene columns.
-            # Only practical after HVG selection has reduced the gene count.
-
-            # Bin expression values if required
-            if self.input_style == "binned":
-                normalise = self.model.decoder.normalise_bins
-                for idx in range(data.n_obs):
-                    data.X[idx] = binning(data.X[idx], self.n_bins)
-                    if normalise:
-                        data.X[idx] = data.X[idx] / self.n_bins
-
-            gene_ids = torch.LongTensor([self.vocab[g] for g in data.var.index])
-            count_matrix = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
-
-            for i in tqdm(range(0, len(data), batch_size), total=n_batches, desc="Embedding cells"):
-                batch_expr  = torch.FloatTensor(count_matrix[i : i + batch_size]).to(device)
-                batch_genes = gene_ids.unsqueeze(0).expand(batch_expr.shape[0], -1).to(device)
-
-                # Prepend CLS token
-                batch_genes = torch.cat(
-                    [torch.full((batch_expr.shape[0], 1), self.cls_token_id, dtype=torch.long, device=device), batch_genes],
-                    dim=1,
-                )
-                batch_expr = torch.cat(
-                    [torch.full((batch_expr.shape[0], 1), self.pad_value, dtype=batch_expr.dtype, device=device), batch_expr],
-                    dim=1,
-                )
-
-                padding_mask = torch.zeros(batch_genes.shape, dtype=torch.bool, device=device)
-
-                if self.model.use_generative_training:
-                    output = self.model.embed(src=batch_genes, values=batch_expr, src_key_padding_mask=padding_mask)
-                    transformer_output = output[0]
-                else:
-                    transformer_output = self.model.encode(src=batch_genes, values=batch_expr, src_key_padding_mask=padding_mask, check_conditions=False)
-
-                embeddings.append(transformer_output[:, 0, :].cpu())
+            # Dense path: all samples in a batch share the same gene columns.
+            embeddings.append(self._run_dense_embed(data, batch_size, device))
 
         emb = torch.cat(embeddings, dim=0).numpy()
         return pd.DataFrame(
