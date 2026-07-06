@@ -666,9 +666,25 @@ class CancerFoundation(pl.LightningModule):
                 avail = [g for g in gene_subsets[mod_val] if g in mod_data.var.index]
                 mod_data = mod_data[:, avail].copy()
             elif hvg_select and mod_data.n_vars > self.n_top_genes:
-                print(f"  Selecting {self.n_top_genes} HVGs (flavor='{flavor}') for modality '{mod_val}'")
-                sc.pp.highly_variable_genes(mod_data, n_top_genes=self.n_top_genes, flavor=flavor)
-                mod_data = mod_data[:, mod_data.var["highly_variable"]].copy()
+                effective_flavor = flavor
+                hvg_data = mod_data  # may be replaced by a log1p copy below
+
+                if flavor == "seurat_v3":
+                    # seurat_v3 requires raw integer counts; if data is already
+                    # library-size-normalised (non-integer), log1p a temporary copy
+                    # for gene ranking only — the original data is kept for embedding.
+                    sample = mod_data.X[:min(10, mod_data.n_obs)]
+                    if hasattr(sample, "toarray"):
+                        sample = sample.toarray()
+                    if not np.all(sample == np.floor(sample)):
+                        print(f"  Non-integer data for '{mod_val}'; log1p copy used for HVG, flavor='seurat'.")
+                        hvg_data = mod_data.copy()
+                        sc.pp.log1p(hvg_data)
+                        effective_flavor = "seurat"
+
+                print(f"  Selecting {self.n_top_genes} HVGs (flavor='{effective_flavor}') for modality '{mod_val}'")
+                sc.pp.highly_variable_genes(hvg_data, n_top_genes=self.n_top_genes, flavor=effective_flavor)
+                mod_data = mod_data[:, hvg_data.var["highly_variable"]].copy()
 
             gene_set_used[mod_val] = mod_data.var_names.tolist()
             mod_emb = self._run_dense_embed(mod_data, batch_size, device)
@@ -766,6 +782,7 @@ class CancerFoundation(pl.LightningModule):
 
         elif modality_col is not None and modality_col in data.obs.columns and hvg_select and not sparse_embed:
             # Per-modality HVG: fit and embed each modality group independently
+            print("Performing HVG selection per data modality!")
             emb_array, gs_used = self._embed_by_modality(
                 data, modality_col, hvg_select=True,
                 batch_size=batch_size, device=device,
