@@ -218,9 +218,12 @@ class CancTypeClassTask(DownstreamTask):
             batch_size=batch_size,
             normalized=bool(getattr(task_cfg, "normalized", True)),
         )
-        # gene_subset only supported by CancerFoundation; fittable embedders (e.g. PCA) don't accept it
-        if gene_subset is not None and not getattr(embedder, "fittable", False):
-            kwargs["gene_subset"] = gene_subset
+        # modality (log1p+MAD gene selection) and gene_subset are CancerFoundation-only;
+        # fittable embedders (e.g. PCA) don't accept them.
+        if not getattr(embedder, "fittable", False):
+            kwargs["modality"] = "bulk"
+            if gene_subset is not None:
+                kwargs["gene_subset"] = gene_subset
 
         result = embedder.embed(adata, **kwargs)
 

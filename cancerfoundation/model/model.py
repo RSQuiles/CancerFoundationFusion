@@ -29,18 +29,6 @@ _PB_MODALITY_NORM: frozenset = frozenset({
     "pseudobulk", "synthpb", "pairedpb", "pseudo",
 })
 
-# Default scanpy HVG flavor per modality kind.
-# SC is always log1p-normalised → "seurat" (bin-normalised dispersion).
-# Bulk and pseudobulk are raw counts in this pipeline → "seurat_v3"
-# (regularised NB mean-variance model, designed for count data).
-# Override per-run via the hvg_flavor_by_modality argument to embed().
-_DEFAULT_HVG_FLAVOR: dict = {
-    "sc": "seurat",
-    "pseudobulk": "seurat_v3",
-    "bulk": "seurat_v3",
-}
-
-
 def _classify_modality(val: str) -> str:
     """Map a raw modality label to 'sc', 'pseudobulk', or 'bulk'."""
     norm = val.lower().replace(" ", "").replace("-", "").replace("_", "")
@@ -49,6 +37,20 @@ def _classify_modality(val: str) -> str:
     if "pseudo" in norm or norm in _PB_MODALITY_NORM:
         return "pseudobulk"
     return "bulk"
+
+
+def _top_mad_genes(X, n_top: int) -> np.ndarray:
+    """Return indices of the ``n_top`` genes (columns) with highest MAD.
+
+    MAD (median absolute deviation) is computed on the values as passed — in this
+    pipeline the data is already log1p-transformed by the time gene selection runs,
+    so this is log1p + MAD. Robust to the composition-driven variance that dominates
+    bulk/pseudobulk expression.
+    """
+    X = X if isinstance(X, np.ndarray) else X.toarray()
+    med = np.median(X, axis=0)
+    mad = np.median(np.abs(X - med), axis=0)
+    return np.argsort(mad)[-n_top:]
 
 
 class CancerFoundation(pl.LightningModule):
@@ -617,6 +619,29 @@ class CancerFoundation(pl.LightningModule):
 
         return torch.cat(embeddings, dim=0)
 
+    def _select_genes(self, data, kind: str, seurat_flavor: str = "seurat"):
+        """Reduce an AnnData to ``n_top_genes`` using a modality-appropriate scheme.
+
+        Deterministic. Assumes ``data`` is already log1p-normalised.
+          - ``kind == "sc"``: scanpy HVG (``seurat_flavor``, bin-normalised dispersion),
+            appropriate for sparse log1p single-cell data.
+          - bulk / pseudobulk: genes with highest MAD on the log1p values, robust to
+            the cell-type-composition variance that dominates (pseudo)bulk expression.
+
+        Returns the gene-subset AnnData (a copy), or ``data`` unchanged when it already
+        has at most ``n_top_genes`` genes.
+        """
+        if data.n_vars <= self.n_top_genes:
+            return data
+        if kind == "sc":
+            print(f"  Selecting {self.n_top_genes} HVGs (flavor='{seurat_flavor}') for modality 'sc'")
+            sc.pp.highly_variable_genes(data, n_top_genes=self.n_top_genes, flavor=seurat_flavor)
+            return data[:, data.var["highly_variable"]].copy()
+        # bulk / pseudobulk → log1p + MAD
+        print(f"  Selecting {self.n_top_genes} top-MAD genes for modality '{kind}'")
+        top_idx = _top_mad_genes(data.X, self.n_top_genes)
+        return data[:, top_idx].copy()
+
     def _embed_by_modality(
         self,
         data,
@@ -625,29 +650,26 @@ class CancerFoundation(pl.LightningModule):
         batch_size: int,
         device,
         gene_subsets: Optional[dict] = None,
-        hvg_flavor_by_modality: Optional[dict] = None,
     ) -> tuple:
-        """Embed each modality group independently with its own HVG gene set.
+        """Embed each modality group independently with its own gene set.
 
-        The scanpy HVG flavor is chosen per modality kind via _DEFAULT_HVG_FLAVOR
-        (seurat for SC, seurat_v3 for bulk/pseudobulk count data) and can be
-        overridden with hvg_flavor_by_modality.
+        Gene selection per group follows _select_genes: scanpy 'seurat' HVG for SC,
+        log1p + MAD for bulk/pseudobulk. Data is assumed already log1p-normalised.
 
         Args:
             data: AnnData already vocab-intersected and normalised.
             modality_col: obs column holding modality labels.
-            hvg_select: whether to run HVG per modality (ignored when gene_subsets given).
+            hvg_select: whether to run gene selection per modality (ignored when
+                gene_subsets given).
             batch_size: forward-pass batch size.
             device: torch device.
-            gene_subsets: if provided, a dict mapping modality label → gene list; skips HVG.
-            hvg_flavor_by_modality: optional dict mapping modality kind ('sc', 'bulk',
-                'pseudobulk') to a scanpy HVG flavor string, overriding _DEFAULT_HVG_FLAVOR.
+            gene_subsets: if provided, a dict mapping modality label → gene list; skips
+                gene selection.
 
         Returns:
             (emb_array: np.ndarray of shape (n_obs, d_model),
              gene_set_used: dict[str, list[str]])
         """
-        flavor_map = {**_DEFAULT_HVG_FLAVOR, **(hvg_flavor_by_modality or {})}
         mod_vals = data.obs[modality_col].astype(str)
         unique_mods = mod_vals.unique()
 
@@ -659,32 +681,13 @@ class CancerFoundation(pl.LightningModule):
             mod_mask = (mod_vals == mod_val).values
             mod_data = data[mod_mask].copy()
             kind = _classify_modality(mod_val)
-            flavor = flavor_map.get(kind, "seurat")
             print(f"Modality '{mod_val}' ({kind}): {mod_data.n_obs} cells, {mod_data.n_vars} genes")
 
             if gene_subsets is not None and mod_val in gene_subsets:
                 avail = [g for g in gene_subsets[mod_val] if g in mod_data.var.index]
                 mod_data = mod_data[:, avail].copy()
-            elif hvg_select and mod_data.n_vars > self.n_top_genes:
-                effective_flavor = flavor
-                hvg_data = mod_data  # may be replaced by a log1p copy below
-
-                if flavor == "seurat_v3":
-                    # seurat_v3 requires raw integer counts; if data is already
-                    # library-size-normalised (non-integer), log1p a temporary copy
-                    # for gene ranking only — the original data is kept for embedding.
-                    sample = mod_data.X[:min(10, mod_data.n_obs)]
-                    if hasattr(sample, "toarray"):
-                        sample = sample.toarray()
-                    if not np.all(sample == np.floor(sample)):
-                        print(f"  Non-integer data for '{mod_val}'; log1p copy used for HVG, flavor='seurat'.")
-                        hvg_data = mod_data.copy()
-                        sc.pp.log1p(hvg_data)
-                        effective_flavor = "seurat"
-
-                print(f"  Selecting {self.n_top_genes} HVGs (flavor='{effective_flavor}') for modality '{mod_val}'")
-                sc.pp.highly_variable_genes(hvg_data, n_top_genes=self.n_top_genes, flavor=effective_flavor)
-                mod_data = mod_data[:, hvg_data.var["highly_variable"]].copy()
+            elif hvg_select:
+                mod_data = self._select_genes(mod_data, kind)
 
             gene_set_used[mod_val] = mod_data.var_names.tolist()
             mod_emb = self._run_dense_embed(mod_data, batch_size, device)
@@ -704,40 +707,49 @@ class CancerFoundation(pl.LightningModule):
         hvg_select=True,
         gene_subset=None,
         flavor="seurat",
-        sparse_embed: bool = False,
+        modality: str = "sc",
         modality_col: Optional[str] = None,
-        hvg_flavor_by_modality: Optional[dict] = None):
+        return_preprocessed: bool = False):
         """Embeds an AnnData object into cell embeddings.
 
-        Handles all preprocessing: gene intersection with vocab, HVG selection,
-        binning, and batched forward passes through the transformer.
+        Handles all preprocessing: gene intersection with vocab, deterministic
+        modality-aware gene selection, binning, and batched forward passes through the
+        transformer.
+
+        Gene selection (see ``_select_genes``) depends on modality: scanpy ``seurat``
+        HVG for single-cell (``modality="sc"``), log1p + MAD for bulk/pseudobulk
+        (``modality="bulk"`` / ``"pseudobulk"``). Data is log1p by the time selection
+        runs (either already ``normalized`` or normalised here).
 
         Args:
             adata: AnnData object (h5ad). X should contain expression values
                 (dense or sparse).
             batch_size: Batch size for inference.
-            modality_col: If provided, name of an obs column holding modality labels
-                (e.g. "modality" or "_eval_modality"). When set, HVG selection and
-                dense embedding are performed independently per modality group so that
-                each modality's variance structure drives its own gene selection.
-                ``gene_set_used`` is then returned as a ``dict[str, list[str]]``
-                instead of a flat list. ``gene_subset`` can also be passed as such a
-                dict to skip re-fitting HVG.
-            hvg_flavor_by_modality: optional dict mapping modality kind ('sc', 'bulk',
-                'pseudobulk') to a scanpy HVG flavor string, overriding the defaults
-                in _DEFAULT_HVG_FLAVOR (seurat for SC, seurat_v3 for bulk/pseudobulk).
-                Only used when modality_col is set.
+            modality: Modality of the whole AnnData when ``modality_col`` is not set —
+                one of "sc", "bulk", "pseudobulk". Drives single-modality gene selection.
+            modality_col: If provided, name of an obs column holding per-cell modality
+                labels (e.g. "modality" or "_eval_modality"). When set, gene selection
+                and dense embedding are performed independently per modality group so
+                each modality's variance structure drives its own gene set.
+                ``gene_set_used`` is then returned as a ``dict[str, list[str]]`` instead
+                of a flat list. ``gene_subset`` can also be passed as such a dict to skip
+                re-fitting selection.
+            return_preprocessed: If True, return the normalised, vocab-intersected,
+                gene-selected AnnData (un-binned) instead of running the forward pass.
+                Used by ``preprocess_for_embedding`` so both paths share identical
+                preprocessing. Not compatible with the per-modality ``modality_col`` path.
 
         Returns:
             Tuple of (pd.DataFrame with cell IDs as index and columns dim_0, dim_1, ...,
-            gene_set_used as list[str] or dict[str, list[str]] when modality_col is set).
+            gene_set_used as list[str] or dict[str, list[str]] when modality_col is set),
+            or the preprocessed AnnData when ``return_preprocessed`` is True.
         """
         self.model.eval()
         device = next(self.model.parameters()).device
 
         # Work on a copy to avoid mutating the input
         data = adata.copy()
-        if not sparse_embed and hasattr(data.X, "toarray"):
+        if hasattr(data.X, "toarray"):
             data.X = data.X.toarray()
 
         data = self._maybe_fix_negative(data)
@@ -767,7 +779,6 @@ class CancerFoundation(pl.LightningModule):
                 emb_array, gs_used = self._embed_by_modality(
                     data, modality_col, hvg_select=False,
                     batch_size=batch_size, device=device, gene_subsets=gene_subset,
-                    hvg_flavor_by_modality=hvg_flavor_by_modality,
                 )
                 return pd.DataFrame(
                     emb_array,
@@ -775,18 +786,17 @@ class CancerFoundation(pl.LightningModule):
                     columns=[f"dim_{i}" for i in range(emb_array.shape[1])],
                 ), gs_used
             else:
-                # Apply supplied gene set (e.g. from train preprocessing) — no HVG re-fit
+                # Apply supplied gene set (e.g. from train preprocessing) — no re-fit
                 available_set = set(data.var.index)
                 available = [g for g in gene_subset if g in available_set]
                 data = data[:, available].copy()
 
-        elif modality_col is not None and modality_col in data.obs.columns and hvg_select and not sparse_embed:
-            # Per-modality HVG: fit and embed each modality group independently
-            print("Performing HVG selection per data modality!")
+        elif modality_col is not None and modality_col in data.obs.columns and hvg_select:
+            # Per-modality selection: fit and embed each modality group independently
+            print("Performing gene selection per data modality!")
             emb_array, gs_used = self._embed_by_modality(
                 data, modality_col, hvg_select=True,
                 batch_size=batch_size, device=device,
-                hvg_flavor_by_modality=hvg_flavor_by_modality,
             )
             return pd.DataFrame(
                 emb_array,
@@ -794,115 +804,18 @@ class CancerFoundation(pl.LightningModule):
                 columns=[f"dim_{i}" for i in range(emb_array.shape[1])],
             ), gs_used
 
-        elif hvg_select and not sparse_embed and data.n_vars > self.n_top_genes:
-            print("Reducing to Highly Variable Genes before embedding!")
-            sc.pp.highly_variable_genes(data, n_top_genes=self.n_top_genes, flavor=flavor)
-            data = data[:, data.var["highly_variable"]].copy()
+        elif hvg_select:
+            data = self._select_genes(data, kind=modality, seurat_flavor=flavor)
+
+        # Early return for preprocess_for_embedding: selected, un-binned data.
+        if return_preprocessed:
+            return data
 
         # Retrieve gene set
         gene_set_used = data.var_names.tolist()
 
-        n_batches = (len(data) + batch_size - 1) // batch_size
-        embeddings = []
-
-        if sparse_embed:
-            # Sparse path: mirrors AnnDataCollator._sample with zero_percentage.
-            # Per sample:
-            #   1. Non-zero genes are identified from the sparse matrix (no densification).
-            #   2. ~ZERO_PCT * max_genes zero-expression genes are stochastically included,
-            #      exactly as AnnDataCollator does when zero_percentage is set.
-            #   3. Remaining slots are filled with randomly-permuted non-zero genes.
-            #   4. Binning is applied to the combined vector; zeros keep bin 0 naturally.
-            ZERO_PCT = 0.2
-            vocab_ids = np.array([self.vocab[g] for g in gene_set_used], dtype=np.int64)
-            n_genes = len(gene_set_used)
-            all_cols = np.arange(n_genes, dtype=np.int64)
-            X_all = data.X  # kept sparse — rows accessed one at a time
-            is_sparse_X = hasattr(X_all, "toarray")
-            max_genes = self.max_seq_len - 1  # one slot reserved for CLS
-
-            for i in tqdm(range(0, len(data), batch_size), total=n_batches, desc="Embedding cells"):
-                batch_X = X_all[i : i + batch_size]
-                n_in_batch = batch_X.shape[0]
-                genes_list, expr_list = [], []
-
-                for j in range(n_in_batch):
-                    # Extract non-zero genes without materialising the full dense row
-                    if is_sparse_X:
-                        row = batch_X.getrow(j)
-                        nz_cols = row.indices.copy().astype(np.int64)
-                        nz_expr = row.data.copy().astype(np.float32)
-                    else:
-                        row_dense = batch_X[j]
-                        nz_cols = np.nonzero(row_dense)[0].astype(np.int64)
-                        nz_expr = row_dense[nz_cols].astype(np.float32)
-
-                    # Stochastically sample zero-expression genes (~ZERO_PCT * max_genes),
-                    # mirroring AnnDataCollator._sample: each zero gene is included
-                    # independently with p = n_zero_target / n_zero_genes.
-                    zero_mask = np.ones(n_genes, dtype=bool)
-                    if len(nz_cols):
-                        zero_mask[nz_cols] = False
-                    zero_cols = all_cols[zero_mask]
-
-                    n_zero_target = int(ZERO_PCT * max_genes)
-                    if len(zero_cols) > 0 and n_zero_target > 0:
-                        p = n_zero_target / len(zero_cols)
-                        sel_zero_cols = zero_cols[np.random.rand(len(zero_cols)) <= p]
-                    else:
-                        sel_zero_cols = np.empty(0, dtype=np.int64)
-
-                    # Fill remaining slots with randomly-permuted non-zero genes
-                    n_nz_slots = max_genes - len(sel_zero_cols)
-                    if len(nz_cols) > n_nz_slots:
-                        perm = np.random.permutation(len(nz_cols))[:n_nz_slots]
-                        sel_nz_cols = nz_cols[perm]
-                        sel_nz_expr = nz_expr[perm]
-                    else:
-                        sel_nz_cols = nz_cols
-                        sel_nz_expr = nz_expr
-
-                    # Combine: sampled zeros first, then non-zeros
-                    combined_cols = np.concatenate([sel_zero_cols, sel_nz_cols])
-                    combined_expr = np.concatenate([
-                        np.zeros(len(sel_zero_cols), dtype=np.float32),
-                        sel_nz_expr,
-                    ])
-
-                    # Per-sample binning: binning() handles mixed zero/non-zero arrays
-                    # correctly — zeros stay at bin 0, non-zeros get quantile bins 1..n_bins
-                    if self.input_style == "binned":
-                        combined_expr = binning(combined_expr, self.n_bins).astype(np.float32)
-                        if self.model.decoder.normalise_bins:
-                            combined_expr = combined_expr / self.n_bins
-
-                    gene_ids_sample = vocab_ids[combined_cols]
-                    genes_list.append(np.insert(gene_ids_sample.astype(np.int64), 0, self.cls_token_id))
-                    expr_list.append(np.insert(combined_expr, 0, self.pad_value))
-
-                # Pad within batch to the longest sequence in this batch
-                max_len = max(len(g) for g in genes_list)
-                pad_genes = torch.full((n_in_batch, max_len), self.pad_token_id, dtype=torch.long, device=device)
-                pad_expr  = torch.full((n_in_batch, max_len), self.pad_value,    dtype=torch.float32, device=device)
-                for j, (g, e) in enumerate(zip(genes_list, expr_list)):
-                    pad_genes[j, :len(g)] = torch.from_numpy(g)
-                    pad_expr [j, :len(e)] = torch.from_numpy(e)
-
-                padding_mask = pad_genes.eq(self.pad_token_id)
-
-                if self.model.use_generative_training:
-                    output = self.model.embed(src=pad_genes, values=pad_expr, src_key_padding_mask=padding_mask)
-                    transformer_output = output[0]
-                else:
-                    transformer_output = self.model.encode(src=pad_genes, values=pad_expr, src_key_padding_mask=padding_mask, check_conditions=False)
-
-                embeddings.append(transformer_output[:, 0, :].cpu())
-
-        else:
-            # Dense path: all samples in a batch share the same gene columns.
-            embeddings.append(self._run_dense_embed(data, batch_size, device))
-
-        emb = torch.cat(embeddings, dim=0).numpy()
+        # Dense path: all samples in a batch share the same gene columns.
+        emb = self._run_dense_embed(data, batch_size, device).numpy()
         return pd.DataFrame(
             emb,
             index=adata.obs_names,
@@ -915,77 +828,40 @@ class CancerFoundation(pl.LightningModule):
         normalized: bool = False,
         gene_subset: list | None = None,
         return_edges: bool = False,
+        modality: str = "sc",
     ):
-        """Normalize, intersect vocab, select HVGs, and optionally bin — without running the forward pass.
+        """Normalize, intersect vocab, select genes, and optionally bin — without running the forward pass.
+
+        Delegates normalization, vocab intersection, and gene selection to
+        ``embed(..., return_preprocessed=True)`` so the frozen and fine-tuned paths
+        select genes identically (scanpy ``seurat`` for SC, log1p + MAD for
+        bulk/pseudobulk), then applies binning here.
 
         Calling this on the full dataset before a train/test split ensures every cell
         uses the same gene set.  Pass the returned ``var.index`` as ``gene_subset`` to
-        a second call on held-out data so HVG selection is never re-fit on test samples.
+        a second call on held-out data so gene selection is never re-fit on test samples.
 
         Args:
             adata: Input AnnData object.
             normalized: If True, skip CP10K + log1p normalization (data already normalized).
-            gene_subset: If provided, skip HVG selection and subset directly to these gene
+            gene_subset: If provided, skip gene selection and subset directly to these gene
                 names (must be a subset of the vocab-intersected genes).
+            modality: Modality of the data ("sc", "bulk", "pseudobulk") — drives gene
+                selection, matching the ``modality`` argument of ``embed``.
 
         Returns:
             Preprocessed AnnData ready for ``embed_for_finetune()`` or ``embed(hvg_select=False)``.
         """
-        import scanpy as sc
-
-        data = adata.copy()
-        if hasattr(data.X, "toarray"):
-            data.X = data.X.toarray()
-
-        data = self._maybe_fix_negative(data)
-
-        if not normalized:
-            sc.pp.normalize_total(data, target_sum=1e4)
-            sc.pp.log1p(data)
-
-        # Intersect genes with vocab
-        common_genes = list(set(self.vocab.keys()).intersection(set(data.var.index)))
-        if not common_genes:
-            raise ValueError("No common genes between vocab and data. Check gene name format.")
-        print(f"Common genes: {len(common_genes)} / {data.n_vars}")
-        data = data[:, common_genes].copy()
-
-        if gene_subset is not None:
-            # Apply caller-supplied gene set (e.g. from train preprocessing) — no HVG re-fit
-            available_set = set(data.var.index)
-            available = [g for g in gene_subset if g in available_set]
-            data = data[:, available].copy()
-        elif self.n_top_genes and data.n_vars > self.n_top_genes:
-            print("Reducing to Highly Variable Genes before embedding!")
-            X = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
-            mean = X.mean(axis=0)
-            var = X.var(axis=0)
-            mean[mean == 0] = 1e-12
-            dispersion = var / mean
-            dispersion[dispersion == 0] = np.nan
-            dispersion = np.log(dispersion)
-            n_bins = 20
-            mean_log = np.log1p(mean)
-            bins = np.percentile(mean_log, np.linspace(0, 100, n_bins + 1))
-            bins = np.unique(bins)
-            bin_indices = np.digitize(mean_log, bins) - 1
-            bin_indices = np.clip(bin_indices, 0, len(bins) - 2)
-            disp_norm = np.zeros_like(dispersion)
-            for b in range(len(bins) - 1):
-                mask = bin_indices == b
-                if mask.sum() < 2:
-                    disp_norm[mask] = dispersion[mask]
-                    continue
-                bin_disp = dispersion[mask]
-                bin_mean = np.nanmean(bin_disp)
-                bin_std = np.nanstd(bin_disp)
-                if bin_std == 0:
-                    disp_norm[mask] = 0.0
-                else:
-                    disp_norm[mask] = (bin_disp - bin_mean) / bin_std
-            disp_norm = np.nan_to_num(disp_norm, nan=-np.inf)
-            top_idx = np.argsort(disp_norm)[-self.n_top_genes:]
-            data = data[:, top_idx].copy()
+        # Reuse embed()'s preprocessing (normalize → intersect → select) so the two
+        # paths never diverge; return_preprocessed short-circuits before the forward pass.
+        data = self.embed(
+            adata,
+            normalized=normalized,
+            hvg_select=(gene_subset is None),
+            gene_subset=gene_subset,
+            modality=modality,
+            return_preprocessed=True,
+        )
 
         if self.input_style == "binned":
             from cancerfoundation.data.preprocess import binning_with_edges

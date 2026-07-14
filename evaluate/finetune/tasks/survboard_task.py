@@ -697,11 +697,12 @@ class SurvBoardTask(DownstreamTask):
 
             # Preprocess: HVG fitted on train, same gene set applied to test
             processed_train = fresh_emb.preprocess_for_embedding(
-                self._full_adata[train_idx], normalized=normalized
+                self._full_adata[train_idx], normalized=normalized, modality="bulk"
             )
             kept_genes = processed_train.var.index.tolist()
             processed_test = fresh_emb.preprocess_for_embedding(
-                self._full_adata[test_idx], normalized=normalized, gene_subset=kept_genes
+                self._full_adata[test_idx], normalized=normalized,
+                gene_subset=kept_genes, modality="bulk",
             )
             gene_ids = torch.LongTensor(
                 [fresh_emb.vocab[g] for g in kept_genes]
@@ -851,7 +852,10 @@ class SurvBoardTask(DownstreamTask):
     ) -> np.ndarray:
         embedder.eval()
         embedder.cuda()
-        result = embedder.embed(adata, batch_size=batch_size, normalized=True)
+        kwargs = dict(batch_size=batch_size, normalized=True)
+        if not getattr(embedder, "fittable", False):
+            kwargs["modality"] = "bulk"  # TCGA bulk → log1p + MAD gene selection
+        result = embedder.embed(adata, **kwargs)
         df = result[0] if isinstance(result, tuple) else result
         return df.to_numpy()
 

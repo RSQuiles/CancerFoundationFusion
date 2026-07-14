@@ -263,7 +263,11 @@ class ProteomePredTask(DownstreamTask):
     def _embed_adata(self, embedder: Any, adata: ad.AnnData, batch_size: int = 64) -> np.ndarray:
         embedder.eval()
         embedder.cuda()
-        df_emb = embedder.embed(adata, batch_size=batch_size, log1p_only=True)
+        kwargs = dict(batch_size=batch_size, log1p_only=True)
+        if not getattr(embedder, "fittable", False):
+            kwargs["modality"] = "bulk"  # proteome/CPTAC bulk → log1p + MAD gene selection
+        result = embedder.embed(adata, **kwargs)
+        df_emb = result[0] if isinstance(result, tuple) else result
         return df_emb.to_numpy()
 
     def compute_metrics(

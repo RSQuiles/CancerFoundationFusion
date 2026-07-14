@@ -149,12 +149,13 @@ def main() -> None:
             print("Inference device: CPU")
 
         print("Generating embeddings...")
-        emb_df = model.embed(
+        result = model.embed(
             adata,
             batch_size=args.batch_size,
             normalized=args.normalized,
             log1p_only=args.log1p_only,
         )
+        emb_df = result[0] if isinstance(result, tuple) else result
 
         adata.obsm[args.obsm_key] = emb_df.to_numpy().astype(np.float32)
         print(

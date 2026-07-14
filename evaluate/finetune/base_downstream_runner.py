@@ -214,20 +214,22 @@ class BaseDownstreamRunner:
         # FINETUNE BRANCH (single-fold only — multi-fold delegates to prepare_datasets)
         if self.finetune and hasattr(self.embedder, "preprocess_for_embedding"):
             normalized = bool(getattr(self.task_cfg, "normalized", False))
+            # Modality drives gene selection (sc → seurat HVG, bulk/pseudobulk → log1p+MAD)
+            modality = str(getattr(self.task_cfg, "modality", "sc"))
 
-            # Preprocess train adata — HVG selection runs on training cells only
+            # Preprocess train adata — gene selection runs on training cells only
             if self.is_master:
                 log.info("Fine-tuning mode: preprocessing train split for embedding...")
             processed_train = self.embedder.preprocess_for_embedding(
-                train_adata, normalized=normalized
+                train_adata, normalized=normalized, modality=modality
             )
             kept_genes = processed_train.var.index.tolist()
 
-            # Apply same gene set to test (no HVG re-fit on test cells)
+            # Apply same gene set to test (no re-fit on test cells)
             if self.is_master:
                 log.info("Fine-tuning mode: preprocessing test split with train gene set...")
             processed_test = self.embedder.preprocess_for_embedding(
-                test_adata, normalized=normalized, gene_subset=kept_genes
+                test_adata, normalized=normalized, gene_subset=kept_genes, modality=modality
             )
 
             gene_ids = torch.LongTensor([self.embedder.vocab[g] for g in kept_genes])

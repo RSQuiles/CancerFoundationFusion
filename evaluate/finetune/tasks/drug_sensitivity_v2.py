@@ -115,7 +115,10 @@ def precompute_embeddings(embedder: Any, task_cfg: DictConfig) -> pd.DataFrame:
     if torch.cuda.is_available() and hasattr(embedder, "cuda"):
         embedder.cuda()
 
-    result = embedder.embed(full_adata, batch_size=batch_size, normalized=normalized)
+    kwargs = dict(batch_size=batch_size, normalized=normalized)
+    if not getattr(embedder, "fittable", False):
+        kwargs["modality"] = "bulk"  # cell-line bulk → log1p + MAD gene selection
+    result = embedder.embed(full_adata, **kwargs)
     df = result[0] if isinstance(result, tuple) else result
     return df
 
@@ -436,7 +439,10 @@ class DrugSensitivityV2Task(DownstreamTask):
         if torch.cuda.is_available() and hasattr(embedder, "cuda"):
             embedder.cuda()
 
-        result = embedder.embed(adata, batch_size=batch_size, normalized=normalized)
+        kwargs = dict(batch_size=batch_size, normalized=normalized)
+        if not getattr(embedder, "fittable", False):
+            kwargs["modality"] = "bulk"  # cell-line bulk → log1p + MAD gene selection
+        result = embedder.embed(adata, **kwargs)
         df = result[0] if isinstance(result, tuple) else result
         return df.to_numpy(dtype=np.float32)
 

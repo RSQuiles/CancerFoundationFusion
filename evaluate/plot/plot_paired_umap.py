@@ -73,7 +73,6 @@ def _embed(model: CancerFoundation, adata: ad.AnnData, batch_size: int, normaliz
         batch_size=batch_size,
         normalized=normalized,
         hvg_select=True,
-        sparse_embed=False,
         modality_col="modality"
     )
     emb_df = result[0] if isinstance(result, tuple) else result

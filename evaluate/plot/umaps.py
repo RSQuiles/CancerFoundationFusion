@@ -168,16 +168,31 @@ def embed_adata(
     flavor: str = "seurat",
     obsm_key: str = "X_cf",
     normalized: bool = True,
+    modality: str = "sc",
+    modality_col: str | None = None,
 ) -> sc.AnnData:
-    """Compute embeddings and store them in `adata.obsm[obsm_key]`."""
-    result = model.embed(
-        adata, 
-        flavor=flavor, 
-        batch_size=batch_size, 
-        normalized=normalized,
-        hvg_select=False,
-        sparse_embed=True,
+    """Compute embeddings and store them in `adata.obsm[obsm_key]`.
+
+    Gene selection is deterministic and modality-aware (see ``CancerFoundation.embed``):
+    scanpy ``seurat`` HVG for single-cell, log1p + MAD for bulk/pseudobulk. When a
+    modality column is present (``modality_col``, else auto-detected as "_eval_modality"
+    or "modality"), selection is fitted per modality group; otherwise the scalar
+    ``modality`` applies to all cells.
+    """
+    if modality_col is None:
+        modality_col = next(
+            (c for c in ("_eval_modality", "modality") if c in adata.obs.columns), None
         )
+    kwargs = dict(
+        flavor=flavor,
+        batch_size=batch_size,
+        normalized=normalized,
+        hvg_select=True,
+        modality=modality,
+    )
+    if modality_col is not None and modality_col in adata.obs.columns:
+        kwargs["modality_col"] = modality_col
+    result = model.embed(adata, **kwargs)
     emb_df = result[0] if isinstance(result, tuple) else result
     adata.obsm[obsm_key] = emb_df.to_numpy(dtype=np.float32)
     return adata
@@ -537,7 +552,7 @@ def _save_pseudobulk_umap(
             return
         try:
             embed_adata(model, pb_adata, batch_size=embed_batch_size,
-                        flavor=flavor, obsm_key="X_cf")
+                        flavor=flavor, obsm_key="X_cf", modality="pseudobulk")
         except Exception as exc:
             print(f"  [warn] pseudobulk embedding failed: {exc}")
             return
