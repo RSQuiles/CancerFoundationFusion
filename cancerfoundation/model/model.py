@@ -48,6 +48,13 @@ def _top_mad_genes(X, n_top: int) -> np.ndarray:
     bulk/pseudobulk expression.
     """
     X = X if isinstance(X, np.ndarray) else X.toarray()
+
+    # Detect if data is likely not log1p-transformed.
+    # Heuristic: log1p data has a max value typically well below 20;.
+    if X.max() > 20:
+        print("  [INFO] Non-log1p data detected. Normalizing!") 
+        X = np.log1p(X)
+
     med = np.median(X, axis=0)
     mad = np.median(np.abs(X - med), axis=0)
     return np.argsort(mad)[-n_top:]
@@ -672,6 +679,7 @@ class CancerFoundation(pl.LightningModule):
         """
         mod_vals = data.obs[modality_col].astype(str)
         unique_mods = mod_vals.unique()
+        print(f"[INFO] Available modalities: {unique_mods}")
 
         emb_array = np.zeros((len(data), self.embsize), dtype=np.float32)
         gene_set_used: dict = {}
@@ -703,7 +711,7 @@ class CancerFoundation(pl.LightningModule):
         adata,
         batch_size: int = 64,
         normalized=False,
-        log1p_only=False,
+        log1p_only=True,
         hvg_select=True,
         gene_subset=None,
         flavor="seurat",

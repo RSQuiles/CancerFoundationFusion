@@ -761,6 +761,7 @@ def run_ablation_umaps(
     n_sc_per_pb: int = 10,
     group_column: str = "tissue_general",
     agg_method: str = "mean",
+    only_pseudobulk: bool = False,
 ) -> None:
     """Generate and save a UMAP for every model inside an ablation directory.
 
@@ -826,6 +827,7 @@ def run_ablation_umaps(
                         agg_method=agg_method,
                         embed_batch_size=embed_batch_size,
                         flavor=flavor,
+                        only_pseudobulk=only_pseudobulk
                     )
             except Exception as exc:
                 print(f"  [error] UMAP generation failed: {exc}")
@@ -869,6 +871,7 @@ def run_ablation_umaps(
                     agg_method=agg_method,
                     embed_batch_size=embed_batch_size,
                     flavor=flavor,
+                    only_pseudobulk=only_pseudobulk
                 )
         except Exception as exc:
             print(f"  [error] UMAP generation failed: {exc}")
@@ -965,6 +968,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             n_sc_per_pb=args.n_sc_per_pb,
             group_column=args.pb_group_column,
             agg_method=args.pb_agg_method,
+            only_pseudobulk=args.plot_pb_only
         )
         return 0
 
@@ -1046,6 +1050,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             agg_method=args.pb_agg_method,
             embed_batch_size=args.embed_batch_size,
             flavor=args.flavor,
+            only_pseudobulk=args.plot_pb_only
         )
 
     adata_to_use.write_h5ad(out_h5ad)
@@ -1220,6 +1225,13 @@ def build_argparser() -> argparse.ArgumentParser:
         help=(
             "Aggregation method for combining SC expression into a pseudobulk "
             "profile before embedding: 'mean' (default) or 'sum'."
+        ),
+    )
+    p.add_argument(
+        "--plot-pb-only",
+        action="store_true",
+        help=(
+            "Whether to only ouput the pseudobulk UMAP"
         ),
     )
     return p
