@@ -112,6 +112,10 @@ def process_partitions(
         combined = ad.concat(buffer, join="outer", merge="same", index_unique=None)
         combined.obs_names_make_unique()
 
+        # Tag as single-cell modality so downstream preprocessing/plotting can
+        # read it directly from the h5ad (matches the bulk/paired generators).
+        combined.obs["modality"] = "sc"
+
         out_path = output_dir / f"subsampled_{output_idx}.h5ad"
         combined.write_h5ad(out_path)
         print(f"  Saved → {out_path}")
