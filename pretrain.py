@@ -165,6 +165,8 @@ def main(input_args=None):
 
     if args.contrastive_training and not args.unified:
         raise ValueError("Contrastive training is only supported with unified_fm=True.")
+    if args.mmd and not args.unified:
+        raise ValueError("MMD alignment loss is only supported with unified_fm=True.")
     if args.agg_consistency and not args.unified:
         raise ValueError(
             "Aggregation consistency losses are only supported with unified_fm=True."
@@ -280,6 +282,7 @@ def main(input_args=None):
         their_init_weights=args.their_init_weights,
         # Unified FM parameters
         contrastive=args.contrastive_training,
+        mmd=args.mmd,
         aggregation=args.agg_consistency,
         agg_fn=args.agg_fn,
         paired_alignment=args.paired_sampling,
@@ -290,6 +293,7 @@ def main(input_args=None):
         verbose=args.verbose,
         weight_mvc=args.loss_weight_mvc,
         weight_contrastive=args.loss_weight_contrastive,
+        weight_mmd=args.loss_weight_mmd,
         weight_paired=args.loss_weight_paired,
         weight_agg=args.loss_weight_agg,
         weight_dat=args.loss_weight_dat,

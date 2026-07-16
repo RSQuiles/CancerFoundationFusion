@@ -57,6 +57,7 @@ class TransformerModule(nn.Module):
         their_init_weights: bool,
         # Unified FM parameters
         contrastive: bool = False,
+        mmd: bool = False,
         aggregation: bool = False,
         agg_fn: Optional[str] = None,
         paired_alignment: bool = False,
@@ -67,6 +68,7 @@ class TransformerModule(nn.Module):
         verbose: bool = False,
         weight_mvc: float = 1.0,
         weight_contrastive: float = 1.0,
+        weight_mmd: float = 1.0,
         weight_paired: float = 1.0,
         weight_agg: float = 1.0,
         weight_dat: float = 1.0,
@@ -119,6 +121,7 @@ class TransformerModule(nn.Module):
         self.max_seq_len = max_seq_len
         self.gen_method = gen_method
         self.contrastive = contrastive
+        self.mmd = mmd
         self.aggregation = aggregation
         self.agg_fn = agg_fn
         self.paired_alignment = paired_alignment
@@ -128,6 +131,7 @@ class TransformerModule(nn.Module):
         self.verbose = verbose
         self.weight_mvc = weight_mvc
         self.weight_contrastive = weight_contrastive
+        self.weight_mmd = weight_mmd
         self.weight_paired = weight_paired
         self.weight_agg = weight_agg
         self.weight_reconstruction = weight_reconstruction
@@ -957,6 +961,23 @@ class TransformerModule(nn.Module):
             loss = loss + self.weight_contrastive * loss_contrastive
             loss_dict["loss_contrastive"] = loss_contrastive.detach() * self.weight_contrastive
 
+        # MMD alignment loss: distribution-level matching of the real-bulk and
+        # pseudobulk embedding marginals via a mixture-of-RBF-kernels MMD. A
+        # non-adversarial complement/alternative to DAT that matches the whole
+        # distribution rather than just the means. Marginal-only, so — unlike the
+        # contrastive loss — it does not conflict with 1-to-1 pairing and runs on
+        # paired and unpaired batches alike.
+        if self.mmd and not skip_unified_losses:
+            embeddings = output_dict["embeddings"]
+            modalities = tensors["conditions"]["modality"]
+            assert len(embeddings) == len(
+                modalities
+            ), "Embeddings and modalities tensors must have the same batch size"
+
+            loss_mmd = self.modality_mmd_loss(embeddings, modalities)
+            loss = loss + self.weight_mmd * loss_mmd
+            loss_dict["loss_mmd"] = loss_mmd.detach() * self.weight_mmd
+
         # Paired alignment loss: MSE between matched bulk–pseudobulk–SC_mean CLS embeddings
         if self.paired_alignment and is_paired_batch and not skip_unified_losses:
             if self.verbose:
@@ -1171,6 +1192,90 @@ class TransformerModule(nn.Module):
     ) -> torch.Tensor:
         """MSE between CLS embeddings of matched bulk–pseudobulk pairs."""
         return F.mse_loss(pb_embs, bulk_embs)
+
+    def modality_mmd_loss(
+        self,
+        embeddings: torch.Tensor,
+        modalities: torch.Tensor,
+        use_cls_token: bool = True,
+    ) -> torch.Tensor:
+        """Maximum Mean Discrepancy between real-bulk and pseudobulk embeddings.
+
+        Distribution-level alignment of the pseudobulk (modality 2) and real-bulk
+        (modality 0) marginals in cell-embedding space — a stable, non-adversarial
+        alternative/complement to the DAT discriminator. Single-cell cells
+        (modality 1, incl. pseudobulk constituents) are ignored: MMD aligns only
+        the two bulk-level clouds.
+
+        References
+        ----------
+        Gretton et al., "A Kernel Two-Sample Test", JMLR 2012 (MMD estimator).
+        Long et al., "Learning Transferable Features with Deep Adaptation
+        Networks", ICML 2015 (multi-kernel MMD for domain adaptation).
+        Shaham et al., "Removal of batch effects using distribution-matching
+        residual networks", Bioinformatics 2017 (MMD for batch-effect removal).
+
+        Modality convention (from BulkSCCollator): 0 = real bulk, 2 = pseudobulk.
+
+        embeddings : (B, L, D) or (B, D)
+        modalities  : (B,)
+        """
+        # Reduce sequence dim → (B, D)
+        if embeddings.dim() == 3:
+            embeddings = embeddings[:, 0, :] if use_cls_token else embeddings.mean(dim=1)
+
+        assert embeddings.dim() == 2, f"Expected (B, D), got {embeddings.shape}"
+        assert modalities.dim() == 1, f"Expected (B,), got {modalities.shape}"
+
+        bulk_emb = embeddings[modalities == 0]   # (N0, D)
+        pb_emb   = embeddings[modalities == 2]   # (N2, D)
+
+        # MMD is undefined without both clouds; skip cleanly (keeps the graph intact).
+        if bulk_emb.size(0) < 1 or pb_emb.size(0) < 1:
+            return embeddings.new_zeros(())
+
+        return self._mmd_rbf(bulk_emb, pb_emb)
+
+    @staticmethod
+    def _mmd_rbf(
+        x: torch.Tensor,
+        y: torch.Tensor,
+        scales: tuple = (0.25, 0.5, 1.0, 2.0, 4.0),
+        eps: float = 1e-8,
+    ) -> torch.Tensor:
+        """Biased squared-MMD with a mixture of RBF kernels.
+
+        Bandwidths are set from the median pairwise squared distance of the pooled
+        sample (the median heuristic) times a range of ``scales``. Averaging over
+        several bandwidths makes the estimate far less sensitive to any single
+        bandwidth than a fixed-sigma kernel — the standard choice for MMD-based
+        domain adaptation. The biased V-statistic (diagonal included) is used: it
+        is non-negative for a valid kernel and smoother than the unbiased form,
+        which matters at the small per-modality batch sizes here.
+        """
+        xy = torch.cat([x, y], dim=0)
+        dist = torch.cdist(xy, xy) ** 2          # (N+M, N+M) squared distances
+        n = x.size(0)
+
+        # Median heuristic, detached: the bandwidth is a kernel hyperparameter,
+        # not a quantity to backpropagate through.
+        with torch.no_grad():
+            pos = dist[dist > 0]
+            median = pos.median() if pos.numel() > 0 else dist.new_tensor(1.0)
+
+        xx = dist[:n, :n]
+        yy = dist[n:, n:]
+        xy_block = dist[:n, n:]
+
+        mmd = x.new_zeros(())
+        for s in scales:
+            gamma = 1.0 / (2.0 * (s * median).clamp_min(eps))
+            k_xx = torch.exp(-gamma * xx).mean()
+            k_yy = torch.exp(-gamma * yy).mean()
+            k_xy = torch.exp(-gamma * xy_block).mean()
+            mmd = mmd + (k_xx + k_yy - 2.0 * k_xy)
+
+        return mmd / len(scales)
 
     def training_step(self, batch, batch_idx):
         """Performs a single training step (for PyTorch Lightning).

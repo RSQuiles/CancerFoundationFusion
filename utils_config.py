@@ -503,6 +503,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--mmd",
+        action="store_true",
+        help="Whether to include an MMD loss that aligns the real-bulk and pseudobulk embedding distributions (mixture-of-RBF-kernels Maximum Mean Discrepancy). A non-adversarial alternative/complement to DAT. Default is False.",
+    )
+
+    parser.add_argument(
         "--agg-consistency",
         action="store_true",
         help="Whether to include an aggregation consistency loss that encourages the pseudobulk embeddings to be similar to the aggregated embeddings of their constituent single-cell samples. Default is False.",
@@ -602,6 +608,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--loss-weight-mvc",            type=float, default=1.0, help="Weight for MVC loss.")
     parser.add_argument("--loss-weight-contrastive",    type=float, default=1.0, help="Weight for contrastive loss.")
+    parser.add_argument("--loss-weight-mmd",            type=float, default=1.0, help="Weight for MMD alignment loss.")
     parser.add_argument("--loss-weight-paired",         type=float, default=1.0, help="Weight for paired alignment loss.")
     parser.add_argument("--loss-weight-agg",            type=float, default=1.0, help="Weight for aggregation consistency loss.")
     parser.add_argument("--loss-weight-dat",            type=float, default=1.0, help="Weight for DAT condition loss.")

@@ -118,6 +118,7 @@ class CancerFoundation(pl.LightningModule):
         n_top_genes: int = 1200,
         # Unified FM parameters
         contrastive: bool = False,
+        mmd: bool = False,
         aggregation: bool = False,
         agg_fn: Optional[str] = None,
         noise: Optional[List[int]] = None,
@@ -129,6 +130,7 @@ class CancerFoundation(pl.LightningModule):
         verbose: bool = False,
         weight_mvc: float = 1.0,
         weight_contrastive: float = 1.0,
+        weight_mmd: float = 1.0,
         weight_paired: float = 1.0,
         weight_agg: float = 1.0,
         weight_dat: float = 1.0,
@@ -217,6 +219,7 @@ class CancerFoundation(pl.LightningModule):
 
         # Unified FM parameters
         self.contrastive = contrastive
+        self.mmd = mmd
         self.aggregation = aggregation
         self.agg_fn = agg_fn
         self.paired_alignment = paired_alignment
@@ -228,6 +231,7 @@ class CancerFoundation(pl.LightningModule):
         self.verbose = verbose
         self.weight_mvc = weight_mvc
         self.weight_contrastive = weight_contrastive
+        self.weight_mmd = weight_mmd
         self.weight_paired = weight_paired
         self.weight_agg = weight_agg
         self.weight_dat = weight_dat
@@ -369,6 +373,7 @@ class CancerFoundation(pl.LightningModule):
                 their_init_weights=self.their_init_weights,
                 # Unified FM parameters
                 contrastive=self.contrastive,
+                mmd=self.mmd,
                 aggregation=self.aggregation,
                 agg_fn=self.agg_fn,
                 paired_alignment=self.paired_alignment,
@@ -378,6 +383,7 @@ class CancerFoundation(pl.LightningModule):
                 verbose=self.verbose,
                 weight_mvc=self.weight_mvc,
                 weight_contrastive=self.weight_contrastive,
+                weight_mmd=self.weight_mmd,
                 weight_paired=self.weight_paired,
                 weight_agg=self.weight_agg,
                 weight_dat=self.weight_dat,
