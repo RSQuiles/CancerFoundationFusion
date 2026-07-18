@@ -171,6 +171,19 @@ def main(input_args=None):
         raise ValueError(
             "Aggregation consistency losses are only supported with unified_fm=True."
         )
+    if args.precomputed_pb and not args.unified:
+        raise ValueError("--precomputed-pb is only supported with --unified.")
+    if args.precomputed_pb and not args.pb_label:
+        raise ValueError(
+            "--precomputed-pb requires --pb-label (the modality label identifying the "
+            "precomputed pseudobulk rows in the memory-mapped dataset)."
+        )
+    if args.precomputed_pb and args.agg_consistency:
+        raise ValueError(
+            "--precomputed-pb is incompatible with --agg-consistency: precomputed "
+            "pseudobulk batches contain no constituent single cells to enforce "
+            "aggregation consistency against."
+        )
     if args.agg_consistency and not args.agg_fn:
         # Fallback to sum
         args.agg_fn = "sum"
@@ -242,6 +255,7 @@ def main(input_args=None):
         pb_group_column=args.pb_group_column,
         agg_consistency=args.agg_consistency,
         pb_label=args.pb_label,
+        precomputed_pb=args.precomputed_pb,
         paired_sampling=args.paired_sampling,
         paired_every_n=args.paired_every_n,
         paired_column=args.paired_column,

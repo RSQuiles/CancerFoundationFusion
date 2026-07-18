@@ -154,6 +154,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         pb_group_column: Optional[str] = None,
         agg_consistency: Optional[bool] = False,
         pb_label: Optional[str] = None,
+        precomputed_pb: bool = False,
         paired_sampling: bool = False,
         paired_every_n: int = 10,
         paired_column: Optional[str] = "paired",
@@ -189,6 +190,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         self.pb_group_column = pb_group_column
         self.agg_consistency = agg_consistency
         self.pb_label = pb_label
+        self.precomputed_pb = precomputed_pb
         self.paired_sampling = paired_sampling
         self.paired_every_n = paired_every_n
         self.paired_column = paired_column
@@ -287,6 +289,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                     n_sc_per_pb=self.hparams.n_sc_per_pseudobulk,
                     balance=self.balance,
                     epoch_size=self.epoch_size,
+                    precomputed_pb=self.precomputed_pb,
                     paired_sampling=self.paired_sampling,
                     paired_every_n=self.paired_every_n,
                     verbose=self.verbose,
@@ -369,6 +372,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                 pb_ratio=self.hparams.pb_ratio,
                 n_sc_per_pseudobulk=self.hparams.n_sc_per_pseudobulk,
                 agg_consistency=self.agg_consistency,
+                precomputed_pb=self.precomputed_pb,
                 paired_column="paired" if self.paired_sampling else None,
                 verbose=self.verbose,
             )

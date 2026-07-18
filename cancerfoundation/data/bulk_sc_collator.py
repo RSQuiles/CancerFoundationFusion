@@ -51,6 +51,7 @@ class BulkSCCollator(AnnDataCollator):
     aggregation: str = "sum"
     match_fn: Optional[Callable] = None
     agg_consistency: bool = False # Determines whether to include the sc_for_pb samples in the batch
+    precomputed_pb: bool = False  # Draw precomputed PB rows directly instead of aggregating SC on the fly
     paired_column: Optional[str] = None  # obs column carrying pair IDs; enables is_paired_batch detection
     input_data: Optional[str] = "counts" 
     verbose: bool = False
@@ -69,9 +70,14 @@ class BulkSCCollator(AnnDataCollator):
         self.n_bulk = round(self.batch_size * self.bulk_ratio)
         self.n_pb = round(self.batch_size * self.pb_ratio)
         self.n_sc = self.batch_size - self.n_bulk - self.n_pb
-        self.raw_batch_size = (
-            self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pseudobulk
-        )
+        # In --precomputed-pb mode each pseudobulk is a single precomputed row (passed
+        # through unchanged), so the raw batch is just n_sc + n_pb + n_bulk.
+        if self.precomputed_pb:
+            self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb
+        else:
+            self.raw_batch_size = (
+                self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pseudobulk
+            )
         # Paired batches carry n_sc_per_pseudobulk matched SC cells per pair
         # instead of the usual n_sc free SC cells.
         self.paired_batch_size = self.n_bulk + self.n_pb * (1 + self.n_sc_per_pseudobulk)
@@ -95,7 +101,17 @@ class BulkSCCollator(AnnDataCollator):
             )
 
     def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, Any]:
-        if len(examples) == self.raw_batch_size:
+        # A precomputed standard/class-aware batch: PB rows are drawn freely (some may
+        # carry nonzero pair IDs when paired_sampling is composed), so paired detection
+        # below is suppressed for it — genuine paired batches have paired_batch_size.
+        is_precomputed_batch = self.precomputed_pb and len(examples) == self.raw_batch_size
+        if is_precomputed_batch:
+            # Each pseudobulk is a single precomputed row that passes through unchanged
+            # (n_sc_per_pb == 1). Guarded ahead of the length checks below because
+            # raw_batch_size == batch_size in this mode.
+            n_sc_per_pb = 1
+            n_sc_actual = self.n_sc
+        elif len(examples) == self.raw_batch_size:
             n_sc_per_pb = self.n_sc_per_pseudobulk
             n_sc_actual = self.n_sc
         elif len(examples) == self.paired_batch_size:
@@ -131,7 +147,7 @@ class BulkSCCollator(AnnDataCollator):
         # The set-equality check below catches any future reordering before it silently
         # corrupts the loss; the element-wise check then confirms the invariant holds.
         is_paired = False
-        if self.paired_column is not None and n_sc_per_pb == 1:
+        if self.paired_column is not None and n_sc_per_pb == 1 and not is_precomputed_batch:
             pb_pair_ids   = [int(s.get(self.paired_column, 0)) for s in sc_for_pb_samples]
             bulk_pair_ids = [int(s.get(self.paired_column, 0)) for s in bulk_samples]
             nonzero_pb   = [p for p in pb_pair_ids   if p != 0]
@@ -153,11 +169,12 @@ class BulkSCCollator(AnnDataCollator):
         sc_pseudobulk_index: List[int] = []
         pseudobulk_sizes: List[int] = []
 
-        if is_paired:
+        if is_paired or self.precomputed_pb:
             # Precomputed PB rows pass through unchanged; no aggregation needed.
-            # Order matches bulk_samples because sample_paired_batch indexes both
-            # paired_pb_indices and paired_bulk_indices with the same pair_positions,
-            # so pseudobulk_samples[i] is guaranteed to be paired with bulk_samples[i].
+            # (Paired) order matches bulk_samples because sample_paired_batch indexes both
+            # paired_pb_indices and paired_bulk_indices with the same pair_positions, so
+            # pseudobulk_samples[i] is paired with bulk_samples[i]. In --precomputed-pb
+            # (non-paired) mode there is no pairing; each row is just a source pseudobulk.
             pseudobulk_samples = list(sc_for_pb_samples)
             pseudobulk_sizes = [1] * len(sc_for_pb_samples)
         else:
@@ -209,16 +226,19 @@ class BulkSCCollator(AnnDataCollator):
             unified_pseudobulk_index.append(pb_local)
             unified_is_sc_for_pb.append(0)
 
-        # 2 -> pseudobulk (aggregated SC or precomputed; real only when paired)
+        # 2 -> pseudobulk (aggregated SC, or precomputed rows when paired / precomputed_pb;
+        #                   real whenever the row is a precomputed one)
+        pb_is_real = 1 if (is_paired or self.precomputed_pb) else 0
         for pb_idx, sample in enumerate(pseudobulk_samples):
             unified_samples.append(sample)
             unified_modalities.append(2)
-            unified_is_real.append(1 if is_paired else 0)
+            unified_is_real.append(pb_is_real)
             unified_pseudobulk_index.append(pb_idx)
             unified_is_sc_for_pb.append(0)
 
-        # 3 (1) -> sc for pb
-        if self.agg_consistency and not is_paired:
+        # 3 (1) -> sc for pb (only for on-the-fly aggregation; precomputed PB rows have no
+        #          constituent SC cells in the batch, so aggregation consistency is off)
+        if self.agg_consistency and not is_paired and not self.precomputed_pb:
             for sc_idx, sample in enumerate(sc_for_pb_samples):
                 unified_samples.append(sample)
                 unified_modalities.append(1)

@@ -509,11 +509,18 @@ class CancerFoundation(pl.LightningModule):
         row_to_bulk_local = np.full(n_total, -1, dtype=np.int64)
         row_to_bulk_local[bulk_idx] = np.arange(n_bulk, dtype=np.int64)
 
-        # The CDD class space is what the SOURCE can supply: a class with no
-        # single-cell rows can never form a D(c,c') pair, whatever the bulk says.
-        sc_idx = np.asarray(getattr(dataset, "sc_indices", np.array([], dtype=np.int64)))
-        sc_tissue = {int(c) for c in tissue_arr[sc_idx]} if sc_idx.size else set()
-        class_ids = sorted(sc_tissue - exclude_set)
+        # The CDD class space is what the SOURCE can supply: a class the source cannot
+        # produce can never form a D(c,c') pair, whatever the bulk says. The source is the
+        # single cells normally, or the precomputed pseudobulk rows in --precomputed-pb
+        # mode — so the class space must be derived from whichever pool actually feeds the
+        # modality-2 (pseudobulk) half of the batch.
+        precomputed_pb = bool(getattr(dm, "precomputed_pb", False))
+        if precomputed_pb:
+            src_idx = np.asarray(getattr(dataset, "pb_indices", np.array([], dtype=np.int64)))
+        else:
+            src_idx = np.asarray(getattr(dataset, "sc_indices", np.array([], dtype=np.int64)))
+        src_tissue = {int(c) for c in tissue_arr[src_idx]} if src_idx.size else set()
+        class_ids = sorted(src_tissue - exclude_set)
         class_set = set(class_ids)
 
         # A bulk label is trusted only if it names a class in that space. Everything
@@ -589,14 +596,52 @@ class CancerFoundation(pl.LightningModule):
     def _refresh_source_means(self, core, dataset):
         """Estimate the source (pseudobulk) class means under the CURRENT weights.
 
-        Pseudobulks are aggregated on the fly from randomly drawn cells, so they are
-        re-drawn here rather than tracked with an EMA: an EMA would smear over both a
-        changing pseudobulk composition and a changing model state, and recluster()'s
-        offset correction is only valid if src_mean and bank_emb share one model state.
+        The source means seed the clustering's fallback centroids for tissues with no bulk
+        anchors, and recluster()'s offset correction is only valid if src_mean and bank_emb
+        come from one model state AND one source construction. So the means must be built
+        from whatever actually feeds the batch's pseudobulk half:
+
+        - default: pseudobulks aggregated on the fly from randomly drawn cells (re-drawn
+          here rather than EMA-tracked, which would smear over a changing composition);
+        - --precomputed-pb: the precomputed pseudobulk rows themselves, encoded directly.
         """
         collator = self._cdd_refresh_collator()
+        if collator is None:
+            return
+
+        # --precomputed-pb: encode precomputed PB rows directly (no SC aggregation). They
+        # already carry modality == pb_code in obs, so no modality override is needed.
+        precomputed_pb = bool(
+            getattr(getattr(self.trainer, "datamodule", None), "precomputed_pb", False)
+        )
+        if precomputed_pb:
+            pb_group_to_idx = getattr(dataset, "pb_group_to_indices", None)
+            if pb_group_to_idx is None:
+                return
+            # Seeded on the step alone: every rank shares global_step, so all ranks draw
+            # the same PB rows and derive identical centroids without communicating.
+            rng = np.random.default_rng(1234 + int(self.global_step))
+            cap = max(1, int(self.cdd_cluster_source_pb))
+            class_ids = core.cdd_class_ids.tolist()
+            means = torch.zeros_like(core.src_mean)
+            counts = torch.zeros_like(core.src_count)
+            for k, c in enumerate(class_ids):
+                pool = pb_group_to_idx.get(c)
+                if pool is None or len(pool) == 0:
+                    continue
+                n_take = min(len(pool), cap)
+                pick = rng.choice(len(pool), size=n_take, replace=False)
+                samples = [dataset[int(pool[j])] for j in pick]
+                feats = self._encode_rows(samples, collator)
+                if feats is None:
+                    continue
+                means[k] = F.normalize(feats.mean(0), dim=0).to(means.dtype)
+                counts[k] = len(samples)
+            core.set_source_means(means, counts)
+            return
+
         group_to_idx = getattr(dataset, "sc_group_to_indices", None)
-        if collator is None or group_to_idx is None:
+        if group_to_idx is None:
             return
         train_collator = getattr(self.trainer.train_dataloader, "collate_fn", None)
         if train_collator is None or not hasattr(train_collator, "_aggregate_sc"):

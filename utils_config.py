@@ -477,6 +477,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--precomputed-pb",
+        action="store_true",
+        help="Draw precomputed pseudobulk rows (modality --pb-label) directly for standard and class-aware CDD batches instead of aggregating single cells on the fly. Requires --unified and --pb-label; incompatible with --agg-consistency (there are no constituent SC cells in the batch to enforce aggregation consistency against). Default is False.",
+    )
+
+    parser.add_argument(
         "--paired-sampling",
         action="store_true",
         help="Whether to include periodic paired batches where each precomputed PB row is matched 1-to-1 with its corresponding bulk row. Requires --pb-label and a 'paired' obs column with integer pair IDs. Default is False.",
