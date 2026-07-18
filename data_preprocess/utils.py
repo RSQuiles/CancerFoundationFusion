@@ -1,9 +1,38 @@
 """
 Utilities for data preprocessing for unified pipeline:
 """
-def walk_tissue_names(check_fn, *args, precise=False, **kwargs):
-    """Return the first tissue category whose name or any subtissue matches check_fn."""
+
+# Tissue categories that do NOT correspond to a CellxGene `tissue_general` value
+# (the ones flagged "No direct CellxGene match — kept for bulk" in
+# `tissue_categories` below). When `cellxgene_only=True`, these are skipped so
+# only labels that exist in the CellxGene ontology can be assigned.
+NON_CELLXGENE_TISSUES = {
+    "intestine",
+    "esophagus",
+    "lymph node",
+    "thyroid",
+    "adrenal gland",
+    "uterus",
+    "vascular",
+    "nasal",
+    "oral cavity",
+}
+
+
+def walk_tissue_names(check_fn, *args, precise=False, cellxgene_only=False, **kwargs):
+    """Return the first tissue category whose name or any subtissue matches check_fn.
+
+    Args:
+        check_fn: Predicate called as ``check_fn(name, *args, **kwargs)`` returning
+            True when ``name`` matches the sample.
+        precise: If True, return the matching subtissue instead of its parent category.
+        cellxgene_only: If True, restrict assignable categories to those that map to a
+            CellxGene ``tissue_general`` value (skip everything in
+            ``NON_CELLXGENE_TISSUES``).
+    """
     for tissue, subtissues in tissue_categories.items():
+        if cellxgene_only and tissue in NON_CELLXGENE_TISSUES:
+            continue
         # Check the category name itself
         if check_fn(tissue, *args, **kwargs):
             return tissue
