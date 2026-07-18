@@ -182,6 +182,38 @@ def main(input_args=None):
         raise ValueError(
             "--esm-emb requires --esm-emb-path to point to the pretrained gene embedding parquet file."
         )
+    if args.cdd and not args.unified:
+        raise ValueError("The CDD loss (--cdd) is only supported with unified_fm=True.")
+    if args.cdd and args.cdd_class_column not in args.conditions:
+        raise ValueError(
+            f"--cdd-class-column '{args.cdd_class_column}' must be one of --conditions {args.conditions}."
+        )
+    if args.cdd_infer_labels and not args.cdd:
+        raise ValueError("--cdd-infer-labels requires --cdd.")
+    if args.cdd_class_aware and not args.pb_group_column:
+        raise ValueError("--cdd-class-aware requires --pb-group-column (the tissue column).")
+    if not 0.0 <= args.cdd_bulk_class_frac <= 1.0:
+        raise ValueError(
+            f"--cdd-bulk-class-frac must be in [0, 1], got {args.cdd_bulk_class_frac}."
+        )
+    # --cdd-class-aware composes with --paired-sampling: the sampler still yields a
+    # paired batch every paired_every_n steps and a class-aware batch otherwise.
+    # The CDD loss is computed only on the (class-aware) non-paired batches; paired
+    # batches use the paired alignment loss instead.
+
+    # CDD's warmup exists so the marginal MMD can pull the bulk and pseudobulk clouds
+    # together before the first clustering runs; without an aligner the warmup does
+    # nothing and the source-seeded centroids have no chance of competing. Enable MMD
+    # for that window if the user did not. It decays to --cdd-mmd-final-weight (0 by
+    # default) once the ramp completes, so an auto-enabled MMD turns itself back off.
+    cdd_source_fallback = not args.cdd_no_source_fallback
+    if args.cdd and args.cdd_cluster_warmup_steps > 0 and not args.mmd:
+        args.mmd = True
+        print(
+            f"[CDD] --mmd auto-enabled for the {args.cdd_cluster_warmup_steps}-step warmup "
+            f"(weight {args.loss_weight_mmd}), decaying to {args.cdd_mmd_final_weight} "
+            f"over the following {args.cdd_ramp_steps} steps as CDD ramps in."
+        )
 
     datamodule = BulkSCDataModule(
         data_path=args.train_path,
@@ -214,6 +246,10 @@ def main(input_args=None):
         paired_every_n=args.paired_every_n,
         paired_column=args.paired_column,
         verbose=args.verbose,
+        class_aware_cdd=args.cdd_class_aware,
+        cdd_exclude_labels=args.cdd_exclude_labels,
+        cdd_min_class_count=args.cdd_min_class_count,
+        cdd_bulk_class_frac=args.cdd_bulk_class_frac,
     )
     datamodule.setup(stage="fit")
 
@@ -299,6 +335,24 @@ def main(input_args=None):
         weight_dat=args.loss_weight_dat,
         weight_reconstruction=args.loss_weight_reconstruction,
         n_sc_per_pseudobulk=args.n_sc_per_pseudobulk,
+        # Contrastive Domain Discrepancy (CAN)
+        cdd=args.cdd,
+        weight_cdd=args.loss_weight_cdd,
+        cdd_class_column=args.cdd_class_column,
+        cdd_min_class_count=args.cdd_min_class_count,
+        cdd_exclude_labels=args.cdd_exclude_labels,
+        cdd_class_aware=args.cdd_class_aware,
+        cdd_infer_labels=args.cdd_infer_labels,
+        cdd_cluster_warmup_steps=args.cdd_cluster_warmup_steps,
+        cdd_cluster_interval=args.cdd_cluster_interval,
+        cdd_cluster_iters=args.cdd_cluster_iters,
+        cdd_cluster_ambiguity=args.cdd_cluster_ambiguity,
+        cdd_cluster_min_size=args.cdd_cluster_min_size,
+        cdd_relabel_known=args.cdd_relabel_known,
+        cdd_cluster_source_fallback=cdd_source_fallback,
+        cdd_cluster_source_pb=args.cdd_cluster_source_pb,
+        cdd_ramp_steps=args.cdd_ramp_steps,
+        cdd_mmd_final_weight=args.cdd_mmd_final_weight,
     )
 
     if args.pretrained:

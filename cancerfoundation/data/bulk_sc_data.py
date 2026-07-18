@@ -80,6 +80,10 @@ class BulkSCDataset(Dataset):
 
         self.verbose = verbose
         self.modality_column = modality_column
+        # Kept so consumers can resolve the pseudobulk modality code from the mapping
+        # (e.g. the CDD refresh pass, which synthesizes pseudobulk rows outside the
+        # collator and must tag them with the right modality).
+        self.pb_label = pb_label
         self.pb_group_column = pb_group_column
         self.paired_column = paired_column if (
             paired_column is not None and paired_column in self.obs.columns
@@ -140,8 +144,16 @@ class BulkSCDataset(Dataset):
                 for g in np.unique(sc_group_vals)
             }
             assert len(self.sc_group_to_indices) > 0, "No SC groups found"
+            # Bulk analog: group column value → bulk row indices. Enables
+            # class-aware CDD batches (same tissue in both bulk and pseudobulk).
+            bulk_group_vals = group_vals[self.bulk_indices]
+            self.bulk_group_to_indices: Optional[dict] = {
+                g: self.bulk_indices[bulk_group_vals == g]
+                for g in np.unique(bulk_group_vals)
+            }
         else:
             self.sc_group_to_indices = None
+            self.bulk_group_to_indices = None
 
         # Label categories for balanced sampling
         self.balance = balance
@@ -181,6 +193,9 @@ class BulkSCDataset(Dataset):
         data = {
             "expressions": torch.tensor(exp, dtype=torch.float32),
             "genes": torch.from_numpy(genes),
+            # Original dataset row index (Subset forwards it unchanged); used by the
+            # CDD target-label bank to look up per-bulk pseudo-labels.
+            "_row_index": int(index),
         }
 
         # Additional conditions input to model (e.g. tissue type)
@@ -369,6 +384,11 @@ class BulkSCSampler(Sampler[list[int]]):
         verbose: bool = False,
         seed: Optional[int] = None,
         world_size: int = 1,
+        class_aware_cdd: bool = False,
+        cdd_exclude_group_codes: Optional[list] = None,
+        cdd_min_class_count: int = 2,
+        n_cdd_classes: int = 8,
+        cdd_bulk_class_frac: float = 0.6,
     ):
         # Account for the Subset resulting from random_split.
         # SubsetReindexer builds a LUT once; each remap() call also returns a
@@ -388,6 +408,11 @@ class BulkSCSampler(Sampler[list[int]]):
                 if self.base_dataset.sc_group_to_indices is not None
                 else None
             )
+            self.bulk_group_to_indices = (
+                reindexer.remap_dict(self.base_dataset.bulk_group_to_indices)
+                if getattr(self.base_dataset, "bulk_group_to_indices", None) is not None
+                else None
+            )
             self.sc_pair_to_indices = (
                 reindexer.remap_dict(self.base_dataset.sc_pair_to_indices)
                 if getattr(self.base_dataset, "sc_pair_to_indices", None)
@@ -404,6 +429,7 @@ class BulkSCSampler(Sampler[list[int]]):
             self.sc_indices = self.dataset.sc_indices
             self.pb_indices = self.dataset.pb_indices
             self.sc_group_to_indices = self.base_dataset.sc_group_to_indices
+            self.bulk_group_to_indices = getattr(self.base_dataset, "bulk_group_to_indices", None)
             self.sc_pair_to_indices = getattr(self.base_dataset, "sc_pair_to_indices", {})
 
         # Pre-compute sorted group keys (drop any group that became empty after Subset)
@@ -413,6 +439,38 @@ class BulkSCSampler(Sampler[list[int]]):
             )
         else:
             self.sc_groups = None
+
+        # Class-aware CDD sampling: tissue groups present in BOTH the SC (source)
+        # and bulk (target) pools with enough samples, excluding non-tissue codes
+        # (e.g. "unknown"). When enabled, batches draw the same tissues in both
+        # domains so the CDD loss is non-trivial.
+        self.class_aware_cdd = class_aware_cdd
+        self.n_cdd_classes = n_cdd_classes
+        self.cdd_bulk_class_frac = min(max(cdd_bulk_class_frac, 0.0), 1.0)
+        self.cdd_min_class_count = cdd_min_class_count
+        self.cdd_exclude_group_codes = set(cdd_exclude_group_codes or ())
+        exclude_codes = self.cdd_exclude_group_codes
+        self.shared_groups = None
+        if class_aware_cdd:
+            if self.sc_group_to_indices is None or self.bulk_group_to_indices is None:
+                raise ValueError(
+                    "class_aware_cdd requires pb_group_column (tissue) so both SC and "
+                    "bulk group pools exist."
+                )
+            min_c = max(1, cdd_min_class_count)
+            self.shared_groups = sorted(
+                g for g in self.sc_groups
+                if g not in exclude_codes
+                and len(self.sc_group_to_indices.get(g, [])) >= min_c
+                and len(self.bulk_group_to_indices.get(g, [])) >= min_c
+            )
+            if len(self.shared_groups) == 0:
+                raise ValueError(
+                    "class_aware_cdd: no tissue is present in both bulk and SC pools "
+                    "with enough samples. Check the tissue labels / exclude list."
+                )
+            if self.verbose:
+                print(f"[CDD] class-aware sampling over {len(self.shared_groups)} shared tissues.")
 
         self.verbose = verbose
         self.world_size = max(1, world_size)
@@ -597,11 +655,16 @@ class BulkSCSampler(Sampler[list[int]]):
                         and self.paired_sampling \
                         and self.paired_pb_indices is not None
 
-            # Sample paired or unpaired batches            
+            # Batch constructor by priority: paired sampling (when scheduled) wins;
+            # otherwise class-aware sampling (if enabled) matches tissues across the
+            # bulk/pseudobulk halves for CDD; otherwise the standard batch. The CDD
+            # loss itself runs only on the non-paired batches (see module.forward).
             if is_paired:
                 if self.verbose:
                     print("Sampling paired batch!")
                 yield self.sample_paired_batch()
+            elif self.class_aware_cdd:
+                yield self.sample_class_aware_batch()
             else:
                 yield self.sample_standard_batch()
                 
@@ -698,6 +761,107 @@ class BulkSCSampler(Sampler[list[int]]):
             modality="bulk",
             balanced=self.sample_balanced,
         )
+
+        indices.extend(sc_idx)
+        indices.extend(pb_idx)
+        indices.extend(bulk_idx)
+        return indices
+
+    def refresh_cdd_labels(self, pseudo_label, row_to_bulk_local):
+        """Re-key the bulk tissue pools on the clustering's pseudo-labels.
+
+        Called after each clustering event. Without it, rows the clustering recovered
+        (formerly "unknown", or a tissue with no single-cell counterpart) stay
+        undrawable in the matched half below, because these pools would still be built
+        from the raw labels that marked them unusable in the first place.
+
+        ``pseudo_label`` is indexed by bank-local id and ``row_to_bulk_local`` by base
+        dataset row, so sampler-space indices are mapped through
+        ``subset_base_indices`` first. Rows still unassigned (-1) drop out of every
+        pool; they remain reachable through the free part of the bulk half.
+        """
+        if not self.class_aware_cdd or self.bulk_group_to_indices is None:
+            return
+        base = self.subset_base_indices[self.bulk_indices]
+        local = np.asarray(row_to_bulk_local)[base]
+        labels = np.where(local >= 0, np.asarray(pseudo_label)[np.clip(local, 0, None)], -1)
+
+        bulk_arr = np.asarray(self.bulk_indices)
+        new_pools = {
+            int(g): bulk_arr[labels == g] for g in np.unique(labels) if g >= 0
+        }
+        min_c = max(1, self.cdd_min_class_count)
+        new_shared = sorted(
+            g for g in self.sc_groups
+            if g not in self.cdd_exclude_group_codes
+            and len(self.sc_group_to_indices.get(g, [])) >= min_c
+            and len(new_pools.get(g, [])) >= min_c
+        )
+        # A degenerate clustering pass (e.g. everything filtered as ambiguous) must not
+        # leave the sampler with no tissue to draw; keep the previous pools instead.
+        if not new_shared:
+            if self.verbose:
+                print("[CDD] sampler pools NOT refreshed: no shared tissue survived.")
+            return
+        self.bulk_group_to_indices = new_pools
+        self.shared_groups = new_shared
+        if self.verbose:
+            print(
+                f"[CDD] sampler pools refreshed: {len(self.shared_groups)} shared "
+                f"tissues, {int((labels >= 0).sum())}/{len(labels)} bulk rows labelled."
+            )
+
+    def sample_class_aware_batch(self):
+        """Class-aware batch for CDD: the same K tissues are drawn in both the
+        pseudobulk (source) and bulk (target) halves, so the class-conditional
+        MMD has matched classes in both domains. Batch structure/order matches
+        sample_standard_batch: [sc..., sc_for_pb..., bulk...].
+
+        Only a fraction (cdd_bulk_class_frac) of the bulk slots is reserved for the
+        chosen tissues; the rest are drawn freely from ALL bulk. Reserving every slot
+        would mean bulk rows outside the shared tissues — "unknown" rows above all —
+        never appear in any batch, so they would receive no gradient from any loss and
+        never be embedded for the clustering that exists to recover them.
+        """
+        indices: list[int] = []
+
+        # Free SC filler (unchanged from the standard batch).
+        sc_idx = self.sample(
+            self.sc_indices, size=self.n_sc, modality="sc", balanced=self.sample_balanced,
+        )
+
+        # Pick K shared tissues for this batch and spread PBs/bulk across them.
+        K = min(self.n_cdd_classes, len(self.shared_groups))
+        chosen = self.rng.choice(self.shared_groups, size=K, replace=False)
+
+        # Pseudobulks: n_pb tissue-pure PBs distributed round-robin over the K tissues.
+        pb_groups = [chosen[i % K] for i in range(self.n_pb)]
+        pb_sc_indices: list[int] = []
+        for g in pb_groups:
+            pb_sc_indices.extend(list(self.sample(
+                self.sc_group_to_indices[g], size=self.n_sc_per_pb, modality="pb", balanced=False,
+            )))
+        pb_idx = np.array(pb_sc_indices)
+
+        # Bulk: a matched part over the SAME K tissues (so CDD sees paired classes),
+        # plus a free part over all bulk (so every bulk row still trains).
+        n_matched = int(round(self.n_bulk * self.cdd_bulk_class_frac))
+        n_free = self.n_bulk - n_matched
+        bulk_sel: list[int] = []
+        if n_matched > 0:
+            bulk_groups = [chosen[i % K] for i in range(n_matched)]
+            bulk_counts: dict = {}
+            for g in bulk_groups:
+                bulk_counts[g] = bulk_counts.get(g, 0) + 1
+            for g, cnt in bulk_counts.items():
+                bulk_sel.extend(list(self.sample(
+                    self.bulk_group_to_indices[g], size=cnt, modality="bulk", balanced=False,
+                )))
+        if n_free > 0:
+            bulk_sel.extend(list(self.sample(
+                self.bulk_indices, size=n_free, modality="bulk", balanced=self.sample_balanced,
+            )))
+        bulk_idx = np.array(bulk_sel)
 
         indices.extend(sc_idx)
         indices.extend(pb_idx)

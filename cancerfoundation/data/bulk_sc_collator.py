@@ -259,6 +259,11 @@ class BulkSCCollator(AnnDataCollator):
         )  # similar to above, but for all samples in the batch
         data_dict["pseudobulk_sizes"] = torch.LongTensor(pseudobulk_sizes)
         data_dict["is_paired_batch"] = torch.tensor(is_paired, dtype=torch.bool)
+        # Original dataset row index per sample (-1 for aggregated pseudobulk). Used
+        # by the CDD target-label bank to map bulk rows to their pseudo-labels.
+        data_dict["row_index"] = torch.LongTensor(
+            [int(s.get("_row_index", -1)) for s in unified_samples]
+        )
 
         return data_dict
 
