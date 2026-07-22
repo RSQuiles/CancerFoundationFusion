@@ -6,6 +6,16 @@ import torch
 
 from cancerfoundation.data.data_collator import AnnDataCollator
 
+# Canonical model-facing modality codes. These are the values served to the model
+# in ``conditions["modality"]`` and compared against by every modality-aware loss —
+# they are deliberately decoupled from the stored ``mapping.json`` codes (which only
+# select row pools). Any code path that hands rows to the model outside this collator
+# (e.g. the CDD clustering refresh) must stamp these, not the raw stored codes, or the
+# modality condition token — and thus the embeddings — will disagree with training.
+BULK_MODALITY = 0
+SC_MODALITY = 1
+PB_MODALITY = 2
+
 
 @dataclass
 class BulkSCCollator(AnnDataCollator):
@@ -207,7 +217,7 @@ class BulkSCCollator(AnnDataCollator):
         # 0 -> real bulk
         for sample in bulk_samples:
             unified_samples.append(sample)
-            unified_modalities.append(0)
+            unified_modalities.append(BULK_MODALITY)
             unified_is_real.append(1)
             unified_pseudobulk_index.append(-1)
             unified_is_sc_for_pb.append(0)
@@ -216,7 +226,7 @@ class BulkSCCollator(AnnDataCollator):
         #            sample_pseudobulk_index carries the local PB index when matched)
         for sc_idx, sample in enumerate(sc_samples):
             unified_samples.append(sample)
-            unified_modalities.append(1)
+            unified_modalities.append(SC_MODALITY)
             unified_is_real.append(1)
             if pb_pair_id_to_local:
                 pid = int(sample.get(self.paired_column, 0))
@@ -231,7 +241,7 @@ class BulkSCCollator(AnnDataCollator):
         pb_is_real = 1 if (is_paired or self.precomputed_pb) else 0
         for pb_idx, sample in enumerate(pseudobulk_samples):
             unified_samples.append(sample)
-            unified_modalities.append(2)
+            unified_modalities.append(PB_MODALITY)
             unified_is_real.append(pb_is_real)
             unified_pseudobulk_index.append(pb_idx)
             unified_is_sc_for_pb.append(0)
@@ -241,7 +251,7 @@ class BulkSCCollator(AnnDataCollator):
         if self.agg_consistency and not is_paired and not self.precomputed_pb:
             for sc_idx, sample in enumerate(sc_for_pb_samples):
                 unified_samples.append(sample)
-                unified_modalities.append(1)
+                unified_modalities.append(SC_MODALITY)
                 unified_is_real.append(1)
                 unified_pseudobulk_index.append(sc_pseudobulk_index[sc_idx])
                 unified_is_sc_for_pb.append(1)

@@ -1333,6 +1333,20 @@ class TransformerModule(nn.Module):
         return self._mmd_rbf(bulk_emb, pb_emb)
 
     @staticmethod
+    def _pairwise_sq_dists(xy: torch.Tensor) -> torch.Tensor:
+        """Pairwise squared Euclidean distances via the Gram identity.
+
+        Avoids ``torch.cdist``, whose p=2 backward divides by the distance and so
+        returns NaN gradients at zero distance — and the diagonal of
+        ``cdist(xy, xy)`` is always exactly zero (as is any pair of coincident
+        embeddings). ``‖a-b‖² = ‖a‖² + ‖b‖² - 2·a·bᵀ`` never takes a square root,
+        keeping gradients finite; clamp at 0 to absorb float round-off.
+        """
+        sq = (xy * xy).sum(dim=1, keepdim=True)          # (N, 1)
+        dist = sq + sq.t() - 2.0 * (xy @ xy.t())
+        return dist.clamp_min(0.0)
+
+    @staticmethod
     def _mmd_rbf(
         x: torch.Tensor,
         y: torch.Tensor,
@@ -1350,7 +1364,7 @@ class TransformerModule(nn.Module):
         which matters at the small per-modality batch sizes here.
         """
         xy = torch.cat([x, y], dim=0)
-        dist = torch.cdist(xy, xy) ** 2          # (N+M, N+M) squared distances
+        dist = TransformerModule._pairwise_sq_dists(xy)  # (N+M, N+M) squared distances
         n = x.size(0)
 
         # Median heuristic, detached: the bandwidth is a kernel hyperparameter,
@@ -1454,7 +1468,7 @@ class TransformerModule(nn.Module):
 
         # Shared multi-RBF kernel over the pooled source+target sample.
         xy = torch.cat([source_emb, target_emb], dim=0)
-        dist_all = torch.cdist(xy, xy) ** 2
+        dist_all = self._pairwise_sq_dists(xy)
         with torch.no_grad():
             pos = dist_all[dist_all > 0]
             median = pos.median() if pos.numel() > 0 else dist_all.new_tensor(1.0)

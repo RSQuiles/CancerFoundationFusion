@@ -184,6 +184,19 @@ def main(input_args=None):
             "pseudobulk batches contain no constituent single cells to enforce "
             "aggregation consistency against."
         )
+    if args.paired_sampling and not args.unified:
+        raise ValueError(
+            "--paired-sampling is only supported with --unified: the paired alignment "
+            "loss matches rows by their modality, which is injected into the "
+            "conditions only in unified mode."
+        )
+    if args.paired_sampling and not args.pb_label:
+        raise ValueError(
+            "--paired-sampling requires --pb-label: paired batches match a precomputed "
+            "pseudobulk row to a bulk row by shared pair id, so the dataset must contain "
+            "precomputed pseudobulk rows identified by --pb-label. Without them no paired "
+            "batch can be formed."
+        )
     if args.agg_consistency and not args.agg_fn:
         # Fallback to sum
         args.agg_fn = "sum"

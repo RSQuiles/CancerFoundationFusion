@@ -114,7 +114,7 @@ class BulkSCDataset(Dataset):
         assert len(self.bulk_indices) > 0, "No bulk samples found"
         assert len(self.sc_indices) > 0, "No SC samples found"
 
-        # Precomputed pseudobulk rows (optional — only present when paired data exists)
+        # Precomputed pseudobulk rows (optional — always present when paired data exists)
         if pb_label is not None and pb_label in self.mapping.get(modality_column, {}):
             pb_code = self.mapping[modality_column][pb_label]
             self.pb_indices = np.where(modality_vals == pb_code)[0]
@@ -624,41 +624,57 @@ class BulkSCSampler(Sampler[list[int]]):
         self.paired_common_ids: Optional[np.ndarray] = None
 
         if paired_sampling:
+            # paired_sampling was explicitly requested, so a dataset that cannot form
+            # paired batches is a misconfiguration — fail loudly rather than silently
+            # training without any paired batch.
             paired_col_name = self.base_dataset.paired_column
             if len(self.pb_indices) == 0:
-                print("Warning: paired_sampling=True but no precomputed PB rows — paired batches will be skipped.")
-            elif paired_col_name is None:
-                print("Warning: paired_sampling=True but 'paired' column missing from obs — paired batches will be skipped.")
-            else:
-                # Access via pre-extracted _obs_arrays; index by base (obs-row) positions
-                paired_arr = self.base_dataset._obs_arrays[paired_col_name]
-                pb_pair_ids   = paired_arr[self.subset_base_indices[self.pb_indices]]
-                bulk_pair_ids = paired_arr[self.subset_base_indices[self.bulk_indices]]
+                raise ValueError(
+                    "paired_sampling=True but the dataset has no precomputed pseudobulk "
+                    "rows (check --pb-label and that the memory-mapped store actually "
+                    "contains rows with that modality code). Paired batches pair a "
+                    "precomputed PB row to a bulk row, so none can be formed."
+                )
+            if paired_col_name is None:
+                raise ValueError(
+                    "paired_sampling=True but the 'paired' column is missing from obs "
+                    "(expected column: "
+                    f"{self.base_dataset.paired_column!r}). Paired batches are matched by "
+                    "shared pair id, which this column supplies."
+                )
+            # Access via pre-extracted _obs_arrays; index by base (obs-row) positions
+            paired_arr = self.base_dataset._obs_arrays[paired_col_name]
+            pb_pair_ids   = paired_arr[self.subset_base_indices[self.pb_indices]]
+            bulk_pair_ids = paired_arr[self.subset_base_indices[self.bulk_indices]]
 
-                # Build pair-id → subset-local index lookup (1-to-1; last writer wins for duplicates)
-                pb_by_id = {
-                    int(pid): int(lidx)
-                    for lidx, pid in zip(self.pb_indices, pb_pair_ids)
-                    if pid != 0
-                }
-                bulk_by_id = {
-                    int(pid): int(lidx)
-                    for lidx, pid in zip(self.bulk_indices, bulk_pair_ids)
-                    if pid != 0
-                }
+            # Build pair-id → subset-local index lookup (1-to-1; last writer wins for duplicates)
+            pb_by_id = {
+                int(pid): int(lidx)
+                for lidx, pid in zip(self.pb_indices, pb_pair_ids)
+                if pid != 0
+            }
+            bulk_by_id = {
+                int(pid): int(lidx)
+                for lidx, pid in zip(self.bulk_indices, bulk_pair_ids)
+                if pid != 0
+            }
 
-                common_ids = sorted(set(pb_by_id) & set(bulk_by_id))
-                if common_ids:
-                    self.paired_pb_indices = np.array(
-                        [pb_by_id[k] for k in common_ids], dtype=np.int64
-                    )
-                    self.paired_bulk_indices = np.array(
-                        [bulk_by_id[k] for k in common_ids], dtype=np.int64
-                    )
-                    self.paired_common_ids = np.array(common_ids, dtype=np.int64)
-                    print(f"Paired sampling: {len(common_ids)} PB–bulk pairs found.")
-                else:
-                    print("Warning: no matching pair IDs between PB and bulk rows — paired batches will be skipped.")
+            common_ids = sorted(set(pb_by_id) & set(bulk_by_id))
+            if not common_ids:
+                raise ValueError(
+                    "paired_sampling=True but no pair id is shared between the "
+                    "precomputed pseudobulk rows and the bulk rows, so no PB–bulk pair "
+                    "can be formed. Check that the 'paired' column is populated "
+                    "consistently across both modalities."
+                )
+            self.paired_pb_indices = np.array(
+                [pb_by_id[k] for k in common_ids], dtype=np.int64
+            )
+            self.paired_bulk_indices = np.array(
+                [bulk_by_id[k] for k in common_ids], dtype=np.int64
+            )
+            self.paired_common_ids = np.array(common_ids, dtype=np.int64)
+            print(f"Paired sampling: {len(common_ids)} PB–bulk pairs found.")
 
     def _build_klass_tensors(
         self, labels: np.ndarray

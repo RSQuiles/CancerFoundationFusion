@@ -620,6 +620,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="MMD weight after the CDD ramp completes. During warmup MMD runs at --loss-weight-mmd to pull the bulk/pseudobulk clouds together, then hands over to CDD. NOTE: this applies whenever --cdd is set, INCLUDING an explicitly passed --mmd, so --mmd --cdd decays MMD to 0 unless you set this. Ignored without --cdd. Default 0.0.",
     )
 
+    # ------------------------------------------------------------------
+    # Additional losses for the unified model: aggregation consistency, 
+    # balanced sampling, and domain adversarial training (DAT)
+    # ------------------------------------------------------------------
+
     parser.add_argument(
         "--agg-consistency",
         action="store_true",

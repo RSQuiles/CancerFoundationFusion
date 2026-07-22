@@ -10,6 +10,7 @@ import scanpy as sc
 from cancerfoundation.model.perturbation_model import PerturbationTransformer
 from cancerfoundation.utils import load_pretrained
 from cancerfoundation.model.module import TransformerModule
+from cancerfoundation.data.bulk_sc_collator import BULK_MODALITY, PB_MODALITY
 from cancerfoundation.data.preprocess import binning
 from cancerfoundation.loss import get_loss
 from safetensors import safe_open
@@ -584,7 +585,16 @@ class CancerFoundation(pl.LightningModule):
         bulk_idx = np.asarray(dataset.bulk_indices)
         # row_to_bulk_local maps dataset.bulk_indices[k] -> k, so iterating in this
         # order yields bank-local ids 0..n_bulk-1 and needs no index plumbing.
-        samples = [dataset[int(i)] for i in bulk_idx]
+        # Stamp the canonical bulk modality (not the raw mapping code): this plain
+        # collator does not apply BulkSCCollator's modality override, so without this
+        # the condition token — and thus the bank embeddings — would disagree with the
+        # training path whenever preprocessing did not encode bulk as code 0.
+        modality_col = dataset.modality_column
+        samples = []
+        for i in bulk_idx:
+            s = dataset[int(i)]
+            s[modality_col] = BULK_MODALITY
+            samples.append(s)
         feats = self._encode_rows(samples, collator)
         if feats is None:
             return False
@@ -609,8 +619,10 @@ class CancerFoundation(pl.LightningModule):
         if collator is None:
             return
 
-        # --precomputed-pb: encode precomputed PB rows directly (no SC aggregation). They
-        # already carry modality == pb_code in obs, so no modality override is needed.
+        # --precomputed-pb: encode precomputed PB rows directly (no SC aggregation).
+        # They carry the raw mapping pb_code in obs; stamp the canonical PB modality
+        # below so the condition token matches the training path regardless of how
+        # preprocessing encoded modality.
         precomputed_pb = bool(
             getattr(getattr(self.trainer, "datamodule", None), "precomputed_pb", False)
         )
@@ -632,6 +644,8 @@ class CancerFoundation(pl.LightningModule):
                 n_take = min(len(pool), cap)
                 pick = rng.choice(len(pool), size=n_take, replace=False)
                 samples = [dataset[int(pool[j])] for j in pick]
+                for s in samples:
+                    s[dataset.modality_column] = PB_MODALITY
                 feats = self._encode_rows(samples, collator)
                 if feats is None:
                     continue
@@ -648,12 +662,10 @@ class CancerFoundation(pl.LightningModule):
             return
 
         modality_col = getattr(dataset, "modality_column", None)
-        pb_label = getattr(dataset, "pb_label", None)
-        if modality_col is None or pb_label is None:
+        if modality_col is None:
             return
-        pb_code = dataset.mapping.get(modality_col, {}).get(pb_label)
-        if pb_code is None:
-            return
+        # On-the-fly aggregation needs no precomputed PB rows (no pb_label lookup): the
+        # rows are synthesized here and stamped with the canonical PB modality below.
 
         n_per_pb = train_collator.n_sc_per_pseudobulk
         # Seeded on the step alone: every rank shares global_step, so all ranks draw
@@ -678,9 +690,10 @@ class CancerFoundation(pl.LightningModule):
                 train_collator._fill_missing_conditions(pb, chunk)
                 # _fill_missing_conditions copies conditions from the constituent SC
                 # cells, so modality would come out as "sc". In the training path the
-                # collator assigns modality separately; here it must be set explicitly,
-                # or the condition token would encode these as single cells.
-                pb[modality_col] = pb_code
+                # collator assigns modality separately; here it must be set explicitly
+                # to the canonical PB code (matching training), or the condition token
+                # would encode these as single cells.
+                pb[modality_col] = PB_MODALITY
                 pb_samples.append(pb)
             feats = self._encode_rows(pb_samples, collator)
             if feats is None:
