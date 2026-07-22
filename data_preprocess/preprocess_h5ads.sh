@@ -20,10 +20,12 @@ for arg in "$@"; do
 done
 
 SCRIPT_ARGS=(
-    --h5ad-path /cluster/work/boeva/rquiles/data/bulk_counts
-    --data-path /cluster/work/boeva/rquiles/data/bulk_counts/pipeline_ready
-    --obs-columns tissue_general assay
+    --h5ad-path /cluster/work/boeva/rquiles/data/eheiss_RAW_paired
+    --data-path /cluster/work/boeva/rquiles/data/eheiss_RAW_paired/pipeline_ready
+    --obs-columns tissue_general
 )
+
+# --obs-columns tissue_general assay
 
 if [[ "$USE_LOCAL" -eq 1 ]]; then
     echo "Running locally (no singularity)"

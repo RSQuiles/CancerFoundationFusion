@@ -284,14 +284,20 @@ def _set_h5ad_index(h5ads: Path, var_field: str = "feature_id") -> None:
             print(f"Skipped {path.name}")
 
 def _generate_vocab_from_h5ads(
-    h5ads: Path, cls_token: str, pad_token: str
+    h5ads: Path, cls_token: str, pad_token: str, intersect: bool=True
 ) -> dict[str, int]:
-    genes = set()
+    if intersect:
+        genes = None
+    else:
+        genes = set()
     for path in h5ads.iterdir():
         if not path.name.endswith(".h5ad"):
             continue
-        var_names = read_anndata(path).var_names
-        genes.update(var_names)
+        if intersect:
+            genes = var_names if genes is None else genes & var_names
+        else:
+            var_names = read_anndata(path).var_names
+            genes.update(var_names)
     vocab = {gene: i for i, gene in enumerate([cls_token, pad_token] + list(genes))}
     return vocab
 
@@ -409,7 +415,7 @@ def main(args):
 
     data_path = DatasetDir(args.data_path)
     data_path.mkdir()
-    # Generate and save vocabularyº
+    # Generate and save vocabulary
     if args.vocab_path is None:
         if args.update_index is not None:
             print("Setting h5ad index to gene names...")
