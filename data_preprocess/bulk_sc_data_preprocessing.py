@@ -409,7 +409,7 @@ def main(args):
 
     data_path = DatasetDir(args.data_path)
     data_path.mkdir()
-    # Generate and save vocabularyº
+    # Generate and save vocabulary
     if args.vocab_path is None:
         if args.update_index is not None:
             print("Setting h5ad index to gene names...")

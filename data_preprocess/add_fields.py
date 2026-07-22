@@ -36,6 +36,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 from scipy.spatial.distance import cdist
+import scipy.sparse as sp
 
 from utils import walk_tissue_names
 
@@ -122,37 +123,63 @@ def compute_embedding(
     n_top_genes: int = 2000,
     n_pcs: int = 50,
     normalize: bool = True,
+    do_umap: bool = False,
 ) -> bool:
-    """Compute PCA/UMAP (+ Leiden) on a copy and stash coords on ``adata.obsm``.
+    """Compute a PCA embedding and stash ``X_pca`` on ``adata.obsm``.
 
-    Returns True on success, False if the embedding could not be built.
+    Kept memory-light for large datasets: highly variable genes are selected and
+    the matrix is subset to them *before* any dense operation, PCA runs directly
+    on the sparse HVG matrix (no ``scale`` densification), and the UMAP/Leiden
+    graph is only built when ``do_umap`` is set. Returns True on success.
     """
     if adata.n_obs < 3 or adata.n_vars < 2:
+        print("    [embed] too few cells/genes for an embedding; skipping")
         return False
+
+    if sp.issparse(adata.X):
+        adata.X = adata.X.tocsr()
+        adata.X.indices = adata.X.indices.astype(np.int64, copy=False)
+        adata.X.indptr = adata.X.indptr.astype(np.int64, copy=False)
     try:
-        emb = adata.copy()
-        if normalize and "log1p" not in emb.uns:
-            sc.pp.normalize_total(emb, target_sum=1e4)
-            sc.pp.log1p(emb)
-        n_top = min(n_top_genes, emb.n_vars)
-        sc.pp.highly_variable_genes(emb, n_top_genes=n_top, subset=True)
-        sc.pp.scale(emb, max_value=10)
-        n_comps = min(n_pcs, emb.n_vars - 1, emb.n_obs - 1)
-        sc.tl.pca(emb, n_comps=n_comps)
-        adata.obsm["X_pca"] = emb.obsm["X_pca"]
-        # UMAP + clustering: requested for the fill step / downstream inspection,
-        # but non-fatal if the optional deps are missing.
-        try:
-            sc.pp.neighbors(emb)
-            sc.tl.umap(emb)
-            adata.obsm["X_umap"] = emb.obsm["X_umap"]
-            sc.tl.leiden(emb)
-            adata.obs["leiden"] = emb.obs["leiden"].values
-        except Exception as e:  # noqa: BLE001
-            print(f"  UMAP/Leiden step skipped ({e})")
+        print(f"    [embed] copying matrix ({adata.n_obs} x {adata.n_vars})...", flush=True)
+        # work = adata.copy()
+        work = adata
+        # Select HVGs and subset in the same pass, so nothing downstream ever
+        # operates at full gene width.
+        n_top = min(n_top_genes, work.n_vars)
+        if normalize:
+            print("    [embed] Normalizing before embedding with flavor=seurat!", flush=True)
+            # sc.pp.normalize_total(work, target_sum=1e4)
+            sc.pp.log1p(work)
+            sc.pp.highly_variable_genes(work, n_top_genes=n_top, subset=True, flavor="seurat")
+        else:
+            print("    [embed] seurat_v3 HVGs on raw counts, then log1p", flush=True)
+            sc.pp.highly_variable_genes(work, n_top_genes=n_top, flavor="seurat_v3", subset=True)
+            sc.pp.log1p(work)
+        print(f"    [embed] subset to {work.n_vars} HVGs", flush=True)
+        # PCA directly on the sparse HVG matrix. zero_center=False uses truncated
+        # SVD, which keeps the input sparse instead of allocating a dense copy.
+        n_comps = min(n_pcs, work.n_vars - 1, work.n_obs - 1)
+        print(f"    [embed] PCA ({n_comps} comps, sparse/truncated-SVD)...", flush=True)
+        sc.tl.pca(work, n_comps=n_comps, zero_center=False)
+        adata.obsm["X_pca"] = work.obsm["X_pca"]
+        print("    [embed] X_pca ready", flush=True)
+        # UMAP + clustering: opt-in (heavy on large data, unused by the centroid
+        # fill), and non-fatal if the optional deps are missing.
+        if do_umap:
+            try:
+                print("    [embed] neighbors + UMAP + Leiden...", flush=True)
+                sc.pp.neighbors(work)
+                sc.tl.umap(work)
+                adata.obsm["X_umap"] = work.obsm["X_umap"]
+                sc.tl.leiden(work)
+                adata.obs["leiden"] = work.obs["leiden"].values
+                print("    [embed] X_umap + leiden ready", flush=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"    [embed] UMAP/Leiden step skipped ({e})", flush=True)
         return True
     except Exception as e:  # noqa: BLE001
-        print(f"  Embedding failed, skipping centroid fill ({e})")
+        print(f"    [embed] embedding failed, skipping centroid fill ({e})", flush=True)
         return False
 
 
@@ -297,7 +324,7 @@ def main(args):
             tissue_fill=args.tissue_fill,
             fill_threshold=args.tissue_fill_threshold,
             fill_rep=args.tissue_fill_rep,
-            fill_normalize=not args.tissue_fill_lognorm,
+            fill_normalize=args.tissue_fill_lognorm,
         )
         adata.write_h5ad(out_file)
         print(f"      -> wrote {out_file}")
@@ -383,7 +410,7 @@ def get_args():
     parser.add_argument(
         "--tissue-fill-lognorm",
         action="store_true",
-        help="Input X is already log-normalized; skip normalize_total+log1p before embedding",
+        help="Whether to apply normalize_total+log1p before embedding",
     )
     parser.set_defaults(tissue_fill=True)
     return parser.parse_args()
