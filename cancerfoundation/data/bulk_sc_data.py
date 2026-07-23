@@ -529,7 +529,9 @@ class BulkSCSampler(Sampler[list[int]]):
         self.n_sc_per_pb = n_sc_per_pb
         # In --precomputed-pb mode each pseudobulk is a single precomputed row (no
         # n_sc_per_pb blow-up), so the raw batch is just n_sc + n_pb + n_bulk.
-        if precomputed_pb:
+        if self.precomputed_pb:
+            if self.verbose:
+                print("[PSEUDOBULK] Using precomputed pseudobulks!")
             self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb
         else:
             self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pb

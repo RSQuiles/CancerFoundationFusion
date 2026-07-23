@@ -293,10 +293,10 @@ def _generate_vocab_from_h5ads(
     for path in h5ads.iterdir():
         if not path.name.endswith(".h5ad"):
             continue
+        var_names = read_anndata(path).var_names
         if intersect:
-            genes = var_names if genes is None else genes & var_names
+            genes = set(var_names) if genes is None else genes & set(var_names)
         else:
-            var_names = read_anndata(path).var_names
             genes.update(var_names)
     vocab = {gene: i for i, gene in enumerate([cls_token, pad_token] + list(genes))}
     return vocab

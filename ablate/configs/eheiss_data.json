@@ -25,9 +25,10 @@
       "train_path": "/cluster/work/boeva/rquiles/data/eheiss_RAW/pipeline_ready",
       "conditions": ["tissue_general"],
       "zero_percentages": [0.2, 0.4, 0.6],
-      "bulk_ratio": 0.3,
-      "pb_ratio": 0.3,
+      "bulk_ratio": 0.4,
+      "pb_ratio": 0.4,
       "precomputed_pb": true,
+      "pb_group_column": "tissue_general",
       "trunc_by_sample": true,
       "balanced_sampler": true,
       "balanced_labels": ["tissue_general"]
@@ -51,10 +52,12 @@
     },
     "features": {
       "unified": true,
-      "loss_weight_paired": 100,
-      "loss_weight_dat": 100,
-      "loss_weight_agg": 10,
-      "loss_weight_reconstruction": 10
+      "loss_weight_paired": 10,
+      "loss_weight_dat": 10,
+      "loss_weight_mmd": 1000,
+      "loss_weight_cdd": 1000,
+      "loss_weight_agg": 1,
+      "loss_weight_reconstruction": 1
     }
   },
   "base_overrides": {},
@@ -102,6 +105,23 @@
         "features": {
           "unified": true,
           "mmd": true
+        }
+      }
+    },
+    {
+      "name": "cdd",
+      "overrides": {
+        "trainer": {
+          "save_dir": "${work}/outputs/save_CFF/ablation_united_data/cdd",
+          "wandb_name": "cdd"
+        },
+        "data": {},
+        "model": {},
+        "features": {
+          "unified": true,
+          "cdd": true,
+          "cdd_class_aware": true,
+          "cdd_cluster_warmup_steps": 5000
         }
       }
     }

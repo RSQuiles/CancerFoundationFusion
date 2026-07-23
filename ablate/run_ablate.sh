@@ -1,4 +1,4 @@
 #!/bin/bash -l
 
 python -u ablate.py \
-	--config ./configs/paired_mix.json \
+	--config ./configs/eheiss_data.json \
