@@ -60,6 +60,11 @@ _SC_MODALITY_ALIASES: frozenset[str] = frozenset({
     "sc", "singlecell", "scrna", "scrnaseq",
 })
 
+# Modality aliases recognised as pseudobulk (precomputed or generated).
+_PB_MODALITY_ALIASES: frozenset[str] = frozenset({
+    "pseudobulk", "synthpb", "pairedpb", "pseudo",
+})
+
 
 # --------------------------------------------------------------------------- #
 # Checkpoint / model helpers
@@ -219,6 +224,24 @@ def _is_sc_modality(val: str) -> bool:
     """Return True if the modality string refers to single-cell data."""
     normalised = val.lower().replace(" ", "").replace("-", "").replace("_", "")
     return normalised in _SC_MODALITY_ALIASES or normalised.startswith("sc")
+
+
+def _is_pb_modality(val: str) -> bool:
+    """Return True if the modality string refers to pseudobulk data."""
+    normalised = val.lower().replace(" ", "").replace("-", "").replace("_", "")
+    return normalised in _PB_MODALITY_ALIASES or "pseudo" in normalised
+
+
+def _canonical_modality(val: str) -> str:
+    """Collapse a raw modality string to one of 'sc', 'pseudobulk', 'bulk'.
+
+    Pseudobulk is checked first so a 'pseudobulk' label is never mistaken for bulk.
+    """
+    if _is_pb_modality(val):
+        return "pseudobulk"
+    if _is_sc_modality(val):
+        return "sc"
+    return "bulk"
 
 
 def _assign_colors(
@@ -422,50 +445,121 @@ def save_umap_plot(
 # Modality-split UMAP helper
 # --------------------------------------------------------------------------- #
 
-def _plot_three_modality_umap(
+# Per-modality marker styling shared by the modality- and tissue-coloured panels.
+# Colour is only used by the modality panel; the tissue panel overrides it per point.
+_MODALITY_ORDER: tuple[str, ...] = ("sc", "pseudobulk", "bulk")
+_MODALITY_STYLE: dict[str, dict] = {
+    "sc":         dict(color="#4393c3", s=4,  marker="o", linewidths=0,   label="Single-cell"),
+    "pseudobulk": dict(color="#4dac26", s=30, marker="^", linewidths=0.5, edgecolors="black", label="Pseudobulk"),
+    "bulk":       dict(color="#d6604d", s=30, marker="D", linewidths=0.5, edgecolors="black", label="Bulk"),
+}
+
+
+def _scatter_by_modality(
+    ax,
+    coords: np.ndarray,
+    modality_vals: np.ndarray,
+    point_colors: np.ndarray | None = None,
+) -> None:
+    """Scatter sc/pseudobulk/bulk points with their per-modality marker styles.
+
+    When ``point_colors`` is None each modality uses its fixed palette colour
+    (modality panel). When given an (N, 4) RGBA array the marker colours are taken
+    from it per point (tissue panel), keeping the marker *shape* per modality.
+    """
+    for mod in _MODALITY_ORDER:
+        mask = modality_vals == mod
+        if not mask.any():
+            continue
+        style = dict(_MODALITY_STYLE[mod])
+        if point_colors is not None:
+            style.pop("color", None)
+            style["c"] = point_colors[mask]
+        ax.scatter(
+            coords[mask, 0], coords[mask, 1],
+            alpha=0.4, rasterized=True, **style,
+        )
+
+
+def _plot_pseudobulk_figure(
     adata: sc.AnnData,
     title: str | None = None,
+    tissue_key: str | None = "tissue",
+    skip_unknown: bool = False,
 ) -> plt.Figure:
-    """UMAP coloured by modality only: single-cell, bulk, pseudobulk."""
+    """Pseudobulk UMAP figure: one modality-coloured panel, plus a tissue-coloured
+    panel when ``tissue_key`` is present in ``adata.obs``.
+
+    Both panels share the same layout and per-modality marker shapes (dots for SC,
+    triangles for pseudobulk, diamonds for bulk); the tissue panel recolours points
+    by tissue while keeping the shape encoding so modalities stay distinguishable.
+    """
     umap_coords = adata.obsm["X_umap"]
     modality_vals = adata.obs["modality"].astype(str).to_numpy()
 
-    sc_mask   = modality_vals == "sc"
-    bulk_mask = modality_vals == "bulk"
-    pb_mask   = modality_vals == "pseudobulk"
+    has_tissue = tissue_key is not None and tissue_key in adata.obs.columns
+    n_panels = 2 if has_tissue else 1
+    fig, axes = plt.subplots(1, n_panels, figsize=(7.0 * n_panels, 6.0), squeeze=False)
+    axes_flat = axes[0]
 
-    fig, ax = plt.subplots(figsize=(7.0, 6.0))
+    def _style_axes(ax, panel_title: str) -> None:
+        ax.set_xlabel("UMAP 1", fontsize=9)
+        ax.set_ylabel("UMAP 2", fontsize=9)
+        ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+        ax.set_title(panel_title, fontsize=10, fontweight="bold")
+        for spine in ("top", "right"):
+            ax.spines[spine].set_visible(False)
 
-    if sc_mask.any():
-        ax.scatter(
-            umap_coords[sc_mask, 0], umap_coords[sc_mask, 1],
-            color="#4393c3", s=4, marker="o", linewidths=0,
-            alpha=0.4, rasterized=True, label="Single-cell",
+    # Marker-shape handles reused for the modality legend on both panels.
+    modality_handles = [
+        mlines.Line2D(
+            [], [], linestyle="None", markersize=6, alpha=0.6,
+            marker=_MODALITY_STYLE[m]["marker"],
+            color=_MODALITY_STYLE[m]["color"],
+            markeredgecolor="black" if m != "sc" else _MODALITY_STYLE[m]["color"],
+            label=_MODALITY_STYLE[m]["label"],
         )
-    if pb_mask.any():
-        ax.scatter(
-            umap_coords[pb_mask, 0], umap_coords[pb_mask, 1],
-            color="#4dac26", s=30, marker="^", linewidths=0.5,
-            edgecolors="black", alpha=0.4, rasterized=True, label="Pseudobulk",
-        )
-    if bulk_mask.any():
-        ax.scatter(
-            umap_coords[bulk_mask, 0], umap_coords[bulk_mask, 1],
-            color="#d6604d", s=30, marker="D", linewidths=0.5,
-            edgecolors="black", alpha=0.4, rasterized=True, label="Bulk",
-        )
+        for m in _MODALITY_ORDER
+        if (modality_vals == m).any()
+    ]
 
-    ax.set_xlabel("UMAP 1", fontsize=9)
-    ax.set_ylabel("UMAP 2", fontsize=9)
-    ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
-    for spine in ("top", "right"):
-        ax.spines[spine].set_visible(False)
-    ax.legend(
-        title="Modality", fontsize=8, title_fontsize=8,
+    # ── Panel 1: colour by modality ──────────────────────────────────────
+    ax0 = axes_flat[0]
+    _scatter_by_modality(ax0, umap_coords, modality_vals, point_colors=None)
+    _style_axes(ax0, "modality")
+    ax0.legend(
+        handles=modality_handles, title="Modality", fontsize=8, title_fontsize=8,
         loc="lower left", frameon=True, framealpha=0.9,
     )
+
+    # ── Panel 2: colour by tissue (shape still encodes modality) ─────────
+    if has_tissue:
+        ax1 = axes_flat[1]
+        tissue_col = adata.obs[tissue_key].astype(str)
+        point_colors, cat_colors, categories = _assign_colors(
+            tissue_col, skip_unknown=skip_unknown
+        )
+        _scatter_by_modality(ax1, umap_coords, modality_vals, point_colors=point_colors)
+        _style_axes(ax1, str(tissue_key))
+        if cat_colors and categories:
+            n_cats = len(categories)
+            leg_fontsize = 3 if n_cats > 50 else 5 if n_cats > 20 else 6
+            ncol = max(1, n_cats // 25)
+            tissue_legend = ax1.legend(
+                handles=[mpatches.Patch(color=cat_colors[c], label=c) for c in categories],
+                title=tissue_key, fontsize=leg_fontsize, title_fontsize=8,
+                loc="lower right", frameon=True, framealpha=0.85, ncol=ncol,
+                borderpad=0.5, labelspacing=0.3, handlelength=1.0,
+            )
+            ax1.add_artist(tissue_legend)  # pin so the modality legend doesn't overwrite
+        # Modality (shape) legend so triangles/diamonds/dots remain readable.
+        ax1.legend(
+            handles=modality_handles, title="Modality", fontsize=8, title_fontsize=8,
+            loc="lower left", frameon=True, framealpha=0.9,
+        )
+
     if title:
-        ax.set_title(title, fontsize=11, fontweight="bold")
+        fig.suptitle(title, fontsize=12, fontweight="bold", y=1.02)
     fig.tight_layout()
     return fig
 
@@ -484,17 +578,27 @@ def _save_pseudobulk_umap(
     flavor: str = "seurat",
     dpi: int = 200,
     use_sc: bool = False,
+    skip_unknown: bool = False,
 ) -> None:
     """Compute and save a UMAP with SC, bulk, and pseudobulk observations.
 
-    Two code paths:
+    Three code paths, tried in order of preference:
 
-    **Precomputed** (preferred): when ``adata.obs`` contains ``_eval_modality``
-    (written by ``build_eval_adata.py``), embeddings are read directly from
-    ``adata.obsm["X_cf"]`` — no model is needed and ``model`` may be ``None``.
+    **Eval-precomputed**: when ``adata.obs`` contains ``_eval_modality`` (written by
+    ``build_eval_adata.py``), embeddings are read directly from ``adata.obsm["X_cf"]``
+    using the ``synth_pb`` rows — no model needed (``model`` may be ``None``).
 
-    **Live**: ``model`` must be provided; pseudobulk profiles are generated from
-    SC expression and embedded on the fly.
+    **Modality-precomputed**: when the raw ``modality`` column already contains
+    pseudobulk rows (the ``--precomputed-pb`` training feature), those rows' existing
+    embeddings in ``adata.obsm["X_cf"]`` are used directly instead of regenerating
+    pseudobulks — also needs no model.
+
+    **Live**: ``model`` must be provided; pseudobulk profiles are generated from SC
+    expression and embedded on the fly. On-the-fly pseudobulks are labelled with the
+    ``group_column`` tissue they were aggregated from.
+
+    Each pseudobulk point carries its tissue (from ``group_column``) when available,
+    so the saved figure gets both a modality-coloured and a tissue-coloured panel.
 
     Output is named after ``joint_out_png`` with ``_pseudobulk`` or
     ``_pseudobulk_with_sc`` inserted before the extension.
@@ -503,7 +607,17 @@ def _save_pseudobulk_umap(
         print("  [warn] pseudobulk UMAP skipped — 'X_cf' not in obsm")
         return
 
-    # ── Precomputed path: synth_pb already embedded via build_eval_adata ───
+    # Per-subset tissue labels (aligned with sc_emb / pb_emb / bulk_emb), or None
+    # for any subset whose tissue is unavailable. All-None → modality-only plot.
+    sc_tissue = pb_tissue = bulk_tissue = None
+
+    def _tissue_for(a: sc.AnnData, mask) -> np.ndarray | None:
+        if group_column not in a.obs.columns:
+            return None
+        return a.obs[group_column].astype(str).to_numpy()[mask] if mask is not None \
+            else a.obs[group_column].astype(str).to_numpy()
+
+    # ── Path 1 — eval-precomputed: synth_pb already embedded via build_eval_adata ──
     if "_eval_modality" in adata.obs.columns:
         eval_mod      = adata.obs["_eval_modality"].astype(str)
         sc_mask       = eval_mod.isin(["subsampled", "paired_sc"]).values
@@ -515,14 +629,35 @@ def _save_pseudobulk_umap(
             return
 
         emb = adata.obsm["X_cf"]
-        sc_emb       = emb[sc_mask]
-        bulk_emb     = emb[bulk_mask]
-        pb_emb       = emb[synth_pb_mask]
+        sc_emb   = emb[sc_mask]
+        bulk_emb = emb[bulk_mask]
+        pb_emb   = emb[synth_pb_mask]
+        sc_tissue   = _tissue_for(adata, sc_mask)
+        bulk_tissue = _tissue_for(adata, bulk_mask)
+        pb_tissue   = _tissue_for(adata, synth_pb_mask)
 
-    # ── Live path: generate and embed pseudobulks on the fly ───────────────
+    # ── Path 2 — modality-precomputed: real pseudobulk rows already in the data ──
+    elif "modality" in adata.obs.columns and adata.obs["modality"].astype(str).map(
+        _is_pb_modality
+    ).any():
+        print("  using precomputed pseudobulk rows (modality == 'pseudobulk')")
+        canon    = adata.obs["modality"].astype(str).map(_canonical_modality).to_numpy()
+        sc_mask   = canon == "sc"
+        bulk_mask = canon == "bulk"
+        pb_mask   = canon == "pseudobulk"
+
+        emb = adata.obsm["X_cf"]
+        sc_emb   = emb[sc_mask]
+        bulk_emb = emb[bulk_mask]
+        pb_emb   = emb[pb_mask]
+        sc_tissue   = _tissue_for(adata, sc_mask)
+        bulk_tissue = _tissue_for(adata, bulk_mask)
+        pb_tissue   = _tissue_for(adata, pb_mask)
+
+    # ── Path 3 — live: generate and embed pseudobulks on the fly ────────────────
     else:
         if model is None:
-            print("  [warn] pseudobulk UMAP skipped — no model and no precomputed synth_pb")
+            print("  [warn] pseudobulk UMAP skipped — no model and no precomputed pseudobulk")
             return
         if "modality" not in adata.obs.columns:
             print("  [warn] pseudobulk UMAP skipped — 'modality' not in obs")
@@ -563,6 +698,11 @@ def _save_pseudobulk_umap(
             bulk_sub.obsm["X_cf"] if bulk_sub.n_obs > 0
             else np.empty((0, sc_emb.shape[1]), dtype=np.float32)
         )
+        # SC/bulk tissue from the source obs; PB tissue from the group each was built
+        # from (generate_pseudobulk_adata writes it into obs[group_column]).
+        sc_tissue   = _tissue_for(sc_sub, None)
+        bulk_tissue = _tissue_for(bulk_sub, None) if bulk_sub.n_obs > 0 else np.empty(0, dtype=object)
+        pb_tissue   = _tissue_for(pb_adata, None)
 
     if use_sc:
         combined_emb = np.vstack([sc_emb, pb_emb, bulk_emb])
@@ -571,14 +711,22 @@ def _save_pseudobulk_umap(
             + ["pseudobulk"] * len(pb_emb)
             + ["bulk"]       * len(bulk_emb)
         )
+        tissue_parts = [sc_tissue, pb_tissue, bulk_tissue]
     else:
         combined_emb = np.vstack([pb_emb, bulk_emb])
         modality_col = (
             ["pseudobulk"] * len(pb_emb)
             + ["bulk"]       * len(bulk_emb)
         )
+        tissue_parts = [pb_tissue, bulk_tissue]
 
-    combined = AnnData(obs=pd.DataFrame({"modality": modality_col}))
+    obs_dict = {"modality": modality_col}
+    # Only add tissue if every included subset supplied it (keeps alignment exact).
+    if all(t is not None for t in tissue_parts):
+        obs_dict["tissue"] = np.concatenate(
+            [np.asarray(t, dtype=object) for t in tissue_parts]
+        )
+    combined = AnnData(obs=pd.DataFrame(obs_dict))
     combined.obsm["X_cf"] = combined_emb
 
     n_cells = combined.n_obs
@@ -600,7 +748,10 @@ def _save_pseudobulk_umap(
     out_png = joint_out_png.parent / f"{stem}_{tag}{suffix}"
 
     try:
-        fig = _plot_three_modality_umap(combined, title=f"{stem} ({tag})")
+        fig = _plot_pseudobulk_figure(
+            combined, title=f"{stem} ({tag})",
+            tissue_key="tissue", skip_unknown=skip_unknown,
+        )
         fig.savefig(out_png, dpi=dpi, bbox_inches="tight")
         plt.close(fig)
         print(f"  saved → {out_png}")
@@ -677,10 +828,18 @@ def _save_modality_split_umaps(
             except Exception as exc:
                 print(f"  [warn] {label}-only UMAP failed: {exc}")
 
-    has_precomputed_pb = (
+    # Pseudobulk points can come from precomputed eval synth_pb rows, from real
+    # precomputed pseudobulk rows in the raw modality column (--precomputed-pb), or
+    # be generated on the fly (needs a model). The first two need no model.
+    has_eval_synth_pb = (
         "_eval_modality" in adata.obs.columns
         and (adata.obs["_eval_modality"] == "synth_pb").any()
     )
+    has_modality_pb = (
+        "modality" in adata.obs.columns
+        and adata.obs["modality"].astype(str).map(_is_pb_modality).any()
+    )
+    has_precomputed_pb = has_eval_synth_pb or has_modality_pb
     if model is not None or has_precomputed_pb:
         # Use n_sc_per_pb from model hparams when available
         n_sc_per_pb_actual = (
@@ -691,7 +850,7 @@ def _save_modality_split_umaps(
             n_neighbors=n_neighbors, min_dist=min_dist, seed=seed,
             n_sc_per_pb=n_sc_per_pb_actual, group_column=group_column,
             agg_method=agg_method, embed_batch_size=embed_batch_size,
-            flavor=flavor, dpi=dpi,
+            flavor=flavor, dpi=dpi, skip_unknown=skip_unknown,
         )
         # UMAP computed with bulk + pseudobulk only (no SC)
         _save_pseudobulk_umap(adata, model, joint_out_png, use_sc=False, **_common)
