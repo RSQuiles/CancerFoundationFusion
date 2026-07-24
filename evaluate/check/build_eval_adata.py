@@ -181,11 +181,11 @@ def _run_masked_forward(
     use_edges = model.input_style == "binned"
     if use_edges:
         preprocess_result = model.preprocess_for_embedding(
-            sc_adata, normalized=normalized, return_edges=True
+            sc_adata, normalized=normalized, return_edges=True, modality="bulk"
         )
         data, orig_X_full, bin_edges_full = preprocess_result
     else:
-        data = model.preprocess_for_embedding(sc_adata, normalized=normalized)
+        data = model.preprocess_for_embedding(sc_adata, normalized=normalized, modality="bulk")
 
     if data.n_obs == 0:
         return None
@@ -283,7 +283,10 @@ def embed_into_adata(
 ) -> None:
     """Embed every cell in adata and store the result in adata.obsm[obsm_key]."""
     try:
-        emb_df, _ = model.embed(adata, batch_size=batch_size, normalized=normalized)
+        emb_df, _ = model.embed(
+            adata, batch_size=batch_size, normalized=normalized,
+            modality_col="_eval_modality",
+        )
         adata.obsm[obsm_key] = emb_df.to_numpy(dtype=np.float32)
         log.info(
             "  obsm['%s'] stored  (%d cells × %d dims)",

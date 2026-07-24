@@ -210,7 +210,7 @@ def compute_reconstruction_metrics(
     device = next(model.model.parameters()).device
     rng = np.random.default_rng(seed)
 
-    data = model.preprocess_for_embedding(adata, normalized=normalized)
+    data = model.preprocess_for_embedding(adata, normalized=normalized, modality="bulk")
     if data.n_obs == 0:
         return {}
 
