@@ -227,7 +227,7 @@ class TransformerModule(nn.Module):
                     self.grad_reverse_discriminators[cond_name] = (
                         AdversarialDiscriminator(
                             d_model,
-                            n_cls=cond_num,
+                            n_cls=n_cls,
                             scale=dat_scale,
                             no_invert_dat=no_invert_dat,
                         )
