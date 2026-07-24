@@ -243,6 +243,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="The conditions (obs keys) the model should be invariant to.",
     )
     parser.add_argument(
+        "--condition-encoders",
+        type=str,
+        nargs="+",
+        default=None,
+        help=(
+            "Subset of --conditions that actually get a ConditionEncoder and are injected "
+            "via --where-condition. Conditions in --conditions but not here are label-only "
+            "(available to DAT/CDD, but never encoded or made invariant through conditioning). "
+            "Default (unset): all conditions are encoded, matching prior behaviour."
+        ),
+    )
+    parser.add_argument(
         "--scale-zero-expression",
         type=float,
         default=None,

@@ -128,6 +128,7 @@ class CancerFoundation(pl.LightningModule):
         esm_emb_path: Optional[Union[str, os.PathLike]] = None,
         esm_emb_finetune: bool = False,
         dat_columns: Optional[List[str]] = [],
+        encoded_conditions: Optional[List[str]] = None,
         paired_alignment: bool = False,
         verbose: bool = False,
         weight_mvc: float = 1.0,
@@ -293,6 +294,7 @@ class CancerFoundation(pl.LightningModule):
         self.no_invert_dat = no_invert_dat
         self.conditions = conditions
         self.conditions_nums = conditions_nums
+        self.encoded_conditions = encoded_conditions
         self.where_condition = where_condition
         self.gen_method = gen_method
 
@@ -398,6 +400,7 @@ class CancerFoundation(pl.LightningModule):
                 use_generative_training=self.USE_GENERATIVE_TRAINING,
                 do_dat=self.do_dat,
                 dat_columns=self.dat_columns,
+                encoded_conditions=self.encoded_conditions,
                 no_invert_dat=self.no_invert_dat,
                 explicit_zero_prob=self.explicit_zero_prob,
                 activation=self.activation,

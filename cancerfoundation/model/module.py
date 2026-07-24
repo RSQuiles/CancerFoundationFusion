@@ -65,6 +65,7 @@ class TransformerModule(nn.Module):
         gene_embeddings_path: Optional[Union[str, os.PathLike, Path]] = None,
         gene_embeddings_freeze: bool = True,
         dat_columns: Optional[list[str]] = [],
+        encoded_conditions: Optional[list[str]] = None,
         verbose: bool = False,
         weight_mvc: float = 1.0,
         weight_contrastive: float = 1.0,
@@ -123,6 +124,26 @@ class TransformerModule(nn.Module):
         self.model_type = "Transformer"
         self.d_model = d_model
         self.conditions = conditions
+
+        # Which conditions actually get a ConditionEncoder + where_condition injection.
+        # The full `conditions` set still drives label provisioning for DAT/CDD and the
+        # collator; `encoded_conditions` (a subset, default = all) decouples "encode &
+        # inject this condition" from "expose this condition's label". Order follows the
+        # `conditions` dict for deterministic decoder concatenation / checkpoint layout.
+        if conditions is None:
+            self.encoded_conditions = []
+        elif encoded_conditions is None:
+            self.encoded_conditions = list(conditions.keys())
+        else:
+            encoded_set = set(encoded_conditions)
+            unknown = encoded_set - set(conditions.keys())
+            if unknown:
+                raise ValueError(
+                    f"encoded_conditions {sorted(unknown)} are not in conditions "
+                    f"{list(conditions.keys())}."
+                )
+            self.encoded_conditions = [c for c in conditions.keys() if c in encoded_set]
+        self._use_condition_encoders = len(self.encoded_conditions) > 0
         self.input_emb_style = input_emb_style
         self.cell_emb_style = cell_emb_style
         self.explicit_zero_prob = explicit_zero_prob
@@ -199,17 +220,21 @@ class TransformerModule(nn.Module):
 
         mvc_decoder_d_in = d_model
         expr_decoder_d_in = d_model
-        # Conditions are taken into account only in the decoder
-        if self.conditions and self.where_condition != "none":
-            mvc_decoder_d_in = d_model * (len(self.conditions) + 1)
+        # Conditions are taken into account only in the decoder. Only the encoded
+        # subset contributes to the decoder input width.
+        if self._use_condition_encoders and self.where_condition != "none":
+            mvc_decoder_d_in = d_model * (len(self.encoded_conditions) + 1)
             if where_condition == "end":
-                expr_decoder_d_in = d_model * (len(self.conditions) + 1)
+                expr_decoder_d_in = d_model * (len(self.encoded_conditions) + 1)
 
-        # Conditions are encoded as separate embeddings
+        # Conditions are encoded as separate embeddings. Build encoders only for the
+        # encoded subset; label-only conditions (used by DAT/CDD) get no encoder.
         if conditions:
             self.condition_encoders = nn.ModuleDict({})
-            for cond_name, cond_num in self.conditions.items():
-                self.condition_encoders[cond_name] = ConditionEncoder(cond_num, d_model)
+            for cond_name in self.encoded_conditions:
+                self.condition_encoders[cond_name] = ConditionEncoder(
+                    self.conditions[cond_name], d_model
+                )
             # Check condition encoders
             # if self.verbose:
             #     print("Condition Encoders Inspection:")
@@ -403,12 +428,12 @@ class TransformerModule(nn.Module):
         # RAFA: modified handling of the where_condition == "begin"
         total_embs = gene_embs + value_embs
 
-        if self.where_condition == "begin" and conditions:
+        if self.where_condition == "begin" and self._use_condition_encoders and conditions is not None:
             # We sum the condition embeddings along the first dimension to generate a unified condition token
             condition_emb = torch.stack(
                 [
-                    self.condition_encoders[cond_name](cond_values)
-                    for cond_name, cond_values in conditions.items()
+                    self.condition_encoders[cond_name](conditions[cond_name])
+                    for cond_name in self.condition_encoders
                 ],
                 dim=1,
             ).sum(dim=1)
@@ -483,12 +508,12 @@ class TransformerModule(nn.Module):
             total_embs = src_embs + values
 
         # RAFA: Match generative begin-conditioning behavior
-        if self.where_condition == "begin" and conditions is not None:
+        if self.where_condition == "begin" and self._use_condition_encoders and conditions is not None:
             # We sum the condition embeddings along the first dimension to generate a unified condition token
             condition_emb = torch.stack(
                 [
-                    self.condition_encoders[cond_name](cond_values)
-                    for cond_name, cond_values in conditions.items()
+                    self.condition_encoders[cond_name](conditions[cond_name])
+                    for cond_name in self.condition_encoders
                 ],
                 dim=1,
             ).sum(dim=1)
@@ -584,12 +609,12 @@ class TransformerModule(nn.Module):
         pcpt_values_embs = self.value_encoder(pcpt_values)
         pcpt_total_embs = pcpt_token_embs + pcpt_values_embs
 
-        if self.where_condition == "begin" and self.conditions:
+        if self.where_condition == "begin" and self._use_condition_encoders:
             # We sum the condition embeddings along the first dimension to generate a unified condition token
             condition_emb = torch.stack(
                 [
-                    self.condition_encoders[cond_name](cond_values)
-                    for cond_name, cond_values in conditions.items()
+                    self.condition_encoders[cond_name](conditions[cond_name])
+                    for cond_name in self.condition_encoders
                 ],
                 dim=1,
             ).sum(dim=1)
@@ -642,7 +667,7 @@ class TransformerModule(nn.Module):
             pcpt_total_embs[:, 0, :] = input_cell_emb
 
         # Modify masks in case condition token is being fed into the model
-        if self.where_condition == "begin" and self.conditions:
+        if self.where_condition == "begin" and self._use_condition_encoders:
             assert gen_total_embs is not None
             src_key_padding_mask = torch.cat(
                 [
@@ -686,7 +711,7 @@ class TransformerModule(nn.Module):
             Tensor: The extracted cell embeddings of shape (batch, embsize).
         """
         # Remove condition token if present (assumed at position 1)
-        if self.where_condition == "begin" and self.conditions:
+        if self.where_condition == "begin" and self._use_condition_encoders:
             layer_output = torch.cat(
                 [
                     layer_output[:, :1, :],   # CLS
@@ -752,7 +777,7 @@ class TransformerModule(nn.Module):
         output["embeddings"] = transformer_output
 
         if self.do_mvc:
-            if self.conditions and self.where_condition != "none":
+            if self._use_condition_encoders and self.where_condition != "none":
                 mvc_input_emb = torch.cat(
                     [cell_emb, condition_emb.view(condition_emb.shape[0], -1)], dim=1
                 )
@@ -1732,7 +1757,7 @@ class TransformerModule(nn.Module):
             input_cell_emb=input_cell_emb,
         )
 
-        if self.where_condition == "begin" and self.conditions:
+        if self.where_condition == "begin" and self._use_condition_encoders:
             # Condition token was inserted after CLS in the perceptual stream.
             pcpt_output_for_decoder = torch.cat(
                 [
@@ -1752,11 +1777,11 @@ class TransformerModule(nn.Module):
 
         condition_emb = None
         decoder_input = transformer_output
-        if self.conditions:
+        if self._use_condition_encoders:
             condition_emb = torch.cat(
                 [
-                    self.condition_encoders[cond_name](cond_values)
-                    for cond_name, cond_values in conditions.items()
+                    self.condition_encoders[cond_name](conditions[cond_name])
+                    for cond_name in self.condition_encoders
                 ],
                 dim=1,
             ).view(transformer_output.shape[0], -1)
@@ -1812,11 +1837,11 @@ class TransformerModule(nn.Module):
             Mapping[str, Tensor]: A dictionary containing MLM predictions ('mlm_output'), cell embeddings ('cell_emb'), and other optional outputs.
         """
         condition_emb = None
-        if self.conditions:
+        if self._use_condition_encoders:
             condition_emb = torch.cat(
                 [
-                    self.condition_encoders[cond_name](cond_values).unsqueeze(1)
-                    for cond_name, cond_values in conditions.items()
+                    self.condition_encoders[cond_name](conditions[cond_name]).unsqueeze(1)
+                    for cond_name in self.condition_encoders
                 ],
                 dim=1,
             )
@@ -1824,7 +1849,7 @@ class TransformerModule(nn.Module):
 
         if self.where_condition == "begin":
             # RAFA: Get rid of the condition token once the it has been encoded through self-attention
-            if self.conditions and condition_emb is not None:
+            if self._use_condition_encoders and condition_emb is not None:
                 # num_conditions = condition_emb.shape[1]
                 decoder_input = torch.cat(
                     [
@@ -1837,7 +1862,7 @@ class TransformerModule(nn.Module):
                 decoder_input = transformer_output
 
         elif self.where_condition == "end":
-            if self.conditions:
+            if self._use_condition_encoders:
                 decoder_input = torch.cat(
                     [
                         condition_emb.view(condition_emb.shape[0], -1)
@@ -1857,7 +1882,7 @@ class TransformerModule(nn.Module):
         output = self._extend_output(
             output,
             transformer_output,
-            condition_emb=(condition_emb if self.conditions else None),
+            condition_emb=(condition_emb if self._use_condition_encoders else None),
             do_sample=do_sample,
             conditions=conditions
         )

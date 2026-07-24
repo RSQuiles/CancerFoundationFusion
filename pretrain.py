@@ -214,6 +214,17 @@ def main(input_args=None):
         raise ValueError(
             f"--cdd-class-column '{args.cdd_class_column}' must be one of --conditions {args.conditions}."
         )
+    if args.condition_encoders is not None:
+        # Effective condition set includes the auto-added "modality" under --unified.
+        effective_conditions = (
+            (args.conditions or []) + ["modality"] if args.unified else (args.conditions or [])
+        )
+        unknown_enc = set(args.condition_encoders) - set(effective_conditions)
+        if unknown_enc:
+            raise ValueError(
+                f"--condition-encoders {sorted(unknown_enc)} must be a subset of the "
+                f"conditions {effective_conditions}."
+            )
     if args.cdd_infer_labels and not args.cdd:
         raise ValueError("--cdd-infer-labels requires --cdd.")
     if args.cdd_class_aware and not args.pb_group_column:
@@ -322,6 +333,7 @@ def main(input_args=None):
         if args.unified
         else args.conditions,
         conditions_nums=datamodule.conditions_nums if args.conditions else None,
+        encoded_conditions=args.condition_encoders,
         mvc_decoder_style=args.mvc_decoder_style,
         scale_zero_expression=args.scale_zero_expression,
         data_path=args.train_path,
