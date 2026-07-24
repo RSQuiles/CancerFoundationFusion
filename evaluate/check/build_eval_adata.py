@@ -125,7 +125,10 @@ def load_all_modalities(
 ) -> ad.AnnData:
     """Load all modality h5ad files and return one AnnData with _eval_modality column."""
     prefixes = [
-        ("subsampled",  "subsampled"),
+        ("subsampled",  "sc"),
+        ("pretraining_sc", "sc"),
+        ("pretraining_bulk", "bulk"),
+        ("pseudo_bulk", "pseudobulk"),
         ("bulk",        "bulk"),
         ("paired_sc",   "paired_sc"),
         ("paired_pb",   "paired_pb"),
@@ -300,6 +303,7 @@ def build(
     normalized: bool = True,
     group_column: str = "tissue_general",
     n_pca_components: int = 50,
+    precomputed_pb: bool = False
 ) -> ad.AnnData:
     """
     Load data, generate synthetic pseudobulks, embed with each model,
@@ -336,12 +340,14 @@ def build(
 
     # ── Generate synthetic pseudobulks (expression only, same for all models)
     mod_col   = combined.obs["_eval_modality"]
-    sc_mask   = mod_col.isin(["subsampled", "paired_sc"]).values
+    sc_mask   = mod_col.isin(["sc", "subsampled", "paired_sc"]).values
     bulk_mask = (mod_col == "bulk").values
+    pb_mask = (mod_col == "pseudobulk").values
     n_synth   = int(bulk_mask.sum())
 
     synth_pb_adata: ad.AnnData | None = None
-    if sc_mask.any() and n_synth > 0 and group_column in combined.obs.columns:
+    if sc_mask.any() and n_synth > 0 and group_column in combined.obs.columns and not precomputed_pb:
+        log.info("Generating pseudobulk samples on-the-fly from single-cell!")
         synth_pb_adata = generate_pseudobulk_adata(
             combined[sc_mask],
             group_column=group_column,
@@ -351,6 +357,16 @@ def build(
             is_log1p=True,
             normalize=True,
         )
+    else:
+        log.info("Using precomputed pseudobulk samples!")
+        pb_adata = combined[pb_mask]
+        if len(pb_adata) > n_synth:
+            rng = np.random.default_rng(seed)
+            idx = rng.choice(len(pb_adata), size=n_synth, replace=False)
+            synth_pb_adata = pb_adata[idx].copy()
+        else:
+            synth_pb_adata = pb_adata
+
     if synth_pb_adata is not None:
         synth_pb_adata.obs["_eval_modality"] = "synth_pb"
         combined = ad.concat([combined, synth_pb_adata], join="outer", merge="same")
@@ -466,6 +482,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="h5ad files contain raw counts (not log1p-normalised).")
     p.add_argument("--n-pca-components", type=int, default=50,
                    help="Number of PCA components for the baseline embedding (default: 50).")
+    p.add_argument("--precomputed-pb", action="store_true", help="Precomputed pb in dataset")
     return p
 
 
@@ -508,6 +525,7 @@ def main(argv=None) -> int:
         normalized=not args.not_normalized,
         group_column=args.group_column,
         n_pca_components=args.n_pca_components,
+        precomputed_pb=args.precomputed_pb
     )
     return 0
 

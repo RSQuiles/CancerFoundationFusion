@@ -24,16 +24,16 @@ for arg in "$@"; do
 done
 
 SCRIPT_ARGS=(
-    --run-name paired_counts_dat
-    --ckpt "/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts/contrastive/step_step=340000_epoch_epoch=00.ckpt"
-    --adata-dir /cluster/work/boeva/rquiles/data/paired_dataset_counts/pipeline_ready/h5ads
-    --color tissue_general assay
-    --sample-size 10_000
-    --plot-pb-only
+    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_united_data
+    --adata-dir /cluster/work/boeva/rquiles/data/eheiss_RAW/pipeline_ready/h5ads
+    --color tissue_general
+    --sample-size 50_000
     --skip-unknown
 )
 
-# --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts
+# --run-name paired_counts_dat
+# --ckpt "/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts/contrastive/step_step=340000_epoch_epoch=00.ckpt"
+# --plot-pb-only
 
 if [[ "$USE_LOCAL" -eq 1 ]]; then
     echo "Running locally (no singularity)"

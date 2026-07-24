@@ -7,6 +7,7 @@ import torch
 import numpy as np
 import pandas as pd
 import scanpy as sc
+import scipy.sparse as sp
 from cancerfoundation.model.perturbation_model import PerturbationTransformer
 from cancerfoundation.utils import load_pretrained
 from cancerfoundation.model.module import TransformerModule
@@ -1019,13 +1020,23 @@ class CancerFoundation(pl.LightningModule):
         """
         if data.n_vars <= self.n_top_genes:
             return data
+        X = data.X
+        xmax = float(X.data.max() if sp.issparse(X) else X.max()) if getattr(X, "nnz", 1) else 0.0
+        if xmax > 20:
+            print(f"  [INFO] Non-log1p data detected (max={xmax:.1f}). Normalizing for gene selection!")
+            work = data.copy()
+            sc.pp.log1p(work)
+        else:
+            work = data
+
         if kind == "sc":
             print(f"  Selecting {self.n_top_genes} HVGs (flavor='{seurat_flavor}') for modality 'sc'")
-            sc.pp.highly_variable_genes(data, n_top_genes=self.n_top_genes, flavor=seurat_flavor)
-            return data[:, data.var["highly_variable"]].copy()
-        # bulk / pseudobulk → log1p + MAD
+            sc.pp.highly_variable_genes(work, n_top_genes=self.n_top_genes, flavor=seurat_flavor)
+            mask = work.var["highly_variable"].values
+            return data[:, mask].copy()
+        # bulk and pseudobulk HVG selection
         print(f"  Selecting {self.n_top_genes} top-MAD genes for modality '{kind}'")
-        top_idx = _top_mad_genes(data.X, self.n_top_genes)
+        top_idx = _top_mad_genes(work.X, self.n_top_genes)
         return data[:, top_idx].copy()
 
     def _embed_by_modality(
