@@ -167,9 +167,17 @@ def collect_metrics(ablation_dir: Path) -> dict[str, dict[str, dict[str, float]]
 def _build_task_metrics(
     results: dict[str, dict[str, dict[str, float]]],
     primary_overrides: dict[str, str],
+    metric_subsets: dict[str, list[str]] | None = None,
 ) -> tuple[list[str], dict[str, list[str]], dict[str, str]]:
     """
     Derive the set of plottable metrics for each task.
+
+    Parameters
+    ----------
+    metric_subsets : optional task → explicit list of metrics to plot.  Tasks
+        listed here keep exactly those metrics, in the given order; tasks that
+        are absent fall back to the default behaviour.  Explicitly requested
+        metrics bypass SKIP_METRICS.
 
     Returns
     -------
@@ -179,14 +187,30 @@ def _build_task_metrics(
     primary : task → name of the primary (highlighted) metric.
     """
     all_tasks = sorted({t for m in results.values() for t in m})
+    metric_subsets = metric_subsets or {}
 
     task_metrics: dict[str, list[str]] = {}
     for task in all_tasks:
         seen: set[str] = set()
+        seen_all: set[str] = set()   # same, but including SKIP_METRICS
         for model_data in results.values():
             for k, v in model_data.get(task, {}).items():
-                if k not in SKIP_METRICS and isinstance(v, (int, float)):
-                    seen.add(k)
+                if isinstance(v, (int, float)):
+                    seen_all.add(k)
+                    if k not in SKIP_METRICS:
+                        seen.add(k)
+
+        # Explicit subset: honour the requested metrics and their order.
+        if task in metric_subsets:
+            requested = metric_subsets[task]
+            for missing in (m for m in requested if m not in seen_all):
+                print(
+                    f"[warning] metric '{missing}' not found for task '{task}' — ignoring.",
+                    file=sys.stderr,
+                )
+            task_metrics[task] = [m for m in requested if m in seen_all]
+            continue
+
         # Ensure the primary metric is the first in the plot
         primary_metric = primary_overrides.get(task) or TASK_PRIMARY_METRIC.get(task)
         ordered = []
@@ -194,6 +218,12 @@ def _build_task_metrics(
             ordered.append(primary_metric)
         ordered.extend(m for m in sorted(seen) if m != primary_metric)
         task_metrics[task] = ordered
+
+    # A task whose explicit subset resolves to nothing is dropped entirely
+    # (an empty subset is how a caller removes a task row from the figure).
+    all_tasks = [
+        t for t in all_tasks if task_metrics[t] or t not in metric_subsets
+    ]
 
     primary: dict[str, str] = {}
     for task in all_tasks:
@@ -221,6 +251,7 @@ def plot_benchmark(
     output: Path | None,
     show: bool,
     figsize: tuple[float, float] | None,
+    metric_subsets: dict[str, list[str]] | None = None,
 ) -> None:
     """
     Generate the benchmark grid.
@@ -228,12 +259,17 @@ def plot_benchmark(
     Grid layout:  rows = tasks,  columns = metrics within each task.
     Within every subplot, one bar per model.
     The primary metric column is highlighted with a coloured background and ★.
+
+    ``metric_subsets`` optionally restricts (and orders) the metrics plotted for
+    individual tasks — see :func:`_build_task_metrics`.
     """
     if not results:
         print("No results found — nothing to plot.", file=sys.stderr)
         sys.exit(1)
 
-    all_tasks, task_metrics, primary = _build_task_metrics(results, primary_overrides)
+    all_tasks, task_metrics, primary = _build_task_metrics(
+        results, primary_overrides, metric_subsets
+    )
     model_names = list(results.keys())
     n_models    = len(model_names)
     n_tasks     = len(all_tasks)
