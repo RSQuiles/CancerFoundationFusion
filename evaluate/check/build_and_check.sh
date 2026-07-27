@@ -24,7 +24,7 @@ for arg in "$@"; do
     fi
 done
 
-ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_united_data"
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition"
 
 BUILD_ARGS=(
     --adata-dir /cluster/work/boeva/rquiles/data/eheiss_RAW/pipeline_ready/h5ads

@@ -35,11 +35,11 @@ for arg in "$@"; do
 done
 
 # Must match survival_pred_config.yaml
-ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn"
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition"
 
 SCRIPT_ARGS=(
     --ablation-dir $ABLATION_DIR
-    --tasks deconv canc_type_class drug_sensitivity_v2
+    --tasks deconv canc_type_class survival drug_sensitivity_v2
     --pca-baseline
     --config-dir /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/configs
 )

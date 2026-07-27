@@ -24,10 +24,10 @@ for arg in "$@"; do
 done
 
 SCRIPT_ARGS=(
-    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_united_data
+    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition
     --adata-dir /cluster/work/boeva/rquiles/data/eheiss_RAW/pipeline_ready/h5ads
     --color tissue_general
-    --sample-size 50_000
+    --sample-size 75_000
     --skip-unknown
 )
 

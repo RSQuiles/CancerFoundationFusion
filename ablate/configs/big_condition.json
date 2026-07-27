@@ -23,7 +23,7 @@
     },
     "data": {
       "train_path": "/cluster/work/boeva/rquiles/data/eheiss_RAW/pipeline_ready",
-      "conditions": ["tissue_general"],
+      "conditions": ["modality"],
       "zero_percentages": [0.2, 0.4, 0.6],
       "bulk_ratio": 0.4,
       "pb_ratio": 0.4,
@@ -41,13 +41,13 @@
       "lr": 0.0001,
       "warmup_ratio_or_step": 10000,
       "max_seq_len": 1200,
-      "batch_size": 128,
+      "batch_size": 32,
       "input_style": "binned",
       "input_data": "counts",
       "loss": "mse",
       "training_tasks": "both",
       "do_mvc": true,
-      "where_condition": "none",
+      "where_condition": "end",
       "gen_method": "theirs"
     },
     "features": {
