@@ -208,6 +208,17 @@ def main(input_args=None):
         raise ValueError(
             "--esm-emb requires --esm-emb-path to point to the pretrained gene embedding parquet file."
         )
+    if args.monitor_losses and not args.unified:
+        raise ValueError(
+            "--monitor-losses is only supported with --unified: the monitored auxiliary "
+            "losses operate on the bulk/pseudobulk embeddings injected only in unified mode."
+        )
+    if "cdd" in args.monitor_losses and args.cdd_class_column not in args.conditions:
+        print(
+            f"[monitor] 'cdd' requested for monitoring but --cdd-class-column "
+            f"'{args.cdd_class_column}' is not in --conditions {args.conditions}; "
+            f"loss_cdd_monitor will not be logged."
+        )
     if args.cdd and not args.unified:
         raise ValueError("The CDD loss (--cdd) is only supported with unified_fm=True.")
     if args.cdd and args.cdd_class_column not in args.conditions:
@@ -373,6 +384,7 @@ def main(input_args=None):
         weight_agg=args.loss_weight_agg,
         weight_dat=args.loss_weight_dat,
         weight_reconstruction=args.loss_weight_reconstruction,
+        monitor_losses=args.monitor_losses,
         n_sc_per_pseudobulk=args.n_sc_per_pseudobulk,
         # Contrastive Domain Discrepancy (CAN)
         cdd=args.cdd,

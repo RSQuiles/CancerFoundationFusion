@@ -1,0 +1,50 @@
+# Example config for:
+#   python evaluate/plot/plot_ablation_benchmark.py --config <this file>
+#
+# It selects individual runs — possibly from different ablation directories —
+# gives them display names, and arranges them into groups. Metrics are read
+# from each run's metrics/results_*.json; nothing is recomputed.
+
+title: "Big condition vs. united data"
+output: /cluster/work/boeva/rquiles/outputs/save_CFF/comparison.png
+# figsize: [22, 14]        # inches; omitted → derived from the grid size
+
+# Optional per-task metric subsets, in plot order. Tasks left out keep their
+# defaults (all numeric metrics, primary first). 'cmax' and 'ic50' are aliases
+# for the two halves of results_drug_sensitivity_v2.json.
+metrics:
+  canc_type_class: [accuracy, f1_weighted]
+  deconv: [mae, mse]
+  survival: [c_index, ibs]
+  ic50: [mae, mse, pearson_rho, r2, rmse, spearman_rho]
+  cmax: [accuracy, auprc, auroc, balanced_accuracy, f1, mcc, precision, recall]
+
+# Optional: override which metric gets the ★ highlight.
+# primary:
+#   deconv: rmse
+
+groups:
+  - name: "Big condition"
+    dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition
+    experiments:
+      - {name: "Baseline", model: baseline}
+      - {name: "No DAT",   model: no_dat}
+
+  - name: "United data"
+    dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_united_data
+    all_models: true          # every model dir found there
+    exclude: [pca_baseline]   # …except these
+
+  - name: "Baselines"
+    experiments:
+      # 'path' points straight at a model dir, so no group 'dir' is needed.
+      - name: "PCA"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition/pca_baseline
+
+# Instead of 'groups', a flat list plots every run side by side with its own
+# colour and no group banding:
+#
+# experiments:
+#   - {name: "Baseline", dir: /path/to/ablation_a, model: baseline}
+#   - {name: "United",   dir: /path/to/ablation_b, model: unified_v1}
+#   - path: /path/to/ablation_a/pca_baseline      # name defaults to dir name

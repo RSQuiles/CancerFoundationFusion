@@ -138,6 +138,7 @@ class CancerFoundation(pl.LightningModule):
         weight_agg: float = 1.0,
         weight_dat: float = 1.0,
         weight_reconstruction: float = 1.0,
+        monitor_losses: Optional[List[str]] = None,
         n_sc_per_pseudobulk: int = 10,
         # Contrastive Domain Discrepancy (CAN) parameters
         cdd: bool = False,
@@ -257,6 +258,7 @@ class CancerFoundation(pl.LightningModule):
         self.weight_agg = weight_agg
         self.weight_dat = weight_dat
         self.weight_reconstruction = weight_reconstruction
+        self.monitor_losses = list(monitor_losses or [])
         self.n_sc_per_pseudobulk = n_sc_per_pseudobulk
 
         # Contrastive Domain Discrepancy (CAN) parameters
@@ -431,6 +433,7 @@ class CancerFoundation(pl.LightningModule):
                 weight_agg=self.weight_agg,
                 weight_dat=self.weight_dat,
                 weight_reconstruction=self.weight_reconstruction,
+                monitor_losses=self.monitor_losses,
                 # Contrastive Domain Discrepancy (CAN). Exclude-label codes are
                 # resolved from the category mapping in setup() (needs the datamodule).
                 cdd=self.cdd,

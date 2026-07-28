@@ -744,6 +744,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--loss-weight-dat",            type=float, default=1.0, help="Weight for DAT condition loss.")
     parser.add_argument("--loss-weight-reconstruction", type=float, default=1.0, help="Weight applied to all reconstruction losses (loss_expr, loss_mvc, loss_gen).")
 
+    parser.add_argument(
+        "--monitor-losses", type=str, nargs="+", default=[],
+        choices=["contrastive", "mmd", "cdd", "aggregation", "paired"],
+        help="Compute and log these auxiliary losses for monitoring WITHOUT adding them to "
+             "the training gradient (logged as train/loss_<name>_monitor). Lets you gauge "
+             "whether a disabled loss carries a meaningful signal. Requires --unified (and, "
+             "for 'cdd', --cdd-class-column present in --conditions).",
+    )
+
     return parser
 
 CONFIG_SECTIONS = {"trainer", "model", "features", "data"}

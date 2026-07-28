@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -60,68 +59,8 @@ from evaluate.plot.plot_ablation_benchmark import (  # noqa: E402
     TASK_PRIMARY_METRIC,
     collect_metrics,
     plot_benchmark,
+    resolve_task,
 )
-
-# --------------------------------------------------------------------------- #
-# Task-name resolution
-# --------------------------------------------------------------------------- #
-
-# collect_metrics() splits results_drug_sensitivity_v2.json into two tasks whose
-# keys are display strings; give them short handles.
-TASK_ALIASES: dict[str, str] = {
-    "cmax":                 "Drug Sensitivity Prediction (Cmax Classification)",
-    "drug_cmax":            "Drug Sensitivity Prediction (Cmax Classification)",
-    "drug_sensitivity_v2_cmax": "Drug Sensitivity Prediction (Cmax Classification)",
-    "ic50":                 "Drug Sensitivity Prediction (IC50 Regression)",
-    "drug_ic50":            "Drug Sensitivity Prediction (IC50 Regression)",
-    "drug_sensitivity_v2_ic50": "Drug Sensitivity Prediction (IC50 Regression)",
-}
-
-
-def _norm(name: str) -> str:
-    """Lowercase and collapse non-alphanumerics, for forgiving name matching."""
-    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
-
-
-def resolve_task(user_key: str, available: list[str]) -> str:
-    """
-    Map a task name typed on the CLI onto a task key present in *available*.
-
-    Resolution order: exact → alias → normalised → unique substring.
-    Exits with a helpful message if the key is unknown or ambiguous.
-    """
-    if user_key in available:
-        return user_key
-
-    aliased = TASK_ALIASES.get(_norm(user_key))
-    if aliased and aliased in available:
-        return aliased
-
-    norm_map: dict[str, list[str]] = {}
-    for task in available:
-        norm_map.setdefault(_norm(task), []).append(task)
-
-    key = _norm(user_key)
-    if key in norm_map and len(norm_map[key]) == 1:
-        return norm_map[key][0]
-
-    partial = [t for t in available if key in _norm(t)]
-    if len(partial) == 1:
-        return partial[0]
-
-    if len(partial) > 1:
-        print(
-            f"ERROR: task '{user_key}' is ambiguous — matches: {partial}",
-            file=sys.stderr,
-        )
-    else:
-        print(
-            f"ERROR: unknown task '{user_key}'. Available tasks:\n  "
-            + "\n  ".join(available),
-            file=sys.stderr,
-        )
-    sys.exit(1)
-
 
 # --------------------------------------------------------------------------- #
 # Metric subset parsing

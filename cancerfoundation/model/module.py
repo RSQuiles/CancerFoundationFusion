@@ -74,6 +74,7 @@ class TransformerModule(nn.Module):
         weight_agg: float = 1.0,
         weight_dat: float = 1.0,
         weight_reconstruction: float = 1.0,
+        monitor_losses: Optional[list[str]] = None,
         # Contrastive Domain Discrepancy (CAN) parameters
         cdd: bool = False,
         weight_cdd: float = 0.3,
@@ -169,6 +170,9 @@ class TransformerModule(nn.Module):
         self.weight_agg = weight_agg
         self.weight_reconstruction = weight_reconstruction
         self.weight_dat = weight_dat
+        # Auxiliary losses to compute + log for monitoring only (no gradient). Logged
+        # under train/loss_<name>_monitor when the corresponding loss is disabled.
+        self.monitor_losses = set(monitor_losses or ())
 
         # Contrastive Domain Discrepancy (CAN) configuration
         self.cdd = cdd
@@ -1028,7 +1032,8 @@ class TransformerModule(nn.Module):
         # pair as a positive, which contradicts the 1-to-1 pairing enforced by the paired
         # alignment loss. VICReg collapse-prevention is still applied via modality_contrastive_loss
         # in non-paired batches; paired batches rely solely on the paired alignment loss for signal.
-        if self.contrastive and not is_paired_batch and not skip_unified_losses:
+        want_contrastive = self.contrastive or "contrastive" in self.monitor_losses
+        if want_contrastive and not is_paired_batch and not skip_unified_losses:
             embeddings = output_dict["embeddings"]
             modalities = tensors["conditions"]["modality"]
             assert len(embeddings) == len(
@@ -1044,8 +1049,11 @@ class TransformerModule(nn.Module):
                 modalities[tensors["is_sc_for_pb"] == 1] = -1
 
             loss_contrastive = self.modality_contrastive_loss(embeddings, modalities)
-            loss = loss + self.weight_contrastive * loss_contrastive
-            loss_dict["loss_contrastive"] = loss_contrastive.detach() * self.weight_contrastive
+            if self.contrastive:
+                loss = loss + self.weight_contrastive * loss_contrastive
+                loss_dict["loss_contrastive"] = loss_contrastive.detach() * self.weight_contrastive
+            else:
+                loss_dict["loss_contrastive_monitor"] = loss_contrastive.detach() * self.weight_contrastive
 
         # MMD alignment loss: distribution-level matching of the real-bulk and
         # pseudobulk embedding marginals via a mixture-of-RBF-kernels MMD. A
@@ -1057,17 +1065,21 @@ class TransformerModule(nn.Module):
         # LightningModule (full during CDD warmup to pull the clouds together, then
         # decaying to cdd_mmd_final_weight as CDD ramps in). Without CDD it is the
         # plain configured weight.
-        if self.mmd and not skip_unified_losses:
+        want_mmd = self.mmd or "mmd" in self.monitor_losses
+        if want_mmd and not skip_unified_losses:
             embeddings = output_dict["embeddings"]
             modalities = tensors["conditions"]["modality"]
             assert len(embeddings) == len(
                 modalities
             ), "Embeddings and modalities tensors must have the same batch size"
 
-            w_mmd = self._mmd_w if self.cdd else self.weight_mmd
             loss_mmd = self.modality_mmd_loss(embeddings, modalities)
-            loss = loss + w_mmd * loss_mmd
-            loss_dict["loss_mmd"] = loss_mmd.detach() * w_mmd
+            if self.mmd:
+                w_mmd = self._mmd_w if self.cdd else self.weight_mmd
+                loss = loss + w_mmd * loss_mmd
+                loss_dict["loss_mmd"] = loss_mmd.detach() * w_mmd
+            else:
+                loss_dict["loss_mmd_monitor"] = loss_mmd.detach() * self.weight_mmd
 
         # Contrastive Domain Discrepancy (CAN, Kang et al. CVPR 2019): a
         # class-conditional MMD that pulls same-tissue source(pseudobulk)/target(bulk)
@@ -1077,15 +1089,26 @@ class TransformerModule(nn.Module):
         # Skipped on paired batches (those use the 1-to-1 paired alignment loss instead)
         # and during the warmup window, where _cdd_w is 0 and MMD is doing the marginal
         # alignment that makes the first clustering meaningful.
-        if self.cdd and self._cdd_w > 0 and not is_paired_batch and not skip_unified_losses:
+        # want_cdd fires either when CDD is actively training (post-warmup) or when it is
+        # requested for monitoring only. Monitoring additionally requires the tissue class
+        # column to be present in the batch conditions; without it no label is available and
+        # the block is skipped cleanly (no crash).
+        want_cdd = (self.cdd and self._cdd_w > 0) or "cdd" in self.monitor_losses
+        if (
+            want_cdd
+            and not is_paired_batch
+            and not skip_unified_losses
+            and self.cdd_class_column in tensors["conditions"]
+        ):
             embeddings = output_dict["embeddings"]
             modalities = tensors["conditions"]["modality"]
             emb = embeddings[:, 0, :]  # CLS token, matches modality_mmd_loss
 
             # Keep the bank warm between clustering events. The authoritative fill is
             # refresh_bulk_bank() (one model state, full coverage); this streaming write
-            # is a cheap top-up from embeddings we already have.
-            if self.cdd_infer_labels and self._target_bank_ready and self.training:
+            # is a cheap top-up from embeddings we already have. Only relevant when CDD is
+            # actually enabled — the bank is never allocated in monitor-only mode.
+            if self.cdd and self.cdd_infer_labels and self._target_bank_ready and self.training:
                 self.update_target_bank(emb, modalities, tensors.get("row_index"))
 
             tissue = self._cdd_target_labels(tensors)
@@ -1096,11 +1119,15 @@ class TransformerModule(nn.Module):
                 min_class_count=self.cdd_min_class_count,
                 exclude_class_codes=self.cdd_exclude_class_codes,
             )
-            loss = loss + self._cdd_w * loss_cdd
-            loss_dict["loss_cdd"] = loss_cdd.detach() * self._cdd_w
+            if self.cdd and self._cdd_w > 0:
+                loss = loss + self._cdd_w * loss_cdd
+                loss_dict["loss_cdd"] = loss_cdd.detach() * self._cdd_w
+            else:
+                loss_dict["loss_cdd_monitor"] = loss_cdd.detach() * self.weight_cdd
 
         # Paired alignment loss: MSE between matched bulk–pseudobulk–SC_mean CLS embeddings
-        if self.paired_alignment and is_paired_batch and not skip_unified_losses:
+        want_paired = self.paired_alignment or "paired" in self.monitor_losses
+        if want_paired and is_paired_batch and not skip_unified_losses:
             if self.verbose:
                 print("Applying paired alignment loss!")
             modality = tensors["conditions"]["modality"]
@@ -1141,11 +1168,15 @@ class TransformerModule(nn.Module):
                         loss_paired = loss_paired + loss_paired_sc
                         # loss_dict["paired_alignment_loss_sc"] = loss_paired_sc.detach() * self.weight_paired
 
-                loss = loss + self.weight_paired * loss_paired
-                loss_dict["paired_alignment_loss"] = loss_paired.detach() * self.weight_paired
+                if self.paired_alignment:
+                    loss = loss + self.weight_paired * loss_paired
+                    loss_dict["paired_alignment_loss"] = loss_paired.detach() * self.weight_paired
+                else:
+                    loss_dict["paired_alignment_loss_monitor"] = loss_paired.detach() * self.weight_paired
 
         # Aggregation consistency loss: skip for paired batches (SC cells are unrelated to the PBs)
-        if self.aggregation and not is_paired_batch and not skip_unified_losses:
+        want_agg = self.aggregation or "aggregation" in self.monitor_losses
+        if want_agg and not is_paired_batch and not skip_unified_losses:
             embeddings = output_dict["embeddings"]
             assert len(embeddings) == len(
                 tensors["is_sc_for_pb"]
@@ -1177,8 +1208,11 @@ class TransformerModule(nn.Module):
                 loss_agg = loss_agg + F.mse_loss(pb_embedding, sc_embedding_agg)
 
             if sc_assignment:
-                loss = loss + self.weight_agg * loss_agg
-                loss_dict["loss_agg"] = loss_agg.detach() * self.weight_agg
+                if self.aggregation:
+                    loss = loss + self.weight_agg * loss_agg
+                    loss_dict["loss_agg"] = loss_agg.detach() * self.weight_agg
+                else:
+                    loss_dict["loss_agg_monitor"] = loss_agg.detach() * self.weight_agg
 
         loss_dict["total_loss"] = loss
         return loss_dict
