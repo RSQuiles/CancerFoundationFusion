@@ -114,6 +114,8 @@ class CancerFoundation(pl.LightningModule):
         where_condition: str,
         gen_method: str,
         their_init_weights: bool,
+        grad_checkpoint: bool = False,
+        attn_impl: str = "mha",
         dat_start_step: int = 0,
         dat_interval_steps: int = 1,
         perturbation: bool = False,
@@ -299,6 +301,8 @@ class CancerFoundation(pl.LightningModule):
         self.encoded_conditions = encoded_conditions
         self.where_condition = where_condition
         self.gen_method = gen_method
+        self.grad_checkpoint = grad_checkpoint
+        self.attn_impl = attn_impl
 
         self.normalise_bins = normalise_bins
         self.dat_scale = dat_scale
@@ -375,6 +379,8 @@ class CancerFoundation(pl.LightningModule):
                 where_condition=self.where_condition,
                 max_seq_len=self.max_seq_len,
                 gen_method=self.gen_method,
+                grad_checkpoint=self.grad_checkpoint,
+                attn_impl=self.attn_impl,
                 pert_pad_id=2,
                 their_init_weights=self.their_init_weights,
                 vocab=self.vocab,
@@ -415,6 +421,8 @@ class CancerFoundation(pl.LightningModule):
                 where_condition=self.where_condition,
                 max_seq_len=self.max_seq_len,
                 gen_method=self.gen_method,
+                grad_checkpoint=self.grad_checkpoint,
+                attn_impl=self.attn_impl,
                 their_init_weights=self.their_init_weights,
                 # Unified FM parameters
                 contrastive=self.contrastive,

@@ -376,6 +376,8 @@ def main(input_args=None):
         normalise_bins=args.normalise_bins,
         where_condition=args.where_condition,
         gen_method=args.gen_method,
+        grad_checkpoint=args.grad_checkpoint,
+        attn_impl=args.attn_impl,
         their_init_weights=args.their_init_weights,
         # Unified FM parameters
         contrastive=args.contrastive_training,

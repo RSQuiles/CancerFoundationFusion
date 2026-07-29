@@ -149,7 +149,10 @@ def _submit_runs_to_slurm(
 				singularity_image,
 				"bash",
 				"-c",
-				f"export PATH=/usr/bin:/bin && export MASTER_ADDR=localhost && export MASTER_PORT=$(( SLURM_JOB_ID % 16384 + 20000 )) && {worker_inner_cmd}",
+				# expandable_segments cuts fragmentation from the large, short-lived
+				# attention allocations, which is what turns a "there is free VRAM but
+				# no contiguous block" failure into a successful step.
+				f"export PATH=/usr/bin:/bin && export MASTER_ADDR=localhost && export MASTER_PORT=$(( SLURM_JOB_ID % 16384 + 20000 )) && export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True && {worker_inner_cmd}",
 			]
 		)
 

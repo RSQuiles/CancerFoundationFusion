@@ -320,6 +320,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--grad-checkpoint",
+        action="store_true",
+        help=(
+            "Recompute transformer encoder layers during backward instead of keeping "
+            "their activations alive. Removes the 'x nlayers' factor from activation "
+            "memory (~5x headroom at 6 layers) for roughly +30%% step time. "
+            "Numerically identical: RNG state is preserved across the recompute."
+        ),
+    )
+
+    parser.add_argument(
+        "--attn-impl",
+        type=str,
+        choices=["mha", "flex"],
+        default="mha",
+        help=(
+            "Attention implementation for the generative encoder. 'mha' uses "
+            "nn.MultiheadAttention, which merges the pcpt/gen attention mask with the "
+            "key padding mask into a dense [B*H, L, L] tensor and so costs O(B*H*L^2) "
+            "memory. 'flex' runs the same weights through torch FlexAttention with a "
+            "block mask, costing O(B*H*L*d). Parameters are identical between the two, "
+            "so checkpoints are interchangeable. Caveat: 'flex' has no attention-weight "
+            "dropout (FFN and residual dropout still apply), and it requires "
+            "--gen-method theirs or orig. Default is 'mha'."
+        ),
+    )
+
+    parser.add_argument(
         "--wandb-name",
         type=str,
         default=None,

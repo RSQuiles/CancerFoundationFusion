@@ -1,11 +1,82 @@
 from typing import Optional, Tuple
+import warnings
 import torch
+import torch.utils.checkpoint
 from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from torch.nn.modules.transformer import _get_clones
 from functools import partial, lru_cache
+
+
+@lru_cache(maxsize=8)
+def _pcpt_gen_attn_mask(total_len: int, gen_len: int, device: torch.device) -> Tensor:
+    """Bool attention mask for the concatenated ``[pcpt | gen]`` sequence.
+
+    ``True`` means *masked out*: every query may attend to the perceptual block,
+    the generative block is invisible to everyone except itself (the diagonal).
+
+    Module-level so the cache actually survives between calls — an ``lru_cache``
+    defined inside ``forward`` is rebuilt (on CPU, then copied H2D) on every layer
+    of every step.
+    """
+    attn_mask = torch.zeros(total_len, total_len, dtype=torch.bool, device=device)
+    attn_mask[:, total_len - gen_len :] = True
+    attn_mask.diagonal().fill_(False)
+    return attn_mask
+
+
+def _flex_mask_mod(b, h, q_idx, kv_idx, pcpt_len, valid):
+    """FlexAttention ``mask_mod`` equivalent to ``_pcpt_gen_attn_mask`` + key padding.
+
+    ``True`` means *keep* (the inverse convention of the dense mask above).
+    ``valid`` is ``~key_padding_mask`` of shape ``(B, L)``, or ``None`` when the
+    batch has no padding at all.
+
+    The diagonal is always kept so that no query row is fully masked (which would
+    make softmax produce NaNs). For a valid query this is a no-op — the topology
+    already keeps the diagonal — and for a *padded* query the row is discarded
+    downstream by ``positions_to_match`` in ``TransformerModule.forward``.
+    """
+    allowed = (kv_idx < pcpt_len) | (q_idx == kv_idx)
+    if valid is not None:
+        allowed = (allowed & valid[b, kv_idx]) | (q_idx == kv_idx)
+    return allowed
+
+
+@lru_cache(maxsize=8)
+def _cached_block_mask(total_len: int, pcpt_len: int, device: torch.device):
+    """Padding-free block mask — identical across steps, so worth caching."""
+    return create_block_mask(
+        partial(_flex_mask_mod, pcpt_len=pcpt_len, valid=None),
+        B=None,
+        H=None,
+        Q_LEN=total_len,
+        KV_LEN=total_len,
+        device=device,
+    )
+
+
+def build_block_mask(pcpt_len: int, total_len: int, key_padding_mask: Optional[Tensor],
+                     device: torch.device):
+    """Build the FlexAttention block mask once per encoder forward.
+
+    Callers must hoist this above the layer loop: ``create_block_mask`` is not
+    free, and the mask is the same for all layers.
+    """
+    if key_padding_mask is None or not bool(key_padding_mask.any()):
+        return _cached_block_mask(total_len, pcpt_len, device)
+
+    valid = ~key_padding_mask
+    return create_block_mask(
+        partial(_flex_mask_mod, pcpt_len=pcpt_len, valid=valid),
+        B=key_padding_mask.shape[0],
+        H=None,
+        Q_LEN=total_len,
+        KV_LEN=total_len,
+        device=device,
+    )
 
 
 def _make_norm(norm_type: str, d_model: int, eps: float, **factory_kwargs):
@@ -61,6 +132,7 @@ class MHA(nn.Module):
             batch_first=batch_first,
             **factory_kwargs,
         )
+        self.attention_dropout = attention_dropout
 
     def forward(
         self,
@@ -69,12 +141,16 @@ class MHA(nn.Module):
         pcpt_key_padding_mask: Optional[Tensor] = None,
         gen_key_padding_mask: Optional[Tensor] = None,
         need_weights=False,
+        block_mask=None,
     ):
         """
         pcpt_total_embs: (batch, pcpt_len, hidden_dim) (where hidden_dim = num heads * head dim)
         gen_total_embs: (batch, gen_len, hidden_dim)
         pcpt_key_padding_mask: bool tensor of shape (batch, pcpt_len), 1 means valid and 0 means not valid.
         gen_key_padding_mask: bool tensor of shape (batch, gen_len), 1 means valid and 0 means not valid.
+        block_mask: a FlexAttention ``BlockMask`` built once per encoder forward by
+            ``build_block_mask``. When given, attention runs through FlexAttention,
+            which never materialises the ``[B*H, L, L]`` mask or score matrix.
         """
 
         assert not need_weights
@@ -86,6 +162,12 @@ class MHA(nn.Module):
             0 if gen_total_embs is None else gen_total_embs.shape[1],
         )
         total_seq_len = pcpt_seq_len + gen_seq_len
+
+        total_embs = torch.cat((pcpt_total_embs, gen_total_embs), dim=1)
+
+        if block_mask is not None:
+            out = self._flex_attend(total_embs, block_mask)
+            return (out[:, :pcpt_seq_len], out[:, pcpt_seq_len:]), (None, None)
 
         if pcpt_key_padding_mask is None:
             pcpt_key_padding_mask = (
@@ -104,16 +186,9 @@ class MHA(nn.Module):
             [pcpt_key_padding_mask, gen_key_padding_mask], dim=1
         ).to(pcpt_total_embs.device)
 
-        @lru_cache(maxsize=1)
-        def make_mask(len, gen_len, device):
-            attn_mask = torch.zeros(len, len).bool()
-            attn_mask[:, -gen_len:] = True
-            attn_mask.diagonal().fill_(False)
-            return attn_mask.to(device)
-
-        attn_mask = make_mask(total_seq_len, gen_seq_len, pcpt_total_embs.device)
-
-        total_embs = torch.cat((pcpt_total_embs, gen_total_embs), dim=1)
+        attn_mask = _pcpt_gen_attn_mask(
+            total_seq_len, gen_seq_len, pcpt_total_embs.device
+        )
 
         out, _ = self.self_attn(
             total_embs,
@@ -126,12 +201,40 @@ class MHA(nn.Module):
 
         return (out[:, :pcpt_seq_len], out[:, pcpt_seq_len:]), (None, None)
 
+    def _flex_attend(self, total_embs: Tensor, block_mask) -> Tensor:
+        """Same weights as ``self.self_attn``, but O(B*H*L*d) memory.
+
+        ``nn.MultiheadAttention`` is kept purely as the parameter container, so a
+        checkpoint trained under ``--attn-impl mha`` loads unchanged here and vice
+        versa. The projections below are exactly what
+        ``F.multi_head_attention_forward`` does for the self-attention,
+        equal-embed-dim case.
+        """
+        B, L, E = total_embs.shape
+        qkv = F.linear(
+            total_embs, self.self_attn.in_proj_weight, self.self_attn.in_proj_bias
+        )
+        # (B, L, 3E) -> 3 x (B, H, L, head_dim)
+        qkv = qkv.view(B, L, 3, self.num_heads, self.head_dim)
+        query, key, value = (t.permute(0, 2, 1, 3) for t in qkv.unbind(2))
+
+        # flex_attention's default scale is 1/sqrt(head_dim), matching nn.MHA.
+        attn_out = flex_attention(query, key, value, block_mask=block_mask)
+
+        attn_out = attn_out.transpose(1, 2).contiguous().view(B, L, E)
+        return self.self_attn.out_proj(attn_out)
+
     def _forward_perceptual(self, total_embs, key_padding_mask):
+        # need_weights=False keeps this on the SDPA path; the default (True) falls
+        # back to an explicit baddbmm+softmax and allocates a [B, L, L] weight
+        # tensor that is thrown away. This path is hit by TransformerModule.embed(),
+        # and therefore by the CDD bulk-bank refresh in on_train_batch_start.
         out, _ = self.self_attn(
             total_embs,
             total_embs,
             total_embs,
             key_padding_mask=key_padding_mask.to(key_padding_mask.device),
+            need_weights=False,
         )
         return (out, None), (None, None)
 
@@ -254,12 +357,15 @@ class CFLayer(nn.Module):
         gen_total_embs: Tensor,
         pcpt_key_padding_mask: Optional[Tensor] = None,
         gen_key_padding_mask: Optional[Tensor] = None,
+        block_mask=None,
     ) -> Tensor:
         r"""Pass the input through the encoder layer.
         Args:
             src: the sequence to the encoder layer (required).
             src_mask: the mask for the src sequence (optional).
             src_key_padding_mask: the mask for the src keys per batch (optional).
+            block_mask: optional FlexAttention ``BlockMask``, built once per encoder
+                forward and shared by every layer.
         Shape:
             see the docs in Transformer class.
         """
@@ -278,6 +384,7 @@ class CFLayer(nn.Module):
                 self.norm1(gen_total_embs) if gen_total_embs is not None else None,
                 pcpt_key_padding_mask=pcpt_key_padding_mask_,
                 gen_key_padding_mask=gen_key_padding_mask_,
+                block_mask=block_mask,
             )[0]
             pcpt_total_embs = pcpt_total_embs + self.dropout1(pcpt_total_embs2)
             pcpt_total_embs = pcpt_total_embs + self.dropout2(self._ff(self.norm2(pcpt_total_embs)))
@@ -293,6 +400,7 @@ class CFLayer(nn.Module):
                 gen_total_embs,
                 pcpt_key_padding_mask=pcpt_key_padding_mask_,
                 gen_key_padding_mask=gen_key_padding_mask_,
+                block_mask=block_mask,
             )[0]
             pcpt_total_embs = self.norm1(pcpt_total_embs + self.dropout1(pcpt_total_embs2))
             pcpt_total_embs = self.norm2(pcpt_total_embs + self.dropout2(self._ff(pcpt_total_embs)))
@@ -330,12 +438,30 @@ class CFGenerator(nn.Module):
         num_layers,
         norm=None,
         mask_check=True,
+        grad_checkpoint: bool = False,
+        attn_impl: str = "mha",
     ):
         super().__init__()
         self.layers = _get_clones(encoder_layer, num_layers)
         self.num_layers = num_layers
         self.norm = norm
         self.mask_check = mask_check
+        self.grad_checkpoint = grad_checkpoint
+        self.attn_impl = attn_impl
+
+        # flex_attention has no attention-weight dropout. The residual and FFN
+        # dropouts in CFLayer still apply, but this one is silently lost, so say so
+        # rather than let it look like an unexplained regularisation change.
+        attn_dropout = getattr(encoder_layer.self_attn, "attention_dropout", 0.0)
+        if attn_impl == "flex" and attn_dropout:
+            warnings.warn(
+                f"--attn-impl flex drops attention-weight dropout (currently "
+                f"{attn_dropout}); FFN and residual dropout are unaffected. Pass "
+                f"--dropout 0 for an exact match against --attn-impl mha, or accept "
+                f"the slightly weaker regularisation.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     def forward(
         self,
@@ -364,13 +490,41 @@ class CFGenerator(nn.Module):
                     "only bool and floating types of key_padding_mask are supported"
                 )
 
-        for mod in self.layers:
-            pcpt_total_embs, gen_total_embs = mod(
-                pcpt_total_embs,
-                gen_total_embs,
-                pcpt_key_padding_mask,
-                gen_key_padding_mask,
+        # Build the FlexAttention block mask once for the whole stack — it is the
+        # same for every layer, and create_block_mask is not free.
+        block_mask = None
+        if self.attn_impl == "flex" and gen_total_embs is not None:
+            block_mask = build_block_mask(
+                pcpt_len=pcpt_total_embs.shape[1],
+                total_len=pcpt_total_embs.shape[1] + gen_total_embs.shape[1],
+                key_padding_mask=src_key_padding_mask,
+                device=pcpt_total_embs.device,
             )
+
+        for mod in self.layers:
+            if self.grad_checkpoint and self.training:
+                # use_reentrant=False is required, not preferred: gen_total_embs is
+                # None on the perceptual-only path and block_mask is not a tensor,
+                # neither of which the reentrant implementation accepts. It also
+                # preserves RNG state, so dropout is reproduced exactly on the
+                # recompute and the result is numerically identical.
+                pcpt_total_embs, gen_total_embs = torch.utils.checkpoint.checkpoint(
+                    mod,
+                    pcpt_total_embs,
+                    gen_total_embs,
+                    pcpt_key_padding_mask,
+                    gen_key_padding_mask,
+                    block_mask,
+                    use_reentrant=False,
+                )
+            else:
+                pcpt_total_embs, gen_total_embs = mod(
+                    pcpt_total_embs,
+                    gen_total_embs,
+                    pcpt_key_padding_mask,
+                    gen_key_padding_mask,
+                    block_mask,
+                )
 
         if self.norm is not None:
             pcpt_total_embs = self.norm(pcpt_total_embs)
@@ -406,6 +560,8 @@ class RefactoredCFGenerator(nn.Module):
         batch_first: bool = True,
         norm_scheme: str = "post",
         norm: Optional[nn.Module] = None,
+        grad_checkpoint: bool = False,
+        attn_impl: str = "mha",
     ):
         """
         Initializes the refactored Transformer Encoder.
@@ -449,6 +605,15 @@ class RefactoredCFGenerator(nn.Module):
             num_layers=num_layers,
             norm=norm,
         )
+        self.grad_checkpoint = grad_checkpoint
+        if attn_impl == "flex":
+            # This variant delegates to nn.TransformerEncoder, whose layers own their
+            # attention internally; there is no seam to swap in FlexAttention without
+            # reimplementing the layer. Use --gen-method theirs/orig for --attn-impl flex.
+            raise ValueError(
+                "--attn-impl flex is not supported with --gen-method mine "
+                "(RefactoredCFGenerator). Use --gen-method theirs or orig."
+            )
 
     def forward(
         self,
@@ -476,12 +641,28 @@ class RefactoredCFGenerator(nn.Module):
         src = torch.cat((pcpt_total_embs, gen_total_embs), dim=1)
 
         # --- Call the standard Transformer Encoder ---
-        output = self.transformer_encoder(
-            src=src,
-            mask=attn_mask,
-            src_key_padding_mask=src_key_padding_mask,
-            is_causal=False,
-        )
+        if self.grad_checkpoint and self.training:
+            # nn.TransformerEncoder has no checkpointing hook, so drive its layers
+            # directly. Same layers, same order, same final norm.
+            output = src
+            for layer in self.transformer_encoder.layers:
+                output = torch.utils.checkpoint.checkpoint(
+                    layer,
+                    output,
+                    attn_mask,
+                    src_key_padding_mask,
+                    False,  # is_causal
+                    use_reentrant=False,
+                )
+            if self.transformer_encoder.norm is not None:
+                output = self.transformer_encoder.norm(output)
+        else:
+            output = self.transformer_encoder(
+                src=src,
+                mask=attn_mask,
+                src_key_padding_mask=src_key_padding_mask,
+                is_causal=False,
+            )
 
         # --- Post-processing Step ---
         # Split the output back into perceptual and generative parts
@@ -587,9 +768,11 @@ class QuickCFGenerator(nn.Module):
         dim_feedforward: int = 2048,
         dropout: float = 0.1,
         norm_scheme: str = "post",
+        grad_checkpoint: bool = False,
         **kwargs,
     ):
         super().__init__()
+        self.grad_checkpoint = grad_checkpoint
         self.layers = nn.ModuleList(
             [
                 FlexTransformerLayer(
@@ -634,7 +817,12 @@ class QuickCFGenerator(nn.Module):
         # 3. Pass through layers
         x = src
         for layer in self.layers:
-            x = layer(x, block_mask)
+            if self.grad_checkpoint and self.training:
+                x = torch.utils.checkpoint.checkpoint(
+                    layer, x, block_mask, use_reentrant=False
+                )
+            else:
+                x = layer(x, block_mask)
 
         # 4. Split output
         pcpt_output = x[:, :pcpt_len]

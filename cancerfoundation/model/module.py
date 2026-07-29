@@ -55,6 +55,8 @@ class TransformerModule(nn.Module):
         max_seq_len: int,
         gen_method: str,
         their_init_weights: bool,
+        grad_checkpoint: bool = False,
+        attn_impl: str = "mha",
         # Unified FM parameters
         contrastive: bool = False,
         mmd: bool = False,
@@ -154,6 +156,8 @@ class TransformerModule(nn.Module):
         self.where_condition = where_condition
         self.max_seq_len = max_seq_len
         self.gen_method = gen_method
+        self.grad_checkpoint = grad_checkpoint
+        self.attn_impl = attn_impl
         self.contrastive = contrastive
         self.mmd = mmd
         self.aggregation = aggregation
@@ -278,7 +282,10 @@ class TransformerModule(nn.Module):
                     norm_type=norm_type,
                 )
                 self.transformer_encoder = CFGenerator(
-                    encoder_layer=encoder_layers, num_layers=nlayers
+                    encoder_layer=encoder_layers,
+                    num_layers=nlayers,
+                    grad_checkpoint=grad_checkpoint,
+                    attn_impl=attn_impl,
                 )
                 self.flag_encoder = nn.Embedding(2, d_model)
                 self.encoder = self._build_gene_encoder(
@@ -297,7 +304,10 @@ class TransformerModule(nn.Module):
                     norm_type=norm_type,
                 )
                 self.transformer_encoder = CFGenerator(
-                    encoder_layer=encoder_layers, num_layers=nlayers
+                    encoder_layer=encoder_layers,
+                    num_layers=nlayers,
+                    grad_checkpoint=grad_checkpoint,
+                    attn_impl=attn_impl,
                 )
                 self.generative_flag = nn.Parameter(torch.randn(d_model))
                 self.gene_encoder = self._build_gene_encoder(
@@ -313,6 +323,8 @@ class TransformerModule(nn.Module):
                     dropout=dropout,
                     norm_scheme=self.norm_scheme,
                     num_layers=nlayers,
+                    grad_checkpoint=grad_checkpoint,
+                    attn_impl=attn_impl,
                 )
                 self.generative_flag = nn.Parameter(torch.randn(d_model))
                 self.gene_encoder = self._build_gene_encoder(
@@ -329,6 +341,7 @@ class TransformerModule(nn.Module):
                     dropout=dropout,
                     norm_scheme=self.norm_scheme,
                     num_layers=nlayers,
+                    grad_checkpoint=grad_checkpoint,
                 )
                 self.generative_flag = nn.Parameter(torch.randn(d_model))
                 self.gene_encoder = self._build_gene_encoder(
@@ -927,22 +940,29 @@ class TransformerModule(nn.Module):
                 loss = loss + self.weight_reconstruction * self.weight_mvc * loss_mvc
                 loss_dict["loss_mvc"] = loss_mvc * self.weight_mvc * self.weight_reconstruction
 
-            previous_cell_embs = output_dict["cell_emb"].detach()
-            preds = self.generative_forward(
-                pcpt_gene,
-                pcpt_expr,
-                pcpt_key_padding_mask,
-                gen_gene,
-                gen_key_padding_mask,
-                src_key_padding_mask,
-                attn_mask,
-                input_cell_emb=previous_cell_embs,
-                conditions=conditions_batch,
-            )["gen_preds"]
-
-            loss_gen = self.criterion(preds, gen_expr_target, positions_to_match)
-            loss = loss + use_cell_embedding * self.weight_reconstruction * loss_gen
-            loss_dict["loss_gen"] = loss_gen * self.weight_reconstruction
+            # The cell-embedding-conditioned pass contributes to `loss` only through
+            # the `use_cell_embedding` factor below, which CancerFoundation keeps at
+            # False for the first 1000 steps. Running it anyway costs a full extra
+            # transformer forward whose activations are retained until backward, so
+            # skip it outright when its weight is zero. Numerically identical.
+            if use_cell_embedding:
+                previous_cell_embs = output_dict["cell_emb"].detach()
+                preds = self.generative_forward(
+                    pcpt_gene,
+                    pcpt_expr,
+                    pcpt_key_padding_mask,
+                    gen_gene,
+                    gen_key_padding_mask,
+                    src_key_padding_mask,
+                    attn_mask,
+                    input_cell_emb=previous_cell_embs,
+                    conditions=conditions_batch,
+                )["gen_preds"]
+                loss_gen = self.criterion(preds, gen_expr_target, positions_to_match)
+                loss = loss + use_cell_embedding * self.weight_reconstruction * loss_gen
+                loss_dict["loss_gen"] = loss_gen * self.weight_reconstruction
+            # else: no `loss_gen` key. Logging a 0 here would draw a flat line in
+            # W&B that looks like a converged loss rather than an absent one.
 
         # Perceptual training
         else:
