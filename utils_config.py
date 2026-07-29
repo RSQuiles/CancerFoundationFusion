@@ -434,6 +434,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--metrics-log-interval",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Write train loss rows to metrics.csv every N optimizer steps. "
+            "Default: --ckpt-every-n-steps if set, else --log-interval."
+        ),
+    )
+
+    parser.add_argument(
         "--num-workers",
         type=int,
         default=4,

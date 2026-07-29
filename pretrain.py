@@ -5,7 +5,7 @@ from typing import Optional
 from pathlib import Path
 
 sys.path.insert(0, "../")
-from utils import get_args, MyProgressBar
+from utils import get_args, MyProgressBar, LossCSVLogger
 from cancerfoundation.model.model import CancerFoundation
 from cancerfoundation.data.data_module import BulkSCDataModule
 import pytorch_lightning as pl
@@ -32,6 +32,7 @@ def train_model(
     log_interval: int,
     save_every: bool,
     ckpt_every_n_steps: Optional[int] = None,
+    metrics_log_interval: Optional[int] = None,
     verbose: bool = False,
 ):
     """
@@ -73,6 +74,16 @@ def train_model(
             save_top_k=-1 if save_every else 1,
         )
         callbacks.append(step_checkpoint_callback)
+
+    # Local CSV log of all train/val metrics (offline complement to W&B).
+    # Train rows are written every `metrics_interval` optimizer steps; default matches
+    # the step-checkpoint cadence, falling back to the progress-bar log interval.
+    metrics_interval = (
+        metrics_log_interval
+        if metrics_log_interval is not None
+        else (ckpt_every_n_steps if ckpt_every_n_steps is not None else log_interval)
+    )
+    callbacks.append(LossCSVLogger(save_dir, interval=metrics_interval))
 
     # Learning rate monitoring
     lr_monitor = LearningRateMonitor(logging_interval="step")
@@ -436,6 +447,7 @@ def main(input_args=None):
         log_interval=args.log_interval,
         save_every=args.save_every,
         ckpt_every_n_steps=args.ckpt_every_n_steps,
+        metrics_log_interval=args.metrics_log_interval,
         verbose=args.verbose,
     )
 
