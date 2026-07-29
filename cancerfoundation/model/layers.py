@@ -10,6 +10,14 @@ from torch.nn.modules.transformer import _get_clones
 from functools import partial, lru_cache
 
 
+# flex_attention is a slow reference implementation in eager; torch.compile lowers it
+# into the fused kernel. Done here rather than via --compile, which wraps the whole
+# module (graph breaks) and defaults to dynamic shapes (unsupported by flex).
+# dynamic=False => one compile per distinct sequence length.
+_flex_attention_compiled = torch.compile(flex_attention, dynamic=False)
+_create_block_mask_compiled = torch.compile(create_block_mask, dynamic=False)
+
+
 @lru_cache(maxsize=8)
 def _pcpt_gen_attn_mask(total_len: int, gen_len: int, device: torch.device) -> Tensor:
     """Bool attention mask for the concatenated ``[pcpt | gen]`` sequence.
@@ -48,7 +56,7 @@ def _flex_mask_mod(b, h, q_idx, kv_idx, pcpt_len, valid):
 @lru_cache(maxsize=8)
 def _cached_block_mask(total_len: int, pcpt_len: int, device: torch.device):
     """Padding-free block mask — identical across steps, so worth caching."""
-    return create_block_mask(
+    return _create_block_mask_compiled(
         partial(_flex_mask_mod, pcpt_len=pcpt_len, valid=None),
         B=None,
         H=None,
@@ -69,7 +77,7 @@ def build_block_mask(pcpt_len: int, total_len: int, key_padding_mask: Optional[T
         return _cached_block_mask(total_len, pcpt_len, device)
 
     valid = ~key_padding_mask
-    return create_block_mask(
+    return _create_block_mask_compiled(
         partial(_flex_mask_mod, pcpt_len=pcpt_len, valid=valid),
         B=key_padding_mask.shape[0],
         H=None,
@@ -219,7 +227,7 @@ class MHA(nn.Module):
         query, key, value = (t.permute(0, 2, 1, 3) for t in qkv.unbind(2))
 
         # flex_attention's default scale is 1/sqrt(head_dim), matching nn.MHA.
-        attn_out = flex_attention(query, key, value, block_mask=block_mask)
+        attn_out = _flex_attention_compiled(query, key, value, block_mask=block_mask)
 
         attn_out = attn_out.transpose(1, 2).contiguous().view(B, L, E)
         return self.self_attn.out_proj(attn_out)
