@@ -373,6 +373,15 @@ class BulkSCSampler(Sampler[list[int]]):
     curiculum (int, optional): Curriculum learning parameter. If > 0, gradually
         increases sampling weight balance over epochs. Defaults to 0.
     replacement (bool, optional): Whether to sample with replacement when balanced=True. Defaults to True.
+    epoch_size : int | None
+        Absolute number of batches per epoch. Overrides ``epoch_coverage``.
+    epoch_coverage : float
+        How many passes over the bulk pool make up one epoch. The batch count is
+        ``ceil(coverage * n_bulk_rows / n_bulk)``, so it scales with ``batch_size``:
+        doubling the batch size halves the step count and leaves samples-per-epoch
+        unchanged. Bulk rows are drawn independently per batch, so coverage 1.0
+        means "as many draws as there are rows" (~63% of distinct rows in
+        expectation), not "every row exactly once".
 
     """
 
@@ -392,6 +401,7 @@ class BulkSCSampler(Sampler[list[int]]):
         curiculum: int = 0,
         replacement: bool = True,
         epoch_size: Optional[int] = None,
+        epoch_coverage: float = 1.0,
         precomputed_pb: bool = False,
         paired_sampling: bool = False,
         paired_every_n: int = 10,
@@ -518,6 +528,7 @@ class BulkSCSampler(Sampler[list[int]]):
         self.world_size = max(1, world_size)
         self.batch_size = batch_size
         self.epoch_size = epoch_size
+        self.epoch_coverage = epoch_coverage
         self.bulk_ratio = bulk_ratio
         self.pb_ratio = pb_ratio
         self.drop_last = drop_last
@@ -565,12 +576,35 @@ class BulkSCSampler(Sampler[list[int]]):
                 f"(got n_bulk={self.n_bulk}, n_pb={self.n_pb})."
             )
 
-        # The number of bulk indices defines the epoch length
-        self._n_batches = (
-            len(self.bulk_indices)
-            if self.epoch_size is None
-            else self.epoch_size
-        )
+        # One epoch = `epoch_coverage` passes over the bulk pool. Each batch consumes
+        # n_bulk bulk rows, so the batch count scales with batch_size: doubling
+        # --batch-size halves the step count and keeps samples-per-epoch constant.
+        # (Previously this was len(bulk_indices) — a fixed step count independent of
+        # batch_size, which drew every bulk row ~n_bulk times per "epoch".)
+        # Must stay below the n_bulk > 0 check above: it divides by n_bulk.
+        if self.epoch_size is not None:
+            self._n_batches = int(self.epoch_size)
+        else:
+            self._n_batches = max(
+                1,
+                int(np.ceil(self.epoch_coverage * len(self.bulk_indices) / self.n_bulk)),
+            )
+
+        # DistributedBatchSamplerWrapper shards these batches across ranks, so an epoch
+        # shorter than world_size would leave a rank with nothing to do and hang the
+        # collective.
+        if self._n_batches < self.world_size:
+            raise ValueError(
+                f"Epoch is {self._n_batches} batches but world_size={self.world_size}; "
+                f"at least one rank would get zero steps. Raise --epoch-coverage "
+                f"(currently {self.epoch_coverage}) or lower --batch-size / --bulk-ratio "
+                f"(n_bulk={self.n_bulk} over {len(self.bulk_indices)} bulk rows)."
+            )
+
+        # Printed unconditionally: this determines how much data a run actually sees,
+        # and it used to be an invisible len(bulk_indices).
+        print(self._describe_epoch())
+
         self.count = 0
 
         # Balanced sampling setup
@@ -703,6 +737,37 @@ class BulkSCSampler(Sampler[list[int]]):
             torch.from_numpy(offsets).share_memory_(),
         )
 
+    def _describe_epoch(self) -> str:
+        """Human-readable summary of what one epoch actually consumes.
+
+        Worth printing: the pseudobulk constituents (n_pb * n_sc_per_pb) dominate SC
+        throughput and are drawn every batch whether or not --agg-consistency forwards
+        them to the model, so SC coverage is easy to misjudge from batch_size alone.
+        """
+        sc_per_batch = self.n_sc + (
+            0 if self.precomputed_pb else self.n_pb * self.n_sc_per_pb
+        )
+        n_bulk_rows = max(1, len(self.bulk_indices))
+        n_sc_rows = max(1, len(self.sc_indices))
+        bulk_draws = self._n_batches * self.n_bulk
+        sc_draws = self._n_batches * sc_per_batch
+        source = (
+            f"epoch_size={self.epoch_size} (absolute)"
+            if self.epoch_size is not None
+            else f"epoch_coverage={self.epoch_coverage}"
+        )
+        lines = [
+            f"[EPOCH] {self._n_batches} batches/epoch from {source}",
+            f"[EPOCH] batch_size={self.batch_size} -> n_bulk={self.n_bulk}, "
+            f"n_pb={self.n_pb}, n_sc={self.n_sc}, rows/batch={self.raw_batch_size}",
+            f"[EPOCH] bulk: {bulk_draws} draws over {len(self.bulk_indices)} rows "
+            f"({bulk_draws / n_bulk_rows:.2f} passes/epoch)",
+            f"[EPOCH] sc:   {sc_draws} draws over {len(self.sc_indices)} rows "
+            f"({sc_draws / n_sc_rows:.3f} passes/epoch, "
+            f"{n_sc_rows / max(1, sc_draws):.1f} epochs to cover)",
+        ]
+        return "\n".join(lines)
+
     def __len__(self) -> int:
         return self._n_batches
 
@@ -716,7 +781,8 @@ class BulkSCSampler(Sampler[list[int]]):
     def __iter__(self):
         """
         Yield a list of indices for each batch.
-        The number of batches per epoch is defined by the number of bulk samples.
+        The number of batches per epoch is set by `epoch_coverage` passes over the bulk
+        pool (or by `epoch_size` when given) — see __init__.
         In paired batches there is a one-to-one correspondence between bulk and pseudobulk samples
         """
         for batch_i in range(self._n_batches):

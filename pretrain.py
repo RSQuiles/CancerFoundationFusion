@@ -279,6 +279,7 @@ def main(input_args=None):
         zero_percentages=args.zero_percentages,
         batch_size=args.batch_size,
         epoch_size=args.epoch_size,
+        epoch_coverage=args.epoch_coverage,
         conditions=args.conditions + ["modality"] if args.unified else args.conditions,
         balance_primary=args.balance_primary,
         balance_secondary=args.balance_secondary,

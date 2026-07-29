@@ -510,7 +510,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--epoch-size",
         type=int,
-        help="Number of batches to evaluate in each epoch"
+        help=(
+            "Absolute number of batches per epoch. Overrides --epoch-coverage. "
+            "Leave unset to derive the epoch length from bulk coverage."
+        ),
+    )
+
+    parser.add_argument(
+        "--epoch-coverage",
+        type=float,
+        default=1.0,
+        help=(
+            "How many passes over the bulk pool make up one epoch. The batch count is "
+            "ceil(coverage * n_bulk_rows / bulk_rows_per_batch), so it scales with "
+            "--batch-size: doubling the batch size halves the number of steps and keeps "
+            "samples-per-epoch constant. Note that bulk rows are drawn independently per "
+            "batch, so coverage 1.0 means 'as many draws as there are rows' (~63%% of "
+            "distinct rows in expectation), not 'every row exactly once'. Default is 1.0."
+        ),
     )
 
     parser.add_argument(

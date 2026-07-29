@@ -151,6 +151,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         balance: bool = False,
         balance_labels: Optional[List[str] | str] = None,
         epoch_size: Optional[int] = None,
+        epoch_coverage: float = 1.0,
         pb_group_column: Optional[str] = None,
         agg_consistency: Optional[bool] = False,
         pb_label: Optional[str] = None,
@@ -187,6 +188,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         self.balance_labels = balance_labels
         self.conditions = conditions
         self.epoch_size = epoch_size
+        self.epoch_coverage = epoch_coverage
         self.pb_group_column = pb_group_column
         self.agg_consistency = agg_consistency
         self.pb_label = pb_label
@@ -289,6 +291,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                     n_sc_per_pb=self.hparams.n_sc_per_pseudobulk,
                     balance=self.balance,
                     epoch_size=self.epoch_size,
+                    epoch_coverage=self.epoch_coverage,
                     precomputed_pb=self.precomputed_pb,
                     paired_sampling=self.paired_sampling,
                     paired_every_n=self.paired_every_n,
