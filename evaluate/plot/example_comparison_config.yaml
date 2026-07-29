@@ -27,8 +27,8 @@ groups:
   - name: "Big condition"
     dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition
     experiments:
-      - {name: "Baseline", model: baseline}
-      - {name: "No DAT",   model: no_dat}
+      - {name: "Unified Baseline", model: unified}
+      - {name: "DAT",   model: dat}
 
   - name: "United data"
     dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_united_data
