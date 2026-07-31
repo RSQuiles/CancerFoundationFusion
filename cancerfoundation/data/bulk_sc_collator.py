@@ -5,6 +5,7 @@ import numpy as np
 import torch
 
 from cancerfoundation.data.data_collator import AnnDataCollator
+from cancerfoundation.data.preprocess import looks_like_counts
 
 # Canonical model-facing modality codes. These are the values served to the model
 # in ``conditions["modality"]`` and compared against by every modality-aware loss —
@@ -75,6 +76,8 @@ class BulkSCCollator(AnnDataCollator):
         """
         # Determine binning
         self.do_binning = self.n_bins is not None
+        # Latches so the counts/log1p mismatch warning fires once, not per batch.
+        self._warned_counts_mismatch = False
 
         super().__post_init__()
         self.n_bulk = round(self.batch_size * self.bulk_ratio)
@@ -328,20 +331,35 @@ class BulkSCCollator(AnnDataCollator):
         self,
         sc_samples: List[Dict[str, Any]],
         input_data: str,
-        sc_counts: bool = False, # The SC data we are using is always log1p normalized by default
+        sc_counts: Optional[bool] = None,
         rank_normalise: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Aggregate a list of single-cell token sequences into a single pseudobulk
         in the same sparse (gene_ids, expressions) format used by individual cells.
-        The log1p values are first mapped back to count space via expm1, then aggregated by gene ID.
+
+        Aggregation must happen in count space. When the SC rows are log1p values
+        they are first mapped back via ``expm1``; when they are already counts that
+        step must be skipped — ``expm1`` on a raw count saturates float32 for any
+        gene with count >= ~89, and because summing saturated values is not
+        rank-preserving the resulting profile is badly distorted rather than merely
+        rescaled.
+
+        Args:
+            sc_counts: True when ``sc_samples`` hold raw counts (skip ``expm1``),
+                False when they hold log1p values. Defaults to
+                ``input_data == "counts"``, i.e. the space the caller has declared
+                the on-disk data to be in.
 
         Each cell can be rank-normalised to unit sum (via expm1 → proportion) before
         aggregation, so all cells contribute equally regardless of sequencing depth.
-        The result is re-normalised to log1p(CPM) to match the model's input
-        format. Zero entries are dropped and the CLS token is prepended.
+        The result is re-normalised to log1p(CPM) when the model expects log1p input.
+        Zero entries are dropped and the CLS token is prepended.
         """
         k = self.keep_first_n_tokens
+
+        if sc_counts is None:
+            sc_counts = input_data == "counts"
 
         # Per-cell mapping to count space and normalization
         genes_list = []
@@ -359,19 +377,24 @@ class BulkSCCollator(AnnDataCollator):
             if len(genes) == 0:
                 continue
 
-            # if self.verbose:
-            #     print(f"expr max before expm1: {exprs.max()}, min: {exprs.min()}")
-            #     if exprs.max() > 20:
-            #         print(f"WARNING: suspiciously large log1p value: {exprs.max()}")
-
-            # Map to count space: log1p → expm1
+            # Map to count space: log1p → expm1. Skipped when the rows are already
+            # counts, since expm1 would saturate them (see the docstring).
             if not sc_counts:
-                # exprs = np.expm1(exprs)
+                if not self._warned_counts_mismatch and looks_like_counts(exprs):
+                    self._warned_counts_mismatch = True
+                    print(
+                        f"[WARNING] _aggregate_sc called with sc_counts=False but the SC rows "
+                        f"look like raw counts (max={exprs.max():.1f}, integral). expm1 will "
+                        f"saturate them and the pseudobulk profile will be distorted. Check "
+                        f"--input-data (currently {input_data!r})."
+                    )
                 # Avoid potential overflows
-                exprs = np.clip(                                                                                                              
-                    np.expm1(exprs.astype(np.float64)),                                                                                       
-                    0, np.finfo(np.float32).max,                                                                                              
+                exprs = np.clip(
+                    np.expm1(exprs.astype(np.float64)),
+                    0, np.finfo(np.float32).max,
                 ).astype(np.float32)
+            else:
+                exprs = exprs.astype(np.float32)
 
             # Rank normalize: expm1 → normalize to proportions
             # This way each cell contributes equally to the pseudobulk, regardless of sequencing depth or previous normalization

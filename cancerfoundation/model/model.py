@@ -7,12 +7,18 @@ import torch
 import numpy as np
 import pandas as pd
 import scanpy as sc
-import scipy.sparse as sp
 from cancerfoundation.model.perturbation_model import PerturbationTransformer
 from cancerfoundation.utils import load_pretrained
 from cancerfoundation.model.module import TransformerModule
 from cancerfoundation.data.bulk_sc_collator import BULK_MODALITY, PB_MODALITY
-from cancerfoundation.data.preprocess import binning
+from cancerfoundation.data.preprocess import binning, looks_like_counts
+# Modality-aware gene-panel selection lives in cancerfoundation/data/gene_panel.py,
+# kept free of torch/lightning imports so it can be exercised without a checkpoint.
+from cancerfoundation.data.gene_panel import (  # noqa: F401  (re-exported)
+    _classify_modality,
+    _top_mad_genes,
+    select_shared_panel,
+)
 from cancerfoundation.loss import get_loss
 from safetensors import safe_open
 from cancerfoundation.loss import LossType
@@ -20,47 +26,6 @@ from pytorch_lightning.utilities.types import OptimizerLRSchedulerConfig
 import torch.nn.functional as F
 from tqdm import tqdm
 import time
-
-# ---------------------------------------------------------------------------
-# Module-level helpers for modality-aware HVG selection
-# ---------------------------------------------------------------------------
-_SC_MODALITY_NORM: frozenset = frozenset({
-    "sc", "singlecell", "scrna", "scrnaseq", "subsampled", "pairedsc",
-})
-_PB_MODALITY_NORM: frozenset = frozenset({
-    "pseudobulk", "synthpb", "pairedpb", "pseudo",
-})
-
-def _classify_modality(val: str) -> str:
-    """Map a raw modality label to 'sc', 'pseudobulk', or 'bulk'."""
-    norm = val.lower().replace(" ", "").replace("-", "").replace("_", "")
-    if norm in _SC_MODALITY_NORM or norm.startswith("sc"):
-        return "sc"
-    if "pseudo" in norm or norm in _PB_MODALITY_NORM:
-        return "pseudobulk"
-    return "bulk"
-
-
-def _top_mad_genes(X, n_top: int) -> np.ndarray:
-    """Return indices of the ``n_top`` genes (columns) with highest MAD.
-
-    MAD (median absolute deviation) is computed on the values as passed — in this
-    pipeline the data is already log1p-transformed by the time gene selection runs,
-    so this is log1p + MAD. Robust to the composition-driven variance that dominates
-    bulk/pseudobulk expression.
-    """
-    X = X if isinstance(X, np.ndarray) else X.toarray()
-
-    # Detect if data is likely not log1p-transformed.
-    # Heuristic: log1p data has a max value typically well below 20;.
-    if X.max() > 20:
-        print("  [INFO] Non-log1p data detected. Normalizing!") 
-        X = np.log1p(X)
-
-    med = np.median(X, axis=0)
-    mad = np.median(np.abs(X - med), axis=0)
-    return np.argsort(mad)[-n_top:]
-
 
 class CancerFoundation(pl.LightningModule):
     """The main PyTorch Lightning module for the Cancer Foundation model.
@@ -1034,10 +999,9 @@ class CancerFoundation(pl.LightningModule):
         """
         if data.n_vars <= self.n_top_genes:
             return data
-        X = data.X
-        xmax = float(X.data.max() if sp.issparse(X) else X.max()) if getattr(X, "nnz", 1) else 0.0
-        if xmax > 20:
-            print(f"  [INFO] Non-log1p data detected (max={xmax:.1f}). Normalizing for gene selection!")
+        if looks_like_counts(data.X):
+            print("  [INFO] Raw counts detected. Normalizing for gene selection only "
+                  "(the values fed to the model are left as-is, matching training).")
             work = data.copy()
             sc.pp.log1p(work)
         else:
@@ -1121,6 +1085,9 @@ class CancerFoundation(pl.LightningModule):
         flavor="seurat",
         modality: str = "sc",
         modality_col: Optional[str] = None,
+        shared_panel: bool = True,
+        panel_strategy: str = "consensus",
+        panel_reference: Optional[str] = None,
         return_preprocessed: bool = False):
         """Embeds an AnnData object into cell embeddings.
 
@@ -1140,12 +1107,22 @@ class CancerFoundation(pl.LightningModule):
             modality: Modality of the whole AnnData when ``modality_col`` is not set —
                 one of "sc", "bulk", "pseudobulk". Drives single-modality gene selection.
             modality_col: If provided, name of an obs column holding per-cell modality
-                labels (e.g. "modality" or "_eval_modality"). When set, gene selection
-                and dense embedding are performed independently per modality group so
-                each modality's variance structure drives its own gene set.
-                ``gene_set_used`` is then returned as a ``dict[str, list[str]]`` instead
-                of a flat list. ``gene_subset`` can also be passed as such a dict to skip
-                re-fitting selection.
+                labels (e.g. "modality" or "_eval_modality"). With
+                ``shared_panel=False`` gene selection and dense embedding are performed
+                independently per modality group, and ``gene_set_used`` comes back as a
+                ``dict[str, list[str]]``. ``gene_subset`` can also be passed as such a
+                dict to skip re-fitting selection.
+            shared_panel: When True (default) and ``modality_col`` resolves to two or
+                more groups, fit ONE gene panel across all of them (see
+                ``select_shared_panel``) and embed every cell through it, returning a
+                flat ``gene_set_used``. Cross-modality metrics are only interpretable
+                this way: a per-modality panel makes the input distribution differ
+                *with* modality, which no batch-integration metric can tell apart from
+                a real batch effect. No-op for single-group data, so single-modality
+                callers are unaffected. Ignored when ``gene_subset`` is given.
+            panel_strategy: How to fit the shared panel — "consensus" (default),
+                "reference", or "pooled". See ``select_shared_panel``.
+            panel_reference: Group name to fit on when ``panel_strategy="reference"``.
             return_preprocessed: If True, return the normalised, vocab-intersected,
                 gene-selected AnnData (un-binned) instead of running the forward pass.
                 Used by ``preprocess_for_embedding`` so both paths share identical
@@ -1173,13 +1150,62 @@ class CancerFoundation(pl.LightningModule):
                 # Raw counts
                 sc.pp.normalize_total(data, target_sum=1e4)
             sc.pp.log1p(data)
+        elif looks_like_counts(data.X):
+            # Not necessarily wrong: training bins the on-disk values directly and
+            # per-row quantile binning is scale-invariant, so for input_style="binned"
+            # this matches training. Said out loud because gene selection and any
+            # downstream PCA/aggregation DO care about the scale.
+            print(
+                "[INFO] normalized=True but the matrix looks like raw counts. Values "
+                "will be embedded as-is (consistent with binned training); gene "
+                "selection log1p-normalises internally."
+            )
 
-        # Intersect genes with vocab
-        common_genes = list(set(self.vocab.keys()).intersection(set(data.var.index)))
+        # Intersect genes with vocab. Sorted so the column order is reproducible
+        # across processes (set iteration order is not); the encoder is permutation
+        # invariant over gene tokens, so this only affects reproducibility.
+        common_genes = sorted(set(self.vocab.keys()).intersection(set(data.var.index)))
         if len(common_genes) == 0:
-            raise ValueError(f"No common genes between vocab and data. Check gene name format.")
+            raise ValueError("No common genes between vocab and data. Check gene name format.")
         print(f"Common genes: {len(common_genes)} / {data.n_vars}")
         data = data[:, common_genes].copy()
+
+        # ── Shared panel: fit one gene set across modality groups ──────────────
+        # Resolved into a flat `gene_subset` so the single-panel branch below does the
+        # rest (subset once, one dense forward pass for every cell).
+        if (
+            gene_subset is None
+            and shared_panel
+            and hvg_select
+            and modality_col is not None
+            and modality_col in data.obs.columns
+            and not return_preprocessed
+        ):
+            group_vals = data.obs[modality_col].astype(str).to_numpy()
+            n_groups = len(set(group_vals.tolist()))
+            if n_groups > 1 and data.n_vars > self.n_top_genes:
+                print(
+                    f"[INFO] Shared gene panel across {n_groups} modality groups "
+                    f"(strategy='{panel_strategy}'): one panel for all cells."
+                )
+                gene_subset = select_shared_panel(
+                    data,
+                    groups=group_vals,
+                    n_top=self.n_top_genes,
+                    flavor=flavor,
+                    strategy=panel_strategy,
+                    reference=panel_reference,
+                )
+            elif n_groups > 1:
+                print(
+                    f"[INFO] Shared panel requested but data has {data.n_vars} genes "
+                    f"<= n_top_genes={self.n_top_genes}; keeping all genes."
+                )
+            else:
+                print(
+                    f"[INFO] Shared panel is a no-op: '{modality_col}' has a single "
+                    f"group ('{group_vals[0] if len(group_vals) else 'n/a'}')."
+                )
 
         if gene_subset is not None:
             if isinstance(gene_subset, dict):

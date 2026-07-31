@@ -66,7 +66,22 @@ fi
 # Uses the conda python that has scib + scanpy. --skip-existing avoids
 # recomputing metrics 1-4; --scib appends scIB keys to each cached JSON
 # and writes batch_integration.png.
+#
+# Note --skip-existing is now panel-aware: a cached unified_metrics.json whose
+# panel_hash differs from this eval.h5ad's is ignored and recomputed, so rebuilding
+# with a different gene panel can no longer serve stale numbers.
 echo "=== Step 2: computing scIB batch integration metrics ==="
 source ~/.bashrc
 conda activate bulkFM
 python -u unified_metrics.py "${CHECK_ARGS[@]}" --scib --skip-existing
+
+# ── Step 3: diagnose the scIB numbers ────────────────────────────────────────
+# Reproduces the exact bulk-vs-pseudobulk subset scIB scores and reports the
+# quantities those metrics are built from: the label x batch contingency (BRAS and
+# kBET skip labels holding a single batch), Euclidean *and* cosine kNN mixing (iLISI
+# and UMAPs use Euclidean, BRAS uses cosine), cloud geometry, and unscaled PCR.
+# Use it whenever the table and the UMAPs disagree.
+echo "=== Step 3: diagnosing the scIB numbers ==="
+python -u diagnose_scib.py \
+    --eval-adata $ABLATION_DIR/eval.h5ad \
+    --out-csv $ABLATION_DIR/_scib_metrics/diagnosis.csv

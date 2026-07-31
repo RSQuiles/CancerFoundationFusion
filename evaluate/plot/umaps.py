@@ -62,7 +62,18 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from cancerfoundation.model.model import CancerFoundation
-from evaluate.utils import generate_pseudobulk_adata
+from evaluate.utils import (
+    BULK_MODALITIES,
+    MOD_BULK,
+    MOD_PAIRED_BULK,
+    MOD_PAIRED_PB,
+    MOD_PAIRED_SC,
+    MOD_PB,
+    MOD_SC,
+    MOD_SYNTH_PB,
+    SC_MODALITIES,
+    generate_pseudobulk_adata,
+)
 
 
 _EPOCH_RE = re.compile(r"epoch_(\d+)")
@@ -380,9 +391,12 @@ def _save_pseudobulk_umap(
     # ── Path 1 — eval-precomputed: synth_pb already embedded via build_eval_adata ──
     if "_eval_modality" in adata.obs.columns:
         eval_mod      = adata.obs["_eval_modality"].astype(str)
-        sc_mask       = eval_mod.isin(["subsampled", "paired_sc"]).values
-        bulk_mask     = eval_mod.isin(["bulk", "paired_bulk"]).values
-        synth_pb_mask = (eval_mod == "synth_pb").values
+        # These are _eval_modality labels, not build_eval_adata's filename prefixes.
+        # This used to match "subsampled", which is only ever a prefix, so every
+        # plain "sc" row was dropped from the SC layer of the plot.
+        sc_mask       = eval_mod.isin(SC_MODALITIES).values
+        bulk_mask     = eval_mod.isin(BULK_MODALITIES).values
+        synth_pb_mask = (eval_mod == MOD_SYNTH_PB).values
 
         if not synth_pb_mask.any():
             print("  [warn] pseudobulk UMAP skipped — no 'synth_pb' rows in _eval_modality")
@@ -593,7 +607,7 @@ def _save_modality_split_umaps(
     # be generated on the fly (needs a model). The first two need no model.
     has_eval_synth_pb = (
         "_eval_modality" in adata.obs.columns
-        and (adata.obs["_eval_modality"] == "synth_pb").any()
+        and (adata.obs["_eval_modality"] == MOD_SYNTH_PB).any()
     )
     has_modality_pb = (
         "modality" in adata.obs.columns
@@ -623,12 +637,13 @@ def _save_modality_split_umaps(
 # --------------------------------------------------------------------------- #
 
 _EVAL_MOD_TO_MODALITY: dict[str, str] = {
-    "subsampled": "sc",
-    "paired_sc":  "sc",
-    "bulk":       "bulk",
-    "paired_bulk":"bulk",
-    "paired_pb":  "pseudobulk",
-    "synth_pb":   "synth_pb",
+    MOD_SC:          "sc",
+    MOD_PAIRED_SC:   "sc",
+    MOD_BULK:        "bulk",
+    MOD_PAIRED_BULK: "bulk",
+    MOD_PB:          "pseudobulk",
+    MOD_PAIRED_PB:   "pseudobulk",
+    MOD_SYNTH_PB:    "synth_pb",
 }
 
 

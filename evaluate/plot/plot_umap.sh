@@ -23,8 +23,15 @@ for arg in "$@"; do
     fi
 done
 
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_monitor_align"
+
+# --eval-adata makes the figures use the SAME embeddings the metrics are computed
+# from (evaluate/check/build_and_check.sh writes it). Without it, umaps.py re-embeds
+# a fresh subsample live, so the UMAP and the scIB table describe different vectors
+# and can disagree for reasons that have nothing to do with the models.
 SCRIPT_ARGS=(
-    --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_monitor_align
+    --ablation-dir $ABLATION_DIR
+    --eval-adata $ABLATION_DIR/eval.h5ad
     --adata-dir /cluster/work/boeva/rquiles/data/mini_eheiss_RAW/pipeline_ready/h5ads
     --color tissue_general
     --sample-size 6_000

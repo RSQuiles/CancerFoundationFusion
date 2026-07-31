@@ -70,7 +70,17 @@ try:
 except ImportError:
     log.warning("Could not load CancerFoundation")
 
-from evaluate.utils import generate_pseudobulk_adata
+from evaluate.utils import (  # re-exports looks_like_counts without the training stack
+    MOD_BULK,
+    MOD_PAIRED_BULK,
+    MOD_PAIRED_PB,
+    MOD_PAIRED_SC,
+    MOD_PB,
+    MOD_SC,
+    MOD_SYNTH_PB,
+    generate_pseudobulk_adata,
+    looks_like_counts,
+)
 
 _MODALITY_COL = "_eval_modality"
 
@@ -433,6 +443,13 @@ def compute_aggregation_metrics(
         log.warning("No group with >= %d SC cells — skipping synthetic aggregation.", n_sc_per_pb)
         return {}
 
+    # Whether the SC rows need expm1 before aggregation (see the loop below).
+    is_log1p = not looks_like_counts(sc_adata.X)
+    log.info(
+        "  Synthetic aggregation: SC input detected as %s.",
+        "log1p" if is_log1p else "raw counts",
+    )
+
     n_pb = min(n_pb, max(1, len(valid) * 5))
     sims: list[float] = []
     l2s:  list[float] = []
@@ -452,11 +469,17 @@ def compute_aggregation_metrics(
         mean_sc = sc_embs.mean(axis=0)
 
         sc_exprs = sc_sub.X if isinstance(sc_sub.X, np.ndarray) else sc_sub.X.toarray()
-        pb_expr  = np.expm1(sc_exprs.astype(np.float64)).sum(axis=0)
+        # Aggregate in count space. expm1 is only correct when the rows are log1p;
+        # on raw counts it saturates float32 and the summed profile is distorted.
+        if is_log1p:
+            sc_exprs = np.expm1(sc_exprs.astype(np.float64))
+        pb_expr = sc_exprs.astype(np.float64).sum(axis=0)
         total = pb_expr.sum()
         if total > 0:
             pb_expr = pb_expr / total * 1e6
-        pb_expr = np.log1p(pb_expr).astype(np.float32)
+        if is_log1p:
+            pb_expr = np.log1p(pb_expr)
+        pb_expr = pb_expr.astype(np.float32)
 
         pb_adata = ad.AnnData(X=pb_expr[np.newaxis, :], var=sc_sub.var.copy())
         pb_adata.obs_names = ["pb_synth_0"]
@@ -651,16 +674,36 @@ def run_scib_benchmark(
     Benchmarks
     ----------
     1. **bulk_vs_pb** — all bulk (bulk + paired_bulk) vs all pseudobulk
-       (paired_pb + synth_pb).  batch_key = "modality_type".
+       (pseudobulk + paired_pb + synth_pb).  batch_key = "modality_type".
     2. **paired_vs_nonpaired** — paired samples (paired_bulk + paired_pb) vs
        non-paired samples (bulk + synth_pb).  batch_key = "pairing".
     3. **paired_bulk_vs_paired_pb** — paired_bulk vs paired_pb only.
        batch_key = "modality_type".
     4. **nonpaired_bulk_vs_synth_pb** — non-paired bulk vs synth_pb only.
        batch_key = "modality_type".
+
+    Interpreting the output — the four batch metrics are not equally usable here:
+
+    * ``iLISI`` is global and label-free; it is the one that answers "are the two
+      modalities interleaved in the embedding".
+    * ``BRAS`` and ``kBET`` are computed *inside each* ``label_key`` group and skip
+      any group holding only one batch (kBET also skips groups under 10 cells), so
+      they only see labels present in BOTH modalities. This function logs the
+      label x batch contingency and warns when few labels qualify — if that warning
+      fires, treat those two columns as uninformative rather than as evidence.
+      BRAS additionally uses *cosine* distance, while a scanpy UMAP of the same
+      embedding uses Euclidean neighbours; the two can legitimately disagree.
+    * ``PCR comparison`` is ``max(0, (pcr_pre - pcr_post)/pcr_pre)`` against
+      ``X_pca``, so it clips to 0 whenever an embedding is no less batch-driven
+      than the baseline. The unscaled pcr_pre/pcr_post values are logged so a 0 can
+      be told apart from a missing baseline.
+
+    Note the aggregate ``Batch correction`` column is an unweighted mean over
+    whichever metrics ran, so a constant-0 PCR column drags every model down by the
+    same amount and the ranking ends up driven by BRAS.
     """
     try:
-        from scib_metrics.benchmark import Benchmarker, BatchCorrection
+        from scib_metrics.benchmark import BatchCorrection, Benchmarker, BioConservation
     except ImportError:
         log.warning("scib_metrics not installed — skipping batch integration benchmark.")
         return
@@ -671,12 +714,15 @@ def run_scib_benchmark(
     mod_col = eval_adata.obs.get(
         _MODALITY_COL, pd.Series("", index=eval_adata.obs_names, dtype=str)
     )
-    bulk_mask        = (mod_col == "bulk").values
-    paired_bulk_mask = (mod_col == "paired_bulk").values
-    paired_pb_mask   = (mod_col == "paired_pb").values
-    synth_pb_mask    = (mod_col == "synth_pb").values
+    bulk_mask        = (mod_col == MOD_BULK).values
+    paired_bulk_mask = (mod_col == MOD_PAIRED_BULK).values
+    pb_mask          = (mod_col == MOD_PB).values
+    paired_pb_mask   = (mod_col == MOD_PAIRED_PB).values
+    synth_pb_mask    = (mod_col == MOD_SYNTH_PB).values
     all_bulk_mask    = bulk_mask | paired_bulk_mask
-    all_pb_mask      = paired_pb_mask | synth_pb_mask
+    # Include plain "pseudobulk" rows: they used to be excluded, so benchmark 1 only
+    # ever saw the synth_pb subset and ignored the bulk of the pseudobulk data.
+    all_pb_mask      = pb_mask | paired_pb_mask | synth_pb_mask
 
     # ── Helper: subsample a boolean mask to at most n indices ───────────────
     def _sample_idx(mask: np.ndarray, n: int) -> np.ndarray:
@@ -722,8 +768,92 @@ def run_scib_benchmark(
         for key, arrs in emb_accum.items():
             if emb_counts[key] == n_total:
                 sub.obsm[key] = np.vstack(arrs).astype(np.float32)
+            else:
+                # Silently dropping this used to make a whole model disappear from
+                # the results table with no indication why.
+                log.warning(
+                    "  '%s' covers %d of %d rows — excluded from this benchmark. "
+                    "Its embedding is missing for some cells; re-run build_eval_adata.",
+                    key, emb_counts[key], n_total,
+                )
 
         return sub if sub.obsm else None
+
+    # ── Helper: are the label-conditioned metrics (BRAS, kBET) usable here? ──
+    def _label_batch_report(
+        sub: ad.AnnData, batch_col: str, tag: str
+    ) -> tuple[pd.DataFrame, int]:
+        """Log the label x batch contingency and return (table, n_usable_labels).
+
+        BRAS and kBET skip any label group holding a single batch, so the number of
+        labels present in *both* batches is exactly how much signal those two
+        metrics have to work with.
+        """
+        tab = pd.crosstab(
+            sub.obs[group_column].astype(str), sub.obs[batch_col].astype(str)
+        )
+        n_batches = tab.shape[1]
+        both = (tab > 0).sum(axis=1) == n_batches
+        # kBET additionally needs >= 10 cells in the label group
+        usable = int((both & (tab.sum(axis=1) >= 10)).sum())
+
+        log.info("[scIB %s] label x batch contingency:\n%s", tag, tab.to_string())
+        if usable < 2:
+            log.warning(
+                "[scIB %s] only %d of %d '%s' label(s) contain both batches with >=10 "
+                "cells. BRAS and kBET are computed per label and skip the rest, so "
+                "those two columns carry almost no batch-mixing signal for this "
+                "comparison — read iLISI instead.",
+                tag, usable, tab.shape[0], group_column,
+            )
+        else:
+            log.info(
+                "[scIB %s] %d of %d '%s' labels usable for per-label metrics "
+                "(BRAS, kBET).",
+                tag, usable, tab.shape[0], group_column,
+            )
+        return tab, usable
+
+    # ── Helper: unscaled PCR, so a clipped 0 can be told from a missing baseline ──
+    def _log_pcr(sub: ad.AnnData, batch_col: str, tag: str) -> dict:
+        if "X_pca" not in sub.obsm:
+            return {}
+        try:
+            from scib_metrics.utils import principal_component_regression
+        except ImportError:
+            return {}
+        batch = sub.obs[batch_col].astype(str).to_numpy()
+        out: dict = {}
+        try:
+            pre = float(
+                principal_component_regression(
+                    np.asarray(sub.obsm["X_pca"], dtype=np.float32),
+                    batch, categorical=True,
+                )
+            )
+        except Exception:
+            log.warning("[scIB %s] pcr(X_pca) failed:\n%s", tag, traceback.format_exc())
+            return {}
+        out["X_pca"] = pre
+        log.info("[scIB %s] pcr(X_pca) = %.4f  (unintegrated baseline)", tag, pre)
+        for key in (k for k in sub.obsm if k.startswith("X_cf_")):
+            try:
+                post = float(
+                    principal_component_regression(
+                        np.asarray(sub.obsm[key], dtype=np.float32),
+                        batch, categorical=True,
+                    )
+                )
+            except Exception:
+                continue
+            out[key] = post
+            scaled = max(0.0, (pre - post) / pre) if pre > 0 else 0.0
+            log.info(
+                "[scIB %s]   %-24s pcr=%.4f -> pcr_comparison=%.4f%s",
+                tag, key, post, scaled,
+                "  [clipped: more batch-driven than the baseline]" if post >= pre else "",
+            )
+        return out
 
     # ── Helper: run one Benchmarker and save results ────────────────────────
     def _run_one(sub: ad.AnnData, batch_col: str, tag: str) -> None:
@@ -742,9 +872,8 @@ def run_scib_benchmark(
             dict(sub.obs[batch_col].value_counts().items()),
         )
 
-        print(f"sub.n_vars: {sub.n_vars}")
-        print(f"sub.n_obs: {sub.n_obs}")
-        # print(f"sub.X: {sub.X.shape}")
+        contingency, n_usable_labels = _label_batch_report(sub, batch_col, tag)
+        pcr_raw = _log_pcr(sub, batch_col, tag)
 
         pre_integrated_key = "X_pca" if "X_pca" in sub.obsm else None
 
@@ -753,7 +882,16 @@ def run_scib_benchmark(
             batch_key=batch_col,
             label_key=group_column,
             embedding_obsm_keys=embedding_keys,
-            bio_conservation_metrics=None,
+            # Bio conservation is on so that "the modalities mix" can be told apart
+            # from "the embedding collapsed": a degenerate space mixes batches
+            # perfectly while destroying label structure.
+            bio_conservation_metrics=BioConservation(
+                isolated_labels=True,
+                silhouette_label=True,
+                clisi_knn=True,
+                nmi_ari_cluster_labels_kmeans=False,
+                nmi_ari_cluster_labels_leiden=False,
+            ),
             batch_correction_metrics=BatchCorrection(
                 bras=True,
                 ilisi_knn=True,
@@ -766,15 +904,40 @@ def run_scib_benchmark(
         bm.benchmark()
         results = bm.get_results(min_max_scale=False, clean_names=True)
         log.info("[scIB %s] complete.\n%s", tag, results.to_string())
+        if n_usable_labels < 2:
+            log.warning(
+                "[scIB %s] reminder: BRAS/KBET above are based on %d usable label(s) "
+                "— do not rank models on them for this comparison.",
+                tag, n_usable_labels,
+            )
 
         if out_dir is not None:
             scib_out_dir = out_dir / "_scib_metrics"
             scib_out_dir.mkdir(parents=True, exist_ok=True)
             results.to_csv(scib_out_dir / f"scib_{tag}.csv")
+            contingency.to_csv(scib_out_dir / f"scib_{tag}_label_batch.csv")
+            # Provenance for the numbers above, so a reader of the CSV can tell
+            # whether the per-label metrics were usable and what PCR was measuring.
+            meta = {
+                "tag": tag,
+                "batch_key": batch_col,
+                "label_key": group_column,
+                "n_cells": int(sub.n_obs),
+                "n_max_per_batch": int(n_max),
+                "n_labels": int(contingency.shape[0]),
+                "n_labels_usable_per_label_metrics": int(n_usable_labels),
+                "batch_counts": {
+                    str(k): int(v) for k, v in sub.obs[batch_col].value_counts().items()
+                },
+                "pcr_unscaled": pcr_raw,
+                "seed": int(seed),
+            }
+            with (scib_out_dir / f"scib_{tag}_meta.json").open("w") as f:
+                json.dump(meta, f, indent=2)
             png_dir = scib_out_dir / f"scib_{tag}"
             png_dir.mkdir(parents=True, exist_ok=True)
             bm.plot_results_table(min_max_scale=False, show=False, save_dir=png_dir)
-            log.info("[scIB %s] → %s/", tag, png_dir)
+            log.info("[scIB %s] -> %s/", tag, png_dir)
 
     # ── Benchmark 1: all bulk vs all pseudobulk ─────────────────────────────
     sub1 = _build_sub([
@@ -785,6 +948,18 @@ def run_scib_benchmark(
         _run_one(sub1, "modality_type", "bulk_vs_pb")
     else:
         log.warning("[scIB] bulk_vs_pb: could not build sub-adata — skipping.")
+
+    # Benchmarks 2 and 3 need paired_* rows; without them benchmark 4 degenerates
+    # into a subset of benchmark 1, so it is skipped rather than emitting a
+    # near-duplicate table under a different name.
+    has_paired = bool(paired_bulk_mask.any() and paired_pb_mask.any())
+    if not has_paired:
+        log.info(
+            "[scIB] no paired_bulk/paired_pb rows in this dataset — skipping "
+            "paired_vs_nonpaired and paired_bulk_vs_paired_pb, and skipping "
+            "nonpaired_bulk_vs_synth_pb (it would duplicate bulk_vs_pb)."
+        )
+        return
 
     # ── Benchmark 2: paired vs non-paired ──────────────────────────────────
     paired_mask    = paired_bulk_mask | paired_pb_mask
@@ -842,10 +1017,25 @@ def run_single_model(
     out_dir.mkdir(parents=True, exist_ok=True)
     metrics_file = out_dir / "unified_metrics.json"
 
+    # Gene panel used to build the embeddings in this eval AnnData. Metrics computed
+    # under a different panel are not comparable, so it keys the cache: without this,
+    # --skip-existing happily serves metrics from a previous panel and the numbers
+    # silently describe embeddings that no longer exist.
+    provenance = dict(eval_adata.uns.get("eval_provenance", {}) or {})
+    current_hash = str(provenance.get("panel_hash", "unknown"))
+
     if skip_existing and metrics_file.exists():
-        log.info("  Cached — loading %s", metrics_file)
         with metrics_file.open() as f:
-            return json.load(f)
+            cached = json.load(f)
+        cached_hash = str(cached.get("panel_hash", "unknown"))
+        if cached_hash == current_hash:
+            log.info("  Cached — loading %s", metrics_file)
+            return cached
+        log.warning(
+            "  Ignoring cache %s: it was computed under gene panel %s but this "
+            "eval AnnData uses %s. Recomputing.",
+            metrics_file, cached_hash, current_hash,
+        )
 
     metrics: dict = {}
 
@@ -865,12 +1055,16 @@ def run_single_model(
         sub = eval_adata[mask]
         return sub, sub.obsm[obsm_key].astype(np.float32)
 
-    sc_adata,          sc_emb          = _get("subsampled")
-    bulk_adata,        bulk_emb        = _get("bulk")
-    paired_sc_adata,   paired_sc_emb   = _get("paired_sc")
-    paired_pb_adata,   paired_pb_emb   = _get("paired_pb")
-    paired_bulk_adata, paired_bulk_emb = _get("paired_bulk")
-    synth_pb_adata,    synth_pb_emb    = _get("synth_pb")
+    # NB: these are ``_eval_modality`` *labels*, not the filename prefixes
+    # build_eval_adata globs on. This used to read _get("subsampled") — a prefix
+    # that is never a label — so sc_adata was always None and every agg_synth_*
+    # metric was silently skipped.
+    sc_adata,          sc_emb          = _get(MOD_SC)
+    bulk_adata,        bulk_emb        = _get(MOD_BULK)
+    paired_sc_adata,   paired_sc_emb   = _get(MOD_PAIRED_SC)
+    paired_pb_adata,   paired_pb_emb   = _get(MOD_PAIRED_PB)
+    paired_bulk_adata, paired_bulk_emb = _get(MOD_PAIRED_BULK)
+    synth_pb_adata,    synth_pb_emb    = _get(MOD_SYNTH_PB)
 
     # ── Metric 1: reconstruction ──────────────────────────────────────────
     recon_cache_key = f"recon_{model_name}"
@@ -992,7 +1186,12 @@ def run_single_model(
     if ckpt_path is not None:
         metrics["checkpoint"] = str(ckpt_path)
 
-    # print(metrics)
+    # Stamp the panel these numbers describe, so a later --skip-existing run can
+    # tell whether the cache is still valid (see the top of this function).
+    metrics["panel_hash"] = current_hash
+    if provenance:
+        metrics["shared_panel"] = provenance.get("shared_panel")
+        metrics["panel_strategy"] = provenance.get("panel_strategy")
 
     with metrics_file.open("w") as f:
         json.dump(metrics, f, indent=2)
@@ -1024,6 +1223,7 @@ def run_ablation(
     skip_existing: bool,
     normalized: bool,
     do_scib: bool = False,
+    scib_n_max: int = 500,
 ) -> None:
     model_dirs = sorted(
         d for d in ablation_dir.iterdir()
@@ -1089,6 +1289,7 @@ def run_ablation(
             eval_adata,
             model_names=[d.name for d in model_dirs],
             group_column=group_column,
+            n_max=scib_n_max,
             out_dir=ablation_dir,
             seed=seed,
         )
@@ -1298,6 +1499,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Skip models that already have unified_metrics.json.")
     p.add_argument("--not-normalized", action="store_true",
                    help="h5ad files contain raw counts (not log1p-normalised).")
+    p.add_argument("--scib-n-max", type=int, default=500,
+                   help="Cells per batch in each scIB benchmark (default: 500). "
+                        "All scIB numbers depend on this and on --seed.")
     p.add_argument("--scib", action="store_true",
                    help="Compute scIB batch integration metrics (requires scib + scanpy). "
                         "Intended for a second pass after the main metrics have been cached "
@@ -1355,7 +1559,10 @@ def main(argv=None) -> int:
         if not ablation_dir.is_dir():
             log.error("--ablation-dir not found: %s", ablation_dir)
             return 1
-        run_ablation(ablation_dir=ablation_dir, eval_adata=eval_adata, do_scib=args.scib, **kwargs)
+        run_ablation(
+            ablation_dir=ablation_dir, eval_adata=eval_adata,
+            do_scib=args.scib, scib_n_max=args.scib_n_max, **kwargs,
+        )
 
     else:
         ckpt = args.ckpt.expanduser().resolve()

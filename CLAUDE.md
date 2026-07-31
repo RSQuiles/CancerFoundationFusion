@@ -75,7 +75,8 @@ cancerfoundation/
 │   ├── bulk_sc_data.py       # Bulk and single-cell paired dataset handling
 │   ├── bulk_sc_collator.py   # Collator for bulk/SC paired data
 │   ├── data_sampler.py       # Balanced sampling across metadata categories
-│   └── preprocess.py         # Binning and normalization utilities
+│   ├── gene_panel.py         # Gene-panel selection for embedding (shared + per-modality)
+│   └── preprocess.py         # Binning + looks_like_counts (counts vs log1p detection)
 ├── assets/
 │   └── vocab.json            # Default gene vocabulary
 ├── loss.py                   # MSE, ordinal cross-entropy, ZINB losses
@@ -83,6 +84,12 @@ cancerfoundation/
 └── utils.py                  # Pretrained weight loading, gene mapping
 
 evaluate/
+├── check/
+│   ├── build_eval_adata.py   # Builds eval.h5ad: per-model embeddings + PCA baseline
+│   ├── unified_metrics.py    # Unified-FM metrics + scIB batch-integration benchmark
+│   ├── diagnose_scib.py      # Explains scIB numbers when they disagree with the UMAPs
+│   ├── compare_experiments.py# Cross-experiment bar charts from unified_metrics.csv
+│   └── check_*.py            # Standalone self-checks (no checkpoint needed)
 ├── finetune/
 │   ├── downstream_task.py         # DownstreamTask abstract base class + TaskRegistry
 │   ├── base_downstream_runner.py  # BaseDownstreamRunner (shared training loop, DDP, checkpointing)
@@ -125,6 +132,7 @@ Top-level scripts and config:
 - **TransformerModule** (`module.py`): Gene encoder + value encoder → TransformerEncoder → decoder
 - **CancerFoundation** (`model.py`): Lightning wrapper handling training loop, loss, optimization
   - `embed(adata)` method: produces cell embeddings directly from an AnnData object (handles gene intersection, HVG selection, binning, batched inference)
+  - `embed(..., modality_col=...)` on multi-modality data uses ONE shared gene panel across modalities by default (`shared_panel=True`, consensus rank aggregation). Per-modality panels make the model's input distribution differ *with* modality, which is indistinguishable from a batch effect — never compare bulk to pseudobulk embeddings fitted on different panels. Pass `shared_panel=False` only to reproduce that older behaviour.
 - Optional features: MVC decoder, DAT (Domain Adversarial Training), explicit zero probability modeling, contrastive loss (pseudobulk vs bulk), aggregation consistency loss, denoising, ESM/RNABert gene embeddings
 
 ### Loss Functions (`cancerfoundation/loss.py`)

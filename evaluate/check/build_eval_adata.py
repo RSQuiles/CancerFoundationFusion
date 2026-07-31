@@ -60,6 +60,7 @@ from pathlib import Path
 
 import anndata as ad
 import numpy as np
+import scanpy as sc
 import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -67,7 +68,18 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from cancerfoundation.model.model import CancerFoundation
-from evaluate.utils import generate_pseudobulk_adata
+from evaluate.utils import (
+    MOD_BULK,
+    MOD_PAIRED_BULK,
+    MOD_PAIRED_PB,
+    MOD_PAIRED_SC,
+    MOD_PB,
+    MOD_SC,
+    MOD_SYNTH_PB,
+    SC_MODALITIES,
+    generate_pseudobulk_adata,
+    looks_like_counts,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -123,16 +135,23 @@ def load_all_modalities(
     sample_size: int,
     seed: int,
 ) -> ad.AnnData:
-    """Load all modality h5ad files and return one AnnData with _eval_modality column."""
+    """Load all modality h5ad files and return one AnnData with _eval_modality column.
+
+    Note the left column is a *filename prefix* and the right one is the
+    ``_eval_modality`` label written to obs — they are not the same vocabulary.
+    Consumers must match on the labels (imported from ``evaluate.utils``), never on
+    the prefixes; matching on "subsampled" is what silently disabled the
+    ``agg_synth_*`` metrics.
+    """
     prefixes = [
-        ("subsampled",  "sc"),
-        ("pretraining_sc", "sc"),
-        ("pretraining_bulk", "bulk"),
-        ("pseudo_bulk", "pseudobulk"),
-        ("bulk",        "bulk"),
-        ("paired_sc",   "paired_sc"),
-        ("paired_pb",   "paired_pb"),
-        ("paired_bulk", "paired_bulk"),
+        ("subsampled",  MOD_SC),
+        ("pretraining_sc", MOD_SC),
+        ("pretraining_bulk", MOD_BULK),
+        ("pseudo_bulk", MOD_PB),
+        ("bulk",        MOD_BULK),
+        ("paired_sc",   MOD_PAIRED_SC),
+        ("paired_pb",   MOD_PAIRED_PB),
+        ("paired_bulk", MOD_PAIRED_BULK),
     ]
     parts: list[ad.AnnData] = []
     for prefix, label in prefixes:
@@ -270,6 +289,73 @@ def _run_masked_forward(
 
 
 # ---------------------------------------------------------------------------
+# Provenance
+# ---------------------------------------------------------------------------
+
+def panel_hash(panel) -> str:
+    """Stable short hash of a gene panel (flat list or per-modality dict).
+
+    Used as a cache key: metrics computed under one panel must not be reused for
+    another. Shared with ``unified_metrics.py`` via ``uns["eval_provenance"]``.
+    """
+    import hashlib
+    import json
+
+    if panel is None:
+        return "none"
+    if isinstance(panel, dict):
+        payload = {str(k): sorted(map(str, v)) for k, v in sorted(panel.items())}
+    else:
+        payload = sorted(map(str, panel))
+    blob = json.dumps(payload, sort_keys=True).encode()
+    return hashlib.sha1(blob).hexdigest()[:12]
+
+
+def _build_provenance(
+    combined: ad.AnnData,
+    panels: dict,
+    normalized: bool,
+    shared_panel: bool,
+    panel_strategy: str,
+    sample_size: int,
+    seed: int,
+    group_column: str,
+) -> dict:
+    """Assemble the ``uns["eval_provenance"]`` record."""
+    counts = (
+        combined.obs["_eval_modality"].astype(str).value_counts().to_dict()
+        if "_eval_modality" in combined.obs.columns
+        else {}
+    )
+    # One hash over all models' panels: under shared_panel they are refitted per
+    # model (n_top_genes is a model hparam), so a difference in any of them means
+    # the cached metrics are not comparable.
+    combined_hash = panel_hash(
+        {str(k): (v if not isinstance(v, dict) else sorted(sum(v.values(), [])))
+         for k, v in sorted(panels.items())}
+    ) if panels else "none"
+
+    return {
+        "normalized_flag": bool(normalized),
+        "counts_detected": bool(looks_like_counts(combined.X)),
+        "shared_panel": bool(shared_panel),
+        "panel_strategy": str(panel_strategy),
+        "panel_hash": combined_hash,
+        "panel_sizes": {
+            k: (len(v) if not isinstance(v, dict)
+                else {kk: len(vv) for kk, vv in v.items()})
+            for k, v in panels.items()
+        },
+        "modality_counts": {str(k): int(v) for k, v in counts.items()},
+        "sample_size_per_prefix": int(sample_size),
+        "seed": int(seed),
+        "group_column": str(group_column),
+        "n_obs": int(combined.n_obs),
+        "n_vars": int(combined.n_vars),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Core
 # ---------------------------------------------------------------------------
 
@@ -280,20 +366,29 @@ def embed_into_adata(
     obsm_key: str,
     batch_size: int,
     normalized: bool,
-) -> None:
-    """Embed every cell in adata and store the result in adata.obsm[obsm_key]."""
+    shared_panel: bool = True,
+    panel_strategy: str = "consensus",
+) -> list[str] | dict | None:
+    """Embed every cell in adata and store the result in adata.obsm[obsm_key].
+
+    Returns the gene panel actually used — a flat list under ``shared_panel``, a
+    per-modality dict otherwise — so the caller can record it as provenance.
+    """
     try:
-        emb_df, _ = model.embed(
+        emb_df, gene_set = model.embed(
             adata, batch_size=batch_size, normalized=normalized,
             modality_col="_eval_modality",
+            shared_panel=shared_panel, panel_strategy=panel_strategy,
         )
         adata.obsm[obsm_key] = emb_df.to_numpy(dtype=np.float32)
         log.info(
-            "  obsm['%s'] stored  (%d cells × %d dims)",
+            "  obsm['%s'] stored  (%d cells x %d dims)",
             obsm_key, adata.n_obs, adata.obsm[obsm_key].shape[1],
         )
+        return gene_set
     except Exception:
         log.error("  Embedding failed for key '%s':\n%s", obsm_key, traceback.format_exc())
+        return None
 
 
 def build(
@@ -306,7 +401,10 @@ def build(
     normalized: bool = True,
     group_column: str = "tissue_general",
     n_pca_components: int = 50,
-    precomputed_pb: bool = False
+    n_hvg_baseline: int = 2000,
+    precomputed_pb: bool = False,
+    shared_panel: bool = True,
+    panel_strategy: str = "consensus",
 ) -> ad.AnnData:
     """
     Load data, generate synthetic pseudobulks, embed with each model,
@@ -315,6 +413,10 @@ def build(
     Synthetic pseudobulks (``_eval_modality = "synth_pb"``) are generated once
     using ``n_sc_per_pseudobulk`` from the first model's saved hyperparameters.
     Their embeddings are stored alongside all other cells.
+
+    All modalities are embedded through ONE shared gene panel by default
+    (``shared_panel``), which is what makes the cross-modality metrics
+    interpretable; see ``cancerfoundation.data.gene_panel.select_shared_panel``.
 
     Masked forward-pass arrays (pred, target, mask) are cached per model in
     ``adata.uns["recon_{name}"]`` so ``unified_metrics.py`` can compute
@@ -343,9 +445,9 @@ def build(
 
     # ── Generate synthetic pseudobulks (expression only, same for all models)
     mod_col   = combined.obs["_eval_modality"]
-    sc_mask   = mod_col.isin(["sc", "subsampled", "paired_sc"]).values
-    bulk_mask = (mod_col == "bulk").values
-    pb_mask = (mod_col == "pseudobulk").values
+    sc_mask   = mod_col.isin(SC_MODALITIES).values
+    bulk_mask = (mod_col == MOD_BULK).values
+    pb_mask = (mod_col == MOD_PB).values
     n_synth   = int(bulk_mask.sum())
 
     synth_pb_adata: ad.AnnData | None = None
@@ -357,58 +459,107 @@ def build(
             n_sc_per_pb=n_sc_per_pb,
             n_pb=n_synth,
             seed=seed,
-            is_log1p=True,
+            is_log1p=None,  # auto-detect: raw counts must not be expm1'd
             normalize=True,
         )
-    else:
-        log.info("Using precomputed pseudobulk samples!")
-        pb_adata = combined[pb_mask]
-        if len(pb_adata) > n_synth:
+        if synth_pb_adata is not None:
+            synth_pb_adata.obs["_eval_modality"] = MOD_SYNTH_PB
+            combined = ad.concat([combined, synth_pb_adata], join="outer", merge="same")
+            combined.obs_names_make_unique()
+            log.info(
+                "Generated %d synthetic pseudobulks (n_sc_per_pb=%d, group='%s')",
+                synth_pb_adata.n_obs, n_sc_per_pb, group_column,
+            )
+    elif precomputed_pb and pb_mask.any():
+        # Relabel a subset of the existing pseudobulk rows IN PLACE. Concatenating a
+        # relabelled *copy* (as this used to) put the same cells in the file twice,
+        # embedded twice under independently fitted panels — so the UMAP read one
+        # copy and scIB the other and they disagreed for no modelling reason.
+        pb_pos = np.where(pb_mask)[0]
+        if len(pb_pos) > n_synth > 0:
             rng = np.random.default_rng(seed)
-            idx = rng.choice(len(pb_adata), size=n_synth, replace=False)
-            synth_pb_adata = pb_adata[idx].copy()
-        else:
-            synth_pb_adata = pb_adata
-
-    if synth_pb_adata is not None:
-        synth_pb_adata.obs["_eval_modality"] = "synth_pb"
-        combined = ad.concat([combined, synth_pb_adata], join="outer", merge="same")
-        combined.obs_names_make_unique()
+            pb_pos = np.sort(rng.choice(pb_pos, size=n_synth, replace=False))
+        labels = combined.obs["_eval_modality"].astype(str).to_numpy()
+        labels[pb_pos] = MOD_SYNTH_PB
+        combined.obs["_eval_modality"] = labels
         log.info(
-            "Generated %d synthetic pseudobulks (n_sc_per_pb=%d, group='%s')",
-            synth_pb_adata.n_obs, n_sc_per_pb, group_column,
+            "Relabelled %d of %d precomputed pseudobulk rows as '%s' in place "
+            "(no duplicated cells)",
+            len(pb_pos), int(pb_mask.sum()), MOD_SYNTH_PB,
         )
     else:
         log.warning(
             "Skipping synthetic pseudobulk generation "
-            "(sc_cells=%d, n_synth_target=%d, group_column_present=%s)",
-            sc_mask.sum(), n_synth, group_column in combined.obs.columns,
+            "(sc_cells=%d, pb_rows=%d, n_synth_target=%d, group_column_present=%s)",
+            sc_mask.sum(), int(pb_mask.sum()), n_synth,
+            group_column in combined.obs.columns,
         )
 
     # ── PCA baseline (model-independent) ────────────────────────────────────
+    # This is the "unintegrated" reference that scIB's PCR comparison scores every
+    # embedding against, so it has to be a *fair* baseline. PCA straight on raw
+    # counts is dominated by library size — which for bulk vs pseudobulk IS the
+    # batch — so pcr_pre saturates and pcr_comparison, being
+    # max(0, (pcr_pre - pcr_post)/pcr_pre), can only ever clip to 0. Follow the
+    # standard scIB recipe instead: CP10K + log1p (when the data is counts), HVGs,
+    # then PCA.
     log.info("Computing PCA baseline (%d components) ...", n_pca_components)
     try:
         import scipy.sparse as sp
         from sklearn.decomposition import PCA
 
-        X_expr = combined.X
-        if sp.issparse(X_expr):
-            X_expr = X_expr.toarray()
-        X_expr = np.nan_to_num(X_expr.astype(np.float32))
-        n_components = min(n_pca_components, X_expr.shape[0] - 1, X_expr.shape[1])
-        pca = PCA(n_components=n_components, random_state=seed)
-        combined.obsm["X_pca"] = pca.fit_transform(X_expr).astype(np.float32)
-        log.info(
-            "  X_pca stored (%d cells × %d components)",
-            combined.n_obs, combined.obsm["X_pca"].shape[1],
+        recipe: dict = {"n_components_requested": n_pca_components, "seed": seed}
+        work = ad.AnnData(
+            X=combined.X.copy() if not sp.issparse(combined.X) else combined.X.copy(),
+            obs=combined.obs[[]].copy(),
+            var=combined.var[[]].copy(),
         )
+        if sp.issparse(work.X):
+            work.X = work.X.toarray()
+        work.X = np.nan_to_num(np.asarray(work.X, dtype=np.float32))
+
+        is_counts = looks_like_counts(work.X)
+        recipe["counts_detected"] = bool(is_counts)
+        if is_counts:
+            log.info("  raw counts detected -> CP10K + log1p before PCA")
+            sc.pp.normalize_total(work, target_sum=1e4)
+            sc.pp.log1p(work)
+            recipe["normalisation"] = "normalize_total(1e4)+log1p"
+        else:
+            log.info("  values already look log1p -> PCA on them as-is")
+            recipe["normalisation"] = "none"
+
+        n_hvg = min(n_hvg_baseline, work.n_vars)
+        if n_hvg < work.n_vars:
+            sc.pp.highly_variable_genes(work, n_top_genes=n_hvg, flavor="seurat")
+            work = work[:, work.var["highly_variable"].values].copy()
+        recipe["n_hvg"] = int(work.n_vars)
+
+        n_components = min(n_pca_components, work.n_obs - 1, work.n_vars)
+        pca = PCA(n_components=n_components, random_state=seed)
+        combined.obsm["X_pca"] = pca.fit_transform(
+            np.nan_to_num(np.asarray(work.X, dtype=np.float32))
+        ).astype(np.float32)
+        recipe["n_components"] = int(n_components)
+        recipe["explained_variance_ratio_sum"] = float(
+            pca.explained_variance_ratio_.sum()
+        )
+        combined.uns["X_pca_recipe"] = recipe
+        log.info(
+            "  X_pca stored (%d cells x %d components, %d HVGs, %.3f var explained)",
+            combined.n_obs, combined.obsm["X_pca"].shape[1], recipe["n_hvg"],
+            recipe["explained_variance_ratio_sum"],
+        )
+        del work
+        gc.collect()
     except Exception:
         log.warning("PCA computation failed:\n%s", traceback.format_exc())
 
     # ── Per-model: embed all cells + cache masked forward pass ───────────────
+    panels: dict[str, list[str] | dict] = {}
     for ckpt_path, name in ckpt_name_pairs:
         obsm_key = f"X_cf_{name}"
-        log.info("[%s] Embedding → obsm['%s'] ...", name, obsm_key)
+        log.info("[%s] Embedding -> obsm['%s'] ...", name, obsm_key)
         try:
             model = CancerFoundation.load_from_checkpoint(str(ckpt_path))
             model.eval().to(device)
@@ -416,10 +567,15 @@ def build(
             log.error("  Failed to load %s:\n%s", ckpt_path, traceback.format_exc())
             continue
 
-        embed_into_adata(model, combined, obsm_key, batch_size, normalized)
+        panel = embed_into_adata(
+            model, combined, obsm_key, batch_size, normalized,
+            shared_panel=shared_panel, panel_strategy=panel_strategy,
+        )
+        if panel is not None:
+            panels[name] = panel
 
         # Cache masked forward pass on bulk cells for reconstruction metrics
-        bulk_sub = combined[combined.obs["_eval_modality"] == "bulk"]
+        bulk_sub = combined[combined.obs["_eval_modality"] == MOD_BULK]
         if bulk_sub.n_obs > 0:
             log.info(
                 "  Caching masked forward pass for reconstruction (%d bulk cells) ...",
@@ -441,9 +597,28 @@ def build(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    # ── Provenance ───────────────────────────────────────────────────────────
+    # Records how these embeddings were produced. unified_metrics.py stores the
+    # panel hash in each metrics JSON and refuses a --skip-existing cache whose
+    # hash differs, so changing the panel can never silently serve stale metrics.
+    combined.uns["eval_provenance"] = _build_provenance(
+        combined, panels,
+        normalized=normalized,
+        shared_panel=shared_panel,
+        panel_strategy=panel_strategy,
+        sample_size=sample_size,
+        seed=seed,
+        group_column=group_column,
+    )
+    log.info(
+        "Provenance: shared_panel=%s strategy=%s panel_hash=%s",
+        shared_panel, panel_strategy,
+        combined.uns["eval_provenance"]["panel_hash"],
+    )
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     combined.write_h5ad(out_path)
-    log.info("Saved → %s", out_path)
+    log.info("Saved -> %s", out_path)
     log.info("obsm keys: %s", list(combined.obsm.keys()))
     log.info("uns  keys: %s", list(combined.uns.keys()))
     return combined
@@ -485,7 +660,19 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="h5ad files contain raw counts (not log1p-normalised).")
     p.add_argument("--n-pca-components", type=int, default=50,
                    help="Number of PCA components for the baseline embedding (default: 50).")
+    p.add_argument("--n-hvg-baseline", type=int, default=2000,
+                   help="HVGs used for the PCA baseline (default: 2000).")
     p.add_argument("--precomputed-pb", action="store_true", help="Precomputed pb in dataset")
+    p.add_argument("--per-modality-panel", action="store_true",
+                   help="Fit a separate gene panel per modality instead of one shared "
+                        "panel. Restores the pre-fix behaviour; cross-modality metrics "
+                        "computed this way are confounded by the panel difference, so "
+                        "this is for comparison only.")
+    p.add_argument("--panel-strategy", type=str, default="consensus",
+                   choices=["consensus", "reference", "pooled"],
+                   help="How to fit the shared panel (default: consensus, which ranks "
+                        "genes within each modality and averages the ranks). 'pooled' "
+                        "is biased toward genes that separate the modalities.")
     return p
 
 
@@ -528,7 +715,10 @@ def main(argv=None) -> int:
         normalized=not args.not_normalized,
         group_column=args.group_column,
         n_pca_components=args.n_pca_components,
-        precomputed_pb=args.precomputed_pb
+        n_hvg_baseline=args.n_hvg_baseline,
+        precomputed_pb=args.precomputed_pb,
+        shared_panel=not args.per_modality_panel,
+        panel_strategy=args.panel_strategy,
     )
     return 0
 
