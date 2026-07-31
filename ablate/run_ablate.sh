@@ -1,4 +1,4 @@
 #!/bin/bash -l
 
 python -u ablate.py \
-	--config ./configs/fill.json \
+	--config ./configs/monitor_align.json \

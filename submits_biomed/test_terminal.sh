@@ -25,6 +25,9 @@ export MASTER_ADDR=127.0.0.1
 export MASTER_PORT=$((20000 + RANDOM % 10000))
 # export NCCL_SOCKET_FAMILY=AF_INET
 
+# Avoid fragmentation
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 SCRIPT_ARGS=(
     --config ./config_test.json
 )
