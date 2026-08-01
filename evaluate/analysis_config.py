@@ -25,11 +25,17 @@ STEP_ORDER: tuple[str, ...] = (
     "scib",
     "diagnose",
     "umap",
+    "paired_umap",
     "benchmark",
 )
 
+# Steps enabled unless an experiment says otherwise. ``paired_umap`` is opt-in: it
+# needs a separate paired h5ad (cell-line matched SC + bulk) that most datasets do
+# not have, and it errors out rather than no-oping without one.
+DEFAULT_STEPS: tuple[str, ...] = tuple(s for s in STEP_ORDER if s != "paired_umap")
+
 _DEFAULT_DEFAULTS: dict[str, Any] = {
-    "steps": list(STEP_ORDER),
+    "steps": list(DEFAULT_STEPS),
     "seed": 0,
     # False -> the underlying CLIs get --not-normalized. The repo's on-disk data is
     # raw counts and binning is scale-invariant, so True (embed as-is, matching
@@ -66,6 +72,22 @@ _DEFAULT_DEFAULTS: dict[str, Any] = {
         "no_modality_split": False,
         "adata_prefix": None,
         "embed_batch_size": 64,
+    },
+    # plot_paired_umap.py --ablation-dir. Only the keys below reach run_ablation():
+    # --out-prefix / --domain-col / --sc-label / --bulk-label / --is-log1p /
+    # --max-sc-per-line exist on the CLI but are ignored in ablation-dir mode, so they
+    # are deliberately absent here rather than offered and silently dropped.
+    "paired_umap": {
+        "input_h5ad": None,     # required when this step runs; no sensible default
+        "out_dir": None,        # None -> {ablation_dir}/paired_umaps
+        "cell_line_col": "cell_line",
+        "n_cell_lines": 50,
+        "batch_size": 64,
+        "neighbors": 15,
+        "min_dist": 0.5,
+        "dpi": 200,
+        "no_sc": False,
+        "device": None,
     },
     "benchmark": {"output": None, "no_show": True, "figsize": None, "primary": {}},
 }
@@ -120,6 +142,7 @@ class ExperimentConfig:
     scib: dict[str, Any]
     diagnose: dict[str, Any]
     umap: dict[str, Any]
+    paired_umap: dict[str, Any]
     benchmark: dict[str, Any]
 
     @property
@@ -310,6 +333,14 @@ def load_analysis_config(config_path: Path | str) -> AnalysisConfig:
                 "source: live, both of which read the raw h5ads."
             )
 
+        if "paired_umap" in steps and not merged["paired_umap"].get("input_h5ad"):
+            raise KeyError(
+                f"[{name}] runs the 'paired_umap' step but 'paired_umap.input_h5ad' is "
+                "unset. That step needs a single paired h5ad holding cell-line matched "
+                "SC and bulk observations (e.g. .../processed/paired_samples.h5ad); it "
+                "does not read adata_dir or eval.h5ad."
+            )
+
         experiments.append(
             ExperimentConfig(
                 name=name,
@@ -323,6 +354,7 @@ def load_analysis_config(config_path: Path | str) -> AnalysisConfig:
                 scib=merged["scib"],
                 diagnose=merged["diagnose"],
                 umap=merged["umap"],
+                paired_umap=merged["paired_umap"],
                 benchmark=merged["benchmark"],
             )
         )

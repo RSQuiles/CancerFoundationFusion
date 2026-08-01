@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from evaluate.analysis_config import (  # noqa: E402
+    DEFAULT_STEPS,
     STEP_ORDER,
     deep_merge,
     interpolate,
@@ -105,7 +106,8 @@ def main() -> int:
 
         steps, skipped = plan_experiment(exp, ROOT)
         names = [s.name for s in steps]
-        check("all six steps planned", names == list(STEP_ORDER), str(names))
+        check("default steps planned", names == list(DEFAULT_STEPS), str(names))
+        check("paired_umap is opt-in, not default", "paired_umap" not in names)
         check("build runs (no eval.h5ad yet)", "build" in names)
 
         print("\n=== environment per step ===")
@@ -157,6 +159,60 @@ def main() -> int:
         bench_argv = shlex.join(by_name["benchmark"].argv)
         check("benchmark defaults its output path", "benchmark.png" in bench_argv)
         check("benchmark passes --no-show", "--no-show" in bench_argv)
+
+        print("\n=== paired_umap (opt-in step) ===")
+        paired_h5ad = tmp / "paired_samples.h5ad"
+        paired_h5ad.write_text("stub", encoding="utf-8")
+        p_ok = tmp / "cfg_paired.yaml"
+        p_ok.write_text(
+            f"""
+env: {{container_image: /i.sif, conda_env: e}}
+experiments:
+  - name: p
+    ablation_dir: {(work / 'abl_a').as_posix()}
+    steps: [paired_umap]
+    paired_umap:
+      input_h5ad: {paired_h5ad.as_posix()}
+      n_cell_lines: 10
+      no_sc: true
+""",
+            encoding="utf-8",
+        )
+        cfg_p = load_analysis_config(p_ok)
+        exp_p = cfg_p.experiments[0]
+        check("paired_umap needs no adata_dir", exp_p.adata_dir is None)
+        steps_p, _ = plan_experiment(exp_p, ROOT)
+        check("paired_umap is planned when requested",
+              [s.name for s in steps_p] == ["paired_umap"], str([s.name for s in steps_p]))
+        sp = steps_p[0]
+        check("paired_umap runs in the container", sp.env_kind == "container")
+        check("paired_umap does not depend on eval.h5ad", sp.needs_eval is False)
+        pa = shlex.join(sp.argv)
+        check("targets plot_paired_umap.py", "plot_paired_umap.py" in pa)
+        check("passes --ablation-dir", "--ablation-dir" in pa)
+        check("passes --input-h5ad", "--input-h5ad" in pa)
+        check("defaults out-dir to {ablation_dir}/paired_umaps",
+              sp.argv[sp.argv.index("--out-dir") + 1]
+              == str(work / "abl_a" / "paired_umaps"),
+              sp.argv[sp.argv.index("--out-dir") + 1])
+        check("forwards --n-cell-lines", "--n-cell-lines 10" in pa)
+        check("forwards --no-sc", "--no-sc" in pa)
+        # Flags main() drops in --ablation-dir mode must not be sent.
+        for dead in ("--out-prefix", "--domain-col", "--sc-label", "--bulk-label",
+                     "--is-log1p", "--max-sc-per-line"):
+            check(f"omits {dead} (ignored in ablation-dir mode)", dead not in pa)
+
+        p_bad = tmp / "cfg_paired_bad.yaml"
+        p_bad.write_text(
+            f"experiments:\n  - name: p\n    ablation_dir: {(work / 'abl_a').as_posix()}\n"
+            "    steps: [paired_umap]\n",
+            encoding="utf-8",
+        )
+        try:
+            load_analysis_config(p_bad)
+            check("rejects paired_umap without input_h5ad", False)
+        except KeyError:
+            check("rejects paired_umap without input_h5ad", True)
 
         print("\n=== sample-size reconciliation ===")
         n, note = resolve_sample_sizes(exp, will_build=True)
@@ -262,7 +318,7 @@ experiments:
         cfg4 = load_analysis_config(cfg_path)
         rec = execute_experiment(cfg4.experiments[0], cfg4, None,
                                  dry_run=True, local=False)
-        check("dry run plans every step", len(rec["steps"]) == len(STEP_ORDER),
+        check("dry run plans every default step", len(rec["steps"]) == len(DEFAULT_STEPS),
               str(len(rec["steps"])))
         check("dry run runs nothing",
               all(s["status"] == "dry-run" for s in rec["steps"]))

@@ -1,0 +1,162 @@
+# Every experiment defined in ablate/configs/, ready for:
+#   python evaluate/run_analysis.py --config evaluate/analysis_all_experiments.yaml --dry-run
+#
+# Derived from the 12 files in ablate/configs/. Field mapping used:
+#   ablation_dir  <- base_config.trainer.save_dir   (the parent holding the model dirs;
+#                    the per-ablation save_dir overrides just append /<model>)
+#   adata_dir     <- base_config.data.train_path + "/h5ads"
+#                    (bulk_sc_data_preprocessing.py writes the vocab-filtered h5ads to
+#                    <data-path>/h5ads/, which is what build_eval_adata globs)
+#   build.precomputed_pb <- base_config.data.precomputed_pb
+#   metrics.group_column <- base_config.data.pb_group_column  (tissue_general everywhere)
+#
+# 12 configs collapse to 10 directories, because two pairs target the same save_dir:
+#   big_condition.json + fill.json        -> ablation_big_condition
+#                                            (fill.json re-runs only dat + cdd)
+#   paired_counts.json + paired_config_cscs.json -> ablation_paired_counts
+#                                            (the latter is the CSCS Alps variant)
+# Experiment names must be unique, so each directory appears once below.
+
+vars:
+  work: /cluster/work/boeva/rquiles
+
+env:
+  container_image: /cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif
+  binds: [/cluster]
+  conda_env: bulkFM
+  python: python
+  nv: true
+
+defaults:
+  # 'benchmark' is deliberately NOT here: plot_ablation_benchmark.py exits 1 when a
+  # model dir has no metrics/results_*.json, and only small_partition_ablation.json
+  # declares downstream_tasks. Add 'benchmark' per experiment once you have run
+  # evaluate/finetune/run_downstream_task.py for it.
+  # 'paired_umap' is likewise per-experiment: it needs a cell-line matched paired
+  # h5ad, so only the paired_* experiments below enable it.
+  steps: [build, metrics, scib, diagnose, umap]
+
+  # Shared settings for the opt-in paired plot. The file is the one plot_paired.sh
+  # uses; it lives outside ${work}, but env.binds already covers /cluster.
+  paired_umap:
+    input_h5ad: /cluster/work/boeva/bulkFM/data/processed/paired_samples.h5ad
+    n_cell_lines: 10
+    cell_line_col: cell_line
+  seed: 0
+  # All these configs train with input_data: counts on raw-counts h5ads, and binning
+  # is scale-invariant, so embedding the values as-is matches training.
+  normalized: true
+
+  build:
+    rebuild: auto           # only builds eval.h5ad when it is missing
+    sample_size: 5000
+    precomputed_pb: false   # overridden to true for the three that train that way
+    panel_strategy: consensus
+    n_pca_components: 50
+    n_hvg_baseline: 2000
+    batch_size: 64
+
+  metrics:
+    batch_size: 64
+    group_column: tissue_general
+    skip_existing: true
+
+  scib: {n_max: 500}
+  diagnose: {n_max: 500}
+
+  umap:
+    source: eval            # figure and metric tables come from the same vectors
+    color: [tissue_general]
+    skip_unknown: true
+
+experiments:
+
+  # ── precomputed_pb: true ─────────────────────────────────────────────────────
+  # These three feed precomputed pseudobulk rows straight through the collator.
+
+  - name: monitor_align                       # monitor_align.json (5 models)
+    ablation_dir: ${work}/outputs/save_CFF/ablation_monitor_align
+    adata_dir: ${work}/data/mini_eheiss_RAW/pipeline_ready/h5ads
+    build: {precomputed_pb: true}
+    umap: {color: [tissue_general, modality]}
+
+  - name: big_condition                       # big_condition.json + fill.json (4 models)
+    ablation_dir: ${work}/outputs/save_CFF/ablation_big_condition
+    adata_dir: ${work}/data/eheiss_RAW/pipeline_ready/h5ads
+    build: {precomputed_pb: true}
+    umap: {color: [tissue_general, modality]}
+
+  - name: united_data                         # eheiss_data.json (4 models)
+    ablation_dir: ${work}/outputs/save_CFF/ablation_united_data
+    adata_dir: ${work}/data/eheiss_RAW/pipeline_ready/h5ads
+    build: {precomputed_pb: true}
+
+  # ── paired datasets ──────────────────────────────────────────────────────────
+  # conditions include 'paired', so these data dirs carry paired_*.h5ad and the
+  # paired_* / agg_paired_* metric families will actually populate here — unlike the
+  # experiments above, where they are skipped for lack of paired inputs. These are
+  # also the only experiments where the cell-line 'paired_umap' plot makes sense.
+
+  - name: paired_mix                          # paired_mix.json (2 models)
+    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_mix
+    adata_dir: ${work}/data/paired_dataset_counts/pipeline_ready/h5ads
+    steps: [build, metrics, scib, diagnose, umap, paired_umap]
+
+  - name: paired_corn                         # paired_corn.json (5 models)
+    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_corn
+    adata_dir: ${work}/data/paired_dataset_counts/pipeline_ready/h5ads
+    steps: [build, metrics, scib, diagnose, umap, paired_umap]
+
+  - name: paired_dataset                      # paired_aggfix.json (4 models)
+    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_dataset
+    adata_dir: ${work}/data/paired_dataset/pipeline_ready/h5ads
+    steps: [build, metrics, scib, diagnose, umap, paired_umap]
+
+  # NOTE: save_dir here is 'outputs_rquiles', not 'outputs' like every other config.
+  # Copied verbatim from paired_counts.json / paired_config_cscs.json rather than
+  # "corrected" — confirm which of the two roots actually holds the checkpoints, or
+  # this run will report "No matching model dirs found".
+  - name: paired_counts                       # paired_counts.json (5 models)
+    ablation_dir: ${work}/outputs_rquiles/save_CFF/ablation_paired_counts
+    adata_dir: ${work}/data/paired_dataset_counts/pipeline_ready/h5ads
+    steps: [build, metrics, scib, diagnose, umap, paired_umap]
+
+  # ── no unified-FM features ───────────────────────────────────────────────────
+
+  - name: base_comparison                     # base_comparison_ablation.json (4 models)
+    ablation_dir: ${work}/outputs/save_CFF/ablation_base_comparison
+    adata_dir: ${work}/data/cellxgene_bulk/pipeline_ready/h5ads
+
+  # The only config declaring downstream_tasks (cancer_type_annotation,
+  # survival_prediction), so it is the only one where 'benchmark' can produce a plot.
+  - name: partition                           # small_partition_ablation.json (6 models)
+    ablation_dir: ${work}/outputs/save_CFF/ablation_partition
+    adata_dir: ${work}/data/small_partition/pipeline_ready/h5ads
+    steps: [build, metrics, scib, diagnose, umap, benchmark]
+
+  # ── excluded ─────────────────────────────────────────────────────────────────
+  # example_ablation_config.json -> ablation_test on data/mixed_test: a template
+  # (conditions: [tissue], no input_style, downstream tasks it has never run). Left
+  # out so a full sweep does not fail on it. Uncomment if that directory is real:
+  #
+  # - name: test
+  #   ablation_dir: ${work}/outputs/save_CFF/ablation_test
+  #   adata_dir: ${work}/data/mixed_test/pipeline_ready/h5ads
+  #   metrics: {group_column: tissue}
+  #
+  # paired_config_cscs.json targets the same ablation_paired_counts directory as
+  # paired_counts.json but on CSCS Alps, where train_path is ${data_dir}/... and jobs
+  # use Enroot/Pyxis rather than singularity. A single 'env:' block cannot serve both
+  # clusters — run CSCS from a separate config with its own env if you need it.
+
+slurm:
+  enabled: true
+  mode: per-experiment      # 9 jobs; use single-job to run them all sequentially
+  job_name_prefix: analysis
+  sbatch_args:
+    - --time=4:00:00
+    - --partition=gpu
+    - --gres=gpu:rtx4090:1
+    - --ntasks-per-node=1
+    - --cpus-per-task=4
+    - --mem-per-cpu=32G

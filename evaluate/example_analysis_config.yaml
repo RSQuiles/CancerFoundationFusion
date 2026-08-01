@@ -25,6 +25,8 @@ env:
 
 # Deep-merged under every experiment; anything here can be overridden per experiment.
 defaults:
+  # 'paired_umap' exists too but is opt-in (see below): it needs a cell-line matched
+  # paired h5ad that most datasets do not have, and errors out rather than no-oping.
   steps: [build, metrics, scib, diagnose, umap, benchmark]
   seed: 0
   # false -> passes --not-normalized. The on-disk data is raw counts and per-row
@@ -71,6 +73,25 @@ defaults:
     no_modality_split: false
     embed_batch_size: 64
 
+  # plot_paired_umap.py: SC / pseudobulk / bulk coloured by cell line, one figure per
+  # model. Reads a single paired h5ad, NOT eval.h5ad or adata_dir, so it is
+  # independent of 'build'. Add 'paired_umap' to an experiment's steps to enable it;
+  # input_h5ad is then required.
+  # Only the keys below take effect: main() drops --out-prefix, --domain-col,
+  # --sc-label, --bulk-label, --is-log1p and --max-sc-per-line in --ablation-dir mode,
+  # and forces normalized=True there.
+  paired_umap:
+    input_h5ad: null        # e.g. /cluster/work/boeva/bulkFM/data/processed/paired_samples.h5ad
+    out_dir: null           # null -> {ablation_dir}/paired_umaps
+    cell_line_col: cell_line
+    n_cell_lines: 50
+    batch_size: 64
+    neighbors: 15
+    min_dist: 0.5
+    dpi: 200
+    no_sc: false            # true = bulk + pseudobulk only, no SC cells
+    device: null
+
   benchmark:
     output: null            # null -> {ablation_dir}/benchmark.png
     no_show: true
@@ -82,16 +103,20 @@ experiments:
     ablation_dir: ${work}/outputs/save_CFF/ablation_monitor_align
     adata_dir: ${work}/data/mini_eheiss_RAW/pipeline_ready/h5ads
 
-  # Overrides only what differs: skips build entirely, plots from a live embedding.
+  # Overrides only what differs: skips build entirely, plots from a live embedding,
+  # and adds the opt-in cell-line paired plot.
   - name: paired_mix
     ablation_dir: ${work}/outputs/save_CFF/ablation_paired_mix
     adata_dir: ${work}/data/paired/pipeline_ready/h5ads
-    steps: [metrics, scib, diagnose, umap]
+    steps: [metrics, scib, diagnose, umap, paired_umap]
     build:
       rebuild: never
     umap:
       source: live
       sample_size: 20000
+    paired_umap:
+      input_h5ad: /cluster/work/boeva/bulkFM/data/processed/paired_samples.h5ad
+      n_cell_lines: 10
 
 slurm:
   enabled: true

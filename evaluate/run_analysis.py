@@ -8,12 +8,16 @@ here; this module only builds argv, picks the right environment, and submits job
 The steps do not all run in the same environment, which is the main thing this
 orchestrator exists to get right:
 
-    build      check/build_eval_adata.py        container   GPU
-    metrics    check/unified_metrics.py         container   GPU
-    scib       check/unified_metrics.py --scib  conda       (container lacks scib)
-    diagnose   check/diagnose_scib.py           plain
-    umap       plot/umaps.py                    container   GPU
-    benchmark  plot/plot_ablation_benchmark.py  plain
+    build        check/build_eval_adata.py        container   GPU
+    metrics      check/unified_metrics.py         container   GPU
+    scib         check/unified_metrics.py --scib  conda     (container lacks scib)
+    diagnose     check/diagnose_scib.py           plain
+    umap         plot/umaps.py                    container   GPU
+    paired_umap  plot/plot_paired_umap.py         container   GPU   (opt-in)
+    benchmark    plot/plot_ablation_benchmark.py  plain
+
+``paired_umap`` is opt-in: it needs a separate paired h5ad (cell-line matched SC and
+bulk) rather than eval.h5ad or adata_dir, so it is not in the default step list.
 
 Usage
 -----
@@ -70,17 +74,20 @@ STEP_ENV: dict[str, str] = {
     "scib": "conda",
     "diagnose": "plain",
     "umap": "container",
+    "paired_umap": "container",
     "benchmark": "plain",
 }
 
 # Steps that read eval.h5ad and therefore depend on `build` having produced it.
-# `umap` is conditional: only when umap.source == "eval".
+# `umap` is conditional: only when umap.source == "eval". `paired_umap` never reads
+# eval.h5ad — it builds its own SC/pseudobulk/bulk AnnData from its paired h5ad.
 STEP_NEEDS_EVAL: dict[str, bool] = {
     "build": False,
     "metrics": True,
     "scib": True,
     "diagnose": True,
     "umap": False,   # decided per experiment
+    "paired_umap": False,
     "benchmark": False,
 }
 
@@ -90,6 +97,7 @@ SCRIPTS: dict[str, Path] = {
     "scib": Path("evaluate/check/unified_metrics.py"),
     "diagnose": Path("evaluate/check/diagnose_scib.py"),
     "umap": Path("evaluate/plot/umaps.py"),
+    "paired_umap": Path("evaluate/plot/plot_paired_umap.py"),
     "benchmark": Path("evaluate/plot/plot_ablation_benchmark.py"),
 }
 
@@ -240,6 +248,33 @@ def _umap_argv(exp: ExperimentConfig, root: Path) -> list[str]:
     return argv
 
 
+def _paired_umap_argv(exp: ExperimentConfig, root: Path) -> list[str]:
+    """plot_paired_umap.py in --ablation-dir mode.
+
+    Only the flags ``run_ablation()`` actually receives are passed. --out-prefix,
+    --domain-col, --sc-label, --bulk-label, --is-log1p and --max-sc-per-line exist on
+    the CLI but are dropped by main() in this mode, and `normalized` is hardcoded True
+    there, so forwarding them would imply an effect they do not have.
+    """
+    p = exp.paired_umap
+    out_dir = p.get("out_dir") or exp.ablation_dir / "paired_umaps"
+    argv = [str(root / SCRIPTS["paired_umap"]),
+            "--ablation-dir", str(exp.ablation_dir),
+            "--input-h5ad", str(p["input_h5ad"]),
+            "--out-dir", str(out_dir)]
+    _flag(argv, "--cell-line-col", p["cell_line_col"])
+    _flag(argv, "--n-cell-lines", p["n_cell_lines"])
+    _flag(argv, "--batch-size", p["batch_size"])
+    _flag(argv, "--neighbors", p["neighbors"])
+    _flag(argv, "--min-dist", p["min_dist"])
+    _flag(argv, "--seed", exp.seed)
+    _flag(argv, "--dpi", p["dpi"])
+    _flag(argv, "--device", p.get("device"))
+    if p["no_sc"]:
+        argv.append("--no-sc")
+    return argv
+
+
 def _benchmark_argv(exp: ExperimentConfig, root: Path) -> list[str]:
     b = exp.benchmark
     out = b.get("output") or exp.ablation_dir / "benchmark.png"
@@ -327,6 +362,9 @@ def plan_experiment(
                 "live embedding: the figure may describe different vectors than the "
                 "metric tables"
             )
+        elif name == "paired_umap":
+            argv = _paired_umap_argv(exp, root)
+            note = f"cell-line paired plot from {exp.paired_umap['input_h5ad']}"
         else:
             argv, note = _benchmark_argv(exp, root), ""
 
