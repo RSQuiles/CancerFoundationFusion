@@ -320,6 +320,7 @@ def _build_provenance(
     sample_size: int,
     seed: int,
     group_column: str,
+    recon_failures: dict | None = None,
 ) -> dict:
     """Assemble the ``uns["eval_provenance"]`` record."""
     counts = (
@@ -347,6 +348,9 @@ def _build_provenance(
             for k, v in panels.items()
         },
         "modality_counts": {str(k): int(v) for k, v in counts.items()},
+        # Empty when every model's masked forward pass succeeded. Non-empty means
+        # recon_* will be missing downstream, with the reason recorded here.
+        "recon_failures": {str(k): str(v) for k, v in (recon_failures or {}).items()},
         "sample_size_per_prefix": int(sample_size),
         "seed": int(seed),
         "group_column": str(group_column),
@@ -557,6 +561,7 @@ def build(
 
     # ── Per-model: embed all cells + cache masked forward pass ───────────────
     panels: dict[str, list[str] | dict] = {}
+    recon_failures: dict[str, str] = {}
     for ckpt_path, name in ckpt_name_pairs:
         obsm_key = f"X_cf_{name}"
         log.info("[%s] Embedding -> obsm['%s'] ...", name, obsm_key)
@@ -589,8 +594,21 @@ def build(
                 if recon_cache is not None:
                     combined.uns[f"recon_{name}"] = recon_cache
                     log.info("  Cached: pred/target/mask arrays stored in uns['recon_%s']", name)
-            except Exception:
-                log.warning("  Masked forward pass failed:\n%s", traceback.format_exc())
+                else:
+                    recon_failures[name] = "no cells left after preprocessing"
+                    log.error(
+                        "  Reconstruction cache NOT written for '%s': preprocessing "
+                        "left 0 bulk cells. recon_* metrics will be unavailable.", name,
+                    )
+            except Exception as exc:
+                # Raised to error because a missing cache silently removes the whole
+                # recon_* family downstream — and the live fallback in
+                # unified_metrics.py cannot run in the scIB conda environment.
+                recon_failures[name] = f"{type(exc).__name__}: {exc}"
+                log.error(
+                    "  Reconstruction cache NOT written for '%s' — recon_* metrics "
+                    "will be unavailable downstream:\n%s", name, traceback.format_exc(),
+                )
 
         del model
         gc.collect()
@@ -609,7 +627,15 @@ def build(
         sample_size=sample_size,
         seed=seed,
         group_column=group_column,
+        recon_failures=recon_failures,
     )
+    if recon_failures:
+        log.error(
+            "Reconstruction cache missing for %d model(s): %s — recon_* metrics will "
+            "be absent unless unified_metrics.py runs somewhere CancerFoundation can "
+            "be imported (i.e. inside the container, not the scIB conda env).",
+            len(recon_failures), ", ".join(sorted(recon_failures)),
+        )
     log.info(
         "Provenance: shared_panel=%s strategy=%s panel_hash=%s",
         shared_panel, panel_strategy,

@@ -521,6 +521,20 @@ def _agg_metrics_from_precomputed(
     the same group, takes their mean, and measures cosine similarity and L2
     distance to the pseudobulk embedding.  Returns the same keys as
     ``compute_aggregation_metrics``.
+
+    **Read this before interpreting agg_synth_\\*.** The SC cells are drawn *at
+    random from the same* ``group_column`` *group* — they are not the cells the
+    pseudobulk was actually built from. Under ``build_eval_adata --precomputed-pb``
+    the ``synth_pb`` rows are pipeline-precomputed pseudobulks with no recorded
+    constituents, so this measures whether a pseudobulk embedding lands near the
+    centroid of arbitrary same-tissue single cells: a tissue-level consistency
+    check, not aggregation consistency in the strict sense. The strict version is
+    ``agg_paired_*`` (:func:`_agg_from_paired_sc`), which uses ``obs["paired"]`` to
+    find each pseudobulk's real constituents.
+
+    Note also that ``agg_synth_l2`` compares a single embedding against a mean of
+    ``n_sc_per_pb`` embeddings, and averaging shrinks the norm toward the centroid,
+    so the L2 carries that bias; the cosine variant is the more comparable of the two.
     """
     rng = np.random.default_rng(seed)
 
@@ -1061,10 +1075,22 @@ def run_single_model(
     # metric was silently skipped.
     sc_adata,          sc_emb          = _get(MOD_SC)
     bulk_adata,        bulk_emb        = _get(MOD_BULK)
+    pb_adata,          pb_emb          = _get(MOD_PB)
     paired_sc_adata,   paired_sc_emb   = _get(MOD_PAIRED_SC)
     paired_pb_adata,   paired_pb_emb   = _get(MOD_PAIRED_PB)
     paired_bulk_adata, paired_bulk_emb = _get(MOD_PAIRED_BULK)
     synth_pb_adata,    synth_pb_emb    = _get(MOD_SYNTH_PB)
+
+    present = {
+        lbl: int((eval_adata.obs[_MODALITY_COL].astype(str) == lbl).sum())
+        for lbl in eval_adata.obs[_MODALITY_COL].astype(str).unique()
+    } if _MODALITY_COL in eval_adata.obs.columns else {}
+    log.info("  Modality rows available: %s", present or "<none>")
+
+    # Why each metric family did not run. Reported at the end: a short metrics dict
+    # is otherwise indistinguishable from a broken run, because the plots and the
+    # CSV just omit the missing columns.
+    skipped: dict[str, str] = {}
 
     # ── Metric 1: reconstruction ──────────────────────────────────────────
     recon_cache_key = f"recon_{model_name}"
@@ -1115,6 +1141,27 @@ def run_single_model(
                 normalized=normalized,
             )
         )
+    elif not recon_done:
+        # The live fallback needs both a loadable model and bulk rows. In the scIB
+        # conda environment CancerFoundation cannot be imported at all (see the
+        # guarded import at the top of this module), so only the cached path works
+        # there — run the non-scIB pass in the container first.
+        if bulk_adata is None:
+            skipped["recon_*"] = (
+                f"no rows labelled '{MOD_BULK}' in the eval AnnData"
+            )
+        elif ckpt_path is None:
+            skipped["recon_*"] = (
+                f"uns['{recon_cache_key}'] absent and no checkpoint found to "
+                "recompute it live"
+            )
+        else:
+            skipped["recon_*"] = (
+                f"uns['{recon_cache_key}'] absent and the model could not be loaded "
+                "(is CancerFoundation importable in this environment?). Re-run "
+                "build_eval_adata to refresh the cache, or run this pass inside the "
+                "container."
+            )
 
     # ── Metric 2: paired alignment ────────────────────────────────────────
     if paired_pb_emb is not None and paired_bulk_emb is not None:
@@ -1130,7 +1177,14 @@ def run_single_model(
                 )
             )
         else:
-            log.warning("  'paired' column missing — skipping paired alignment.")
+            skipped["paired_*"] = (
+                "obs['paired'] missing on the paired_pb/paired_bulk rows"
+            )
+    else:
+        skipped["paired_*"] = (
+            f"needs both '{MOD_PAIRED_PB}' and '{MOD_PAIRED_BULK}' rows; this "
+            "dataset has no paired_*.h5ad inputs"
+        )
 
     # ── Metric 3a: aggregation consistency from paired data ───────────────
     if (
@@ -1145,6 +1199,12 @@ def run_single_model(
                 paired_sc_adata, paired_sc_emb,
                 paired_pb_adata, paired_pb_emb,
             )
+        )
+    else:
+        skipped["agg_paired_*"] = (
+            f"needs '{MOD_PAIRED_SC}' and '{MOD_PAIRED_PB}' rows carrying "
+            "obs['paired']; this is the only true aggregation-consistency metric "
+            "(it knows which SC cells composed each pseudobulk)"
         )
 
     # ── Metric 3b: aggregation consistency from synthetic pseudobulks ─────
@@ -1173,18 +1233,84 @@ def run_single_model(
                 normalized=normalized,
             )
         )
+    else:
+        missing = []
+        if sc_emb is None:
+            missing.append(f"'{MOD_SC}' rows")
+        if synth_pb_emb is None:
+            missing.append(f"'{MOD_SYNTH_PB}' rows")
+        if sc_adata is not None and group_column not in sc_adata.obs.columns:
+            missing.append(f"obs['{group_column}'] on the SC rows")
+        skipped["agg_synth_*"] = (
+            "missing " + ", ".join(missing) if missing else "no model to embed live"
+        )
 
     # ── Metric 4: contrastive / distributional alignment ──────────────────
-    pb_for_contrast   = paired_pb_emb
-    bulk_for_contrast = bulk_emb if bulk_emb is not None else paired_bulk_emb
+    # This compares the bulk and pseudobulk *distributions*, so any pseudobulk rows
+    # will do. It used to read paired_pb only, which silently dropped all seven
+    # contrastive metrics on datasets without paired data even though plain
+    # pseudobulk rows were present.
+    if paired_pb_emb is not None:
+        pb_for_contrast, pb_src = paired_pb_emb, MOD_PAIRED_PB
+    else:
+        pb_parts = [
+            (emb, lbl) for emb, lbl in
+            ((pb_emb, MOD_PB), (synth_pb_emb, MOD_SYNTH_PB))
+            if emb is not None
+        ]
+        if pb_parts:
+            pb_for_contrast = np.vstack([emb for emb, _ in pb_parts])
+            pb_src = "+".join(lbl for _, lbl in pb_parts)
+        else:
+            pb_for_contrast, pb_src = None, None
+
+    if bulk_emb is not None:
+        bulk_for_contrast, bulk_src = bulk_emb, MOD_BULK
+    elif paired_bulk_emb is not None:
+        bulk_for_contrast, bulk_src = paired_bulk_emb, MOD_PAIRED_BULK
+    else:
+        bulk_for_contrast, bulk_src = None, None
 
     if pb_for_contrast is not None and bulk_for_contrast is not None:
-        log.info("  Computing contrastive alignment metrics ...")
+        log.info(
+            "  Computing contrastive alignment metrics (%s vs %s) ...",
+            bulk_src, pb_src,
+        )
         metrics.update(compute_contrastive_metrics(bulk_for_contrast, pb_for_contrast, seed=seed))
+        # Which rows these numbers describe, so a value is never ambiguous between
+        # "real bulk vs precomputed PB" and "paired bulk vs paired PB".
+        metrics["contrastive_bulk_source"] = bulk_src
+        metrics["contrastive_pb_source"] = pb_src
+    else:
+        missing = "bulk-like" if bulk_for_contrast is None else "pseudobulk-like"
+        skipped["contrastive_*"] = f"no {missing} rows in the eval AnnData"
+
+    # ── Report which families ran and which did not ───────────────────────
+    _FAMILIES = ("recon_", "paired_", "agg_paired_", "agg_synth_", "contrastive_")
+    computed = [
+        fam for fam in _FAMILIES
+        if any(k.startswith(fam) for k in metrics)
+        # agg_paired_* also starts with "agg_", and paired_* is a prefix of nothing
+        # else, so a plain startswith is unambiguous here.
+    ]
+    log.info(
+        "  Metric families computed: %s",
+        ", ".join(f"{f}*" for f in computed) or "<none>",
+    )
+    if skipped:
+        log.warning(
+            "  Metric families SKIPPED (%d):\n%s",
+            len(skipped),
+            "\n".join(f"    {fam:<16} {why}" for fam, why in skipped.items()),
+        )
 
     # ── Save ──────────────────────────────────────────────────────────────
     if ckpt_path is not None:
         metrics["checkpoint"] = str(ckpt_path)
+
+    # Persisted so the CSV/plots can be read alongside the reason a column is absent.
+    if skipped:
+        metrics["skipped_families"] = skipped
 
     # Stamp the panel these numbers describe, so a later --skip-existing run can
     # tell whether the cache is still valid (see the top of this function).
@@ -1275,10 +1401,27 @@ def run_ablation(
             per_model_per_bin[name] = row[per_bin_col]
     if per_bin_col in df.columns:
         df = df.drop(columns=[per_bin_col])
+    # skipped_families is a nested dict too; it lives in the per-model JSON, not the
+    # flat CSV that compare_experiments.py and _plot_metrics read.
+    if "skipped_families" in df.columns:
+        df = df.drop(columns=["skipped_families"])
 
     csv_path = ablation_dir / "unified_metrics.csv"
     df.to_csv(csv_path)
     log.info("Summary CSV → %s", csv_path)
+
+    # Which columns are missing across the board, so an empty panel in the figure is
+    # explained in the same place the figure is produced.
+    absent = {
+        fam for fam in ("recon_", "paired_", "agg_paired_", "agg_synth_", "contrastive_")
+        if not any(str(c).startswith(fam) for c in df.columns)
+    }
+    if absent:
+        log.warning(
+            "No column for these metric families in %s: %s — see the per-model "
+            "'skipped_families' in each metrics/unified_metrics.json for why.",
+            csv_path.name, ", ".join(sorted(f"{f}*" for f in absent)),
+        )
     _plot_metrics(df, ablation_dir / "unified_metrics.png")
 
     if per_model_per_bin:

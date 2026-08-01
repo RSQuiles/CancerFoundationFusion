@@ -28,6 +28,24 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
 - `--compile`: Enable `torch.compile` for the model
 - `--unified`: Enable Unified FM mode (adds bulk data, contrastive, and aggregation losses)
 
+### Post-training Analysis (UMAPs + unified metrics + benchmark plot)
+```bash
+# Inspect the exact commands without running anything
+python evaluate/run_analysis.py --config evaluate/example_analysis_config.yaml --dry-run
+
+# Submit (one SLURM job per experiment, or one job for all — set slurm.mode)
+python evaluate/run_analysis.py --config evaluate/example_analysis_config.yaml
+
+# Subset by experiment and/or step
+python evaluate/run_analysis.py --config <cfg> --only monitor_align --step umap benchmark
+```
+One config drives N ablation directories. Steps: `build`, `metrics`, `scib`,
+`diagnose`, `umap`, `benchmark`. **They do not all run in the same environment** —
+`build`/`metrics`/`umap` need the bionemo container, `scib` needs the conda env with
+`scib_metrics` (the container lacks it), and `diagnose`/`benchmark` run anywhere. The
+orchestrator picks per step; do not run `--scib` without having run the plain
+`metrics` pass in the container first, or `recon_*` will have no live fallback.
+
 ### Downstream Tasks
 ```bash
 python evaluate/finetune/run_downstream_task.py \
@@ -84,6 +102,10 @@ cancerfoundation/
 └── utils.py                  # Pretrained weight loading, gene mapping
 
 evaluate/
+├── run_analysis.py           # Config-driven orchestrator: UMAPs + metrics + benchmark over N experiments
+├── analysis_config.py        # Config schema/loader for run_analysis.py
+├── example_analysis_config.yaml
+├── check_analysis_plan.py    # Self-checks for the orchestrator (no cluster needed)
 ├── check/
 │   ├── build_eval_adata.py   # Builds eval.h5ad: per-model embeddings + PCA baseline
 │   ├── unified_metrics.py    # Unified-FM metrics + scIB batch-integration benchmark

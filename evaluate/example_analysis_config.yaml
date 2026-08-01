@@ -1,0 +1,107 @@
+# Config for: python evaluate/run_analysis.py --config <this file>
+#
+# Runs the post-training analyses (UMAPs, unified metrics, benchmark plot) over any
+# number of ablation directories. Every step is an existing CLI; this only decides
+# what to run, with which flags, and in which environment.
+#
+# Start with:
+#   python evaluate/run_analysis.py --config evaluate/example_analysis_config.yaml --dry-run
+# which prints the exact commands and submits nothing.
+
+# ${name} interpolation. Resolved from here first, then from the environment.
+vars:
+  work: /cluster/work/boeva/rquiles
+
+# Where each kind of step runs. Steps are split across two environments because the
+# bionemo container lacks scib_metrics while the conda env cannot import
+# CancerFoundation — the orchestrator picks the right one per step, which is the
+# thing the old shell scripts kept getting wrong.
+env:
+  container_image: /cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif
+  binds: [/cluster]
+  conda_env: bulkFM
+  python: python
+  nv: true                  # --nv on the singularity call (GPU steps need it)
+
+# Deep-merged under every experiment; anything here can be overridden per experiment.
+defaults:
+  steps: [build, metrics, scib, diagnose, umap, benchmark]
+  seed: 0
+  # false -> passes --not-normalized. The on-disk data is raw counts and per-row
+  # quantile binning is scale-invariant, so leaving this true (embed as-is, matching
+  # training) is correct; gene selection and the PCA baseline log-normalise internally.
+  normalized: true
+
+  build:
+    rebuild: auto           # auto = only when eval.h5ad is missing | always | never
+    sample_size: 5000       # max cells PER FILENAME PREFIX
+    precomputed_pb: true
+    panel_strategy: consensus   # consensus | reference | pooled
+    per_modality_panel: false   # true restores the pre-fix per-modality panels
+    n_pca_components: 50
+    n_hvg_baseline: 2000
+    batch_size: 64
+
+  metrics:
+    batch_size: 64
+    group_column: tissue_general
+    skip_existing: true     # panel-aware: a cache from another gene panel is redone
+    mask_ratio: 0.15
+    n_sc_per_pb: 10
+    n_synth_pb: 200
+
+  scib:
+    n_max: 500              # cells per batch in each scIB benchmark
+
+  diagnose:
+    n_max: 500
+    out_csv: null           # null -> {ablation_dir}/_scib_metrics/diagnosis.csv
+
+  umap:
+    source: eval            # eval = read eval.h5ad (figure and tables agree)
+                            # live = re-embed a fresh subsample (independent of build)
+    sample_size: 6000       # TOTAL cells; only used when source == live.
+                            # With source: eval and build running, eval.h5ad is built
+                            # at max(build.sample_size, this) and serves both.
+    color: [tissue_general]
+    skip_unknown: true
+    neighbors: 15
+    min_dist: 0.5
+    plot_pb_only: false
+    no_modality_split: false
+    embed_batch_size: 64
+
+  benchmark:
+    output: null            # null -> {ablation_dir}/benchmark.png
+    no_show: true
+    figsize: null           # e.g. [22, 14]
+    primary: {}             # e.g. {deconv: rmse}
+
+experiments:
+  - name: monitor_align
+    ablation_dir: ${work}/outputs/save_CFF/ablation_monitor_align
+    adata_dir: ${work}/data/mini_eheiss_RAW/pipeline_ready/h5ads
+
+  # Overrides only what differs: skips build entirely, plots from a live embedding.
+  - name: paired_mix
+    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_mix
+    adata_dir: ${work}/data/paired/pipeline_ready/h5ads
+    steps: [metrics, scib, diagnose, umap]
+    build:
+      rebuild: never
+    umap:
+      source: live
+      sample_size: 20000
+
+slurm:
+  enabled: true
+  mode: per-experiment      # per-experiment = one job each | single-job = one for all
+  job_name_prefix: analysis
+  sbatch_args:
+    - --time=4:00:00
+    - --partition=gpu
+    - --gres=gpu:rtx4090:1
+    - --ntasks-per-node=1
+    - --cpus-per-task=4
+    - --mem-per-cpu=32G
+  environment: {}           # extra env vars for the sbatch call itself
