@@ -161,8 +161,7 @@ def main(
             sys.path.insert(0, "../")
             from cancerfoundation.model.model import CancerFoundation
             checkpoint_path = str(cfg.finetune[task_name].pretrained_model_path)
-            real_embedder = CancerFoundation.load_from_checkpoint(checkpoint_path, strict=False)
-            real_embedder.eval()
+            real_embedder = CancerFoundation.load_for_inference(checkpoint_path)
         else:
             real_embedder = embedder
         log.info("Pre-computing cell-line embeddings for drug sensitivity (runs once)...")

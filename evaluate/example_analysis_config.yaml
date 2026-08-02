@@ -36,7 +36,9 @@ defaults:
 
   build:
     rebuild: auto           # auto = only when eval.h5ad is missing | always | never
-    sample_size: 5000       # max cells PER FILENAME PREFIX
+    modality_sample_size: 5000   # max cells PER MODALITY (per filename prefix),
+                                 # NOT a total: eval.h5ad ends up with roughly
+                                 # this x the number of modalities present
     precomputed_pb: true
     panel_strategy: consensus   # consensus | reference | pooled
     per_modality_panel: false   # true restores the pre-fix per-modality panels

@@ -71,11 +71,15 @@ def _load_embedder(ckpt: dict, pretrained_model_path_override: str | None):
         )
 
     log.info(f"Loading base transformer from {pretrained_path}")
-    embedder = CancerFoundation.load_from_checkpoint(str(pretrained_path), strict=False)
+    embedder = CancerFoundation.load_for_inference(pretrained_path)
 
     if ckpt.get("finetuned_embedder") and "embedder_state" in ckpt:
         log.info("Applying finetuned embedder state from checkpoint")
-        embedder.load_state_dict(ckpt["embedder_state"])
+        # strict=False: states saved before load_for_inference existed still carry
+        # the training-only DAT discriminators, which the embedder no longer has.
+        missing, unexpected = embedder.load_state_dict(ckpt["embedder_state"], strict=False)
+        if missing:
+            log.warning("Finetuned embedder state is missing %d key(s): %s", len(missing), missing[:10])
 
     embedder.eval()
     for param in embedder.parameters():

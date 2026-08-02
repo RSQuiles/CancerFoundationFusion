@@ -43,7 +43,11 @@ _DEFAULT_DEFAULTS: dict[str, Any] = {
     "normalized": True,
     "build": {
         "rebuild": "auto",          # auto | always | never
-        "sample_size": 5000,        # max cells PER FILENAME PREFIX
+        # Max cells PER MODALITY (per filename prefix), NOT a total: with sc + bulk +
+        # paired_sc + paired_pb + paired_bulk present, 75_000 here means ~300k rows in
+        # eval.h5ad. Named for the unit because conflating it with umap.sample_size
+        # (a total) is an easy and expensive mistake.
+        "modality_sample_size": 5000,
         "precomputed_pb": True,
         "panel_strategy": "consensus",
         "per_modality_panel": False,
@@ -311,6 +315,17 @@ def load_analysis_config(config_path: Path | str) -> AnalysisConfig:
             )
         # Always execute in dependency order regardless of how they were listed.
         steps = [s for s in STEP_ORDER if s in steps]
+
+        if "sample_size" in (item.get("build") or {}) or "sample_size" in (
+            (raw.get("defaults") or {}).get("build") or {}
+        ):
+            raise KeyError(
+                f"[{name}] 'build.sample_size' was renamed to "
+                "'build.modality_sample_size': it is a per-modality cap, not a total "
+                "(sc + bulk + paired_* each get that many cells, so the eval.h5ad row "
+                "count is roughly that times the number of modalities). Rename the "
+                "key; the meaning is unchanged."
+            )
 
         if merged["build"]["rebuild"] not in _VALID_REBUILD:
             raise ValueError(

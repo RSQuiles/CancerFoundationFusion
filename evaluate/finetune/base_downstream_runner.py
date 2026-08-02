@@ -181,8 +181,7 @@ class BaseDownstreamRunner:
         sys.path.insert(0, "../")
         from cancerfoundation.model.model import CancerFoundation
 
-        embedder = CancerFoundation.load_from_checkpoint(resolved_path, strict=False)
-        embedder.eval()
+        embedder = CancerFoundation.load_for_inference(resolved_path)
         for param in embedder.parameters():
             param.requires_grad = self.finetune
 

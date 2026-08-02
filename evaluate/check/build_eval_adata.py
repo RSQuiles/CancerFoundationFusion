@@ -67,8 +67,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from cancerfoundation.checkpoint import read_checkpoint_hparams
 from cancerfoundation.model.model import CancerFoundation
 from evaluate.utils import (
+    MODALITY_COL as _MODALITY_COL,
     MOD_BULK,
     MOD_PAIRED_BULK,
     MOD_PAIRED_PB,
@@ -77,7 +79,9 @@ from evaluate.utils import (
     MOD_SC,
     MOD_SYNTH_PB,
     SC_MODALITIES,
+    detect_scale_by_modality,
     generate_pseudobulk_adata,
+    log_scale_table,
     looks_like_counts,
 )
 
@@ -289,6 +293,165 @@ def _run_masked_forward(
 
 
 # ---------------------------------------------------------------------------
+# PCA baseline
+# ---------------------------------------------------------------------------
+
+def _cp10k_log1p_rows(X, rows: np.ndarray, target_sum: float = 1e4) -> None:
+    """CP10K + log1p, in place, for ``rows`` only.
+
+    Works on the CSR ``data`` buffer directly. The obvious spelling —
+    ``X[rows] = normalized_submatrix`` — is fancy assignment into a sparse matrix,
+    which makes scipy rebuild the entire sparsity structure and allocates several
+    times the matrix; row-slicing ``data[indptr[r]:indptr[r+1]]`` is O(nnz) and
+    allocates nothing. Dense input is handled directly.
+    """
+    import scipy.sparse as sp
+
+    if len(rows) == 0:
+        return
+    if not sp.issparse(X):
+        block = X[rows]
+        totals = block.sum(axis=1, keepdims=True)
+        np.divide(block, np.where(totals > 0, totals, 1.0), out=block)
+        np.multiply(block, target_sum, out=block)
+        X[rows] = np.log1p(block)
+        return
+
+    indptr, data = X.indptr, X.data
+    for r in rows:
+        lo, hi = indptr[r], indptr[r + 1]
+        if hi <= lo:
+            continue
+        row = data[lo:hi]
+        total = row.sum()
+        if total > 0:
+            row *= target_sum / total
+        data[lo:hi] = np.log1p(row)
+
+
+def _to_log1p_scale(adata: ad.AnnData, scale: dict) -> ad.AnnData:
+    """CP10K + log1p only the modality groups detected as raw counts.
+
+    Returns ``adata`` with every row on the log1p scale, so a downstream ``expm1``
+    is valid for all of them. Mutates the passed object (callers hand in a copy).
+    """
+    if _MODALITY_COL not in adata.obs.columns:
+        if looks_like_counts(adata.X):
+            sc.pp.normalize_total(adata, target_sum=1e4)
+            sc.pp.log1p(adata)
+        return adata
+
+    labels = adata.obs[_MODALITY_COL].astype(str).to_numpy()
+    for group, is_counts in scale.items():
+        if not is_counts:
+            continue
+        rows = np.where(labels == group)[0]
+        if len(rows) == 0:
+            continue
+        log.info("  '%s': %d rows are raw counts -> CP10K + log1p before aggregating",
+                 group, len(rows))
+        _cp10k_log1p_rows(adata.X, rows)
+    return adata
+
+
+def _pca_baseline(
+    combined: ad.AnnData,
+    n_pca_components: int,
+    n_hvg_baseline: int,
+    scale: dict,
+    seed: int,
+) -> tuple[np.ndarray, dict]:
+    """scIB-style "unintegrated" reference: CP10K + log1p -> HVGs -> PCA.
+
+    This is what PCR comparison scores every embedding against, so it must be a fair
+    baseline: PCA straight on raw counts is dominated by library size, which for bulk
+    vs pseudobulk *is* the batch, and pcr_comparison being
+    ``max(0, (pre - post)/pre)`` then clips to 0 for every model.
+
+    Order matters for memory, not just correctness. Everything stays sparse until the
+    gene set has been cut to ``n_hvg_baseline``; only that block is densified. The
+    previous version densified the full matrix and held ~3 copies of it before
+    selecting HVGs, which at 300k cells x 28.7k genes is ~100 GB and was reliably
+    OOM-killed. scanpy's normalize_total / log1p / highly_variable_genes all accept
+    CSR, so nothing is lost by deferring the densification.
+    """
+    import scipy.sparse as sp
+    from sklearn.decomposition import PCA
+
+    recipe: dict = {"n_components_requested": int(n_pca_components), "seed": int(seed)}
+
+    # Sparse copy: cheap relative to the dense form, and keeps combined.X untouched
+    # since normalize_total/log1p mutate in place.
+    X = combined.X
+    X = X.copy() if sp.issparse(X) else sp.csr_matrix(np.asarray(X, dtype=np.float32))
+    if X.dtype != np.float32:
+        X = X.astype(np.float32)
+    work = ad.AnnData(X=X, obs=combined.obs[[]].copy(), var=combined.var[[]].copy())
+    del X
+
+    # Bring the count groups onto the log1p scale the others are already on. A single
+    # global verdict is wrong here — see detect_scale_by_modality.
+    counts_groups = [g for g, is_counts in scale.items() if is_counts]
+    recipe["scale_by_modality"] = {str(k): bool(v) for k, v in scale.items()}
+    if counts_groups and _MODALITY_COL in combined.obs.columns:
+        labels = combined.obs[_MODALITY_COL].astype(str).to_numpy()
+        rows = np.where(np.isin(labels, counts_groups))[0]
+        log.info(
+            "  CP10K + log1p for %d rows in count-scale group(s): %s",
+            len(rows), ", ".join(counts_groups),
+        )
+        _cp10k_log1p_rows(work.X, rows)
+        recipe["normalisation"] = f"normalize_total(1e4)+log1p on {counts_groups}"
+    elif not counts_groups:
+        log.info("  every modality already looks log1p -> PCA on the values as-is")
+        recipe["normalisation"] = "none"
+    else:
+        # No modality column: fall back to one global decision.
+        if looks_like_counts(work.X):
+            sc.pp.normalize_total(work, target_sum=1e4)
+            sc.pp.log1p(work)
+            recipe["normalisation"] = "normalize_total(1e4)+log1p (global)"
+        else:
+            recipe["normalisation"] = "none"
+
+    # Safety net before HVG. scanpy's "seurat" flavor expm1's its input, so any row
+    # still on the count scale here overflows to inf and pd.cut then raises
+    # "cannot specify integer `bins` when input data contains infinity". That can only
+    # happen if looks_like_counts returned a false negative for some group, so log1p
+    # such rows rather than letting the whole baseline die.
+    _mx = float(work.X.max()) if work.X.nnz else 0.0
+    if _mx > 20:
+        log.warning(
+            "  values up to %.1f survived normalisation - some group was detected as "
+            "log1p but looks like counts. Applying log1p globally so the HVG step "
+            "(which expm1's internally) does not overflow; the baseline will be "
+            "approximate.", _mx,
+        )
+        sc.pp.log1p(work)
+        recipe["normalisation"] += " (+global log1p fallback)"
+
+    # HVGs while still sparse, then cut the gene axis before densifying.
+    n_hvg = min(n_hvg_baseline, work.n_vars)
+    if n_hvg < work.n_vars:
+        sc.pp.highly_variable_genes(work, n_top_genes=n_hvg, flavor="seurat")
+        work = work[:, work.var["highly_variable"].values].copy()
+    recipe["n_hvg"] = int(work.n_vars)
+
+    dense = work.X.toarray() if sp.issparse(work.X) else np.asarray(work.X)
+    del work
+    dense = np.nan_to_num(dense, copy=False).astype(np.float32, copy=False)
+    log.info("  densified %d x %d block (%.2f GB) for PCA",
+             dense.shape[0], dense.shape[1], dense.nbytes / 1e9)
+
+    n_components = int(min(n_pca_components, dense.shape[0] - 1, dense.shape[1]))
+    pca = PCA(n_components=n_components, random_state=seed)
+    coords = pca.fit_transform(dense).astype(np.float32)
+    recipe["n_components"] = n_components
+    recipe["explained_variance_ratio_sum"] = float(pca.explained_variance_ratio_.sum())
+    return coords, recipe
+
+
+# ---------------------------------------------------------------------------
 # Provenance
 # ---------------------------------------------------------------------------
 
@@ -321,6 +484,7 @@ def _build_provenance(
     seed: int,
     group_column: str,
     recon_failures: dict | None = None,
+    scale_by_modality: dict | None = None,
 ) -> dict:
     """Assemble the ``uns["eval_provenance"]`` record."""
     counts = (
@@ -338,7 +502,11 @@ def _build_provenance(
 
     return {
         "normalized_flag": bool(normalized),
-        "counts_detected": bool(looks_like_counts(combined.X)),
+        # Per group, because a single global verdict is not meaningful when the
+        # modalities disagree on scale (see detect_scale_by_modality).
+        "scale_by_modality": {
+            str(k): bool(v) for k, v in (scale_by_modality or {}).items()
+        },
         "shared_panel": bool(shared_panel),
         "panel_strategy": str(panel_strategy),
         "panel_hash": combined_hash,
@@ -430,17 +598,23 @@ def build(
     combined = load_all_modalities(adata_dir, sample_size, seed)
     log.info("Total cells: %d", combined.n_obs)
 
+    # Per-modality, because these files genuinely disagree on scale — see
+    # detect_scale_by_modality. Everything below that needs to know the expression
+    # scale reads this rather than re-deciding globally.
+    scale_by_modality = detect_scale_by_modality(combined, _MODALITY_COL)
+    log_scale_table(scale_by_modality, log)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # ── Read n_sc_per_pb from the first model's hparams ─────────────────────
     n_sc_per_pb = 10
     if ckpt_name_pairs:
         try:
-            tmp = CancerFoundation.load_from_checkpoint(str(ckpt_name_pairs[0][0]))
-            n_sc_per_pb = int(getattr(tmp.hparams, "n_sc_per_pseudobulk", 10))
+            # Read the hparams straight off the checkpoint; building the whole
+            # model for one scalar fails on any checkpoint with drifted hparams.
+            hparams = read_checkpoint_hparams(ckpt_name_pairs[0][0])
+            n_sc_per_pb = int(hparams.get("n_sc_per_pseudobulk", 10))
             log.info("n_sc_per_pseudobulk from model hparams: %d", n_sc_per_pb)
-            del tmp
-            gc.collect()
         except Exception:
             log.warning(
                 "Could not read n_sc_per_pseudobulk from checkpoint — using default %d",
@@ -457,15 +631,23 @@ def build(
     synth_pb_adata: ad.AnnData | None = None
     if sc_mask.any() and n_synth > 0 and group_column in combined.obs.columns and not precomputed_pb:
         log.info("Generating pseudobulk samples on-the-fly from single-cell!")
+        # The SC pool can span two modalities on different scales ('sc' is raw counts
+        # from cellxgene_subsample, 'paired_sc' is log1p because
+        # pseudobulk_paired_generation.py log1p's it unconditionally). Aggregating
+        # across that with one is_log1p verdict applies expm1 to raw counts and
+        # saturates float32, so bring the count rows onto the log1p scale first and
+        # then say so explicitly rather than letting the callee guess.
+        sc_sub = _to_log1p_scale(combined[sc_mask].copy(), scale_by_modality)
         synth_pb_adata = generate_pseudobulk_adata(
-            combined[sc_mask],
+            sc_sub,
             group_column=group_column,
             n_sc_per_pb=n_sc_per_pb,
             n_pb=n_synth,
             seed=seed,
-            is_log1p=None,  # auto-detect: raw counts must not be expm1'd
+            is_log1p=True,  # guaranteed by _to_log1p_scale above
             normalize=True,
         )
+        del sc_sub
         if synth_pb_adata is not None:
             synth_pb_adata.obs["_eval_modality"] = MOD_SYNTH_PB
             combined = ad.concat([combined, synth_pb_adata], join="outer", merge="same")
@@ -507,57 +689,27 @@ def build(
     # max(0, (pcr_pre - pcr_post)/pcr_pre), can only ever clip to 0. Follow the
     # standard scIB recipe instead: CP10K + log1p (when the data is counts), HVGs,
     # then PCA.
-    log.info("Computing PCA baseline (%d components) ...", n_pca_components)
-    try:
-        import scipy.sparse as sp
-        from sklearn.decomposition import PCA
-
-        recipe: dict = {"n_components_requested": n_pca_components, "seed": seed}
-        work = ad.AnnData(
-            X=combined.X.copy() if not sp.issparse(combined.X) else combined.X.copy(),
-            obs=combined.obs[[]].copy(),
-            var=combined.var[[]].copy(),
-        )
-        if sp.issparse(work.X):
-            work.X = work.X.toarray()
-        work.X = np.nan_to_num(np.asarray(work.X, dtype=np.float32))
-
-        is_counts = looks_like_counts(work.X)
-        recipe["counts_detected"] = bool(is_counts)
-        if is_counts:
-            log.info("  raw counts detected -> CP10K + log1p before PCA")
-            sc.pp.normalize_total(work, target_sum=1e4)
-            sc.pp.log1p(work)
-            recipe["normalisation"] = "normalize_total(1e4)+log1p"
-        else:
-            log.info("  values already look log1p -> PCA on them as-is")
-            recipe["normalisation"] = "none"
-
-        n_hvg = min(n_hvg_baseline, work.n_vars)
-        if n_hvg < work.n_vars:
-            sc.pp.highly_variable_genes(work, n_top_genes=n_hvg, flavor="seurat")
-            work = work[:, work.var["highly_variable"].values].copy()
-        recipe["n_hvg"] = int(work.n_vars)
-
-        n_components = min(n_pca_components, work.n_obs - 1, work.n_vars)
-        pca = PCA(n_components=n_components, random_state=seed)
-        combined.obsm["X_pca"] = pca.fit_transform(
-            np.nan_to_num(np.asarray(work.X, dtype=np.float32))
-        ).astype(np.float32)
-        recipe["n_components"] = int(n_components)
-        recipe["explained_variance_ratio_sum"] = float(
-            pca.explained_variance_ratio_.sum()
-        )
-        combined.uns["X_pca_recipe"] = recipe
-        log.info(
-            "  X_pca stored (%d cells x %d components, %d HVGs, %.3f var explained)",
-            combined.n_obs, combined.obsm["X_pca"].shape[1], recipe["n_hvg"],
-            recipe["explained_variance_ratio_sum"],
-        )
-        del work
-        gc.collect()
-    except Exception:
-        log.warning("PCA computation failed:\n%s", traceback.format_exc())
+    if n_pca_components <= 0:
+        log.info("Skipping PCA baseline (n_pca_components <= 0); "
+                 "scIB's PCR comparison will report no baseline.")
+    else:
+        log.info("Computing PCA baseline (%d components) ...", n_pca_components)
+        try:
+            combined.obsm["X_pca"], recipe = _pca_baseline(
+                combined, n_pca_components, n_hvg_baseline, scale_by_modality, seed
+            )
+            combined.uns["X_pca_recipe"] = recipe
+            log.info(
+                "  X_pca stored (%d cells x %d components, %d HVGs, %.3f var explained)",
+                combined.n_obs, combined.obsm["X_pca"].shape[1], recipe["n_hvg"],
+                recipe["explained_variance_ratio_sum"],
+            )
+            gc.collect()
+        except Exception:
+            # Never fatal: the baseline only feeds scIB's PCR comparison, and losing
+            # it must not cost the embeddings this build already computed.
+            log.error("PCA baseline failed (X_pca will be absent):\n%s",
+                      traceback.format_exc())
 
     # ── Per-model: embed all cells + cache masked forward pass ───────────────
     panels: dict[str, list[str] | dict] = {}
@@ -566,8 +718,8 @@ def build(
         obsm_key = f"X_cf_{name}"
         log.info("[%s] Embedding -> obsm['%s'] ...", name, obsm_key)
         try:
-            model = CancerFoundation.load_from_checkpoint(str(ckpt_path))
-            model.eval().to(device)
+            model = CancerFoundation.load_for_inference(ckpt_path)
+            model.to(device)
         except Exception:
             log.error("  Failed to load %s:\n%s", ckpt_path, traceback.format_exc())
             continue
@@ -628,6 +780,7 @@ def build(
         seed=seed,
         group_column=group_column,
         recon_failures=recon_failures,
+        scale_by_modality=scale_by_modality,
     )
     if recon_failures:
         log.error(

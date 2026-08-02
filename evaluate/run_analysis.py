@@ -44,6 +44,7 @@ import json
 import logging
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -119,18 +120,20 @@ class Step:
 # ---------------------------------------------------------------------------
 
 def resolve_sample_sizes(exp: ExperimentConfig, will_build: bool) -> tuple[int, str]:
-    """Return (build_sample_size, note).
+    """Return (modality_sample_size, note).
 
     The two knobs are NOT the same unit:
-      * build --sample-size = max cells per *filename prefix*
-      * umap  --sample-size = total cells drawn from the raw h5ads, and it is only
+      * build.modality_sample_size -> --sample-size = max cells PER MODALITY
+        (per filename prefix), so the eval.h5ad row count is roughly this times the
+        number of modalities present.
+      * umap.sample_size = TOTAL cells drawn from the raw h5ads, and it is only
         honoured on the live path; with --eval-adata, umaps.py plots whatever rows
         eval.h5ad holds and ignores the flag.
 
     So when an experiment both builds and plots from eval.h5ad, eval.h5ad has to be
     built large enough for the plot: take the max, once, and reuse it for both.
     """
-    build_n = int(exp.build["sample_size"])
+    build_n = int(exp.build["modality_sample_size"])
     umap_n = int(exp.umap["sample_size"])
 
     if exp.umap["source"] != "eval" or "umap" not in exp.steps:
@@ -144,12 +147,13 @@ def resolve_sample_sizes(exp: ExperimentConfig, will_build: bool) -> tuple[int, 
         return build_n, ""
     if umap_n > build_n:
         return umap_n, (
-            f"build sample_size raised {build_n} -> {umap_n} so the single eval.h5ad "
-            f"also serves the UMAP (umap.sample_size won)"
+            f"modality_sample_size raised {build_n} -> {umap_n} (per modality) so the "
+            f"single eval.h5ad also serves the UMAP's {umap_n} total; note eval.h5ad "
+            f"will hold ~{umap_n} x n_modalities rows"
         )
     return build_n, (
-        f"build sample_size {build_n} already >= umap.sample_size {umap_n}; "
-        f"eval.h5ad serves both"
+        f"modality_sample_size {build_n} (per modality) already >= "
+        f"umap.sample_size {umap_n} (total); eval.h5ad serves both"
     )
 
 
@@ -425,6 +429,40 @@ def wrap_command(step: Step, env: EnvConfig, local: bool) -> list[str]:
 # Execution
 # ---------------------------------------------------------------------------
 
+def _explain_returncode(rc: int, step_name: str) -> tuple[str | None, str | None]:
+    """Turn a subprocess return code into (signal name, actionable hint).
+
+    A negative return code means the child was killed by a signal, which prints as a
+    bare '-9' and reads like an ordinary error. SIGKILL on these steps is almost
+    always the OOM killer, and saying so turns a mystifying failure into a one-line
+    fix.
+    """
+    if rc >= 0:
+        return None, None
+    signum = -rc
+    # Compare by number, not by attribute: signal.SIGKILL does not exist on Windows,
+    # and this runs during failure handling, where raising would hide the real error.
+    try:
+        name = signal.Signals(signum).name
+    except ValueError:
+        name = f"signal {signum}"
+
+    if signum == 9:  # SIGKILL
+        hint = (
+            "killed by SIGKILL - on a SLURM node this is almost always the OOM "
+            "killer. Raise --mem-per-cpu / --cpus-per-task in slurm.sbatch_args, or "
+            "lower build.modality_sample_size (it is per modality, so the eval.h5ad "
+            "row count is roughly that times the number of modalities)."
+        )
+        if step_name == "build":
+            hint += " Setting build.n_pca_components: 0 also skips the PCA baseline."
+        return name, hint
+    if signum == 15:  # SIGTERM
+        return name, ("terminated - typically the SLURM time limit; raise --time in "
+                      "slurm.sbatch_args.")
+    return name, None
+
+
 def execute_experiment(
     exp: ExperimentConfig,
     cfg: AnalysisConfig,
@@ -475,11 +513,20 @@ def execute_experiment(
             results.append({"step": step.name, "status": "ok",
                             "seconds": elapsed, "command": shlex.join(cmd)})
         else:
-            log.error("    [%s] FAILED rc=%d (%.1fs)", step.name, proc.returncode, elapsed)
+            sig_name, hint = _explain_returncode(proc.returncode, step.name)
+            log.error("    [%s] FAILED rc=%d%s (%.1fs)", step.name, proc.returncode,
+                      f" [{sig_name}]" if sig_name else "", elapsed)
+            if hint:
+                log.error("    %s", hint)
             failed.add(step.name)
-            results.append({"step": step.name, "status": "failed",
-                            "returncode": proc.returncode, "seconds": elapsed,
-                            "command": shlex.join(cmd)})
+            entry = {"step": step.name, "status": "failed",
+                     "returncode": proc.returncode, "seconds": elapsed,
+                     "command": shlex.join(cmd)}
+            if sig_name:
+                entry["signal"] = sig_name
+            if hint:
+                entry["hint"] = hint
+            results.append(entry)
 
     record = {
         "experiment": exp.name,

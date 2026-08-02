@@ -194,3 +194,8 @@ DATA/{tissue}/processed_data/train/
 ## Configuration
 
 All hyperparameters defined in `utils_config.py:get_args()`. `utils.py` at the top level is a thin wrapper. W&B integration configured via `.devcontainer/devcontainer.env` with `WANDB_API_KEY`.
+
+**New `CancerFoundation.__init__` arguments must have a default**, chosen to reproduce the previous behaviour. `save_hyperparameters()` writes the signature into every checkpoint and Lightning replays it on load, so a new *required* argument breaks every checkpoint saved before it.
+
+### Loading old checkpoints
+Use `CancerFoundation.load_for_inference(path)` (see `cancerfoundation/checkpoint.py`), not `load_from_checkpoint`, anywhere a model is loaded to produce embeddings or reconstructions. It fills in hyperparameters the checkpoint predates, strips the `torch.compile` `_orig_mod.` key prefix, and drops the training-only DAT discriminators — whose `modality` head changed from 3 to 2 classes in July 2026. It is not for resuming training. `python scripts/inspect_checkpoint.py <ckpt>` reports hyperparameter and weight-shape drift for a checkpoint that will not load.

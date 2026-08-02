@@ -35,6 +35,25 @@ class CancerFoundation(pl.LightningModule):
     optimizer and scheduler setup, and the training/validation loops required by PyTorch Lightning.
     """
 
+    @classmethod
+    def load_for_inference(cls, path, map_location: str = "cpu", **overrides):
+        """Load a checkpoint for evaluation or embedding, tolerating code drift.
+
+        Prefer this over ``load_from_checkpoint`` anywhere the model is only used
+        to produce embeddings or reconstructions: it repairs hyperparameters that
+        predate current constructor arguments, strips the ``torch.compile`` key
+        prefix, and drops the training-only DAT discriminators. See
+        ``cancerfoundation/checkpoint.py``. Not suitable for resuming training.
+        """
+        from cancerfoundation.checkpoint import load_for_inference
+
+        return load_for_inference(path, map_location=map_location, **overrides)
+
+    # NOTE: new arguments below must be added *with a default*, chosen to
+    # reproduce the previous behaviour. `save_hyperparameters()` stores this
+    # signature into every checkpoint, and Lightning replays it on load, so a new
+    # required argument breaks every checkpoint saved before it (see
+    # cancerfoundation/checkpoint.py).
     def __init__(
         self,
         n_bins: int,

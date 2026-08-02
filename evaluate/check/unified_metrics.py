@@ -96,8 +96,7 @@ def _find_best_ckpt(model_dir: Path) -> Path | None:
 
 
 def _load_model(ckpt_path: Path, device: str) -> CancerFoundation:
-    model = CancerFoundation.load_from_checkpoint(str(ckpt_path))
-    model.eval()
+    model = CancerFoundation.load_for_inference(ckpt_path)
     return model.to(device)
 
 

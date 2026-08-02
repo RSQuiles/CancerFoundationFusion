@@ -28,6 +28,7 @@ from evaluate.analysis_config import (  # noqa: E402
 )
 from evaluate.run_analysis import (  # noqa: E402
     STEP_ENV,
+    _explain_returncode,
     plan_experiment,
     resolve_sample_sizes,
     wrap_command,
@@ -98,7 +99,7 @@ def main() -> int:
         cfg = load_analysis_config(cfg_path)
         exp = cfg.experiments[0]
         check("one experiment loaded", len(cfg.experiments) == 1)
-        check("defaults applied", exp.build["sample_size"] == 5000)
+        check("defaults applied", exp.build["modality_sample_size"] == 5000)
         check("ablation_dir interpolated", exp.ablation_dir == work / "abl_a")
         check("eval_adata derived", exp.eval_adata == work / "abl_a" / "eval.h5ad")
         check("analysis_dir under ablation_dir",
@@ -214,6 +215,24 @@ experiments:
         except KeyError:
             check("rejects paired_umap without input_h5ad", True)
 
+        print("\n=== return-code explanation ===")
+        # Runs during failure handling, so it must never raise -- including on
+        # Windows, where signal.SIGKILL does not exist.
+        name9, hint9 = _explain_returncode(-9, "build")
+        check("SIGKILL is named", name9 in ("SIGKILL", "signal 9"), str(name9))
+        check("SIGKILL hint mentions OOM", "OOM" in (hint9 or ""), str(hint9))
+        check("SIGKILL hint is actionable for build",
+              "modality_sample_size" in (hint9 or "")
+              and "n_pca_components" in (hint9 or ""))
+        name15, hint15 = _explain_returncode(-15, "umap")
+        check("SIGTERM is named", name15 in ("SIGTERM", "signal 15"), str(name15))
+        check("SIGTERM hint mentions the time limit", "time limit" in (hint15 or ""))
+        check("ordinary failures get no signal", _explain_returncode(1, "x") == (None, None))
+        check("success gets no signal", _explain_returncode(0, "x") == (None, None))
+        check("unknown signal still names itself",
+              _explain_returncode(-77, "x")[0] == "signal 77",
+              str(_explain_returncode(-77, "x")))
+
         print("\n=== sample-size reconciliation ===")
         n, note = resolve_sample_sizes(exp, will_build=True)
         check("max() wins when umap needs more (6000 > 5000)", n == 6000, str(n))
@@ -266,7 +285,7 @@ vars:
   work: {work}
 env: {{container_image: /i.sif, conda_env: e}}
 defaults:
-  build: {{sample_size: 1234}}
+  build: {{modality_sample_size: 1234}}
 experiments:
   - name: a
     ablation_dir: ${{work}}/abl_a
@@ -281,7 +300,8 @@ experiments:
         )
         cfg3 = load_analysis_config(p3)
         a, b = cfg3.experiments
-        check("defaults override reaches experiments", a.build["sample_size"] == 1234)
+        check("defaults override reaches experiments",
+              a.build["modality_sample_size"] == 1234)
         check("per-experiment steps override", b.steps == ["diagnose", "benchmark"])
         check("per-experiment nested override", b.metrics["group_column"] == "cancer_type")
         check("sibling keeps the default",

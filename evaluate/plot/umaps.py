@@ -160,11 +160,10 @@ def load_model_for_inference(
     """Load a trained model checkpoint and move to the requested device."""
     ckpt_path = _as_path(ckpt_path)
     if vocab is None:
-        model = CancerFoundation.load_from_checkpoint(str(ckpt_path))
+        model = CancerFoundation.load_for_inference(ckpt_path)
     else:
-        model = CancerFoundation.load_from_checkpoint(str(ckpt_path), vocab=vocab)
+        model = CancerFoundation.load_for_inference(ckpt_path, vocab=vocab)
 
-    model.eval()
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     model = model.to(device)

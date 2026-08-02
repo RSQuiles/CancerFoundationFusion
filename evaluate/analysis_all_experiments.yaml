@@ -49,7 +49,7 @@ defaults:
 
   build:
     rebuild: auto           # only builds eval.h5ad when it is missing
-    sample_size: 5000
+    modality_sample_size: 5000   # per modality, NOT a total
     precomputed_pb: false   # overridden to true for the three that train that way
     panel_strategy: consensus
     n_pca_components: 50

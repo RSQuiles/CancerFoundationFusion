@@ -47,6 +47,9 @@ looks_like_counts = _import_looks_like_counts()
 # to be hard-coded strings in each script, which is how "subsampled" (a *filename
 # prefix*, never a label) ended up in three consumers and silently suppressed the
 # agg_synth_* metrics. Import these instead of writing the literals.
+# obs column holding the labels below.
+MODALITY_COL = "_eval_modality"
+
 MOD_SC = "sc"
 MOD_BULK = "bulk"
 MOD_PB = "pseudobulk"
@@ -59,6 +62,49 @@ MOD_SYNTH_PB = "synth_pb"
 SC_MODALITIES = (MOD_SC, MOD_PAIRED_SC)
 BULK_MODALITIES = (MOD_BULK, MOD_PAIRED_BULK)
 PB_MODALITIES = (MOD_PB, MOD_PAIRED_PB, MOD_SYNTH_PB)
+
+
+def detect_scale_by_modality(adata, modality_col: str = "_eval_modality") -> dict:
+    """Per-modality verdict on whether the rows hold raw counts.
+
+    A single global :func:`looks_like_counts` call over an eval AnnData is not
+    trustworthy, because the modalities genuinely disagree on scale:
+    ``pseudobulk_paired_generation.py`` log1p's its SC rows unconditionally while
+    honouring ``use_counts`` for PB and bulk, so a ``*_counts`` dataset ends up with
+    log1p ``paired_sc`` rows next to raw-count ``paired_pb`` / ``paired_bulk`` /
+    ``sc`` / ``bulk`` rows. The global call then samples whichever group is largest
+    and reports one answer for all of them, which is how ``expm1`` came to be
+    applied to raw counts.
+
+    Returns ``{modality_label: is_counts}``. Groups too small or all-zero come back
+    ``False`` (treated as already-log1p, the conservative choice: it skips a
+    transform rather than applying a wrong one).
+    """
+    if modality_col not in adata.obs.columns:
+        return {}
+    labels = adata.obs[modality_col].astype(str).to_numpy()
+    out: dict[str, bool] = {}
+    for label in dict.fromkeys(labels.tolist()):
+        rows = np.where(labels == label)[0]
+        if len(rows) == 0:
+            continue
+        out[label] = bool(looks_like_counts(adata.X[rows]))
+    return out
+
+
+def log_scale_table(scale: dict, log=None) -> None:
+    """Log a one-line-per-modality summary of :func:`detect_scale_by_modality`."""
+    if not scale:
+        return
+    emit = log.info if log is not None else print
+    emit("  Expression scale per modality:")
+    for label, is_counts in scale.items():
+        emit(f"    {label:<14} {'raw counts' if is_counts else 'log1p'}")
+    if len(set(scale.values())) > 1:
+        emit(
+            "    NOTE mixed scales in one AnnData - each group is handled "
+            "separately; do not trust a single global counts/log1p verdict here."
+        )
 
 
 def generate_pseudobulk_adata(
@@ -119,8 +165,11 @@ def generate_pseudobulk_adata(
     is_sparse = sp.issparse(X)
 
     chosen_groups: list[str] = rng.choice(valid_groups, size=n_pb, replace=True).tolist()
-    pb_rows: list[np.ndarray] = []
-    for g in chosen_groups:
+    # Preallocate and fill in place. Accumulating a list of n_pb row arrays and then
+    # calling np.array() on it holds two full copies at once, which at
+    # n_pb = 75_000 x 28_725 genes is ~17 GB instead of ~8.6 GB.
+    pb_X = np.zeros((n_pb, sc_adata.n_vars), dtype=np.float32)
+    for i, g in enumerate(chosen_groups):
         pool    = group_to_idx[g]
         sel_idx = rng.choice(pool, size=n_sc_per_pb, replace=len(pool) < n_sc_per_pb)
         expr    = X[sel_idx].toarray() if is_sparse else np.asarray(X[sel_idx])
@@ -132,11 +181,12 @@ def generate_pseudobulk_adata(
             if total > 0:
                 agg = agg / total * 1e4
             agg = np.log1p(agg)
-        pb_rows.append(agg)
+        pb_X[i] = np.asarray(agg, dtype=np.float32).ravel()
 
-    pb_X = np.array(pb_rows, dtype=np.float32)
     pb_obs = pd.DataFrame(
         {"modality": ["pseudobulk"] * n_pb, group_column: chosen_groups},
         index=[f"pb_{i}" for i in range(n_pb)],
     )
-    return ad.AnnData(X=pb_X, obs=pb_obs, var=sc_adata.var.copy())
+    # Sparse, so concatenating this onto a sparse eval AnnData cannot densify the
+    # whole thing. Pseudobulk profiles are dense-ish but the caller's matrix is not.
+    return ad.AnnData(X=sp.csr_matrix(pb_X), obs=pb_obs, var=sc_adata.var.copy())

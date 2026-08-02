@@ -687,7 +687,7 @@ class SurvBoardTask(DownstreamTask):
             )
 
             # Reload pretrained weights — fresh copy for each fold
-            fresh_emb = CancerFoundation.load_from_checkpoint(ckpt_path, strict=False)
+            fresh_emb = CancerFoundation.load_for_inference(ckpt_path)
             fresh_emb = fresh_emb.to(device)
             for param in fresh_emb.parameters():
                 param.requires_grad = True
