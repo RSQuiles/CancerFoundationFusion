@@ -61,9 +61,12 @@ python evaluate/plot/plot_unified_metrics_table.py --config evaluate/plot/exampl
 python evaluate/plot/plot_unified_metrics_table.py --config <cfg> --list          # what's available
 python evaluate/plot/plot_unified_metrics_table.py --config <cfg> --style rank_table
 ```
-Styles: `heatmap` (default), `rank_table`, `bars`. Colour is a **direction-aware,
-within-column** normalisation — the best run in a column is always fully green, so read
-the numbers for magnitude and the colours for ordering only. Metrics with no
+Styles: `heatmap` (default), `rank_table`, `bars`. The **numbers printed in each cell
+are the raw absolute values** straight from `unified_metrics.json`; only the *fill
+colour* is a direction-aware, within-column normalisation (`normalize: minmax | zscore
+| rank`). The best run in a column is always fully green, so read the numbers for
+magnitude and the colours for ordering. `bars` shows the same absolute values with a
+zero-anchored axis, so bar length is proportional to the value. Metrics with no
 better/worse direction are drawn grey rather than ranked. The script warns and adds a
 figure footnote when the selected runs disagree on `panel_hash`, since metrics computed
 under different gene panels are not comparable.

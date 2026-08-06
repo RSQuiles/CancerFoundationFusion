@@ -842,8 +842,8 @@ def plot_table(
     cbar.set_ticklabels(["worst", "mid", "best"])
     cbar.ax.tick_params(labelsize=7.5, length=0)
     cbar.set_label(
-        f"colour = {mode} within each metric, direction-aware "
-        "(relative to the runs shown, not absolute)",
+        f"numbers = absolute metric values   ·   colour = {mode} within each "
+        "metric, direction-aware (ranks the runs shown; not an absolute scale)",
         fontsize=7.5, color="dimgrey",
     )
     cbar.outline.set_visible(False)
@@ -918,7 +918,13 @@ def plot_bars(
             ax.spines[side].set_visible(False)
 
         finite = [y for y in ys if math.isfinite(y)]
-        if not finite:
+        if finite:
+            # Anchor at zero so bar length is proportional to the absolute value.
+            # Auto-scaling would start the axis just below the smallest bar and turn
+            # a 1% difference into a 10x-looking one.  min(0, ...) keeps negative
+            # cosines visible instead of clipping them to nothing.
+            ax.set_ylim(min(0.0, min(finite) * 1.15), max(0.0, max(finite) * 1.15))
+        else:
             ax.text(0.5, 0.5, "No data", ha="center", va="center",
                     transform=ax.transAxes, color="grey", fontsize=9)
 
