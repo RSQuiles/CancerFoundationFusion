@@ -46,6 +46,31 @@ One config drives N ablation directories. Steps: `build`, `metrics`, `scib`,
 orchestrator picks per step; do not run `--scib` without having run the plain
 `metrics` pass in the container first, or `recon_*` will have no live fallback.
 
+### Cross-experiment comparison plots
+Two config-driven scripts share one run-selection grammar (`groups`/`experiments` with
+display names, `all_models`, `exclude` — see `evaluate/plot/experiment_selection.py`).
+Both read metrics already on disk and recompute nothing.
+
+```bash
+# Downstream task results ({model}/metrics/results_<task>.json) as a bar grid
+python evaluate/plot/plot_ablation_benchmark.py --config evaluate/plot/example_comparison_config.yaml
+
+# Internal unified-FM metrics ({model}/metrics/unified_metrics.json, plus optional
+# scIB columns from {ablation}/_scib_metrics/scib_<tag>.csv) as an annotated heatmap
+python evaluate/plot/plot_unified_metrics_table.py --config evaluate/plot/example_unified_metrics_config.yaml --no-show
+python evaluate/plot/plot_unified_metrics_table.py --config <cfg> --list          # what's available
+python evaluate/plot/plot_unified_metrics_table.py --config <cfg> --style rank_table
+```
+Styles: `heatmap` (default), `rank_table`, `bars`. Colour is a **direction-aware,
+within-column** normalisation — the best run in a column is always fully green, so read
+the numbers for magnitude and the colours for ordering only. Metrics with no
+better/worse direction are drawn grey rather than ranked. The script warns and adds a
+figure footnote when the selected runs disagree on `panel_hash`, since metrics computed
+under different gene panels are not comparable.
+
+`python evaluate/check/check_unified_table.py` self-checks both scripts offline (no
+cluster, GPU or checkpoints needed).
+
 ### Downstream Tasks
 ```bash
 python evaluate/finetune/run_downstream_task.py \
@@ -120,6 +145,11 @@ evaluate/
 │   ├── task_template.py           # Template for implementing new tasks
 │   └── utils.py                   # Downstream task utilities
 └── plot/
+    ├── experiment_selection.py     # Shared YAML run-selection (groups, display names, palette)
+    ├── plot_ablation_benchmark.py  # Downstream-task bar grid (results_*.json)
+    ├── plot_unified_metrics_table.py # Internal-metrics table (unified_metrics.json + scIB)
+    ├── example_comparison_config.yaml
+    ├── example_unified_metrics_config.yaml
     ├── umaps.py
     └── utils.py
 

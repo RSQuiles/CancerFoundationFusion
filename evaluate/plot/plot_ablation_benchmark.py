@@ -48,14 +48,23 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 import numpy as np
+
+from evaluate.plot.experiment_selection import (  # noqa: E402
+    GROUP_SHADES as _GROUP_SHADES,
+    as_str_list as _as_metric_list,
+    grouped_layout as _grouped_layout,
+    is_model_dir,
+    load_raw_config,
+    parse_figsize,
+    parse_groups,
+)
 
 # --------------------------------------------------------------------------- #
 # Defaults
@@ -109,25 +118,10 @@ METRIC_LABELS: dict[str, str] = {
 _PRIMARY_BG   ="#FFFDE7"   # very light yellow
 _PRIMARY_EDGE = "#F9A825"   # amber border
 
-# Grouped mode: one base hue per group, lightened across its members.
-_GROUP_PALETTE = [
-    "#4C72B0", "#DD8452", "#55A868", "#C44E52",
-    "#8172B3", "#937860", "#DA8BC3", "#8C8C8C",
-    "#CCB974", "#64B5CD",
-]
-_GROUP_GAP    = 1.2         # bar-width units inserted between groups
-_GROUP_SHADES = ("lightsteelblue", "lightyellow")   # alternating band colours
-
 
 # --------------------------------------------------------------------------- #
 # Data collection
 # --------------------------------------------------------------------------- #
-
-def is_model_dir(path: Path) -> bool:
-    """True if *path* looks like a model directory (has metrics/results_*.json)."""
-    metrics_dir = path / "metrics"
-    return metrics_dir.is_dir() and any(metrics_dir.glob("results_*.json"))
-
 
 def collect_model_metrics(model_dir: Path) -> dict[str, dict[str, float]]:
     """
@@ -267,63 +261,6 @@ class BenchmarkConfig:
         return any(name is not None for name, _ in self.groups)
 
 
-def _as_metric_list(value, where: str) -> list[str]:
-    """Coerce a config metrics entry to a list of metric names."""
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [m.strip() for m in value.split(",") if m.strip()]
-    if isinstance(value, (list, tuple)):
-        return [str(m) for m in value]
-    sys.exit(f"ERROR: {where} must be a list or a comma-separated string.")
-
-
-def _resolve_experiment(entry, group_dir: Path | None, where: str) -> tuple[str, Path]:
-    """Turn one experiment entry into a (display_name, model_dir) pair."""
-    if isinstance(entry, str):
-        entry = {"model": entry}
-    if not isinstance(entry, dict):
-        sys.exit(f"ERROR: {where} must be a mapping or a model name.")
-
-    path = entry.get("path")
-    model = entry.get("model") or entry.get("name")
-    base = entry.get("dir", group_dir)
-
-    if path is not None:
-        model_dir = Path(path).expanduser()
-    elif model is not None and base is not None:
-        model_dir = Path(base).expanduser() / str(model)
-    else:
-        sys.exit(
-            f"ERROR: {where} needs either 'path', or 'model' plus a 'dir' "
-            "(on the entry or its group)."
-        )
-
-    name = str(entry.get("name") or model_dir.name)
-    return name, model_dir.resolve()
-
-
-def _discover_group_models(
-    group_dir: Path,
-    exclude: set[str],
-    already: set[Path],
-) -> list[tuple[str, Path]]:
-    """All model dirs under *group_dir*, minus exclusions and ones already listed."""
-    found: list[tuple[str, Path]] = []
-    if not group_dir.is_dir():
-        sys.exit(f"ERROR: group dir does not exist: {group_dir}")
-
-    for child in sorted(group_dir.iterdir()):
-        if not child.is_dir() or child.name in exclude:
-            continue
-        if not is_model_dir(child):
-            continue
-        if child.resolve() in already:
-            continue
-        found.append((child.name, child.resolve()))
-    return found
-
-
 def load_config(path: Path) -> BenchmarkConfig:
     """
     Parse a YAML (or JSON) comparison config.
@@ -365,81 +302,9 @@ def load_config(path: Path) -> BenchmarkConfig:
     ``name`` defaults to the model directory's name.  Display names must be
     unique across the whole config, since they label the bars.
     """
-    text = path.read_text()
-    if path.suffix.lower() in {".json"}:
-        raw = json.loads(text)
-    else:
-        import yaml
-
-        raw = yaml.safe_load(text)
-
-    if not isinstance(raw, dict):
-        sys.exit(f"ERROR: {path} must contain a mapping at the top level.")
-
-    if "groups" in raw and "experiments" in raw:
-        sys.exit(
-            f"ERROR: {path} defines both 'groups' and 'experiments' at the top "
-            "level — use one or the other (put per-group runs under "
-            "groups[].experiments)."
-        )
-
-    if "groups" in raw:
-        raw_groups = raw["groups"]
-        if not isinstance(raw_groups, list) or not raw_groups:
-            sys.exit(f"ERROR: 'groups' in {path} must be a non-empty list.")
-    elif "experiments" in raw:
-        # A flat list is modelled as a single unnamed group.
-        raw_groups = [{"name": None, "experiments": raw["experiments"]}]
-    else:
-        sys.exit(f"ERROR: {path} must define either 'experiments' or 'groups'.")
-
-    groups: list[tuple[str | None, list[tuple[str, Path]]]] = []
-    seen_names: dict[str, Path] = {}
-    seen_dirs: set[Path] = set()
-
-    for g_idx, group in enumerate(raw_groups):
-        if not isinstance(group, dict):
-            sys.exit(f"ERROR: groups[{g_idx}] in {path} must be a mapping.")
-
-        group_name = group.get("name")
-        group_name = None if group_name is None else str(group_name)
-        group_dir = group.get("dir")
-        group_dir = Path(group_dir).expanduser() if group_dir else None
-        where = f"groups[{g_idx}]" + (f" ('{group_name}')" if group_name else "")
-
-        members: list[tuple[str, Path]] = []
-        for e_idx, entry in enumerate(group.get("experiments") or []):
-            members.append(
-                _resolve_experiment(entry, group_dir, f"{where}.experiments[{e_idx}]")
-            )
-
-        if group.get("all_models"):
-            if group_dir is None:
-                sys.exit(f"ERROR: {where} sets 'all_models' but has no 'dir'.")
-            exclude = {str(x) for x in (group.get("exclude") or [])}
-            listed = {d for _, d in members}
-            members.extend(_discover_group_models(group_dir, exclude, listed))
-
-        if not members:
-            sys.exit(f"ERROR: {where} selects no experiments.")
-
-        for name, model_dir in members:
-            if name in seen_names:
-                sys.exit(
-                    f"ERROR: duplicate experiment name '{name}' "
-                    f"({seen_names[name]} and {model_dir}). Give one an "
-                    "explicit, unique 'name'."
-                )
-            seen_names[name] = model_dir
-            seen_dirs.add(model_dir)
-
-        groups.append((group_name, members))
-
-    figsize = raw.get("figsize")
-    if figsize is not None:
-        if not isinstance(figsize, (list, tuple)) or len(figsize) != 2:
-            sys.exit(f"ERROR: 'figsize' in {path} must be [width, height].")
-        figsize = (float(figsize[0]), float(figsize[1]))
+    raw = load_raw_config(path)
+    groups = parse_groups(raw, path, is_model_dir)
+    figsize = parse_figsize(raw, path)
 
     metrics = {
         str(task): _as_metric_list(value, f"metrics['{task}']")
@@ -586,47 +451,6 @@ def _build_task_metrics(
 # --------------------------------------------------------------------------- #
 # Plot
 # --------------------------------------------------------------------------- #
-
-def _group_color(group_idx: int, member_idx: int, n_members: int) -> tuple:
-    """Base hue from the group; successive members within it are lightened."""
-    base = mcolors.to_rgba(_GROUP_PALETTE[group_idx % len(_GROUP_PALETTE)])
-    lighten = 0.45 * (member_idx / max(n_members - 1, 1)) if n_members > 1 else 0.0
-    return (
-        base[0] + (1 - base[0]) * lighten,
-        base[1] + (1 - base[1]) * lighten,
-        base[2] + (1 - base[2]) * lighten,
-        1.0,
-    )
-
-
-def _grouped_layout(
-    model_names: list[str],
-    groups: list[tuple[str | None, list[str]]],
-) -> tuple[list[float], list[tuple], list[tuple[float, float, str | None]]]:
-    """
-    Lay bars out group by group, separated by ``_GROUP_GAP``.
-
-    Returns (x per model, colour per model, [(x_lo, x_hi, group_name), ...]),
-    all in the same order as *model_names*.
-    """
-    index  = {name: i for i, name in enumerate(model_names)}
-    xs     = [0.0] * len(model_names)
-    colors = [(0.0, 0.0, 0.0, 1.0)] * len(model_names)
-    spans: list[tuple[float, float, str | None]] = []
-
-    cursor = 0.0
-    for g_idx, (group_name, members) in enumerate(groups):
-        span_lo = cursor
-        for m_idx, name in enumerate(members):
-            i = index[name]
-            xs[i] = cursor
-            colors[i] = _group_color(g_idx, m_idx, len(members))
-            cursor += 1.0
-        spans.append((span_lo, cursor - 1.0, group_name))
-        cursor += _GROUP_GAP
-
-    return xs, colors, spans
-
 
 def plot_benchmark(
     results: dict[str, dict[str, dict[str, float]]],

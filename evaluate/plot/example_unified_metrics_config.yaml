@@ -1,0 +1,84 @@
+# Example config for:
+#   python evaluate/plot/plot_unified_metrics_table.py --config <this file>
+#
+# It selects individual runs — possibly from different ablation directories — gives
+# them display names, and arranges them into groups. Metrics are read from each run's
+# metrics/unified_metrics.json (and, if the 'scib' block is present, from that
+# ablation's _scib_metrics/scib_<tag>.csv); nothing is recomputed.
+#
+# The run-selection grammar below ('groups' / 'experiments') is identical to
+# example_comparison_config.yaml — only the metric keys differ.
+
+title: "Internal metrics — monitor_align vs paired_mix"
+output: /cluster/work/boeva/rquiles/outputs/save_CFF/unified_table.png
+# figsize: [18, 7]         # inches; omitted → derived from the grid size
+# dpi: 150
+
+style: heatmap        # heatmap | rank_table | bars
+                      #   heatmap    = value in each cell, cell coloured by rank
+                      #                within its column (the default)
+                      #   rank_table = value + rank, plus a mean-rank column
+                      #   bars       = one bar-chart panel per metric
+normalize: minmax     # minmax | zscore | rank — affects the COLOUR only, never the
+                      # printed numbers. minmax stretches each column to the full
+                      # colour range, so with only two runs the two extremes are
+                      # always used however small the gap; zscore is gentler when
+                      # one run is an outlier.
+cmap: RdYlGn
+show_families: true   # bracket + label under each metric family
+transpose: false      # true → metrics as rows, runs as columns (better when you
+                      # select many metrics and few runs)
+annotate: true        # print the value in every cell
+
+# Optional. Omitted → the curated default set (the same 17 metrics the existing
+# unified_metrics.png bar grid shows), in family order, minus any no run has.
+# `--list` prints everything available in the selected runs.
+metrics:
+  - recon_pearson_r
+  - recon_mae_bins
+  - paired_cosine_sim_mean
+  - paired_rank_mean
+  - paired_random_baseline_cosine     # reference level, drawn grey (no direction)
+  - agg_paired_cosine_pb_to_mean_sc
+  - agg_synth_cosine_pb_to_mean_sc
+  - contrastive_cross_cosine_mean
+  - contrastive_wasserstein
+
+# Optional. Omit the whole block for no scIB columns. Tags are the four benchmarks
+# unified_metrics.py runs: bulk_vs_pb, paired_vs_nonpaired, paired_bulk_vs_paired_pb,
+# nonpaired_bulk_vs_synth_pb (the last three only exist when the dataset has paired
+# rows). Each (tag, metric) pair becomes one extra column.
+scib:
+  tags: [bulk_vs_pb, paired_bulk_vs_paired_pb]
+  # Defaults to [iLISI] on purpose. iLISI is the only global, label-free mixing
+  # measure here: BRAS and kBET are computed per label group and skip labels holding
+  # a single batch, which on tissue_general data leaves very few usable labels, and
+  # PCR comparison clips to 0. Add the others knowingly — see the caveat block in
+  # unified_metrics.run_scib_benchmark and evaluate/check/diagnose_scib.py.
+  metrics: [iLISI]
+  # metrics: [iLISI, BRAS, cLISI, Silhouette label, Batch correction, Total]
+
+groups:
+  - name: "Monitor align"
+    dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_monitor_align
+    experiments:
+      - {name: "Unified Baseline", model: unified}
+      - {name: "CDD", model: cdd}
+
+  - name: "Paired mix"
+    dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_mix
+    all_models: true          # every model dir found there
+    exclude: [pca_baseline]   # …except these
+
+  - name: "Baselines"
+    experiments:
+      # 'path' points straight at a model dir, so no group 'dir' is needed.
+      - name: "PCA"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_monitor_align/pca_baseline
+
+# Instead of 'groups', a flat list plots every run in one block with no banding:
+#
+# experiments:
+#   - {name: "Baseline", dir: /path/to/ablation_a, model: baseline}
+#   - {name: "United",   dir: /path/to/ablation_b, model: unified_v1}
+#   - path: /path/to/ablation_a/cdd               # name defaults to dir name
