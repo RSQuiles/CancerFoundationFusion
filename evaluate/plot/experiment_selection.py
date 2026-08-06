@@ -272,7 +272,18 @@ def parse_figsize(raw: dict, path: Path) -> tuple[float, float] | None:
 
 
 def load_raw_config(path: Path) -> dict:
-    """Read a YAML (or JSON) config and return its top-level mapping."""
+    """Read a YAML (or JSON) config and return its top-level mapping.
+
+    An optional top-level ``vars:`` mapping is expanded into every ``${name}`` in the
+    rest of the config, falling back to the environment — the same convention (and the
+    same implementation) as ``run_analysis.py``'s config, so a long shared path such as
+    the ablation root can be written once::
+
+        vars:
+          work: /cluster/work/boeva/rquiles
+        groups:
+          - {name: "Big condition", dir: "${work}/outputs/save_CFF/ablation_big_condition"}
+    """
     text = path.read_text()
     if path.suffix.lower() in {".json"}:
         import json
@@ -285,4 +296,16 @@ def load_raw_config(path: Path) -> dict:
 
     if not isinstance(raw, dict):
         sys.exit(f"ERROR: {path} must contain a mapping at the top level.")
+
+    variables = raw.pop("vars", None) or {}
+    if not isinstance(variables, dict):
+        sys.exit(f"ERROR: 'vars' in {path} must be a mapping.")
+    if variables or "${" in text:
+        from evaluate.analysis_config import interpolate
+
+        try:
+            raw = interpolate(raw, {str(k): str(v) for k, v in variables.items()})
+        except (KeyError, ValueError) as exc:
+            sys.exit(f"ERROR: in {path}: {exc}")
+
     return raw

@@ -486,7 +486,10 @@ def warn_panel_mismatch(results: dict[str, dict]) -> str | None:
         file=sys.stderr,
     )
     for h, names in by_hash.items():
-        print(f"[warning]   panel {h[:12]}: {', '.join(names)}", file=sys.stderr)
+        # Abbreviate only what is too long to read; truncating short hashes would
+        # make distinct panels look identical in the message.
+        short = h if len(h) <= 20 else h[:16] + "..."
+        print(f"[warning]   panel {short}: {', '.join(names)}", file=sys.stderr)
     return f"⚠ {len(by_hash)} different gene panels among these runs — see stderr"
 
 

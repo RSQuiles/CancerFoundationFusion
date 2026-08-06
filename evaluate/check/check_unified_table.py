@@ -426,6 +426,86 @@ def check_cli(tmp: Path) -> None:
     check("missing config exits 1", proc.returncode == 1, proc.stderr[-200:])
 
 
+def check_vars(tmp: Path) -> None:
+    """``vars:`` interpolation, shared with run_analysis.py's config."""
+    print("\n[vars interpolation]")
+    abl = tmp / "ablation_a"
+
+    cfg = write_config(tmp / "vars.yaml", f"""
+vars:
+  root: {abl.parent.as_posix()}
+  abl: ${{root}}/ablation_a
+title: "Runs under ${{root}}"
+groups:
+  - name: "A"
+    dir: ${{abl}}
+    experiments:
+      - {{name: "U", model: unified}}
+""")
+    config = load_config(cfg)
+    name, model_dir = config.groups[0][1][0]
+    check("${var} expands in a group dir",
+          model_dir == (abl / "unified").resolve(), str(model_dir))
+    check("nested ${var} inside another var expands",
+          "${" not in str(model_dir), str(model_dir))
+    check("${var} expands in scalars too",
+          "${" not in config.title, config.title)
+
+    bad = write_config(tmp / "badvars.yaml", """
+groups:
+  - name: "A"
+    dir: ${no_such_var}/x
+    experiments: [{model: unified}]
+""")
+    try:
+        load_config(bad)
+        ok, detail = False, "no error raised"
+    except SystemExit as exc:
+        ok, detail = "no_such_var" in str(exc), str(exc)
+    check("undefined ${var} is a clear error", ok, detail)
+
+
+def check_example_config() -> None:
+    """The shipped example config must stay loadable as the code evolves.
+
+    It names every model explicitly (no ``all_models``), so parsing it touches no
+    files and works on a machine that has never seen the cluster.
+    """
+    print("\n[shipped example config]")
+    path = ROOT / "evaluate" / "plot" / "example_unified_metrics_config.yaml"
+    check("example config exists", path.is_file(), str(path))
+    if not path.is_file():
+        return
+
+    try:
+        config = load_config(path)
+    except SystemExit as exc:
+        check("example config parses", False, str(exc))
+        return
+    check("example config parses", True)
+
+    runs = [(n, d) for _, members in config.groups for n, d in members]
+    names = [n for n, _ in runs]
+    check("names are unique", len(names) == len(set(names)),
+          str([n for n in names if names.count(n) > 1]))
+    check("every group has runs", all(members for _, members in config.groups))
+    check("all groups are named", all(g for g, _ in config.groups))
+    check("no unexpanded ${vars} remain",
+          not any("${" in str(d) for _, d in runs)
+          and "${" not in str(config.output or ""),
+          str(config.output))
+
+    ablations = {d.parent.name for _, d in runs}
+    check("covers the 9 real ablation dirs", len(ablations) == 9,
+          f"{len(ablations)}: {sorted(ablations)}")
+    check("every dir is an ablation_* directory",
+          all(a.startswith("ablation_") for a in ablations), str(sorted(ablations)))
+    check("selects every trained run", len(runs) == 39, str(len(runs)))
+    check("style/normalize are valid",
+          config.style in ("heatmap", "rank_table", "bars")
+          and config.normalize in ("minmax", "zscore", "rank"))
+
+
 def check_benchmark_untouched() -> None:
     """The step-1 refactor must not change plot_ablation_benchmark's public surface."""
     print("\n[regression: plot_ablation_benchmark]")
@@ -459,8 +539,10 @@ def main() -> None:
         check_formatting()
         results, groups = check_collection(tmp)
         check_config_errors(tmp)
+        check_vars(tmp)
         check_rendering(tmp, results, groups)
         check_cli(tmp)
+        check_example_config()
         check_benchmark_untouched()
 
     print()
