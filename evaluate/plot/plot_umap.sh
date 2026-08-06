@@ -23,7 +23,7 @@ for arg in "$@"; do
     fi
 done
 
-ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_monitor_align"
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition"
 
 # --eval-adata makes the figures use the SAME embeddings the metrics are computed
 # from (evaluate/check/build_and_check.sh writes it). Without it, umaps.py re-embeds
@@ -31,12 +31,14 @@ ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_monitor_alig
 # and can disagree for reasons that have nothing to do with the models.
 SCRIPT_ARGS=(
     --ablation-dir $ABLATION_DIR
-    --eval-adata $ABLATION_DIR/eval.h5ad
-    --adata-dir /cluster/work/boeva/rquiles/data/mini_eheiss_RAW/pipeline_ready/h5ads
+    --adata-dir /cluster/work/boeva/rquiles/data/eheiss_RAW/pipeline_ready/h5ads
     --color tissue_general
-    --sample-size 6_000
+    --sample-size 75_000
     --skip-unknown
 )
+
+    # --eval-adata $ABLATION_DIR/eval.h5ad
+
 
 # --run-name paired_counts_dat
 # --ckpt "/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts/contrastive/step_step=340000_epoch_epoch=00.ckpt"

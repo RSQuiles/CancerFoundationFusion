@@ -48,8 +48,8 @@ defaults:
   normalized: true
 
   build:
-    rebuild: auto           # only builds eval.h5ad when it is missing
-    modality_sample_size: 5000   # per modality, NOT a total
+    rebuild: always           # only builds eval.h5ad when it is missing
+    modality_sample_size: 10000   # per modality, NOT a total
     precomputed_pb: false   # overridden to true for the three that train that way
     panel_strategy: consensus
     n_pca_components: 50
@@ -71,45 +71,15 @@ defaults:
 
 experiments:
 
-  # ── precomputed_pb: true ─────────────────────────────────────────────────────
-  # These three feed precomputed pseudobulk rows straight through the collator.
-
-  - name: monitor_align                       # monitor_align.json (5 models)
-    ablation_dir: ${work}/outputs/save_CFF/ablation_monitor_align
-    adata_dir: ${work}/data/mini_eheiss_RAW/pipeline_ready/h5ads
-    build: {precomputed_pb: true}
-    umap: {color: [tissue_general, modality]}
-
-  - name: big_condition                       # big_condition.json + fill.json (4 models)
-    ablation_dir: ${work}/outputs/save_CFF/ablation_big_condition
-    adata_dir: ${work}/data/eheiss_RAW/pipeline_ready/h5ads
-    build: {precomputed_pb: true}
-    umap: {color: [tissue_general, modality]}
-
-  - name: united_data                         # eheiss_data.json (4 models)
-    ablation_dir: ${work}/outputs/save_CFF/ablation_united_data
-    adata_dir: ${work}/data/eheiss_RAW/pipeline_ready/h5ads
-    build: {precomputed_pb: true}
-
   # ── paired datasets ──────────────────────────────────────────────────────────
   # conditions include 'paired', so these data dirs carry paired_*.h5ad and the
   # paired_* / agg_paired_* metric families will actually populate here — unlike the
   # experiments above, where they are skipped for lack of paired inputs. These are
   # also the only experiments where the cell-line 'paired_umap' plot makes sense.
 
-  - name: paired_mix                          # paired_mix.json (2 models)
-    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_mix
-    adata_dir: ${work}/data/paired_dataset_counts/pipeline_ready/h5ads
-    steps: [build, metrics, scib, diagnose, umap, paired_umap]
-
-  - name: paired_corn                         # paired_corn.json (5 models)
-    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_corn
-    adata_dir: ${work}/data/paired_dataset_counts/pipeline_ready/h5ads
-    steps: [build, metrics, scib, diagnose, umap, paired_umap]
-
   - name: paired_dataset                      # paired_aggfix.json (4 models)
     ablation_dir: ${work}/outputs/save_CFF/ablation_paired_dataset
-    adata_dir: ${work}/data/paired_dataset/pipeline_ready/h5ads
+    adata_dir: ${work}/data/paired_dataset_cpm/pipeline_ready/h5ads
     steps: [build, metrics, scib, diagnose, umap, paired_umap]
 
   # NOTE: save_dir here is 'outputs_rquiles', not 'outputs' like every other config.
@@ -117,15 +87,11 @@ experiments:
   # "corrected" — confirm which of the two roots actually holds the checkpoints, or
   # this run will report "No matching model dirs found".
   - name: paired_counts                       # paired_counts.json (5 models)
-    ablation_dir: ${work}/outputs_rquiles/save_CFF/ablation_paired_counts
+    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_counts
     adata_dir: ${work}/data/paired_dataset_counts/pipeline_ready/h5ads
     steps: [build, metrics, scib, diagnose, umap, paired_umap]
 
   # ── no unified-FM features ───────────────────────────────────────────────────
-
-  - name: base_comparison                     # base_comparison_ablation.json (4 models)
-    ablation_dir: ${work}/outputs/save_CFF/ablation_base_comparison
-    adata_dir: ${work}/data/cellxgene_bulk/pipeline_ready/h5ads
 
   # The only config declaring downstream_tasks (cancer_type_annotation,
   # survival_prediction), so it is the only one where 'benchmark' can produce a plot.
@@ -151,10 +117,10 @@ experiments:
 
 slurm:
   enabled: true
-  mode: per-experiment      # 9 jobs; use single-job to run them all sequentially
+  mode: single-job      # 9 jobs; use single-job to run them all sequentially
   job_name_prefix: analysis
   sbatch_args:
-    - --time=4:00:00
+    - --time=10:00:00
     - --partition=gpu
     - --gres=gpu:rtx4090:1
     - --ntasks-per-node=1

@@ -24,11 +24,11 @@ for arg in "$@"; do
     fi
 done
 
-ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_monitor_align"
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition"
 
 BUILD_ARGS=(
-    --adata-dir /cluster/work/boeva/rquiles/data/mini_eheiss_RAW/pipeline_ready/h5ads
-    --sample-size 5000
+    --adata-dir /cluster/work/boeva/rquiles/data/eheiss_RAW/pipeline_ready/h5ads
+    --sample-size 10000
     --out $ABLATION_DIR/eval.h5ad
     --ablation-dir $ABLATION_DIR
     --precomputed-pb
