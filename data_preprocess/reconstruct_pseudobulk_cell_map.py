@@ -37,6 +37,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pandas as pd
 from scipy import sparse
@@ -412,6 +413,468 @@ def verify(
 
 
 # =========================
+# Rebuild: materialize a paired (pseudo-bulk, single-cell) dataset
+# =========================
+
+VLEN_STR = h5py.special_dtype(vlen=str)
+SAMPLE_ID_RE = re.compile(r"(\d+)\s*$")
+
+
+def _decode(values: np.ndarray) -> np.ndarray:
+    return np.array(
+        [v.decode() if isinstance(v, bytes) else str(v) for v in values],
+        dtype=object,
+    )
+
+
+def pseudobulk_id_from_sample_id(sample_ids) -> np.ndarray:
+    """`pseudo_bulk:000123` -> 123. Falls back to positional ids if unparseable."""
+    ids = []
+    for value in sample_ids:
+        match = SAMPLE_ID_RE.search(str(value))
+        ids.append(int(match.group(1)) if match else -1)
+    ids = np.asarray(ids, dtype=np.int64)
+    if (ids < 0).any():
+        print(
+            "WARNING: some sample_ids have no trailing integer; falling back to "
+            "positional pseudobulk_id.",
+            file=sys.stderr,
+        )
+        ids = np.arange(len(ids), dtype=np.int64)
+    return ids
+
+
+def write_dataframe(group: "h5py.Group", frame: pd.DataFrame, index_name: str) -> None:
+    """Write a pandas frame using AnnData's on-disk dataframe encoding (v0.2.0)."""
+    group.attrs["encoding-type"] = "dataframe"
+    group.attrs["encoding-version"] = "0.2.0"
+    group.attrs["_index"] = index_name
+    # Explicit vlen-str dtype: a zero-column frame yields an empty object array, which
+    # has no native HDF5 equivalent.
+    group.attrs.create(
+        "column-order",
+        np.array(list(frame.columns), dtype=object),
+        dtype=VLEN_STR,
+    )
+
+    index_ds = group.create_dataset(
+        index_name, data=np.asarray(frame.index, dtype=object), dtype=VLEN_STR
+    )
+    index_ds.attrs["encoding-type"] = "string-array"
+    index_ds.attrs["encoding-version"] = "0.2.0"
+
+    for column in frame.columns:
+        series = frame[column]
+        if isinstance(series.dtype, pd.CategoricalDtype):
+            sub = group.create_group(column)
+            sub.attrs["encoding-type"] = "categorical"
+            sub.attrs["encoding-version"] = "0.2.0"
+            sub.attrs["ordered"] = False
+            cats = sub.create_dataset(
+                "categories",
+                data=np.asarray(series.cat.categories, dtype=object),
+                dtype=VLEN_STR,
+            )
+            cats.attrs["encoding-type"] = "string-array"
+            cats.attrs["encoding-version"] = "0.2.0"
+            codes = sub.create_dataset("codes", data=series.cat.codes.to_numpy())
+            codes.attrs["encoding-type"] = "array"
+            codes.attrs["encoding-version"] = "0.2.0"
+        elif pd.api.types.is_numeric_dtype(series) or pd.api.types.is_bool_dtype(series):
+            ds = group.create_dataset(column, data=series.to_numpy())
+            ds.attrs["encoding-type"] = "array"
+            ds.attrs["encoding-version"] = "0.2.0"
+        else:
+            ds = group.create_dataset(
+                column, data=np.asarray(series, dtype=object), dtype=VLEN_STR
+            )
+            ds.attrs["encoding-type"] = "string-array"
+            ds.attrs["encoding-version"] = "0.2.0"
+
+
+class ChunkReader:
+    """Partial CSR row reads from the source chunks, with a small open-file cache.
+
+    Reads only the rows requested (via indptr slicing) instead of loading whole
+    chunk files, which matters because a rebuild touches thousands of chunks.
+    """
+
+    def __init__(self, chunk_dir: Path, max_open: int = 16):
+        self.chunk_dir = chunk_dir
+        self.max_open = max_open
+        self._open: dict[int, tuple] = {}
+
+    def _get(self, chunk_id: int):
+        entry = self._open.get(chunk_id)
+        if entry is not None:
+            return entry
+        if len(self._open) >= self.max_open:
+            oldest = next(iter(self._open))
+            self._open.pop(oldest)[0].close()
+        path = self.chunk_dir / f"source_cells_chunk_{chunk_id:05d}.h5ad"
+        handle = h5py.File(path, "r")
+        entry = (handle, handle["X/indptr"][:])
+        self._open[chunk_id] = entry
+        return entry
+
+    def n_vars(self) -> int:
+        chunk_id = min(available_chunk_ids(self.chunk_dir))
+        handle, _ = self._get(chunk_id)
+        return int(handle["X"].attrs["shape"][1])
+
+    def var_names(self) -> pd.Index:
+        chunk_id = min(available_chunk_ids(self.chunk_dir))
+        handle, _ = self._get(chunk_id)
+        var = handle["var"]
+        index_name = var.attrs.get("_index", "ensembl_id")
+        if isinstance(index_name, bytes):
+            index_name = index_name.decode()
+        return pd.Index(_decode(var[index_name][:]))
+
+    def read_rows(self, chunk_id: int, rows: np.ndarray):
+        """Return (csr block over the source gene axis, obs dict) for `rows`."""
+        handle, indptr = self._get(chunk_id)
+        data_ds, idx_ds = handle["X/data"], handle["X/indices"]
+        n_vars = int(handle["X"].attrs["shape"][1])
+
+        data_parts, idx_parts, counts = [], [], []
+        for row in rows:
+            start, end = int(indptr[row]), int(indptr[row + 1])
+            counts.append(end - start)
+            if end > start:
+                data_parts.append(data_ds[start:end])
+                idx_parts.append(idx_ds[start:end])
+        block = sparse.csr_matrix(
+            (
+                np.concatenate(data_parts) if data_parts else np.zeros(0, np.float32),
+                np.concatenate(idx_parts) if idx_parts else np.zeros(0, np.int32),
+                np.concatenate([[0], np.cumsum(counts)]).astype(np.int64),
+            ),
+            shape=(len(rows), n_vars),
+        )
+        return block, self._read_obs(handle, rows)
+
+    @staticmethod
+    def _read_obs(handle, rows: np.ndarray) -> dict:
+        obs = handle["obs"]
+        index_name = obs.attrs.get("_index", "cell_id")
+        if isinstance(index_name, bytes):
+            index_name = index_name.decode()
+        out: dict[str, np.ndarray] = {}
+        for key in [index_name] + [k for k in obs.keys() if k != index_name]:
+            node = obs[key]
+            if isinstance(node, h5py.Group):  # categorical
+                categories = _decode(node["categories"][:])
+                codes = node["codes"][:][rows]
+                out[key] = np.where(codes >= 0, categories[codes], "unknown")
+            else:
+                values = node[:][rows]
+                out[key] = _decode(values) if values.dtype == object else values
+        out["__index__"] = out.pop(index_name)
+        return out
+
+    def close(self):
+        for handle, _ in self._open.values():
+            handle.close()
+        self._open.clear()
+
+
+class StreamingCSRWriter:
+    """Append CSR blocks to an .h5ad without holding the matrix in memory."""
+
+    def __init__(self, path: Path, n_vars: int, compression: str | None):
+        # libver='earliest' matches write_h5ad_compat() so clusters on HDF5 < 1.10
+        # can read the output.
+        self.handle = h5py.File(path, "w", libver="earliest")
+        self.handle.attrs["encoding-type"] = "anndata"
+        self.handle.attrs["encoding-version"] = "0.1.0"
+        self.n_vars = n_vars
+        self.nnz = 0
+        self.n_obs = 0
+        self.indptr = [0]
+
+        group = self.handle.create_group("X")
+        group.attrs["encoding-type"] = "csr_matrix"
+        group.attrs["encoding-version"] = "0.1.0"
+        kwargs = dict(chunks=(1 << 16,), maxshape=(None,), compression=compression)
+        self.data = group.create_dataset("data", shape=(0,), dtype=np.float32, **kwargs)
+        self.indices = group.create_dataset("indices", shape=(0,), dtype=np.int32, **kwargs)
+
+    def append(self, block: sparse.csr_matrix) -> None:
+        block = block.tocsr()
+        block.sort_indices()
+        n_new = block.data.shape[0]
+        self.data.resize((self.nnz + n_new,))
+        self.indices.resize((self.nnz + n_new,))
+        if n_new:
+            self.data[self.nnz:] = block.data.astype(np.float32, copy=False)
+            self.indices[self.nnz:] = block.indices.astype(np.int32, copy=False)
+        self.indptr.extend((block.indptr[1:] + self.nnz).tolist())
+        self.nnz += n_new
+        self.n_obs += block.shape[0]
+
+    def finalize(self, obs: pd.DataFrame, var_names: pd.Index) -> None:
+        group = self.handle["X"]
+        group.attrs["shape"] = np.array([self.n_obs, self.n_vars], dtype="int64")
+        # int64 indptr: a full rebuild can exceed the 2^31 nnz that int32 allows.
+        group.create_dataset("indptr", data=np.asarray(self.indptr, dtype=np.int64))
+
+        write_dataframe(self.handle.create_group("obs"), obs, "cell_id")
+        var = self.handle.create_group("var")
+        write_dataframe(var, pd.DataFrame(index=pd.Index(var_names, dtype=str)), "ensembl_id")
+
+        for name in ("layers", "obsm", "obsp", "uns", "varm", "varp"):
+            grp = self.handle.create_group(name)
+            grp.attrs["encoding-type"] = "dict"
+            grp.attrs["encoding-version"] = "0.1.0"
+        self.handle.close()
+
+
+def annotate_pseudo_bulk(
+    src_path: Path, dst_path: Path, complete: set[str]
+) -> tuple[np.ndarray, pd.Index]:
+    """Copy the pseudo-bulk h5ad verbatim, adding pseudobulk_id + cells_available.
+
+    Copying rather than rebuilding preserves uns (the cell_type_proportion_* maps the
+    deconv runner relies on) and every existing obs column.
+    """
+    with h5py.File(src_path, "r") as src:
+        obs = src["obs"]
+        index_name = obs.attrs.get("_index", "sample_id")
+        if isinstance(index_name, bytes):
+            index_name = index_name.decode()
+        sample_ids = _decode(obs[index_name][:])
+        column_order = [
+            c.decode() if isinstance(c, bytes) else str(c)
+            for c in obs.attrs.get("column-order", [])
+        ]
+        var = src["var"]
+        var_index = var.attrs.get("_index", "ensembl_id")
+        if isinstance(var_index, bytes):
+            var_index = var_index.decode()
+        var_names = pd.Index(_decode(var[var_index][:]))
+
+        with h5py.File(dst_path, "w", libver="earliest") as dst:
+            for key in src.keys():
+                src.copy(key, dst)
+            for key, value in src.attrs.items():
+                dst.attrs[key] = value
+
+            pb_ids = pseudobulk_id_from_sample_id(sample_ids)
+            available = np.isin(sample_ids.astype(str), np.asarray(sorted(complete)))
+
+            dst_obs = dst["obs"]
+            for name, values in (
+                ("pseudobulk_id", pb_ids),
+                ("cells_available", available),
+            ):
+                if name in dst_obs:
+                    del dst_obs[name]
+                ds = dst_obs.create_dataset(name, data=values)
+                ds.attrs["encoding-type"] = "array"
+                ds.attrs["encoding-version"] = "0.2.0"
+            new_order = [c for c in column_order if c not in ("pseudobulk_id", "cells_available")]
+            new_order += ["pseudobulk_id", "cells_available"]
+            dst_obs.attrs.create(
+                "column-order", np.array(new_order, dtype=object), dtype=VLEN_STR
+            )
+
+    return sample_ids, var_names
+
+
+def rebuild(
+    cell_map: pd.DataFrame,
+    *,
+    pseudo_bulk_h5ad: Path,
+    chunk_dir: Path,
+    output_dir: Path,
+    gene_axis: str,
+    expand_copies: bool,
+    limit_samples: int,
+    compression: str | None,
+    max_open_chunks: int,
+) -> tuple[Path, Path]:
+    """Write a paired pseudo-bulk + matched single-cell dataset joined on pseudobulk_id."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pb_out = output_dir / "pseudo_bulk_matched.h5ad"
+    sc_out = output_dir / "source_cells_matched.h5ad"
+
+    have_chunks = available_chunk_ids(chunk_dir)
+    if not have_chunks:
+        raise FileNotFoundError(f"No source chunks found in {chunk_dir}")
+
+    if "cells_available" in cell_map.columns:
+        complete = set(cell_map.loc[cell_map["cells_available"], "sample_id"].unique())
+    else:
+        per_sample_chunks = cell_map.groupby("sample_id", observed=True)["chunk_id"].apply(
+            lambda s: set(s.unique())
+        )
+        complete = set(
+            per_sample_chunks[per_sample_chunks.apply(lambda s: s.issubset(have_chunks))].index
+        )
+
+    print(f"Annotating pseudo-bulk -> {pb_out}")
+    sample_ids, pb_var_names = annotate_pseudo_bulk(pseudo_bulk_h5ad, pb_out, complete)
+
+    # Emit cells only for pseudo-bulks that exist in the h5ad AND have all cells on disk.
+    usable = [s for s in sample_ids.astype(str) if s in complete]
+    usable = sorted(usable, key=lambda s: int(SAMPLE_ID_RE.search(s).group(1))
+                    if SAMPLE_ID_RE.search(s) else 0)
+    if limit_samples > 0:
+        usable = usable[:limit_samples]
+    if not usable:
+        raise ValueError(
+            "No pseudo-bulk in the h5ad has all of its source cells available locally."
+        )
+    print(
+        f"Pseudo-bulks: {len(sample_ids)} in h5ad, {len(complete)} with cells on disk, "
+        f"{len(usable)} being written"
+    )
+
+    reader = ChunkReader(chunk_dir, max_open=max_open_chunks)
+    try:
+        src_var_names = reader.var_names()
+        if gene_axis == "pseudobulk":
+            target_var = pb_var_names
+            gene_idx = src_var_names.get_indexer(target_var)
+            present_dst = np.where(gene_idx >= 0)[0]
+            present_src = gene_idx[present_dst]
+            n_missing = len(target_var) - len(present_dst)
+            if n_missing:
+                print(
+                    f"{n_missing} pseudo-bulk genes absent from the source chunks; "
+                    "zero-filled in the cell matrix."
+                )
+        else:
+            target_var = src_var_names
+            present_dst = present_src = None
+
+        # Restrict before grouping: the full map is ~14M rows / 20k groups.
+        subset = cell_map[cell_map["sample_id"].isin(set(usable))]
+        by_sample = {k: v for k, v in subset.groupby("sample_id", observed=True)}
+        writer = StreamingCSRWriter(sc_out, len(target_var), compression)
+        obs_frames: list[pd.DataFrame] = []
+
+        for position, sample_id in enumerate(usable):
+            rows = by_sample[sample_id].sort_values(["chunk_id", "row_idx"])
+            blocks, obs_parts = [], []
+            for chunk_id, group in rows.groupby("chunk_id", sort=True):
+                row_idx = group["row_idx"].to_numpy(dtype=np.int64)
+                block, obs_dict = reader.read_rows(int(chunk_id), row_idx)
+                copies = group["n_copies"].to_numpy(dtype=np.int64)
+                if expand_copies:
+                    repeat = np.repeat(np.arange(len(row_idx)), copies)
+                    block = block[repeat]
+                    obs_dict = {k: np.asarray(v)[repeat] for k, v in obs_dict.items()}
+                    copies = np.ones(block.shape[0], dtype=np.int64)
+                blocks.append(block)
+                part = pd.DataFrame({k: v for k, v in obs_dict.items() if k != "__index__"})
+                part["cell_id"] = obs_dict["__index__"]
+                part["n_copies"] = copies.astype(np.int32)
+                obs_parts.append(part)
+
+            block = sparse.vstack(blocks, format="csr")
+            if present_dst is not None:
+                sub = block.tocsc()[:, present_src].tocoo()
+                block = sparse.csr_matrix(
+                    (sub.data, (sub.row, present_dst[sub.col])),
+                    shape=(block.shape[0], len(target_var)),
+                    dtype=np.float32,
+                )
+            writer.append(block)
+
+            obs_part = pd.concat(obs_parts, ignore_index=True)
+            obs_part["sample_id"] = sample_id
+            obs_part["pseudobulk_id"] = np.int64(
+                pseudobulk_id_from_sample_id([sample_id])[0]
+            )
+            obs_frames.append(obs_part)
+
+            if (position + 1) % 250 == 0 or position + 1 == len(usable):
+                print(
+                    f"  {position + 1}/{len(usable)} pseudo-bulks | "
+                    f"{writer.n_obs} cells | {writer.nnz} nonzeros"
+                )
+
+        obs = pd.concat(obs_frames, ignore_index=True)
+        del obs_frames
+        gc.collect()
+
+        # Unique per (pseudo-bulk, cell); a cell reused by several pseudo-bulks appears once each.
+        obs.index = pd.Index(
+            obs["sample_id"].astype(str) + "|" + obs["cell_id"].astype(str),
+            name="cell_id",
+        )
+        obs = obs.drop(columns=["cell_id"])
+        if obs.index.duplicated().any():
+            obs.index = pd.Index(
+                [f"{name}#{i}" for i, name in enumerate(obs.index)], name="cell_id"
+            )
+        for column in ("dataset_id", "donor_id", "tissue_general", "cell_type", "sample_id"):
+            if column in obs.columns:
+                obs[column] = pd.Categorical(obs[column])
+        ordered = [c for c in obs.columns if c not in ("pseudobulk_id", "sample_id", "n_copies")]
+        obs = obs[ordered + ["sample_id", "pseudobulk_id", "n_copies"]]
+
+        writer.finalize(obs, target_var)
+        print(
+            f"Wrote {sc_out}: {writer.n_obs} cells x {len(target_var)} genes, "
+            f"{writer.nnz} nonzeros ({sc_out.stat().st_size / 1e9:.2f} GB)"
+        )
+    finally:
+        reader.close()
+
+    return pb_out, sc_out
+
+
+def verify_rebuilt(
+    pb_path: Path, sc_path: Path, n_samples: int, seed: int, rtol: float, atol: float
+) -> bool:
+    """Re-sum cells from the WRITTEN cell file and compare to the written pseudo-bulk."""
+    with h5py.File(sc_path, "r") as sc, h5py.File(pb_path, "r") as pb:
+        sc_ids = sc["obs/pseudobulk_id"][:]
+        copies = sc["obs/n_copies"][:].astype(np.float64)
+        sc_indptr, sc_data, sc_indices = sc["X/indptr"][:], sc["X/data"], sc["X/indices"]
+        n_vars = int(sc["X"].attrs["shape"][1])
+
+        pb_ids = pb["obs/pseudobulk_id"][:]
+        pb_indptr, pb_data, pb_indices = pb["X/indptr"][:], pb["X/data"][:], pb["X/indices"][:]
+
+        rng = np.random.default_rng(seed)
+        targets = np.unique(sc_ids)
+        picked = rng.choice(targets, size=min(n_samples, len(targets)), replace=False)
+
+        print(f"\n{'pseudobulk_id':<16}{'cells':>8}{'max_abs_diff':>15}{'n_diff':>9}  result")
+        print("-" * 60)
+        all_ok = True
+        for pb_id in picked:
+            recon = np.zeros(n_vars, dtype=np.float64)
+            for row in np.where(sc_ids == pb_id)[0]:
+                start, end = int(sc_indptr[row]), int(sc_indptr[row + 1])
+                if end > start:
+                    recon[sc_indices[start:end]] += sc_data[start:end] * copies[row]
+            pb_row = int(np.where(pb_ids == pb_id)[0][0])
+            expected = np.zeros(n_vars, dtype=np.float64)
+            start, end = int(pb_indptr[pb_row]), int(pb_indptr[pb_row + 1])
+            expected[pb_indices[start:end]] = pb_data[start:end]
+
+            diff = np.abs(recon - expected)
+            ok = np.allclose(recon, expected, rtol=rtol, atol=atol)
+            all_ok &= bool(ok)
+            print(
+                f"{int(pb_id):<16}{int(copies[sc_ids == pb_id].sum()):>8}"
+                f"{diff.max():>15.6g}{int((diff > atol).sum()):>9}  {'PASS' if ok else 'FAIL'}"
+            )
+        print("-" * 60)
+        print(
+            "REBUILD VERIFIED: summing each pseudobulk_id's cells reproduces the pseudo-bulk."
+            if all_ok
+            else "REBUILD MISMATCH: the written files are not consistent."
+        )
+        return all_ok
+
+
+# =========================
 # Entrypoint
 # =========================
 
@@ -445,6 +908,28 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="Restrict the written map to samples whose cells are all on disk.")
     parser.add_argument("--strict", action="store_true",
                         help="Fail instead of warning when a (context, cell_type) pool is missing.")
+
+    rebuild_group = parser.add_argument_group("rebuild")
+    rebuild_group.add_argument("--rebuild", action="store_true",
+                               help="Materialize a paired dataset: an annotated pseudo-bulk h5ad "
+                                    "plus a matched single-cell h5ad, joined on pseudobulk_id. "
+                                    "Requires --pseudo-bulk-h5ad and --output-dir.")
+    rebuild_group.add_argument("--output-dir", type=Path, default=None,
+                               help="Destination for pseudo_bulk_matched.h5ad and "
+                                    "source_cells_matched.h5ad.")
+    rebuild_group.add_argument("--gene-axis", choices=("pseudobulk", "source"), default="pseudobulk",
+                               help="Gene axis for the cell matrix. 'pseudobulk' (default) makes both "
+                                    "files share a var axis; 'source' keeps all source genes.")
+    rebuild_group.add_argument("--expand-copies", action="store_true",
+                               help="Emit one row per drawn copy so a plain sum reproduces the "
+                                    "pseudo-bulk. Default emits unique cells with an n_copies weight.")
+    rebuild_group.add_argument("--limit-samples", type=int, default=0, metavar="N",
+                               help="Only write the first N pseudo-bulks (0 = all). Useful for a trial run.")
+    rebuild_group.add_argument("--compression", choices=("none", "lzf", "gzip"), default="lzf")
+    rebuild_group.add_argument("--max-open-chunks", type=int, default=16)
+    rebuild_group.add_argument("--verify-rebuilt", type=int, default=0, metavar="N",
+                               help="After rebuilding, re-sum N pseudobulk_ids from the written "
+                                    "files and compare.")
     return parser.parse_args(argv)
 
 
@@ -537,6 +1022,8 @@ def main(argv=None) -> int:
         json.dump(summary, handle, indent=2)
     print(f"Wrote {summary_path}")
 
+    exit_code = 0
+
     if args.verify > 0:
         if args.pseudo_bulk_h5ad is None:
             raise ValueError("--verify requires --pseudo-bulk-h5ad")
@@ -549,9 +1036,32 @@ def main(argv=None) -> int:
             rtol=args.rtol,
             atol=args.atol,
         )
-        return 0 if ok else 1
+        exit_code |= 0 if ok else 1
 
-    return 0
+    if args.rebuild:
+        if args.pseudo_bulk_h5ad is None:
+            raise ValueError("--rebuild requires --pseudo-bulk-h5ad")
+        if args.output_dir is None:
+            raise ValueError("--rebuild requires --output-dir")
+        print()
+        pb_out, sc_out = rebuild(
+            cell_map,
+            pseudo_bulk_h5ad=args.pseudo_bulk_h5ad,
+            chunk_dir=chunk_dir,
+            output_dir=args.output_dir,
+            gene_axis=args.gene_axis,
+            expand_copies=args.expand_copies,
+            limit_samples=args.limit_samples,
+            compression=None if args.compression == "none" else args.compression,
+            max_open_chunks=args.max_open_chunks,
+        )
+        if args.verify_rebuilt > 0:
+            ok = verify_rebuilt(
+                pb_out, sc_out, args.verify_rebuilt, args.verify_seed, args.rtol, args.atol
+            )
+            exit_code |= 0 if ok else 1
+
+    return exit_code
 
 
 if __name__ == "__main__":
