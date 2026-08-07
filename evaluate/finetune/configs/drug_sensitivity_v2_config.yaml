@@ -34,7 +34,15 @@ finetune:
     epochs: 100
     batch_size: 64
     embed_batch_size: 64
-    normalized: true
+
+    # Whether this task's input MUST be normalized (CP10K + log1p) before embedding.
+    # "do it?" space: true = apply it, false = apply nothing. Overridden by
+    # run_ablation_downstream.py --normalize / --no-normalize.
+    #
+    # Replaces `normalized:`, which meant the opposite. Note the expression CSV used
+    # to be CP10K+log1p'd unconditionally at load regardless of that key; that is now
+    # governed by this one, so `normalize: true` reproduces the old behaviour.
+    normalize: false
 
     min_lr: 0.000001
     first_cycle_steps: 20

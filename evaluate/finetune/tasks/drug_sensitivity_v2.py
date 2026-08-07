@@ -28,6 +28,7 @@ from torch import nn
 from torch.utils.data import Dataset
 
 from evaluate.finetune.downstream_task import DownstreamTask, TaskRegistry
+from evaluate.finetune.normalization import resolve_policy
 from evaluate.finetune.tasks.components import EmbeddingPredHead
 from evaluate.finetune.utils import deduplicate_var_names, strip_ensembl_versions
 
@@ -107,15 +108,15 @@ def precompute_embeddings(embedder: Any, task_cfg: DictConfig) -> pd.DataFrame:
     jobs can look up pre-computed vectors instead of re-running the model.
     """
     x_path = hydra.utils.to_absolute_path(str(getattr(task_cfg, "x_path", DEFAULT_X_PATH)))
-    full_adata = load_expression_csv(x_path)
+    policy = resolve_policy(task_cfg, None)
+    full_adata = load_expression_csv(x_path, policy)
     batch_size = int(getattr(task_cfg, "embed_batch_size", 64))
-    normalized = bool(getattr(task_cfg, "normalized", True))
 
     embedder.eval()
     if torch.cuda.is_available() and hasattr(embedder, "cuda"):
         embedder.cuda()
 
-    kwargs = dict(batch_size=batch_size, normalized=normalized)
+    kwargs = dict(batch_size=batch_size, **policy.embed_kwargs())
     if not getattr(embedder, "fittable", False):
         kwargs["modality"] = "bulk"  # cell-line bulk → log1p + MAD gene selection
     result = embedder.embed(full_adata, **kwargs)
@@ -160,7 +161,13 @@ def cp10k_log1p_normalize(expr_df: pd.DataFrame) -> pd.DataFrame:
     return np.log1p(normalized.fillna(0.0)).astype(np.float32)
 
 
-def load_expression_csv(x_path: str | Path) -> ad.AnnData:
+def load_expression_csv(x_path: str | Path, policy: Any) -> ad.AnnData:
+    """Load the cell-line expression CSV and normalize it per *policy*.
+
+    ``policy`` is required rather than defaulted: this loader used to CP10K+log1p
+    unconditionally, so a caller that forgot to pass one would silently reintroduce
+    exactly the hidden normalization this switch exists to remove.
+    """
     df = pd.read_csv(x_path, low_memory=False)
     if df.empty or df.shape[1] < 2:
         raise ValueError(f"Expression CSV must contain a row-label column and gene columns: {x_path}")
@@ -183,7 +190,6 @@ def load_expression_csv(x_path: str | Path) -> ad.AnnData:
         )
         expr_df = expr_df.fillna(0.0)
 
-    expr_df = cp10k_log1p_normalize(expr_df)
     if len(var_names) != expr_df.shape[1]:
         raise ValueError(
             f"Expression CSV has {expr_df.shape[1]} gene columns but "
@@ -194,6 +200,10 @@ def load_expression_csv(x_path: str | Path) -> ad.AnnData:
     adata.obs_names = expr_df.index.astype(str).tolist()
     adata.obs["model_name"] = adata.obs_names
     adata.var_names = pd.Index([str(v) for v in var_names])
+    # Before deduplicate_var_names, matching the order the unconditional
+    # cp10k_log1p_normalize() used to run in: dropping duplicate genes changes each
+    # row's library size, so normalizing after it would not reproduce past numbers.
+    adata, _ = policy.apply(adata, task="drug_sensitivity_v2")
     adata = deduplicate_var_names(adata)
     adata.obs_names_make_unique()
     return adata
@@ -323,7 +333,7 @@ class DrugSensitivityV2Task(DownstreamTask):
         endpoint = str(task_cfg.endpoint)
         response_threshold = float(getattr(task_cfg, "response_threshold", 0.5))
 
-        adata = load_expression_csv(x_path)
+        adata = load_expression_csv(x_path, resolve_policy(task_cfg, None))
         response_df = pd.read_csv(y_path)
         labels = load_drug_endpoint_targets(response_df, drug, endpoint, response_threshold)
 
@@ -433,13 +443,15 @@ class DrugSensitivityV2Task(DownstreamTask):
 
     def _embed_adata(self, embedder: Any, adata: ad.AnnData, task_cfg: Any) -> np.ndarray:
         batch_size = int(getattr(task_cfg, "embed_batch_size", 64))
-        normalized = bool(getattr(task_cfg, "normalized", True))
+        # adata here already came through load_expression_csv, which applied the
+        # policy; embed_kwargs() keeps this call a pass-through.
+        policy = resolve_policy(task_cfg, None)
 
         embedder.eval()
         if torch.cuda.is_available() and hasattr(embedder, "cuda"):
             embedder.cuda()
 
-        kwargs = dict(batch_size=batch_size, normalized=normalized)
+        kwargs = dict(batch_size=batch_size, **policy.embed_kwargs())
         if not getattr(embedder, "fittable", False):
             kwargs["modality"] = "bulk"  # cell-line bulk → log1p + MAD gene selection
         result = embedder.embed(adata, **kwargs)

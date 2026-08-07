@@ -40,11 +40,38 @@ python evaluate/run_analysis.py --config evaluate/example_analysis_config.yaml
 python evaluate/run_analysis.py --config <cfg> --only monitor_align --step umap benchmark
 ```
 One config drives N ablation directories. Steps: `build`, `metrics`, `scib`,
-`diagnose`, `umap`, `benchmark`. **They do not all run in the same environment** —
-`build`/`metrics`/`umap` need the bionemo container, `scib` needs the conda env with
-`scib_metrics` (the container lacks it), and `diagnose`/`benchmark` run anywhere. The
-orchestrator picks per step; do not run `--scib` without having run the plain
-`metrics` pass in the container first, or `recon_*` will have no live fallback.
+`diagnose`, `umap`, `paired_umap`, `downstream`, `benchmark`. **They do not all run in
+the same environment** — `build`/`metrics`/`umap`/`downstream` need the bionemo
+container, `scib` needs the conda env with `scib_metrics` (the container lacks it), and
+`diagnose`/`benchmark` run anywhere. The orchestrator picks per step; do not run
+`--scib` without having run the plain `metrics` pass in the container first, or
+`recon_*` will have no live fallback.
+
+`paired_umap` and `downstream` are opt-in and absent from the default step list.
+`downstream` runs `evaluate/finetune/run_ablation_downstream.py`, producing the
+`{model}/metrics/results_{task}.json` that `benchmark` plots — `benchmark` itself is
+plot-only and computes nothing. Enabling `downstream` requires `downstream.tasks`.
+
+### Downstream normalization (`--normalize`)
+`run_ablation_downstream.py --normalize / --no-normalize` forces one normalization
+policy across every task and model, overriding each task config's `normalize:` key;
+`run_analysis.py` exposes it as `downstream.normalize`. Resolution is
+CLI → task config `normalize:` → **off**. See `evaluate/finetune/normalization.py`.
+
+- `--normalize`: CP10K+log1p is applied **once, centrally**, then every embedder is
+  called as a pass-through via `policy.embed_kwargs()`. If a matrix does not look like
+  raw counts (`looks_like_counts`) it is reported and skipped, never log1p'd twice.
+- `--no-normalize`: nothing is applied at any point, for any task.
+
+The decision is logged in a banner, per `[model/task]` line, under the summary table,
+and recorded in each `results_{task}.json` under `"normalization"`.
+
+**Mind the polarity.** Three nearby names mean different things:
+`normalize` (do it) vs `embed(normalized=...)` (data is *already* normalized, so skip)
+vs the analysis config's experiment-level `normalized` (same "already" sense, for
+`build`/`metrics`). Never call an embedder with a bare `normalized=`/`log1p_only=` in
+the downstream path — use `**policy.embed_kwargs()`, which pins both, since
+`PCAEmbedder.embed(normalized=True, log1p_only=True)` still applies log1p.
 
 ### Cross-experiment comparison plots
 Two config-driven scripts share one run-selection grammar (`groups`/`experiments` with
@@ -141,6 +168,7 @@ evaluate/
 │   ├── compare_experiments.py# Cross-experiment bar charts from unified_metrics.csv
 │   └── check_*.py            # Standalone self-checks (no checkpoint needed)
 ├── finetune/
+│   ├── normalization.py           # NormalizationPolicy: the ONE place input normalization is decided
 │   ├── downstream_task.py         # DownstreamTask abstract base class + TaskRegistry
 │   ├── base_downstream_runner.py  # BaseDownstreamRunner (shared training loop, DDP, checkpointing)
 │   ├── downstream_tasks_impl.py   # CancTypeClassTask, DeconvTask implementations

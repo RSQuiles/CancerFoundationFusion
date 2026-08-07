@@ -26,13 +26,18 @@ STEP_ORDER: tuple[str, ...] = (
     "diagnose",
     "umap",
     "paired_umap",
+    "downstream",
     "benchmark",
 )
 
-# Steps enabled unless an experiment says otherwise. ``paired_umap`` is opt-in: it
-# needs a separate paired h5ad (cell-line matched SC + bulk) that most datasets do
-# not have, and it errors out rather than no-oping without one.
-DEFAULT_STEPS: tuple[str, ...] = tuple(s for s in STEP_ORDER if s != "paired_umap")
+# Steps enabled unless an experiment says otherwise.
+#   ``paired_umap`` is opt-in: it needs a separate paired h5ad (cell-line matched SC
+#     + bulk) that most datasets do not have, and it errors out rather than no-oping.
+#   ``downstream`` is opt-in: it fine-tunes and evaluates every model on every
+#     requested task, which is hours of GPU time and needs task datasets (TCGA,
+#     CPTAC, PRISM, ...) that an arbitrary ablation may not have.
+_OPT_IN_STEPS: frozenset[str] = frozenset({"paired_umap", "downstream"})
+DEFAULT_STEPS: tuple[str, ...] = tuple(s for s in STEP_ORDER if s not in _OPT_IN_STEPS)
 
 _DEFAULT_DEFAULTS: dict[str, Any] = {
     "steps": list(DEFAULT_STEPS),
@@ -93,6 +98,26 @@ _DEFAULT_DEFAULTS: dict[str, Any] = {
         "no_sc": False,
         "device": None,
     },
+    # run_ablation_downstream.py: fine-tune + evaluate every model on every task,
+    # producing the {model}/metrics/results_{task}.json that 'benchmark' then plots.
+    # Opt-in; 'tasks' is required once the step is enabled.
+    "downstream": {
+        "tasks": [],            # e.g. [canc_type_class, deconv, survival]
+        "config_dir": None,     # None -> evaluate/finetune/configs
+        "models": None,         # None -> every model dir with a checkpoint
+        "skip_existing": True,
+        "pca_baseline": False,
+        "pca_n_components": 128,
+        # NOTE the polarity, and note that this is NOT the experiment-level
+        # 'normalized' key above. This one is in "do it?" space:
+        #   true  -> CP10K+log1p is applied to every task's input (skipped, with a
+        #            warning, where the matrix does not look like raw counts)
+        #   false -> nothing is applied at any point, for any task
+        #   null  -> each task config's own 'normalize:' key decides
+        # 'normalized' (above) means the opposite thing: "the data is ALREADY
+        # normalized, so tell build/metrics to skip normalising it".
+        "normalize": False,
+    },
     "benchmark": {"output": None, "no_show": True, "figsize": None, "primary": {}},
 }
 
@@ -147,6 +172,7 @@ class ExperimentConfig:
     diagnose: dict[str, Any]
     umap: dict[str, Any]
     paired_umap: dict[str, Any]
+    downstream: dict[str, Any]
     benchmark: dict[str, Any]
 
     @property
@@ -348,6 +374,14 @@ def load_analysis_config(config_path: Path | str) -> AnalysisConfig:
                 "source: live, both of which read the raw h5ads."
             )
 
+        if "downstream" in steps and not merged["downstream"].get("tasks"):
+            raise KeyError(
+                f"[{name}] runs the 'downstream' step but 'downstream.tasks' is empty. "
+                "List the downstream tasks to evaluate, e.g. "
+                "downstream: {tasks: [canc_type_class, deconv]}. Without them "
+                "run_ablation_downstream.py has nothing to do."
+            )
+
         if "paired_umap" in steps and not merged["paired_umap"].get("input_h5ad"):
             raise KeyError(
                 f"[{name}] runs the 'paired_umap' step but 'paired_umap.input_h5ad' is "
@@ -370,6 +404,7 @@ def load_analysis_config(config_path: Path | str) -> AnalysisConfig:
                 diagnose=merged["diagnose"],
                 umap=merged["umap"],
                 paired_umap=merged["paired_umap"],
+                downstream=merged["downstream"],
                 benchmark=merged["benchmark"],
             )
         )

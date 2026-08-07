@@ -42,6 +42,10 @@ SCRIPT_ARGS=(
     --tasks deconv canc_type_class survival drug_sensitivity_v2
     --pca-baseline
     --config-dir /cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/finetune/configs
+    # Stated explicitly rather than left to the default. --no-normalize: nothing is
+    # applied at any point, for any task. --normalize: CP10K+log1p everywhere,
+    # skipped with a warning where the matrix is not raw counts.
+    --no-normalize
 )
 
 # echo "=== GPU status ==="

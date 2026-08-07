@@ -23,6 +23,7 @@ from torch import nn
 from torch.utils.data import Dataset
 
 from evaluate.finetune.downstream_task import DownstreamTask, TaskRegistry
+from evaluate.finetune.normalization import resolve_policy
 from evaluate.finetune.utils import parquet_to_adata, translate_gene_symbols, strip_ensembl_versions, deduplicate_var_names
 
 
@@ -245,10 +246,12 @@ class ProteomePredTask(DownstreamTask):
         train_targets: np.ndarray,
         test_targets: np.ndarray,
         embedder: Any,
+        task_cfg: Any = None,
     ) -> tuple[Dataset, Dataset, int]:
         """Generate embeddings and create ProteomeEmbeddingDataset instances."""
-        train_emb = self._embed_adata(embedder, train_adata)
-        test_emb  = self._embed_adata(embedder, test_adata)
+        policy = resolve_policy(task_cfg, None)
+        train_emb = self._embed_adata(embedder, train_adata, policy=policy)
+        test_emb  = self._embed_adata(embedder, test_adata, policy=policy)
         embedding_dim = train_emb.shape[1]
 
         train_dataset = ProteomeEmbeddingDataset(train_emb, train_targets)
@@ -260,10 +263,16 @@ class ProteomePredTask(DownstreamTask):
         )
         return train_dataset, test_dataset, embedding_dim
 
-    def _embed_adata(self, embedder: Any, adata: ad.AnnData, batch_size: int = 64) -> np.ndarray:
+    def _embed_adata(
+        self, embedder: Any, adata: ad.AnnData, policy: Any, batch_size: int = 64
+    ) -> np.ndarray:
         embedder.eval()
         embedder.cuda()
-        kwargs = dict(batch_size=batch_size, log1p_only=True)
+        adata, _ = policy.apply(adata, task="proteome_pred")
+        # embed_kwargs() pins log1p_only=False as well as normalized=True: this call
+        # used to pass log1p_only=True, which PCAEmbedder honours even when
+        # normalized=True, so leaving it in would re-log1p the matrix here.
+        kwargs = dict(batch_size=batch_size, **policy.embed_kwargs())
         if not getattr(embedder, "fittable", False):
             kwargs["modality"] = "bulk"  # proteome/CPTAC bulk → log1p + MAD gene selection
         result = embedder.embed(adata, **kwargs)

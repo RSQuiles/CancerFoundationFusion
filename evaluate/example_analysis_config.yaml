@@ -25,8 +25,10 @@ env:
 
 # Deep-merged under every experiment; anything here can be overridden per experiment.
 defaults:
-  # 'paired_umap' exists too but is opt-in (see below): it needs a cell-line matched
-  # paired h5ad that most datasets do not have, and errors out rather than no-oping.
+  # 'paired_umap' and 'downstream' exist too but are opt-in (see below).
+  # paired_umap needs a cell-line matched paired h5ad that most datasets do not have
+  # and errors out rather than no-oping; downstream is hours of GPU time and needs
+  # the task datasets (TCGA, CPTAC, PRISM, ...).
   steps: [build, metrics, scib, diagnose, umap, benchmark]
   seed: 0
   # false -> passes --not-normalized. The on-disk data is raw counts and per-row
@@ -93,6 +95,30 @@ defaults:
     dpi: 200
     no_sc: false            # true = bulk + pseudobulk only, no SC cells
     device: null
+
+  # run_ablation_downstream.py: fine-tune + evaluate every model on every task,
+  # writing the {model}/metrics/results_{task}.json that 'benchmark' then plots.
+  # Opt-in (hours of GPU time, and it needs the task datasets): add 'downstream' to
+  # an experiment's steps to enable it, at which point 'tasks' is required.
+  downstream:
+    tasks: []               # e.g. [canc_type_class, deconv, survival]
+    config_dir: null        # null -> evaluate/finetune/configs
+    models: null            # null -> every model dir holding a checkpoint
+    skip_existing: true     # skip a (model, task) whose results_*.json exists
+    pca_baseline: false
+    pca_n_components: 128
+
+    # CAREFUL: this is NOT the experiment-level 'normalized' key above. The two are
+    # near-homographs with OPPOSITE polarity and govern different steps:
+    #   normalized (above)   -> "the data is ALREADY normalized, so build/metrics
+    #                           should skip normalising it"
+    #   normalize (here)     -> "APPLY CP10K+log1p to the downstream task inputs"
+    # Values:
+    #   false -> no normalization at any point, for any task  (the default)
+    #   true  -> CP10K+log1p for every task, skipped with a warning wherever the
+    #            matrix does not look like raw counts, so nothing is done twice
+    #   null  -> each task config's own 'normalize:' key decides
+    normalize: false
 
   benchmark:
     output: null            # null -> {ablation_dir}/benchmark.png

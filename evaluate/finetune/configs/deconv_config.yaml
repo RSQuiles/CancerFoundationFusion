@@ -40,8 +40,14 @@ finetune:
     split_by_context: true
 
     # Apply CP10K + log1p normalization to raw counts before embedding.
-    # Set to false only if the h5ad already contains normalized expression.
-    normalize_input: true
+    # "do it?" space: true = apply it, false = apply nothing. When true it is skipped
+    # with a warning if the matrix does not look like raw counts. Overridden by
+    # run_ablation_downstream.py --normalize / --no-normalize.
+    #
+    # Replaces `normalize_input:` (same meaning, new name). This task's input is
+    # pseudo_bulk_RAW.h5ad, i.e. raw summed counts, so `normalize: true` is the
+    # setting that matches the data described above.
+    normalize: false
     
     # Train/test split ratio
     test_size: 0.2

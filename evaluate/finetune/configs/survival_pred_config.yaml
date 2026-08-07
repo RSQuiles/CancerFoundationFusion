@@ -89,6 +89,15 @@ finetune:
     hidden_dim: 256
     dropout: 0.1
 
+    # Whether this task's input MUST be normalized (CP10K + log1p) before embedding.
+    # "do it?" space: true = apply it, false = apply nothing. Overridden by
+    # run_ablation_downstream.py --normalize / --no-normalize.
+    #
+    # This task previously had no such key, and the two code paths disagreed: the
+    # frozen path applied nothing while the fine-tune path applied log1p, so flipping
+    # finetune_embedder silently changed preprocessing. Both now read this key.
+    normalize: false
+
     # ===== TRAINING HYPERPARAMETERS =====
     epochs: 30
     batch_size: 16

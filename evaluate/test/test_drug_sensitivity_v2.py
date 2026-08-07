@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
 
+from evaluate.finetune.normalization import NormalizationPolicy
 from evaluate.finetune.tasks.drug_sensitivity_v2 import (
     DrugSensitivityV2Task,
     binarize_response,
@@ -25,17 +26,22 @@ def test_prism_response_formula_and_binarization() -> None:
     np.testing.assert_array_equal(binarize_response(response, 0.5), np.array([1.0, 1.0, 0.0]))
 
 
-def test_expression_parser_transposed_header_shape(tmp_path) -> None:
-    x_path = tmp_path / "x.csv"
+def _write_counts_csv(x_path) -> None:
+    """Counts-looking expression CSV: integral and max > 20, so the safeguard passes."""
     pd.DataFrame(
         {
             "row": ["gene_symbol", "ensembl_gene_id", "model_name", "CL_A", "CL_B"],
-            "g1": ["TP53", "ENSG00000141510.17", "ignored", "1.0", "2.0"],
-            "g2": ["KRAS", "ENSG00000133703.13", "ignored", "3.0", "4.0"],
+            "g1": ["TP53", "ENSG00000141510.17", "ignored", "100", "200"],
+            "g2": ["KRAS", "ENSG00000133703.13", "ignored", "300", "400"],
         }
     ).to_csv(x_path, index=False)
 
-    adata = load_expression_csv(x_path)
+
+def test_expression_parser_transposed_header_shape(tmp_path) -> None:
+    x_path = tmp_path / "x.csv"
+    _write_counts_csv(x_path)
+
+    adata = load_expression_csv(x_path, NormalizationPolicy(normalize=True, source="cli"))
 
     assert adata.shape == (2, 2)
     assert adata.obs_names.tolist() == ["CL_A", "CL_B"]
@@ -44,12 +50,39 @@ def test_expression_parser_transposed_header_shape(tmp_path) -> None:
     expected = np.log1p(
         np.array(
             [
-                [1.0 / 4.0 * 1e4, 3.0 / 4.0 * 1e4],
-                [2.0 / 6.0 * 1e4, 4.0 / 6.0 * 1e4],
+                [100.0 / 400.0 * 1e4, 300.0 / 400.0 * 1e4],
+                [200.0 / 600.0 * 1e4, 400.0 / 600.0 * 1e4],
             ],
             dtype=np.float32,
         )
     )
+    np.testing.assert_allclose(adata.X, expected, rtol=1e-6)
+
+
+def test_expression_parser_leaves_counts_alone_when_normalize_off(tmp_path) -> None:
+    x_path = tmp_path / "x.csv"
+    _write_counts_csv(x_path)
+
+    adata = load_expression_csv(x_path, NormalizationPolicy(normalize=False, source="cli"))
+
+    expected = np.array([[100.0, 300.0], [200.0, 400.0]], dtype=np.float32)
+    np.testing.assert_allclose(adata.X, expected)
+
+
+def test_expression_parser_safeguard_skips_already_log1p(tmp_path) -> None:
+    """normalize=True on non-counts input must skip rather than log1p twice."""
+    x_path = tmp_path / "x.csv"
+    pd.DataFrame(
+        {
+            "row": ["gene_symbol", "ensembl_gene_id", "model_name", "CL_A", "CL_B"],
+            "g1": ["TP53", "ENSG00000141510.17", "ignored", "1.5", "2.5"],
+            "g2": ["KRAS", "ENSG00000133703.13", "ignored", "3.5", "4.5"],
+        }
+    ).to_csv(x_path, index=False)
+
+    adata = load_expression_csv(x_path, NormalizationPolicy(normalize=True, source="cli"))
+
+    expected = np.array([[1.5, 3.5], [2.5, 4.5]], dtype=np.float32)
     np.testing.assert_allclose(adata.X, expected)
 
 

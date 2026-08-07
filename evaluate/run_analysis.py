@@ -14,10 +14,23 @@ orchestrator exists to get right:
     diagnose     check/diagnose_scib.py           plain
     umap         plot/umaps.py                    container   GPU
     paired_umap  plot/plot_paired_umap.py         container   GPU   (opt-in)
+    downstream   finetune/run_ablation_downstream container   GPU   (opt-in)
     benchmark    plot/plot_ablation_benchmark.py  plain
 
-``paired_umap`` is opt-in: it needs a separate paired h5ad (cell-line matched SC and
-bulk) rather than eval.h5ad or adata_dir, so it is not in the default step list.
+Two steps are opt-in and therefore absent from the default step list:
+
+``paired_umap`` needs a separate paired h5ad (cell-line matched SC and bulk) rather
+than eval.h5ad or adata_dir.
+
+``downstream`` fine-tunes and evaluates every model on every requested task, writing
+the ``{model}/metrics/results_{task}.json`` that ``benchmark`` then plots. It is hours
+of GPU time and needs task datasets (TCGA, CPTAC, PRISM, ...) an arbitrary ablation
+may not have, so it is enabled explicitly and requires ``downstream.tasks``.
+
+Watch the two normalization keys, which are near-homographs with opposite polarity:
+``normalized`` (experiment level) tells build/metrics the data is *already*
+normalized, so skip; ``downstream.normalize`` tells the downstream tasks to *apply*
+CP10K+log1p. They govern different steps and must not be merged.
 
 Usage
 -----
@@ -76,6 +89,7 @@ STEP_ENV: dict[str, str] = {
     "diagnose": "plain",
     "umap": "container",
     "paired_umap": "container",
+    "downstream": "container",
     "benchmark": "plain",
 }
 
@@ -89,6 +103,7 @@ STEP_NEEDS_EVAL: dict[str, bool] = {
     "diagnose": True,
     "umap": False,   # decided per experiment
     "paired_umap": False,
+    "downstream": False,
     "benchmark": False,
 }
 
@@ -99,6 +114,7 @@ SCRIPTS: dict[str, Path] = {
     "diagnose": Path("evaluate/check/diagnose_scib.py"),
     "umap": Path("evaluate/plot/umaps.py"),
     "paired_umap": Path("evaluate/plot/plot_paired_umap.py"),
+    "downstream": Path("evaluate/finetune/run_ablation_downstream.py"),
     "benchmark": Path("evaluate/plot/plot_ablation_benchmark.py"),
 }
 
@@ -279,6 +295,32 @@ def _paired_umap_argv(exp: ExperimentConfig, root: Path) -> list[str]:
     return argv
 
 
+def _downstream_argv(exp: ExperimentConfig, root: Path) -> list[str]:
+    """run_ablation_downstream.py: produces the results_*.json that 'benchmark' plots.
+
+    ``downstream.normalize`` is in "do it?" space and is NOT the experiment-level
+    ``normalized`` key used by build/metrics, which means the opposite ("already
+    normalized, so skip"). They are deliberately kept separate; see
+    ``evaluate/finetune/normalization.py``.
+    """
+    d = exp.downstream
+    argv = [str(root / SCRIPTS["downstream"]),
+            "--ablation-dir", str(exp.ablation_dir),
+            "--tasks", *[str(t) for t in d["tasks"]]]
+    _flag(argv, "--config-dir", d.get("config_dir"))
+    if d.get("models"):
+        argv += ["--models", *[str(m) for m in d["models"]]]
+    if d.get("skip_existing", True):
+        argv.append("--skip-existing")
+    if d.get("pca_baseline"):
+        argv.append("--pca-baseline")
+        _flag(argv, "--pca-n-components", d.get("pca_n_components"))
+    # None -> say nothing and let each task config decide.
+    if d.get("normalize") is not None:
+        argv.append("--normalize" if d["normalize"] else "--no-normalize")
+    return argv
+
+
 def _benchmark_argv(exp: ExperimentConfig, root: Path) -> list[str]:
     b = exp.benchmark
     out = b.get("output") or exp.ablation_dir / "benchmark.png"
@@ -369,6 +411,15 @@ def plan_experiment(
         elif name == "paired_umap":
             argv = _paired_umap_argv(exp, root)
             note = f"cell-line paired plot from {exp.paired_umap['input_h5ad']}"
+        elif name == "downstream":
+            argv = _downstream_argv(exp, root)
+            norm = exp.downstream.get("normalize")
+            how = ("per task config" if norm is None else
+                   "CP10K+log1p everywhere" if norm else "none anywhere")
+            note = (
+                f"tasks: {', '.join(str(t) for t in exp.downstream['tasks'])}; "
+                f"normalization: {how}; writes the results_*.json that 'benchmark' plots"
+            )
         else:
             argv, note = _benchmark_argv(exp, root), ""
 

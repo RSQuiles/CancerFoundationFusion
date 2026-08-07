@@ -37,6 +37,23 @@ Usage
         --ablation-dir path/to/ablation \\
         --tasks canc_type_class \\
         --config-dir my_configs/
+
+    # Force one normalization policy across every task and model:
+    python evaluate/finetune/run_ablation_downstream.py \\
+        --ablation-dir path/to/ablation \\
+        --tasks canc_type_class deconv \\
+        --no-normalize
+
+Normalization
+-------------
+``--normalize`` / ``--no-normalize`` overrides every task config's ``normalize:``
+key, so one run cannot mix policies across tasks. The decision is logged in a
+banner before any task runs, on each ``[model/task]`` line, under the summary
+table, and recorded in each ``results_{task}.json`` under ``"normalization"``.
+
+Note the polarity: this flag is in "do it?" space. It is NOT the same as
+``embed(normalized=...)``, which means "the data is *already* normalized, so skip".
+See ``evaluate/finetune/normalization.py``.
 """
 
 from __future__ import annotations
@@ -135,6 +152,7 @@ def _run_pca_task(
     cfg_file: Path,
     output_dir: Path,
     n_components: int,
+    normalize: bool | None,
 ) -> str:
     """Run a single downstream task using PCA embeddings as baseline.
 
@@ -151,11 +169,32 @@ def _run_pca_task(
             task_name=task,
             output_dir=output_dir,
             embedder=pca_embedder,
+            normalize=normalize,
         )
         return "ok"
     except Exception:
         log.error("  [pca/%s] FAILED:\n%s", task, traceback.format_exc())
         return "fail"
+
+
+def _normalization_label(normalize: bool | None) -> str:
+    """Short, unambiguous description of the normalization decision."""
+    if normalize is True:
+        return "ON  (CP10K+log1p for every task, skipped where X is not counts)"
+    if normalize is False:
+        return "OFF (no normalization at any point, for any task)"
+    return "per-config (each task's 'normalize:' key; absent means OFF)"
+
+
+def _log_normalization_banner(normalize: bool | None) -> None:
+    """State the normalization decision once, up front, before any task runs."""
+    log.info("=" * 60)
+    log.info("Normalization: %s", _normalization_label(normalize))
+    if normalize is None:
+        log.info(
+            "  (pass --normalize or --no-normalize to force one policy everywhere)"
+        )
+    log.info("=" * 60)
 
 
 def run_ablation(
@@ -170,7 +209,10 @@ def run_ablation(
     pca_baseline: bool = False,
     pca_n_components: int = 128,
     pca_only: bool = False,
+    normalize: bool | None = None,
 ) -> None:
+
+    _log_normalization_banner(normalize)
 
     model_dirs = []
     if not pca_only:
@@ -217,13 +259,17 @@ def run_ablation(
 
             cfg_file = config_dir / TASK_CONFIG_FILES.get(task, f"{task}_config.yaml")
 
-            log.info("  [%s] running with config %s ...", task, cfg_file.name)
+            log.info(
+                "  [%s] running with config %s (normalization: %s) ...",
+                task, cfg_file.name, _normalization_label(normalize),
+            )
             try:
                 run_task(
                     config_path=str(cfg_file),
                     checkpoint_path=ckpt,
                     task_name=task,
                     output_dir=output_dir,
+                    normalize=normalize,
                 )
                 results_summary[model_name][task] = "ok"
                 log.info("  [%s] done.", task)
@@ -252,8 +298,13 @@ def run_ablation(
                 continue
 
             cfg_file = config_dir / TASK_CONFIG_FILES.get(task, f"{task}_config.yaml")
-            log.info("  [pca/%s] running with config %s …", task, cfg_file.name)
-            status = _run_pca_task(task, cfg_file, output_dir, pca_n_components)
+            log.info(
+                "  [pca/%s] running with config %s (normalization: %s) …",
+                task, cfg_file.name, _normalization_label(normalize),
+            )
+            status = _run_pca_task(
+                task, cfg_file, output_dir, pca_n_components, normalize
+            )
             results_summary[pca_name][task] = status
             if status == "ok":
                 log.info("  [pca/%s] done.", task)
@@ -267,6 +318,8 @@ def run_ablation(
             f"{task_statuses.get(t, 'n/a'):<20}" for t in tasks
         )
         log.info(row)
+    log.info("-" * 60)
+    log.info("Normalization: %s", _normalization_label(normalize))
     log.info("=" * 60)
 
     if plot:
@@ -395,6 +448,20 @@ def parse_args() -> argparse.Namespace:
             "Only evaluate the PCA baseline"
         ),
     )
+    parser.add_argument(
+        "--normalize",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Force one normalization policy across every task and every model, "
+            "overriding each config's 'normalize:' key. "
+            "--normalize: CP10K+log1p is applied to every task's input, except where "
+            "the matrix does not look like raw counts, which is reported and skipped "
+            "so nothing is normalized twice. "
+            "--no-normalize: nothing is applied at any point, for any task. "
+            "Omitted: each task config decides, defaulting to no normalization."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -436,6 +503,7 @@ def main() -> None:
         pca_baseline=args.pca_baseline,
         pca_n_components=args.pca_n_components,
         pca_only=args.pca_only,
+        normalize=args.normalize,
     )
 
 

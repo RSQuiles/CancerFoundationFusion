@@ -45,6 +45,7 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader, Dataset
 
 from evaluate.finetune.downstream_task import DownstreamTask, TaskRegistry
+from evaluate.finetune.normalization import resolve_policy
 from evaluate.finetune.tasks.components import EmbeddingPredHead, LinearPredHead
 from evaluate.finetune.utils import parquet_to_adata, translate_gene_symbols, strip_ensembl_versions, deduplicate_var_names
 from evaluate.finetune.pca_baseline import PCAEmbedder
@@ -662,7 +663,7 @@ class SurvBoardTask(DownstreamTask):
         lr_emb     = float(getattr(cfg, "embedder_learning_rate", 1e-5))
         hidden     = int(getattr(cfg, "hidden_dim", 128))
         dropout    = float(getattr(cfg, "dropout", 0.1))
-        normalized = bool(getattr(cfg, "normalized", False))
+        policy     = resolve_policy(cfg, None)
 
         try:
             device = next(embedder.parameters()).device
@@ -695,13 +696,18 @@ class SurvBoardTask(DownstreamTask):
             if embedding_dim is None:
                 embedding_dim = fresh_emb.embsize
 
+            # Normalize per the policy first, then preprocess as a pass-through, so
+            # this path and the frozen one above see identical input.
+            train_adata, _ = policy.apply(self._full_adata[train_idx], task="survival")
+            test_adata, _ = policy.apply(self._full_adata[test_idx], task="survival")
+
             # Preprocess: HVG fitted on train, same gene set applied to test
             processed_train = fresh_emb.preprocess_for_embedding(
-                self._full_adata[train_idx], normalized=normalized, modality="bulk"
+                train_adata, normalized=True, modality="bulk"
             )
             kept_genes = processed_train.var.index.tolist()
             processed_test = fresh_emb.preprocess_for_embedding(
-                self._full_adata[test_idx], normalized=normalized,
+                test_adata, normalized=True,
                 gene_subset=kept_genes, modality="bulk",
             )
             gene_ids = torch.LongTensor(
@@ -852,7 +858,12 @@ class SurvBoardTask(DownstreamTask):
     ) -> np.ndarray:
         embedder.eval()
         embedder.cuda()
-        kwargs = dict(batch_size=batch_size, normalized=True)
+        # One policy for both paths. This used to hardcode normalized=True here while
+        # the fine-tune path defaulted to False, so flipping finetune_embedder
+        # silently changed preprocessing on identical data.
+        policy = resolve_policy(getattr(self, "_task_cfg", None), None)
+        adata, _ = policy.apply(adata, task="survival")
+        kwargs = dict(batch_size=batch_size, **policy.embed_kwargs())
         if not getattr(embedder, "fittable", False):
             kwargs["modality"] = "bulk"  # TCGA bulk → log1p + MAD gene selection
         result = embedder.embed(adata, **kwargs)

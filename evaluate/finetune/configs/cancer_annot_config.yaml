@@ -21,8 +21,17 @@ finetune:
     # Whether to merge GBM and LGG into single class
     merge_gbm_lgg: true
     
-    # Whether data is already normalized (log-scaled)
-    normalized: false
+    # Whether this task's input MUST be normalized (CP10K + log1p) before embedding.
+    # "do it?" space: true = apply it, false = apply nothing. When true it is skipped
+    # with a warning if the matrix does not look like raw counts, so nothing is ever
+    # normalized twice. Overridden by run_ablation_downstream.py
+    # --normalize / --no-normalize.
+    #
+    # Replaces `normalized:`, which meant the OPPOSITE ("already normalized, so
+    # skip"). Before this key existed the effective behaviour here was log1p (and
+    # CP10K+log1p for the PCA baseline, which is the mismatch this replaces); set
+    # `normalize: true` to normalize again, now identically for both embedders.
+    normalize: false
     
     # Minimum number of genes per cell (filtering)
     min_genes: 200

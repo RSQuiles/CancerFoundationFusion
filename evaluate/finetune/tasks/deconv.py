@@ -7,7 +7,6 @@ import anndata as ad
 import hydra
 import numpy as np
 import pandas as pd
-import scipy.sparse as sp
 import torch
 import torch.nn.functional as F
 from scipy.stats import pearsonr
@@ -18,6 +17,7 @@ from torch import nn
 from torch.utils.data import Dataset
 
 from evaluate.finetune.downstream_task import DownstreamTask, TaskRegistry
+from evaluate.finetune.normalization import resolve_policy
 
 log = logging.getLogger(__name__)
 
@@ -387,28 +387,16 @@ class DeconvTask(DownstreamTask):
         return train_dataset, test_dataset, total_input_dim
 
     def _embed_adata(self, embedder: Any, adata: ad.AnnData) -> np.ndarray:
-        """Normalize raw counts (CP10K + log1p) then embed with the frozen model."""
+        """Apply the normalization policy, then embed with the frozen model."""
         task_cfg = getattr(self, "_task_cfg", None)
-        normalize = bool(getattr(task_cfg, "normalize_input", True)) if task_cfg is not None else True
-
-        if normalize:
-            adata = adata.copy()
-            X = adata.X
-            if sp.issparse(X):
-                row_sums = np.asarray(X.sum(axis=1)).ravel()
-                row_sums = np.maximum(row_sums, 1.0)
-                X_norm = X.multiply(10_000.0 / row_sums[:, None]).toarray().astype(np.float32)
-            else:
-                row_sums = np.maximum(np.asarray(X).sum(axis=1), 1.0)
-                X_norm = (np.asarray(X) * (10_000.0 / row_sums[:, np.newaxis])).astype(np.float32)
-            np.log1p(X_norm, out=X_norm)
-            adata.X = X_norm
+        policy = resolve_policy(task_cfg, None)
+        adata, _ = policy.apply(adata, task="deconv")
 
         batch_size = int(getattr(task_cfg, "embed_batch_size", 64)) if task_cfg is not None else 64
         embedder.eval()
         device = "cuda" if torch.cuda.is_available() else "cpu"
         embedder.to(device)
-        result = embedder.embed(adata, batch_size=batch_size, normalized=True)
+        result = embedder.embed(adata, batch_size=batch_size, **policy.embed_kwargs())
         df_emb = result[0] if isinstance(result, tuple) else result
         return df_emb.to_numpy()
 

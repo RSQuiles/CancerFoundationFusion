@@ -27,6 +27,12 @@ from evaluate.finetune.tasks import (
 )
 from evaluate.finetune.downstream_task import TaskRegistry
 from evaluate.finetune.base_downstream_runner import BaseDownstreamRunner
+from evaluate.finetune.normalization import (
+    CANONICAL_KEY,
+    SOURCE_KEY,
+    drain_provenance,
+    resolve_policy,
+)
 from evaluate.finetune.tasks.drug_sensitivity_v2 import (
     PrecomputedEmbedder,
     aggregate_drug_sensitivity_results,
@@ -88,12 +94,29 @@ def load_runner_config(config_path: str | Path, checkpoint_path: str | Path | No
     return cfg
 
 
+def _normalization_record(policy) -> dict:
+    """Provenance block written into results_<task>.json.
+
+    ``normalize``/``source`` are what was asked for and where it came from;
+    ``events`` is what each apply() actually did, including any safeguard skip.
+    Without this you cannot tell later which preprocessing produced a given
+    benchmark bar.
+    """
+    return {
+        "normalize": policy.normalize,
+        "source": policy.source,
+        "summary": policy.describe(),
+        "events": drain_provenance(),
+    }
+
+
 def main(
     config_path: str,
     checkpoint_path: str | Path | None = None,
     task_name: str | None = None,
     output_dir: str | Path | None = None,
     embedder=None,
+    normalize: bool | None = None,
 ) -> dict:
     """
     Main entry point for running a downstream task.
@@ -109,12 +132,23 @@ def main(
     embedder : optional
         Pre-built embedder object (e.g. PCAEmbedder).  When supplied,
         checkpoint loading is skipped entirely.
+    normalize : bool or None
+        Global override for input normalization, in "do it?" space: True means the
+        data must be CP10K+log1p normalized, False means nothing is applied
+        anywhere.  None leaves the decision to the task config's ``normalize:``
+        key, which itself defaults to False.  See
+        ``evaluate/finetune/normalization.py``.
 
     Returns
     -------
     dict
         Final evaluation metrics from the task.
     """
+    # Start from a clean provenance collector: run_ablation_downstream calls this
+    # once per (model, task) in one process, and a task that raised part-way would
+    # otherwise leak its events into the next task's results JSON.
+    drain_provenance()
+
     # Load config
     cfg = load_runner_config(config_path, checkpoint_path)
     log.info(f"Loaded config from {config_path}")
@@ -142,6 +176,16 @@ def main(
         task_name = available_in_config[0]
 
     log.info(f"Running task: {task_name}")
+
+    # Fold a CLI/orchestrator override into the config the tasks actually read, so
+    # every task resolves the same policy from one place. SOURCE_KEY keeps the
+    # reported provenance honest ("cli" rather than "config").
+    if normalize is not None:
+        OmegaConf.set_struct(cfg, False)
+        cfg.finetune[task_name][CANONICAL_KEY] = bool(normalize)
+        cfg.finetune[task_name][SOURCE_KEY] = "cli"
+    policy = resolve_policy(cfg.finetune[task_name], None)
+    log.info("Normalization policy for '%s': %s", task_name, policy.describe())
 
     # Get task from registry
     try:
@@ -180,7 +224,11 @@ def main(
             if runner.is_master:
                 with open(save_dir / f"results_{task_name}__{job['drug']}__{job['endpoint']}.json", "w") as f:
                     json.dump(result, f, indent=2)
-        results = {"jobs": results, "aggregate": aggregate_drug_sensitivity_results(results)}
+        results = {
+            "jobs": results,
+            "aggregate": aggregate_drug_sensitivity_results(results),
+            "normalization": _normalization_record(policy),
+        }
         if runner.is_master:
             with open(save_dir / f"results_{task_name}.json", "w") as f:
                 json.dump(results, f, indent=2)
@@ -189,6 +237,9 @@ def main(
     # Create and run runner
     runner = BaseDownstreamRunner(cfg, task, embedder=embedder)
     results = runner.run()
+
+    if isinstance(results, dict):
+        results["normalization"] = _normalization_record(policy)
 
     if runner.is_master:
         log.info("=" * 60)
@@ -244,6 +295,17 @@ Examples:
         action="store_true",
         help="List all available registered tasks and exit.",
     )
+    parser.add_argument(
+        "--normalize",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Force input normalization on (--normalize) or off (--no-normalize) for "
+            "this task, overriding the config's 'normalize:' key. --normalize applies "
+            "CP10K+log1p, skipping with a warning if the matrix does not look like "
+            "raw counts. Omitted: the config decides, defaulting to off."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -264,7 +326,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     try:
-        results = main(args.config, task_name=args.task)
+        results = main(args.config, task_name=args.task, normalize=args.normalize)
         sys.exit(0)
     except Exception as e:
         log.exception(f"Task failed with error: {e}")

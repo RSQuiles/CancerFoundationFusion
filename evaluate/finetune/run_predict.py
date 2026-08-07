@@ -36,6 +36,12 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
+from evaluate.finetune.normalization import (
+    CANONICAL_KEY,
+    NormalizationPolicy,
+    resolve_policy,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -112,13 +118,14 @@ def _embed_finetune(
     embedder,
     gene_names: list[str],
     adata,
-    normalized: bool,
+    policy,
     device: torch.device,
     batch_size: int = 64,
 ) -> np.ndarray:
     """Preprocess adata with the training gene set, then embed via the transformer."""
+    adata, _ = policy.apply(adata, task="predict")
     processed = embedder.preprocess_for_embedding(
-        adata, normalized=normalized, gene_subset=gene_names
+        adata, normalized=True, gene_subset=gene_names
     )
     expr = processed.X if isinstance(processed.X, np.ndarray) else processed.X.toarray()
     expr_tensor = torch.from_numpy(expr.astype(np.float32))
@@ -138,16 +145,46 @@ def _embed_finetune(
 def _embed_frozen(
     embedder,
     adata,
-    normalized: bool,
+    policy,
     device: torch.device,
     batch_size: int = 64,
 ) -> np.ndarray:
     """Embed adata using the standard frozen embed() path."""
     embedder.eval()
     embedder.to(device)
-    result = embedder.embed(adata, batch_size=batch_size, normalized=normalized)
+    adata, _ = policy.apply(adata, task="predict")
+    result = embedder.embed(adata, batch_size=batch_size, **policy.embed_kwargs())
     df_emb = result[0] if isinstance(result, tuple) else result
     return df_emb.to_numpy()
+
+
+def _policy_from_checkpoint_config(config: dict):
+    """Reproduce the normalization the checkpoint was fine-tuned under.
+
+    Unlike the training path, this must NOT fall back to the global "off" default: a
+    saved checkpoint records how its head was fitted, and embedding inference data
+    differently would silently mispredict. So a checkpoint predating the ``normalize``
+    key has its legacy ``normalized`` key translated here (inverted -- it meant
+    "already normalized, so skip") rather than ignored.
+    """
+    from types import SimpleNamespace
+
+    if CANONICAL_KEY in config:
+        return resolve_policy(SimpleNamespace(**config), None)
+
+    if "normalized" in config:
+        legacy = bool(config["normalized"])
+        log.warning(
+            "Checkpoint predates the 'normalize' key; translating legacy "
+            "'normalized: %s' to 'normalize: %s' so inference matches how this head "
+            "was fitted. Note the transform is now CP10K+log1p where the old "
+            "fine-tune path applied log1p only, so embeddings may differ slightly; "
+            "re-fine-tune to remove the ambiguity.",
+            legacy, not legacy,
+        )
+        return NormalizationPolicy(normalize=not legacy, source="checkpoint-legacy")
+
+    return resolve_policy(None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -199,10 +236,11 @@ def predict(
     config: dict = ckpt["config"]
     finetuned_embedder: bool = ckpt.get("finetuned_embedder", False)
     gene_names: list[str] | None = ckpt.get("gene_names")
-    normalized: bool = bool(config.get("normalized", False))
+    policy = _policy_from_checkpoint_config(config)
     bs = batch_size or int(config.get("batch_size", 32))
 
     log.info(f"Task: {task_name}  |  finetuned_embedder={finetuned_embedder}")
+    log.info("Normalization: %s", policy.describe())
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info(f"Using device: {device}")
@@ -219,10 +257,10 @@ def predict(
         if gene_names is None:
             raise ValueError("Checkpoint has finetuned_embedder=True but no gene_names saved.")
         log.info(f"Fine-tuning mode: embedding with {len(gene_names)} training genes...")
-        embeddings = _embed_finetune(embedder, gene_names, adata, normalized, device, bs)
+        embeddings = _embed_finetune(embedder, gene_names, adata, policy, device, bs)
     else:
         log.info("Frozen mode: embedding with transformer...")
-        embeddings = _embed_frozen(embedder, adata, normalized, device, bs)
+        embeddings = _embed_frozen(embedder, adata, policy, device, bs)
 
     log.info(f"Embeddings shape: {embeddings.shape}")
 
