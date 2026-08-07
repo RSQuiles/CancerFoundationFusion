@@ -444,52 +444,18 @@ def pseudobulk_id_from_sample_id(sample_ids) -> np.ndarray:
     return ids
 
 
-def write_dataframe(group: "h5py.Group", frame: pd.DataFrame, index_name: str) -> None:
-    """Write a pandas frame using AnnData's on-disk dataframe encoding (v0.2.0)."""
-    group.attrs["encoding-type"] = "dataframe"
-    group.attrs["encoding-version"] = "0.2.0"
-    group.attrs["_index"] = index_name
-    # Explicit vlen-str dtype: a zero-column frame yields an empty object array, which
-    # has no native HDF5 equivalent.
-    group.attrs.create(
-        "column-order",
-        np.array(list(frame.columns), dtype=object),
-        dtype=VLEN_STR,
-    )
+def write_elem(group: "h5py.Group", key: str, value) -> None:
+    """anndata's own element writer: `anndata.io` on >=0.11, `.experimental` before.
 
-    index_ds = group.create_dataset(
-        index_name, data=np.asarray(frame.index, dtype=object), dtype=VLEN_STR
-    )
-    index_ds.attrs["encoding-type"] = "string-array"
-    index_ds.attrs["encoding-version"] = "0.2.0"
-
-    for column in frame.columns:
-        series = frame[column]
-        if isinstance(series.dtype, pd.CategoricalDtype):
-            sub = group.create_group(column)
-            sub.attrs["encoding-type"] = "categorical"
-            sub.attrs["encoding-version"] = "0.2.0"
-            sub.attrs["ordered"] = False
-            cats = sub.create_dataset(
-                "categories",
-                data=np.asarray(series.cat.categories, dtype=object),
-                dtype=VLEN_STR,
-            )
-            cats.attrs["encoding-type"] = "string-array"
-            cats.attrs["encoding-version"] = "0.2.0"
-            codes = sub.create_dataset("codes", data=series.cat.codes.to_numpy())
-            codes.attrs["encoding-type"] = "array"
-            codes.attrs["encoding-version"] = "0.2.0"
-        elif pd.api.types.is_numeric_dtype(series) or pd.api.types.is_bool_dtype(series):
-            ds = group.create_dataset(column, data=series.to_numpy())
-            ds.attrs["encoding-type"] = "array"
-            ds.attrs["encoding-version"] = "0.2.0"
-        else:
-            ds = group.create_dataset(
-                column, data=np.asarray(series, dtype=object), dtype=VLEN_STR
-            )
-            ds.attrs["encoding-type"] = "string-array"
-            ds.attrs["encoding-version"] = "0.2.0"
+    Used instead of hand-rolling the on-disk encoding for obs/var and the empty
+    slots, so categorical/string columns follow whatever spec version the installed
+    anndata reads back.
+    """
+    try:
+        from anndata.io import write_elem as _write_elem
+    except ImportError:  # anndata < 0.11
+        from anndata.experimental import write_elem as _write_elem
+    _write_elem(group, key, value)
 
 
 class ChunkReader:
@@ -580,7 +546,12 @@ class ChunkReader:
 
 
 class StreamingCSRWriter:
-    """Append CSR blocks to an .h5ad without holding the matrix in memory."""
+    """Append CSR blocks to an .h5ad without holding the matrix in memory.
+
+    Only X is written by hand -- a full rebuild is far too large to build in memory
+    and hand to `write_h5ad`. obs/var and the empty slots go through anndata's own
+    writer in `finalize()`.
+    """
 
     def __init__(self, path: Path, n_vars: int, compression: str | None):
         # libver='earliest' matches write_h5ad_compat() so clusters on HDF5 < 1.10
@@ -591,7 +562,10 @@ class StreamingCSRWriter:
         self.n_vars = n_vars
         self.nnz = 0
         self.n_obs = 0
-        self.indptr = [0]
+        # int64 numpy parts rather than a Python list of ints: a full rebuild passes
+        # the 2^31 nonzeros addressable by scipy's default int32 indptr, and
+        # `block.indptr + self.nnz` overflows there (NumPy 2 raises OverflowError).
+        self._indptr_parts: list[np.ndarray] = []
 
         group = self.handle.create_group("X")
         group.attrs["encoding-type"] = "csr_matrix"
@@ -609,7 +583,7 @@ class StreamingCSRWriter:
         if n_new:
             self.data[self.nnz:] = block.data.astype(np.float32, copy=False)
             self.indices[self.nnz:] = block.indices.astype(np.int32, copy=False)
-        self.indptr.extend((block.indptr[1:] + self.nnz).tolist())
+        self._indptr_parts.append(block.indptr[1:].astype(np.int64) + self.nnz)
         self.nnz += n_new
         self.n_obs += block.shape[0]
 
@@ -617,16 +591,28 @@ class StreamingCSRWriter:
         group = self.handle["X"]
         group.attrs["shape"] = np.array([self.n_obs, self.n_vars], dtype="int64")
         # int64 indptr: a full rebuild can exceed the 2^31 nnz that int32 allows.
-        group.create_dataset("indptr", data=np.asarray(self.indptr, dtype=np.int64))
+        group.create_dataset(
+            "indptr",
+            data=np.concatenate([np.zeros(1, dtype=np.int64), *self._indptr_parts]),
+        )
+        if self.nnz > np.iinfo(np.int32).max:
+            print(
+                f"NOTE: {self.nnz} nonzeros exceeds int32; the file needs an int64-aware "
+                "reader and ~"
+                f"{self.nnz * 12 / 1e9:.0f} GB of RAM to load unbacked. Consider "
+                "--limit-samples, or dropping --expand-copies and using the n_copies "
+                "weight instead."
+            )
 
-        write_dataframe(self.handle.create_group("obs"), obs, "cell_id")
-        var = self.handle.create_group("var")
-        write_dataframe(var, pd.DataFrame(index=pd.Index(var_names, dtype=str)), "ensembl_id")
-
+        obs = obs.rename_axis("cell_id")
+        write_elem(self.handle, "obs", obs)
+        write_elem(
+            self.handle,
+            "var",
+            pd.DataFrame(index=pd.Index(var_names, dtype=str, name="ensembl_id")),
+        )
         for name in ("layers", "obsm", "obsp", "uns", "varm", "varp"):
-            grp = self.handle.create_group(name)
-            grp.attrs["encoding-type"] = "dict"
-            grp.attrs["encoding-version"] = "0.1.0"
+            write_elem(self.handle, name, {})
         self.handle.close()
 
 
