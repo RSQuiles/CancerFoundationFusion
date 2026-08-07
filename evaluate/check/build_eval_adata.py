@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import json
 import logging
 import sys
 import traceback
@@ -68,6 +69,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from cancerfoundation.checkpoint import read_checkpoint_hparams
+from cancerfoundation.data.bulk_sc_collator import BULK_MODALITY
 from cancerfoundation.model.model import CancerFoundation
 from evaluate.utils import (
     MODALITY_COL as _MODALITY_COL,
@@ -188,6 +190,7 @@ def _run_masked_forward(
     normalized: bool,
     mask_ratio: float = 0.15,
     n_cells: int = 1000,
+    recon_conditions: dict[str, str] | None = None,
 ) -> dict | None:
     """Run a masked forward pass on SC cells and return raw arrays.
 
@@ -195,6 +198,14 @@ def _run_masked_forward(
     where all arrays have shape ``(n_sampled_cells, n_genes)`` with the same
     gene ordering as ``sc_adata.var``.  ``unified_metrics.py`` reads these
     to compute reconstruction metrics without reloading the model.
+
+    ``recon_conditions`` maps an encoded condition name -> the obs column to read
+    its per-cell label from (default: the condition's own name).  It only applies
+    to non-``modality`` conditions of a ``where_condition == "end"`` model, whose
+    conditional decoder needs the condition embedding concatenated onto the
+    transformer output.  ``modality`` always uses the canonical ``BULK_MODALITY``
+    code (recon cells are all bulk); every other condition's integer code is read
+    from the model's ``mapping.json``.
     """
     from utils_config import LossType
 
@@ -238,6 +249,48 @@ def _run_masked_forward(
 
     effective_loss = model.loss_type
 
+    # Condition codes for a `where_condition == "end"` model: its ExprDecoder was built
+    # to take [condition_emb || transformer_output], so the bare encoder output is too
+    # narrow. Rebuild the condition embedding here (mirrors module.py's "end" branch).
+    # `modality` uses the canonical model-facing code (decoupled from mapping.json, see
+    # bulk_sc_collator.py); every other condition's integer code comes from mapping.json.
+    mod = model.model
+    cond_codes: dict[str, torch.Tensor] = {}
+    if getattr(mod, "_use_condition_encoders", False) and mod.where_condition == "end":
+        recon_conditions = recon_conditions or {}
+        mapping = None  # loaded lazily, only if a non-modality condition needs it
+        for cname in mod.encoded_conditions:
+            if cname == "modality":
+                # recon cells are all bulk
+                codes = torch.full((n,), BULK_MODALITY, dtype=torch.long, device=device)
+            else:
+                if mapping is None:
+                    map_path = Path(model.data_path) / "mapping.json"
+                    if not map_path.is_file():
+                        raise FileNotFoundError(
+                            f"condition '{cname}' needs codes from {map_path} "
+                            f"(model.data_path) but it is not present"
+                        )
+                    mapping = json.loads(map_path.read_text())
+                obs_col = recon_conditions.get(cname, cname)
+                if obs_col not in data.obs:
+                    raise ValueError(
+                        f"condition '{cname}' needs obs column '{obs_col}'; not in eval "
+                        f"obs. Pass recon_conditions={{'{cname}': '<obs column>'}}"
+                    )
+                table = mapping[cname]  # {label: int code}
+                labels = data.obs[obs_col].astype(str).to_numpy()
+                try:
+                    codes = torch.as_tensor(
+                        [table[lbl] for lbl in labels], dtype=torch.long, device=device
+                    )
+                except KeyError as e:
+                    raise ValueError(
+                        f"label {e} in obs['{obs_col}'] is absent from "
+                        f"mapping.json['{cname}']"
+                    ) from e
+            cond_codes[cname] = codes
+
     all_pred   = np.zeros((n, n_genes), dtype=np.float32)
     all_target = X.copy()
     all_mask   = np.zeros((n, n_genes), dtype=bool)
@@ -269,7 +322,29 @@ def _run_masked_forward(
                 src_key_padding_mask=padding_mask, check_conditions=False,
             )
 
-        decoder_out = model.model.decoder(transformer_out)
+        if cond_codes:
+            # Concatenate the condition embedding onto every token, matching the
+            # training "end" branch in module.py (generative/perceptual forward).
+            condition_emb = torch.cat(
+                [
+                    mod.condition_encoders[c](cond_codes[c][start:start + bs]).unsqueeze(1)
+                    for c in mod.encoded_conditions
+                ],
+                dim=1,
+            )  # (bs, n_cond, d_model)
+            decoder_input = torch.cat(
+                [
+                    condition_emb.view(bs, -1)
+                    .unsqueeze(1)
+                    .repeat(1, transformer_out.shape[1], 1),
+                    transformer_out,
+                ],
+                dim=2,
+            )
+        else:
+            decoder_input = transformer_out
+
+        decoder_out = model.model.decoder(decoder_input)
         raw_pred = decoder_out["pred"]
 
         if effective_loss == LossType.CORN:
@@ -577,6 +652,7 @@ def build(
     precomputed_pb: bool = False,
     shared_panel: bool = True,
     panel_strategy: str = "consensus",
+    recon_conditions: dict[str, str] | None = None,
 ) -> ad.AnnData:
     """
     Load data, generate synthetic pseudobulks, embed with each model,
@@ -742,6 +818,7 @@ def build(
                 recon_cache = _run_masked_forward(
                     model, bulk_sub,
                     batch_size=batch_size, seed=seed, normalized=normalized,
+                    recon_conditions=recon_conditions,
                 )
                 if recon_cache is not None:
                     combined.uns[f"recon_{name}"] = recon_cache
