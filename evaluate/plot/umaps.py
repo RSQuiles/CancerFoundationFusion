@@ -24,6 +24,13 @@ This script:
 When the AnnData contains a ``modality`` column, single-cell observations are
 drawn as small transparent dots and bulk observations as larger stars, so both
 populations are visually distinguishable while sharing the same colour scale.
+
+``--tissues`` restricts every figure (joint, SC-only, bulk-only, pseudobulk) to
+observations from the listed tissues, and prefixes the output filenames with them:
+
+    python umaps.py --ablation-dir ./save/my_ablation --eval-adata eval.h5ad \
+        --tissues lung,breast
+    # → {model_dir}/lung-breast_umap.png, lung-breast_umap_sc.png, ...
 """
 
 from __future__ import annotations
@@ -209,6 +216,113 @@ def embed_adata(
     emb_df = result[0] if isinstance(result, tuple) else result
     adata.obsm[obsm_key] = emb_df.to_numpy(dtype=np.float32)
     return adata
+
+
+# --------------------------------------------------------------------------- #
+# Tissue filtering
+# --------------------------------------------------------------------------- #
+
+# Tried in order when no explicit tissue column is given.
+_TISSUE_COLUMN_FALLBACKS: tuple[str, ...] = ("tissue_general", "tissue")
+
+
+def _normalize_tissue(value) -> str:
+    """Casefold a tissue label so 'Lung ' and 'lung' compare equal."""
+    return str(value).strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def resolve_tissue_column(
+    adata: AnnData,
+    tissue_column: str | None = None,
+) -> str | None:
+    """Return the obs column holding tissue labels, or None if there is none.
+
+    An explicit ``tissue_column`` is used as-is (and must exist); otherwise the
+    first of ``_TISSUE_COLUMN_FALLBACKS`` present in ``adata.obs`` wins.
+    """
+    candidates = (tissue_column,) if tissue_column else _TISSUE_COLUMN_FALLBACKS
+    return next((c for c in candidates if c in adata.obs.columns), None)
+
+
+def filter_adata_by_tissues(
+    adata: AnnData,
+    tissues: list[str] | None,
+    tissue_column: str | None = None,
+    label: str = "adata",
+) -> AnnData:
+    """Subset *adata* to observations whose tissue label is in *tissues*.
+
+    Matching is case-, space- and hyphen-insensitive. Returns ``adata`` unchanged
+    when ``tissues`` is empty/None, so callers can pass the flag through blindly.
+
+    Raises ``ValueError`` when no tissue column exists or when the selection is
+    empty — silently plotting everything under a tissue-prefixed filename would
+    misrepresent the figure.
+    """
+    if not tissues:
+        return adata
+
+    col = resolve_tissue_column(adata, tissue_column)
+    if col is None:
+        raise ValueError(
+            f"--tissues given but no tissue column found in {label}.obs. "
+            f"Looked for {tissue_column or list(_TISSUE_COLUMN_FALLBACKS)}; "
+            f"available columns: {sorted(adata.obs.columns)[:40]}"
+        )
+
+    values = adata.obs[col].astype(str)
+    normalised = values.map(_normalize_tissue)
+    wanted = {_normalize_tissue(t) for t in tissues}
+    mask = normalised.isin(wanted).to_numpy()
+
+    missing = sorted(wanted - set(normalised.unique()))
+    if missing:
+        # Report the raw labels — those are what the user has to type back.
+        available = sorted(values.unique())
+        shown = ", ".join(available[:30]) + (" ..." if len(available) > 30 else "")
+        print(f"  [warn] no rows in {label}.obs['{col}'] for: {', '.join(missing)}")
+        print(f"         available values: {shown}")
+
+    if not mask.any():
+        raise ValueError(
+            f"Tissue filter {sorted(wanted)} matched 0 of {adata.n_obs} rows in "
+            f"{label}.obs['{col}']."
+        )
+
+    out = adata[mask].copy()
+
+    # Report per-modality survival: a filter that wipes out bulk (e.g. because the
+    # bulk rows carry no tissue label) would otherwise silently yield an SC-only plot.
+    mod_col = next(
+        (c for c in ("_eval_modality", "modality") if c in out.obs.columns), None
+    )
+    breakdown = ""
+    if mod_col is not None:
+        counts = out.obs[mod_col].astype(str).value_counts()
+        breakdown = " [" + ", ".join(f"{k}:{v}" for k, v in counts.items()) + "]"
+    matched = sorted(wanted - set(missing))
+    print(
+        f"  tissue filter on '{col}': {adata.n_obs} → {out.n_obs} cells "
+        f"({', '.join(matched)}){breakdown}"
+    )
+    return out
+
+
+def tissue_file_prefix(tissues: list[str] | None) -> str:
+    """Filename prefix encoding the selected tissues, e.g. ``'lung-breast_'``.
+
+    Empty string when no filter is active, so callers can always concatenate it.
+    """
+    if not tissues:
+        return ""
+    slugs = list(dict.fromkeys(
+        re.sub(r"[^0-9a-z]+", "_", str(t).strip().lower()).strip("_") or "tissue"
+        for t in tissues
+    ))
+    joined = "-".join(slugs)
+    if len(joined) > 60:  # keep filenames sane when many tissues are selected
+        joined = f"{slugs[0]}-and-{len(slugs) - 1}-more"
+    return f"{joined}_"
 
 
 # --------------------------------------------------------------------------- #
@@ -695,6 +809,8 @@ def run_ablation_umaps(
     group_column: str = "tissue_general",
     agg_method: str = "mean",
     only_pseudobulk: bool = False,
+    tissues: list[str] | None = None,
+    tissue_column: str | None = None,
 ) -> None:
     """Generate and save a UMAP for every model inside an ablation directory.
 
@@ -720,6 +836,13 @@ def run_ablation_umaps(
                    embedding key is present.
     color        : obs column(s) to colour by.
     modality_split : when True (default), generate per-modality UMAPs.
+    tissues      : optional tissue whitelist; every figure is restricted to these
+                   tissues and output filenames get them as a prefix
+                   (``lung-breast_umap.png``). On the live path the filter is
+                   applied *after* embedding, so the gene panel stays the one the
+                   full dataset would have produced.
+    tissue_column : obs column holding the tissue labels (default: auto-detect
+                   ``tissue_general`` then ``tissue``).
     """
     ablation_dir = _as_path(ablation_dir)
 
@@ -727,6 +850,16 @@ def run_ablation_umaps(
     if not model_dirs:
         print(f"No subdirectories found in {ablation_dir}.")
         return
+
+    # Embeddings in eval_adata are precomputed, so filtering up front is free and
+    # saves repeating the mask for every model.
+    if tissues and eval_adata is not None:
+        eval_adata = filter_adata_by_tissues(
+            eval_adata, tissues, tissue_column, label="eval_adata"
+        )
+
+    file_prefix = tissue_file_prefix(tissues)
+    title_note = f" ({', '.join(tissues)})" if tissues else ""
 
     for model_dir in model_dirs:
         model_name = model_dir.name
@@ -742,11 +875,12 @@ def run_ablation_umaps(
             print(f"[{model_name}] using precomputed embeddings from eval_adata")
 
             try:
-                compute_umap(adata_copy, use_rep="X_cf", n_neighbors=n_neighbors,
+                compute_umap(adata_copy, use_rep="X_cf",
+                             n_neighbors=min(n_neighbors, adata_copy.n_obs - 1),
                              min_dist=min_dist, random_state=seed)
-                out_png = model_dir / "umap.png"
+                out_png = model_dir / f"{file_prefix}umap.png"
                 save_umap_plot(adata_copy, out_png=out_png, color=color,
-                               title=model_name, skip_unknown=skip_unknown)
+                               title=f"{model_name}{title_note}", skip_unknown=skip_unknown)
                 print(f"  saved → {out_png}")
 
                 if modality_split:
@@ -786,11 +920,17 @@ def run_ablation_umaps(
         try:
             embed_adata(model, adata_copy, batch_size=embed_batch_size,
                         flavor=flavor, obsm_key="X_cf")
-            compute_umap(adata_copy, use_rep="X_cf", n_neighbors=n_neighbors,
+            # After embedding: the gene panel must be fitted on the full dataset,
+            # otherwise a tissue subset silently changes the model's input space.
+            adata_copy = filter_adata_by_tissues(
+                adata_copy, tissues, tissue_column, label=model_name
+            )
+            compute_umap(adata_copy, use_rep="X_cf",
+                         n_neighbors=min(n_neighbors, adata_copy.n_obs - 1),
                          min_dist=min_dist, random_state=seed)
-            out_png = model_dir / "umap.png"
+            out_png = model_dir / f"{file_prefix}umap.png"
             save_umap_plot(adata_copy, out_png=out_png, color=color,
-                           title=model_name, skip_unknown=skip_unknown)
+                           title=f"{model_name}{title_note}", skip_unknown=skip_unknown)
             print(f"  saved → {out_png}")
 
             if modality_split:
@@ -818,7 +958,8 @@ def run_ablation_umaps(
 # CLI
 # --------------------------------------------------------------------------- #
 
-def _parse_color_list(values: list[str] | None) -> list[str] | None:
+def _parse_str_list(values: list[str] | None) -> list[str] | None:
+    """Flatten a space-separated argparse list that may also use commas."""
     if not values:
         return None
     out: list[str] = []
@@ -849,7 +990,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     if args.vocab_json is not None:
         vocab = load_vocab_from_json(args.vocab_json)
 
-    color = _parse_color_list(args.color)
+    color   = _parse_str_list(args.color)
+    tissues = _parse_str_list(args.tissues)
 
     # ---- load raw adata (optional when eval_adata covers everything) ----
     adata = None
@@ -901,7 +1043,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             n_sc_per_pb=args.n_sc_per_pb,
             group_column=args.pb_group_column,
             agg_method=args.pb_agg_method,
-            only_pseudobulk=args.plot_pb_only
+            only_pseudobulk=args.plot_pb_only,
+            tissues=tissues,
+            tissue_column=args.tissue_column,
         )
         return 0
 
@@ -912,7 +1056,9 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     out_dir = _as_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    prefix   = args.out_prefix or args.run_name
+    # Tissue selection is part of the file identity, so it leads the name and is
+    # inherited by the per-modality figures (they derive theirs from out_png.stem).
+    prefix   = f"{tissue_file_prefix(tissues)}{args.out_prefix or args.run_name}"
     out_png  = out_dir / f"{prefix}.umap.png"
     out_h5ad = out_dir / f"{prefix}.umap.h5ad"
 
@@ -925,6 +1071,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         adata_to_use = _build_from_eval_adata(eval_adata, args.run_name)
         if adata_to_use is not None:
             print(f"Using precomputed embeddings (X_cf_{args.run_name}) from eval_adata.")
+            adata_to_use = filter_adata_by_tissues(
+                adata_to_use, tissues, args.tissue_column, label="eval_adata"
+            )
         else:
             print(
                 f"Warning: 'X_cf_{args.run_name}' not found in eval_adata — "
@@ -957,14 +1106,18 @@ def main(argv: Iterable[str] | None = None) -> int:
         print(adata)
         embed_adata(model, adata, batch_size=args.embed_batch_size,
                     flavor=args.flavor, obsm_key="X_cf")
-        adata_to_use = adata
+        # Filter after embedding so the gene panel is the full dataset's, not the
+        # tissue subset's (a different panel behaves like a batch effect).
+        adata_to_use = filter_adata_by_tissues(
+            adata, tissues, args.tissue_column, label="adata"
+        )
 
     # ── UMAP + plots ──────────────────────────────────────────────────────
     print("Computing UMAP...")
     compute_umap(
         adata_to_use,
         use_rep="X_cf",
-        n_neighbors=args.neighbors,
+        n_neighbors=min(args.neighbors, adata_to_use.n_obs - 1),
         min_dist=args.min_dist,
         random_state=args.seed,
     )
@@ -1110,6 +1263,27 @@ def build_argparser() -> argparse.ArgumentParser:
         nargs="*",
         default=None,
         help="obs column(s) to colour by (space- or comma-separated).",
+    )
+    p.add_argument(
+        "--tissues",
+        nargs="*",
+        default=None,
+        help=(
+            "Restrict every UMAP (joint, sc, bulk, pseudobulk) to observations "
+            "from these tissues (space- or comma-separated, case-insensitive). "
+            "Output filenames are prefixed with them, e.g. "
+            "'lung-breast_umap_pseudobulk.png'. On the live-embedding path the "
+            "filter is applied after embedding, so the gene panel is unaffected."
+        ),
+    )
+    p.add_argument(
+        "--tissue-column",
+        type=str,
+        default=None,
+        help=(
+            "obs column holding the tissue labels used by --tissues "
+            "(default: first of 'tissue_general', 'tissue' present in obs)."
+        ),
     )
     p.add_argument(
         "--flavor",
