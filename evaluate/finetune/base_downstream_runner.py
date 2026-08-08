@@ -578,6 +578,19 @@ class BaseDownstreamRunner:
             if self.is_master:
                 log.info("Using externally provided embedder: %s", self.pretrained_model_stem)
 
+        # Fine-tuning runs the embedder inside the training loop, so it has to live on
+        # the same device as the head. load_for_inference() returns a CPU model
+        # (map_location="cpu") and the frozen path only gets away with it because each
+        # task's own _embed_adata calls embedder.cuda() — this branch never does, and
+        # embed_for_finetune() takes its device from the embedder's own parameters, so
+        # without this it drags the CUDA batch back to CPU and the head then rejects a
+        # CPU tensor. Before _build_optimization so the optimizer's lazily-created
+        # state is allocated on the right device.
+        if self.finetune and hasattr(self.embedder, "to"):
+            self.embedder = self.embedder.to(self.device)
+            if self.is_master:
+                log.info("Moved embedder to %s for fine-tuning", self.device)
+
         # Load data and build components
         self._build_loaders()
 
