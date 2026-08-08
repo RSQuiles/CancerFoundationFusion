@@ -159,6 +159,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         paired_sampling: bool = False,
         paired_every_n: int = 10,
         paired_column: Optional[str] = "paired",
+        pb_id_column: Optional[str] = None,
         verbose: bool = False,
         class_aware_cdd: bool = False,
         cdd_exclude_labels: Optional[List[str]] = None,
@@ -196,6 +197,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         self.paired_sampling = paired_sampling
         self.paired_every_n = paired_every_n
         self.paired_column = paired_column
+        self.pb_id_column = pb_id_column
         self.verbose = verbose
         self.class_aware_cdd = class_aware_cdd
         self.cdd_exclude_labels = cdd_exclude_labels or ["unknown"]
@@ -233,6 +235,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                 pb_group_column=self.pb_group_column,
                 pb_label=self.pb_label,
                 paired_column=self.paired_column,
+                pb_id_column=self.pb_id_column,
                 verbose=self.verbose,
             )
 
@@ -293,6 +296,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                     epoch_size=self.epoch_size,
                     epoch_coverage=self.epoch_coverage,
                     precomputed_pb=self.precomputed_pb,
+                    agg_consistency=self.agg_consistency,
                     paired_sampling=self.paired_sampling,
                     paired_every_n=self.paired_every_n,
                     verbose=self.verbose,
@@ -377,6 +381,9 @@ class BulkSCDataModule(pl.LightningDataModule):
                 agg_consistency=self.agg_consistency,
                 precomputed_pb=self.precomputed_pb,
                 paired_column="paired" if self.paired_sampling else None,
+                # Resolved by the dataset (None when obs has no such column), so the
+                # collator only verifies membership when the ids are actually there.
+                pb_id_column=getattr(self.dataset, "pb_id_column", None),
                 verbose=self.verbose,
             )
 

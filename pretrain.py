@@ -189,11 +189,13 @@ def main(input_args=None):
             "--precomputed-pb requires --pb-label (the modality label identifying the "
             "precomputed pseudobulk rows in the memory-mapped dataset)."
         )
-    if args.precomputed_pb and args.agg_consistency:
+    if args.precomputed_pb and args.agg_consistency and not args.pb_id_column:
         raise ValueError(
-            "--precomputed-pb is incompatible with --agg-consistency: precomputed "
-            "pseudobulk batches contain no constituent single cells to enforce "
-            "aggregation consistency against."
+            "--precomputed-pb with --agg-consistency requires --pb-id-column: the "
+            "constituent single cells of a precomputed pseudobulk are found by matching "
+            "that obs column. Pass --pb-id-column pseudobulk_id (written by "
+            "data_preprocess/reconstruct_pseudobulk_cell_map.py --rebuild and carried "
+            "through bulk_sc_data_preprocessing.py), or drop --agg-consistency."
         )
     if args.paired_sampling and not args.unified:
         raise ValueError(
@@ -306,6 +308,7 @@ def main(input_args=None):
         paired_sampling=args.paired_sampling,
         paired_every_n=args.paired_every_n,
         paired_column=args.paired_column,
+        pb_id_column=args.pb_id_column,
         verbose=args.verbose,
         class_aware_cdd=args.cdd_class_aware,
         cdd_exclude_labels=args.cdd_exclude_labels,

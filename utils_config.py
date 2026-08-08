@@ -547,7 +547,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--precomputed-pb",
         action="store_true",
-        help="Draw precomputed pseudobulk rows (modality --pb-label) directly for standard and class-aware CDD batches instead of aggregating single cells on the fly. Requires --unified and --pb-label; incompatible with --agg-consistency (there are no constituent SC cells in the batch to enforce aggregation consistency against). Default is False.",
+        help="Draw precomputed pseudobulk rows (modality --pb-label) directly for standard and class-aware CDD batches instead of aggregating single cells on the fly. Requires --unified and --pb-label. Combining with --agg-consistency additionally requires --pb-id-column, which is how the constituent single cells of each precomputed pseudobulk are found. Default is False.",
+    )
+
+    parser.add_argument(
+        "--pb-id-column",
+        type=str,
+        default=None,
+        help=(
+            "obs column linking a precomputed pseudobulk row to the single cells it was "
+            "aggregated from (e.g. pseudobulk_id, written by "
+            "data_preprocess/reconstruct_pseudobulk_cell_map.py --rebuild). Only needed "
+            "for --precomputed-pb together with --agg-consistency, where n-sc-per-"
+            "pseudobulk constituent cells are drawn per pseudobulk so the aggregation "
+            "loss has a target. Store it as a STRING id: obs.parquet re-encodes every "
+            "column as a category code and fills missing rows with 0, so a numeric id 0 "
+            "would be indistinguishable from 'no pseudobulk'. Default is None (off)."
+        ),
     )
 
     parser.add_argument(

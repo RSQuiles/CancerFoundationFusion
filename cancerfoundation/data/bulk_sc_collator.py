@@ -64,6 +64,7 @@ class BulkSCCollator(AnnDataCollator):
     agg_consistency: bool = False # Determines whether to include the sc_for_pb samples in the batch
     precomputed_pb: bool = False  # Draw precomputed PB rows directly instead of aggregating SC on the fly
     paired_column: Optional[str] = None  # obs column carrying pair IDs; enables is_paired_batch detection
+    pb_id_column: Optional[str] = None  # obs column linking a precomputed PB to its constituent cells
     input_data: Optional[str] = "counts" 
     verbose: bool = False
 
@@ -84,9 +85,18 @@ class BulkSCCollator(AnnDataCollator):
         self.n_pb = round(self.batch_size * self.pb_ratio)
         self.n_sc = self.batch_size - self.n_bulk - self.n_pb
         # In --precomputed-pb mode each pseudobulk is a single precomputed row (passed
-        # through unchanged), so the raw batch is just n_sc + n_pb + n_bulk.
+        # through unchanged), so the raw batch is just n_sc + n_pb + n_bulk — unless
+        # aggregation consistency is on, in which case the sampler also supplies the
+        # n_sc_per_pseudobulk constituent cells of every drawn PB row.
+        self.precomputed_agg = self.precomputed_pb and self.agg_consistency
         if self.precomputed_pb:
-            self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb
+            if self.precomputed_agg:
+                self.raw_batch_size = (
+                    self.n_bulk + self.n_sc
+                    + self.n_pb * (1 + self.n_sc_per_pseudobulk)
+                )
+            else:
+                self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb
         else:
             self.raw_batch_size = (
                 self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pseudobulk
@@ -94,6 +104,17 @@ class BulkSCCollator(AnnDataCollator):
         # Paired batches carry n_sc_per_pseudobulk matched SC cells per pair
         # instead of the usual n_sc free SC cells.
         self.paired_batch_size = self.n_bulk + self.n_pb * (1 + self.n_sc_per_pseudobulk)
+
+        # __call__ infers the batch type purely from len(examples), so two modes sharing
+        # a length would silently mis-slice every batch. In precomputed-agg mode the two
+        # differ by exactly n_sc, which n_sc > 0 guarantees.
+        if self.precomputed_agg and self.raw_batch_size == self.paired_batch_size:
+            raise ValueError(
+                f"Batch-length collision: precomputed aggregation-consistency batches "
+                f"and paired batches are both {self.raw_batch_size} samples, so they "
+                f"cannot be told apart. This happens when n_sc == 0 (n_sc="
+                f"{self.n_sc}); raise --batch-size or lower --bulk-ratio/--pb-ratio."
+            )
 
         # Confirm batch composition
         print("\nBatch composition at the collator level")
@@ -143,14 +164,24 @@ class BulkSCCollator(AnnDataCollator):
             )
 
         sc_samples = [dict(sample) for sample in examples[:n_sc_actual]]
+        pb_block_end = n_sc_actual + self.n_pb * n_sc_per_pb
         sc_for_pb_samples = [
-            dict(sample)
-            for sample in examples[n_sc_actual : n_sc_actual + self.n_pb * n_sc_per_pb]
+            dict(sample) for sample in examples[n_sc_actual:pb_block_end]
         ]
-        bulk_samples = [
-            dict(sample)
-            for sample in examples[n_sc_actual + self.n_pb * n_sc_per_pb :]
-        ]
+
+        # Precomputed + aggregation consistency: the sampler appends a fourth block of
+        # n_sc_per_pseudobulk constituent cells per PB row, in the same order as the PB
+        # rows, between the pseudobulks and the bulk samples.
+        agg_sc_samples: List[Dict[str, Any]] = []
+        if is_precomputed_batch and self.agg_consistency:
+            agg_block_end = pb_block_end + self.n_pb * self.n_sc_per_pseudobulk
+            agg_sc_samples = [
+                dict(sample) for sample in examples[pb_block_end:agg_block_end]
+            ]
+        else:
+            agg_block_end = pb_block_end
+
+        bulk_samples = [dict(sample) for sample in examples[agg_block_end:]]
 
         # Detect paired batch: in paired sampling, sc_for_pb_samples holds precomputed
         # PB rows (not SC cells), each matched to its corresponding bulk row.
@@ -190,6 +221,12 @@ class BulkSCCollator(AnnDataCollator):
             # (non-paired) mode there is no pairing; each row is just a source pseudobulk.
             pseudobulk_samples = list(sc_for_pb_samples)
             pseudobulk_sizes = [1] * len(sc_for_pb_samples)
+            if agg_sc_samples:
+                n_per = self.n_sc_per_pseudobulk
+                self._check_agg_membership(pseudobulk_samples, agg_sc_samples, n_per)
+                pseudobulk_sizes = [n_per] * len(pseudobulk_samples)
+                for pb_idx in range(len(pseudobulk_samples)):
+                    sc_pseudobulk_index.extend([pb_idx] * n_per)
         else:
             for pb_idx, start in enumerate(
                 range(0, len(sc_for_pb_samples), n_sc_per_pb)
@@ -249,10 +286,18 @@ class BulkSCCollator(AnnDataCollator):
             unified_pseudobulk_index.append(pb_idx)
             unified_is_sc_for_pb.append(0)
 
-        # 3 (1) -> sc for pb (only for on-the-fly aggregation; precomputed PB rows have no
-        #          constituent SC cells in the batch, so aggregation consistency is off)
-        if self.agg_consistency and not is_paired and not self.precomputed_pb:
-            for sc_idx, sample in enumerate(sc_for_pb_samples):
+        # 3 (1) -> sc for pb. On the fly these are the very cells that were aggregated;
+        #          with precomputed PB rows they are the constituent cells the sampler
+        #          looked up by pseudobulk id. Either way they carry the local PB index,
+        #          which is all the aggregation-consistency loss needs.
+        agg_source = (
+            agg_sc_samples if (is_precomputed_batch and agg_sc_samples)
+            else sc_for_pb_samples
+        )
+        if self.agg_consistency and not is_paired and (
+            agg_sc_samples or not self.precomputed_pb
+        ):
+            for sc_idx, sample in enumerate(agg_source):
                 unified_samples.append(sample)
                 unified_modalities.append(SC_MODALITY)
                 unified_is_real.append(1)
@@ -292,6 +337,12 @@ class BulkSCCollator(AnnDataCollator):
         )  # similar to above, but for all samples in the batch
         data_dict["pseudobulk_sizes"] = torch.LongTensor(pseudobulk_sizes)
         data_dict["is_paired_batch"] = torch.tensor(is_paired, dtype=torch.bool)
+        # True when the PB rows are precomputed rather than aggregated in this batch.
+        # The aggregation loss uses it to pick its reduction: a *sum* of n_sc_per_pb
+        # sampled cells has no fixed relationship to a pseudobulk built from all N.
+        data_dict["is_precomputed_pb_batch"] = torch.tensor(
+            bool(is_precomputed_batch), dtype=torch.bool
+        )
         # Original dataset row index per sample (-1 for aggregated pseudobulk). Used
         # by the CDD target-label bank to map bulk rows to their pseudo-labels.
         data_dict["row_index"] = torch.LongTensor(
@@ -299,6 +350,42 @@ class BulkSCCollator(AnnDataCollator):
         )
 
         return data_dict
+
+    def _check_agg_membership(
+        self,
+        pseudobulk_samples: List[Dict[str, Any]],
+        agg_sc_samples: List[Dict[str, Any]],
+        n_per: int,
+    ) -> None:
+        """Assert every constituent cell really belongs to the pseudobulk it is matched to.
+
+        The whole feature rests on the sampler emitting the agg block grouped by
+        pseudobulk and in PB order. That is an ordering contract across two files, so it
+        is verified rather than trusted — a silent reordering would train the model to
+        aggregate unrelated cells, which no loss curve would reveal.
+        """
+        expected = len(pseudobulk_samples) * n_per
+        if len(agg_sc_samples) != expected:
+            raise ValueError(
+                f"Aggregation-consistency block has {len(agg_sc_samples)} cells, "
+                f"expected {expected} ({len(pseudobulk_samples)} pseudobulks x {n_per})."
+            )
+        if self.pb_id_column is None:
+            return
+        for pb_idx, pb_sample in enumerate(pseudobulk_samples):
+            pb_id = pb_sample.get(self.pb_id_column)
+            if pb_id is None:
+                continue
+            for offset in range(n_per):
+                sc_id = agg_sc_samples[pb_idx * n_per + offset].get(self.pb_id_column)
+                if sc_id is not None and int(sc_id) != int(pb_id):
+                    raise ValueError(
+                        f"Aggregation-consistency mismatch: cell "
+                        f"{pb_idx * n_per + offset} has {self.pb_id_column}={sc_id} but "
+                        f"is matched to pseudobulk {pb_idx} with "
+                        f"{self.pb_id_column}={pb_id}. The sampler's [sc, pb, agg_sc, "
+                        f"bulk] block order and BulkSCCollator disagree."
+                    )
 
     def _fill_missing_conditions(
         self, pb_sample: Dict[str, Any], sc_samples: List[Dict[str, Any]]

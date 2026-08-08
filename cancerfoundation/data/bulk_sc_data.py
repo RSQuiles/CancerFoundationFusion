@@ -63,6 +63,7 @@ class BulkSCDataset(Dataset):
         pb_label: Optional[str] = "pseudobulk",
         pb_group_column: Optional[str] = None,
         paired_column: Optional[str] = "paired",
+        pb_id_column: Optional[str] = "pseudobulk_id",
         pad_value: float = -1.0,
         obs_columns: Optional[list[str]] = None,
         balance: Optional[bool] = False,
@@ -88,6 +89,13 @@ class BulkSCDataset(Dataset):
         self.paired_column = paired_column if (
             paired_column is not None and paired_column in self.obs.columns
         ) else None
+        # Links a precomputed pseudobulk row to the single cells it was aggregated from.
+        # Written by data_preprocess/reconstruct_pseudobulk_cell_map.py --rebuild onto
+        # both the pseudobulk and the source-cell h5ads; absent for datasets built
+        # without it, in which case aggregation consistency over precomputed PBs is off.
+        self.pb_id_column = pb_id_column if (
+            pb_id_column is not None and pb_id_column in self.obs.columns
+        ) else None
 
         if self.verbose:
             print(f"MemMap ({str(self.data_dir.memmap_path)}) rows: {self.memmap.number_of_rows()}")
@@ -102,6 +110,8 @@ class BulkSCDataset(Dataset):
         # Also pre-extract the pairing column (sampler use only — not served to the model)
         if self.paired_column is not None:
             self._obs_arrays[self.paired_column] = self.obs[self.paired_column].to_numpy()
+        if self.pb_id_column is not None:
+            self._obs_arrays[self.pb_id_column] = self.obs[self.pb_id_column].to_numpy()
 
         # Pre-compute index arrays per modality
         modality_vals = self.obs[modality_column].values
@@ -129,6 +139,14 @@ class BulkSCDataset(Dataset):
             sc_pair_ids = paired_arr[self.sc_indices]
             for pid in np.unique(sc_pair_ids[sc_pair_ids != 0]):
                 self.sc_pair_to_indices[int(pid)] = self.sc_indices[sc_pair_ids == pid]
+        # Build mapping: pseudobulk_id → SC indices of the cells it was aggregated from.
+        # This is the precomputed-pseudobulk analogue of sc_pair_to_indices above, but a
+        # strictly finer link: `paired` matches a PB to a *bulk* row at cell-line
+        # granularity, while `pseudobulk_id` names the exact cells that were summed.
+        self.sc_pb_to_indices: dict[int, np.ndarray] = {}
+        self.pb_id_fill_code: Optional[int] = None
+        if self.pb_id_column is not None:
+            self._build_pb_id_index()
             if self.verbose and self.sc_pair_to_indices:
                 print(f"Found {len(self.sc_pair_to_indices)} pair IDs with matched SC cells.")
 
@@ -219,11 +237,63 @@ class BulkSCDataset(Dataset):
         if self.paired_column is not None:
             data[self.paired_column] = int(self._obs_arrays[self.paired_column][index])
 
+        # Expose the pseudobulk ID so the collator can verify that the SC cells it was
+        # handed really do belong to the pseudobulk they are matched against
+        if self.pb_id_column is not None:
+            data[self.pb_id_column] = int(self._obs_arrays[self.pb_id_column][index])
+
         return data
 
     # ------------------------------------------------------------------
     # helpers
     # ------------------------------------------------------------------
+
+    def _build_pb_id_index(self) -> None:
+        """Index the pseudobulk-id column: which SC rows belong to which pseudobulk.
+
+        The values in ``obs.parquet`` are *category codes*, not the original ids —
+        preprocessing re-encodes every column through
+        ``convert_columns_to_categorical_with_mapping``. Codes are 1:1 with ids and
+        shared across modalities (the encoder runs on the concatenated obs), so
+        grouping by code is equivalent to grouping by id and nothing needs inverting.
+
+        Rows coming from h5ads that never carried the column are filled with ``0`` by
+        ``obs.reindex(..., fill_value=0)``, so the category ``"0"`` means "no
+        pseudobulk" and is excluded here.
+        """
+        pb_id_arr = self._obs_arrays[self.pb_id_column]
+        categories = self.mapping.get(self.pb_id_column, {})
+        self.pb_id_fill_code = categories.get("0")
+
+        # A purely numeric id space cannot express "no pseudobulk": the reindex fill of
+        # 0 is indistinguishable from a genuine id 0, which would bind every unrelated
+        # cell to that one pseudobulk. Preprocessing should write a string id (the
+        # pseudobulk's sample_id) so the fill category is unambiguous.
+        other = [c for c in categories if c != "0"]
+        if self.pb_id_fill_code is not None and other and all(
+            c.lstrip("-").isdigit() for c in other
+        ):
+            print(
+                f"[WARNING] '{self.pb_id_column}' holds plain integer ids, so category "
+                f"'0' is ambiguous: it is both the reindex fill for rows without a "
+                f"pseudobulk and a valid id. Cells with id 0 will be dropped. Write the "
+                f"column as a string id (e.g. the pseudobulk's sample_id) to fix this."
+            )
+
+        sc_pb_ids = pb_id_arr[self.sc_indices]
+        if self.pb_id_fill_code is not None:
+            valid = sc_pb_ids != self.pb_id_fill_code
+        else:
+            valid = np.ones(len(sc_pb_ids), dtype=bool)
+
+        for code in np.unique(sc_pb_ids[valid]):
+            self.sc_pb_to_indices[int(code)] = self.sc_indices[sc_pb_ids == code]
+
+        if self.verbose and self.sc_pb_to_indices:
+            print(
+                f"Found {len(self.sc_pb_to_indices)} pseudobulk ids with constituent "
+                f"SC cells."
+            )
 
     def _load_mapping(self) -> dict:
         with self.data_dir.mapping_path.open("r") as f:
@@ -403,6 +473,7 @@ class BulkSCSampler(Sampler[list[int]]):
         epoch_size: Optional[int] = None,
         epoch_coverage: float = 1.0,
         precomputed_pb: bool = False,
+        agg_consistency: bool = False,
         paired_sampling: bool = False,
         paired_every_n: int = 10,
         verbose: bool = False,
@@ -447,6 +518,13 @@ class BulkSCSampler(Sampler[list[int]]):
                 if getattr(self.base_dataset, "sc_pair_to_indices", None)
                 else {}
             )
+            # Remapped, not filtered afterwards: a pseudobulk whose cells all landed in
+            # the other split drops out here, which is exactly what should happen.
+            self.sc_pb_to_indices = (
+                reindexer.remap_dict(self.base_dataset.sc_pb_to_indices)
+                if getattr(self.base_dataset, "sc_pb_to_indices", None)
+                else {}
+            )
             del reindexer
 
         else:
@@ -461,6 +539,7 @@ class BulkSCSampler(Sampler[list[int]]):
             self.bulk_group_to_indices = getattr(self.base_dataset, "bulk_group_to_indices", None)
             self.pb_group_to_indices = getattr(self.base_dataset, "pb_group_to_indices", None)
             self.sc_pair_to_indices = getattr(self.base_dataset, "sc_pair_to_indices", {})
+            self.sc_pb_to_indices = getattr(self.base_dataset, "sc_pb_to_indices", {})
 
         # Pre-compute sorted group keys (drop any group that became empty after Subset)
         if self.sc_group_to_indices is not None:
@@ -539,13 +618,33 @@ class BulkSCSampler(Sampler[list[int]]):
         self.n_sc = self.batch_size - self.n_bulk - self.n_pb
         self.n_sc_per_pb = n_sc_per_pb
         # In --precomputed-pb mode each pseudobulk is a single precomputed row (no
-        # n_sc_per_pb blow-up), so the raw batch is just n_sc + n_pb + n_bulk.
+        # n_sc_per_pb blow-up), so the raw batch is just n_sc + n_pb + n_bulk — unless
+        # aggregation consistency is on, which additionally draws the n_sc_per_pb
+        # constituent cells of every drawn PB row so the loss has something to compare
+        # against. That makes the batch the same size as the on-the-fly case plus the
+        # n_pb precomputed rows themselves.
+        self.agg_consistency = agg_consistency
+        self.precomputed_agg = precomputed_pb and agg_consistency
         if self.precomputed_pb:
             if self.verbose:
                 print("[PSEUDOBULK] Using precomputed pseudobulks!")
-            self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb
+            if self.precomputed_agg:
+                self.raw_batch_size = (
+                    self.n_bulk + self.n_sc + self.n_pb * (1 + self.n_sc_per_pb)
+                )
+            else:
+                self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb
         else:
             self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pb
+
+        # Restrict the PB draw pool to pseudobulks whose constituent cells are actually
+        # in this split. A PB without them cannot supply an aggregation target, and
+        # falling back to unrelated cells (as sample_paired_batch does for pairs) would
+        # train the model to match a pseudobulk against cells it never contained.
+        self.pb_indices_with_sc = self.pb_indices
+        self.pb_group_to_indices_agg = self.pb_group_to_indices
+        if self.precomputed_agg:
+            self._build_agg_pb_pools()
 
         if precomputed_pb and len(self.pb_indices) == 0:
             raise ValueError(
@@ -712,6 +811,99 @@ class BulkSCSampler(Sampler[list[int]]):
             self.paired_common_ids = np.array(common_ids, dtype=np.int64)
             print(f"Paired sampling: {len(common_ids)} PB–bulk pairs found.")
 
+    def _build_agg_pb_pools(self) -> None:
+        """Restrict the precomputed-PB pools to pseudobulks that have SC cells here.
+
+        Also builds ``pb_local_to_pb_id``, the pseudobulk code of every entry of
+        ``self.pb_indices``, so a drawn PB row can be resolved back to its cells.
+        Indices are subset-local after a random_split, while ``_obs_arrays`` is keyed by
+        base obs rows, so the lookup goes through ``subset_base_indices`` — the same
+        translation the paired-sampling block does.
+        """
+        pb_id_column = getattr(self.base_dataset, "pb_id_column", None)
+        if pb_id_column is None:
+            raise ValueError(
+                "precomputed_pb=True and agg_consistency=True, but the dataset has no "
+                "pseudobulk-id column. Aggregation consistency over precomputed "
+                "pseudobulks needs to know which single cells each one was aggregated "
+                "from. Re-run data_preprocess/bulk_sc_data_preprocessing.py so that "
+                "'pseudobulk_id' is present in obs.parquet (it is written by "
+                "data_preprocess/reconstruct_pseudobulk_cell_map.py --rebuild), or drop "
+                "--agg-consistency."
+            )
+
+        pb_id_arr = self.base_dataset._obs_arrays[pb_id_column]
+        base_pb = (
+            self.subset_base_indices[self.pb_indices]
+            if self.subset_indices is not None
+            else self.pb_indices
+        )
+        self.pb_local_to_pb_id = pb_id_arr[base_pb].astype(np.int64)
+        # Built once: _draw_agg_sc runs per batch and must not rescan pb_indices.
+        self.pb_row_to_pb_id = {
+            int(row): int(code)
+            for row, code in zip(self.pb_indices, self.pb_local_to_pb_id)
+        }
+
+        has_sc = np.fromiter(
+            (int(code) in self.sc_pb_to_indices for code in self.pb_local_to_pb_id),
+            dtype=bool,
+            count=len(self.pb_local_to_pb_id),
+        )
+        self.pb_indices_with_sc = self.pb_indices[has_sc]
+
+        n_dropped = len(self.pb_indices) - len(self.pb_indices_with_sc)
+        if n_dropped:
+            print(
+                f"[PSEUDOBULK] {n_dropped} of {len(self.pb_indices)} precomputed "
+                f"pseudobulk rows have no constituent SC cells in this split and are "
+                f"excluded from the aggregation-consistency pool."
+            )
+        if len(self.pb_indices_with_sc) == 0:
+            raise ValueError(
+                f"precomputed_pb=True and agg_consistency=True, but not one of the "
+                f"{len(self.pb_indices)} precomputed pseudobulk rows has constituent SC "
+                f"cells in this split. Check that '{pb_id_column}' is populated "
+                f"consistently on both the pseudobulk and the single-cell rows — the "
+                f"values must come from the same preprocessing pass, since obs.parquet "
+                f"stores category codes rather than the ids themselves."
+            )
+
+        # Same restriction applied to the tissue-pure pools, so group-aware draws also
+        # only ever pick a usable pseudobulk.
+        if self.pb_group_to_indices is not None:
+            usable = set(int(i) for i in self.pb_indices_with_sc)
+            self.pb_group_to_indices_agg = {
+                g: np.array([i for i in idxs if int(i) in usable], dtype=np.int64)
+                for g, idxs in self.pb_group_to_indices.items()
+            }
+            self.pb_group_to_indices_agg = {
+                g: idxs for g, idxs in self.pb_group_to_indices_agg.items() if len(idxs)
+            }
+            if not self.pb_group_to_indices_agg:
+                raise ValueError(
+                    "No tissue group retains a precomputed pseudobulk with constituent "
+                    "SC cells; cannot form aggregation-consistency batches."
+                )
+
+    def _draw_agg_sc(self, pb_row_indices) -> list[int]:
+        """Draw ``n_sc_per_pb`` constituent cells for each of *pb_row_indices*.
+
+        Returns them grouped by pseudobulk and in the same order as the input, so the
+        collator can slice the block into contiguous per-pseudobulk chunks exactly as it
+        does for the on-the-fly path.
+        """
+        out: list[int] = []
+        for row in pb_row_indices:
+            pool = self.sc_pb_to_indices[self.pb_row_to_pb_id[int(row)]]
+            chosen = self.rng.choice(
+                pool,
+                size=self.n_sc_per_pb,
+                replace=len(pool) < self.n_sc_per_pb,
+            )
+            out.extend(int(i) for i in chosen)
+        return out
+
     def _build_klass_tensors(
         self, labels: np.ndarray
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -870,17 +1062,24 @@ class BulkSCSampler(Sampler[list[int]]):
         # -pure when a PB group column is set, else from the global precomputed-PB pool.
         # The collator passes these rows through unchanged (no on-the-fly aggregation).
         if self.precomputed_pb:
-            if self.pb_group_to_indices is not None:
-                pb_groups = self.rng.choice(self.source_groups, size=self.n_pb, replace=True)
+            # With aggregation consistency the pools are pre-filtered to pseudobulks
+            # whose constituent cells are present, so every drawn row is usable.
+            pb_pool = self.pb_indices_with_sc if self.precomputed_agg else self.pb_indices
+            group_pool = (
+                self.pb_group_to_indices_agg
+                if self.precomputed_agg
+                else self.pb_group_to_indices
+            )
+            if group_pool is not None:
+                groups = sorted(group_pool) if self.precomputed_agg else self.source_groups
+                pb_groups = self.rng.choice(groups, size=self.n_pb, replace=True)
                 pb_sel = [
-                    int(self.sample(self.pb_group_to_indices[g], size=1, balanced=False)[0])
+                    int(self.sample(group_pool[g], size=1, balanced=False)[0])
                     for g in pb_groups
                 ]
                 pb_idx = np.array(pb_sel)
             else:
-                pb_idx = self.sample(
-                    self.pb_indices, size=self.n_pb, balanced=False,
-                )
+                pb_idx = self.sample(pb_pool, size=self.n_pb, balanced=False)
             bulk_idx = self.sample(
                 self.bulk_indices,
                 size=self.n_bulk,
@@ -889,6 +1088,10 @@ class BulkSCSampler(Sampler[list[int]]):
             )
             indices.extend(sc_idx)
             indices.extend(pb_idx)
+            # Block order is a hard contract with the collator:
+            # [sc, pb, agg_sc, bulk], with n_sc_per_pb consecutive cells per pseudobulk.
+            if self.precomputed_agg:
+                indices.extend(self._draw_agg_sc(pb_idx))
             indices.extend(bulk_idx)
             return indices
 
@@ -979,7 +1182,7 @@ class BulkSCSampler(Sampler[list[int]]):
         """Class-aware batch for CDD: the same K tissues are drawn in both the
         pseudobulk (source) and bulk (target) halves, so the class-conditional
         MMD has matched classes in both domains. Batch structure/order matches
-        sample_standard_batch: [sc..., sc_for_pb..., bulk...].
+        sample_standard_batch: [sc..., sc_for_pb..., (agg_sc...,) bulk...].
 
         Only a fraction (cdd_bulk_class_frac) of the bulk slots is reserved for the
         chosen tissues; the rest are drawn freely from ALL bulk. Reserving every slot
@@ -1003,10 +1206,15 @@ class BulkSCSampler(Sampler[list[int]]):
         # otherwise it draws n_sc_per_pb SC cells per slot for on-the-fly aggregation.
         pb_groups = [chosen[i % K] for i in range(self.n_pb)]
         pb_sc_indices: list[int] = []
+        pb_group_pool = (
+            self.pb_group_to_indices_agg
+            if self.precomputed_agg
+            else self.pb_group_to_indices
+        )
         for g in pb_groups:
             if self.precomputed_pb:
                 pb_sc_indices.extend(list(self.sample(
-                    self.pb_group_to_indices[g], size=1, balanced=False,
+                    pb_group_pool[g], size=1, balanced=False,
                 )))
             else:
                 pb_sc_indices.extend(list(self.sample(
@@ -1036,6 +1244,9 @@ class BulkSCSampler(Sampler[list[int]]):
 
         indices.extend(sc_idx)
         indices.extend(pb_idx)
+        # Same [sc, pb, agg_sc, bulk] contract as sample_standard_batch.
+        if self.precomputed_agg:
+            indices.extend(self._draw_agg_sc(pb_idx))
         indices.extend(bulk_idx)
         return indices
 

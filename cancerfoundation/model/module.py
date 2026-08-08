@@ -162,6 +162,8 @@ class TransformerModule(nn.Module):
         self.mmd = mmd
         self.aggregation = aggregation
         self.agg_fn = agg_fn
+        # Latch so the precomputed-pseudobulk reduction warning fires once, not per step.
+        self._warned_agg_fn_precomputed = False
         self.paired_alignment = paired_alignment
         self.vocab = vocab
         self.gene_embeddings_path = gene_embeddings_path
@@ -1197,7 +1199,13 @@ class TransformerModule(nn.Module):
         # Aggregation consistency loss: skip for paired batches (SC cells are unrelated to the PBs)
         want_agg = self.aggregation or "aggregation" in self.monitor_losses
         if want_agg and not is_paired_batch and not skip_unified_losses:
-            embeddings = output_dict["embeddings"]
+            # CLS embeddings, not the full (B, L, D) transformer output: token position
+            # l is a different gene in every row, because _sample_or_truncate permutes
+            # each sample's genes independently and only keep_first_n_tokens=1 (the CLS)
+            # is held fixed. Comparing positions 1..L-1 compares embeddings of unrelated
+            # genes and of padding. The paired-alignment loss above uses cell_emb for
+            # the same reason.
+            embeddings = output_dict["cell_emb"]
             assert len(embeddings) == len(
                 tensors["is_sc_for_pb"]
             ), "Embeddings and input dictionaries must have the same batch size"
@@ -1215,16 +1223,31 @@ class TransformerModule(nn.Module):
             # cannot be used directly to index into embeddings without this lookup.
             pb_global_pos = (tensors["conditions"]["modality"] == 2).nonzero(as_tuple=True)[0]
 
+            # A precomputed pseudobulk aggregates all N of its cells, but only
+            # n_sc_per_pseudobulk of them are in the batch, so a sum would scale with
+            # the sample size rather than with the pseudobulk. Mean is the only
+            # reduction that means the same thing on both sides.
+            agg_fn = self.agg_fn
+            if bool(tensors.get("is_precomputed_pb_batch", False)) and agg_fn != "mean":
+                if not self._warned_agg_fn_precomputed:
+                    self._warned_agg_fn_precomputed = True
+                    print(
+                        f"[WARNING] agg_fn={self.agg_fn!r} with precomputed pseudobulks: "
+                        f"using 'mean' instead. A sum over the sampled cells scales with "
+                        f"n_sc_per_pseudobulk, not with the pseudobulk it is matched to."
+                    )
+                agg_fn = "mean"
+
             loss_agg = torch.tensor(0.0, device=loss.device)
             for pb_local_idx, sc_indices in sc_assignment.items():
                 pb_embedding = embeddings[pb_global_pos[pb_local_idx]]
                 sc_embeddings = embeddings[sc_indices]
-                if self.agg_fn == "mean":
+                if agg_fn == "mean":
                     sc_embedding_agg = sc_embeddings.mean(dim=0)
-                elif self.agg_fn == "sum":
+                elif agg_fn == "sum":
                     sc_embedding_agg = sc_embeddings.sum(dim=0)
                 else:
-                    raise ValueError(f"Unknown agg_fn: {self.agg_fn}")
+                    raise ValueError(f"Unknown agg_fn: {agg_fn}")
                 loss_agg = loss_agg + F.mse_loss(pb_embedding, sc_embedding_agg)
 
             if sc_assignment:
