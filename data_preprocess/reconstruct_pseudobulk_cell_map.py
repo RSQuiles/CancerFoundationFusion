@@ -25,6 +25,21 @@ Build and verify 20 random pseudo-bulks against the generated matrix::
         --pseudo-bulk-dir data/pseudo_bulk \
         --pseudo-bulk-h5ad /path/to/pseudo_bulk_RAW.h5ad \
         --verify 20
+
+Materialize a paired dataset keeping 50 cells per pseudo-bulk, tagged with the modality
+labels the training dataset splits on::
+
+    python data/reconstruct_pseudobulk_cell_map.py \
+        --pseudo-bulk-dir data/pseudo_bulk \
+        --pseudo-bulk-h5ad /path/to/pseudo_bulk_RAW.h5ad \
+        --rebuild --output-dir data/paired \
+        --max-cells-per-pb 50
+
+Both rebuild outputs carry ``obs['modality']`` (``pseudobulk`` / ``sc``) so they can be
+fed straight to ``bulk_sc_data_preprocessing.py``, which needs it to tell the row kinds
+apart. Capping cells per pseudo-bulk breaks the "cells sum to their pseudo-bulk"
+contract by design; the cap is recorded in the cell file's ``uns`` and
+``--verify-rebuilt`` skips rather than reporting a false mismatch.
 """
 
 from __future__ import annotations
@@ -587,7 +602,12 @@ class StreamingCSRWriter:
         self.nnz += n_new
         self.n_obs += block.shape[0]
 
-    def finalize(self, obs: pd.DataFrame, var_names: pd.Index) -> None:
+    def finalize(
+        self,
+        obs: pd.DataFrame,
+        var_names: pd.Index,
+        uns: dict | None = None,
+    ) -> None:
         group = self.handle["X"]
         group.attrs["shape"] = np.array([self.n_obs, self.n_vars], dtype="int64")
         # int64 indptr: a full rebuild can exceed the 2^31 nnz that int32 allows.
@@ -611,18 +631,27 @@ class StreamingCSRWriter:
             "var",
             pd.DataFrame(index=pd.Index(var_names, dtype=str, name="ensembl_id")),
         )
-        for name in ("layers", "obsm", "obsp", "uns", "varm", "varp"):
+        for name in ("layers", "obsm", "obsp", "varm", "varp"):
             write_elem(self.handle, name, {})
+        # uns records how the file was built, so verify_rebuilt can tell a genuine
+        # mismatch from an expected one after --max-cells-per-pb dropped rows.
+        write_elem(self.handle, "uns", uns or {})
         self.handle.close()
 
 
 def annotate_pseudo_bulk(
-    src_path: Path, dst_path: Path, complete: set[str]
+    src_path: Path,
+    dst_path: Path,
+    complete: set[str],
+    modality_label: str = "pseudobulk",
 ) -> tuple[np.ndarray, pd.Index]:
-    """Copy the pseudo-bulk h5ad verbatim, adding pseudobulk_id + cells_available.
+    """Copy the pseudo-bulk h5ad verbatim, adding pseudobulk_id, cells_available, modality.
 
     Copying rather than rebuilding preserves uns (the cell_type_proportion_* maps the
     deconv runner relies on) and every existing obs column.
+
+    ``modality`` is what ``BulkSCDataset`` splits rows on downstream (``--pb-label``),
+    so it has to be on the file before ``bulk_sc_data_preprocessing.py`` sees it.
     """
     with h5py.File(src_path, "r") as src:
         obs = src["obs"]
@@ -650,6 +679,7 @@ def annotate_pseudo_bulk(
             available = np.isin(sample_ids.astype(str), np.asarray(sorted(complete)))
 
             dst_obs = dst["obs"]
+            added = ("pseudobulk_id", "cells_available", "modality")
             for name, values in (
                 ("pseudobulk_id", pb_ids),
                 ("cells_available", available),
@@ -659,8 +689,20 @@ def annotate_pseudo_bulk(
                 ds = dst_obs.create_dataset(name, data=values)
                 ds.attrs["encoding-type"] = "array"
                 ds.attrs["encoding-version"] = "0.2.0"
-            new_order = [c for c in column_order if c not in ("pseudobulk_id", "cells_available")]
-            new_order += ["pseudobulk_id", "cells_available"]
+
+            # A single-valued string column: written through anndata's own writer as a
+            # Categorical rather than a raw dataset, so it round-trips whatever encoding
+            # the installed anndata reads back.
+            if "modality" in dst_obs:
+                del dst_obs["modality"]
+            write_elem(
+                dst_obs,
+                "modality",
+                pd.Categorical([modality_label] * len(sample_ids)),
+            )
+
+            new_order = [c for c in column_order if c not in added]
+            new_order += list(added)
             dst_obs.attrs.create(
                 "column-order", np.array(new_order, dtype=object), dtype=VLEN_STR
             )
@@ -679,8 +721,20 @@ def rebuild(
     limit_samples: int,
     compression: str | None,
     max_open_chunks: int,
+    max_cells_per_pb: int = 0,
+    subsample_seed: int = 0,
+    pb_modality: str = "pseudobulk",
+    sc_modality: str = "sc",
 ) -> tuple[Path, Path]:
-    """Write a paired pseudo-bulk + matched single-cell dataset joined on pseudobulk_id."""
+    """Write a paired pseudo-bulk + matched single-cell dataset joined on pseudobulk_id.
+
+    ``max_cells_per_pb`` caps how many distinct source cells are stored per pseudo-bulk
+    (0 = all). Capping keeps the file to a workable size when only a handful of cells
+    per pseudo-bulk are ever needed — as in aggregation-consistency training, which
+    samples n_sc_per_pseudobulk of them per batch. It does mean the stored cells no
+    longer sum to their pseudo-bulk, so the cap is recorded in the cell file's ``uns``
+    and :func:`verify_rebuilt` reports "not verifiable" rather than a false mismatch.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     pb_out = output_dir / "pseudo_bulk_matched.h5ad"
     sc_out = output_dir / "source_cells_matched.h5ad"
@@ -700,7 +754,9 @@ def rebuild(
         )
 
     print(f"Annotating pseudo-bulk -> {pb_out}")
-    sample_ids, pb_var_names = annotate_pseudo_bulk(pseudo_bulk_h5ad, pb_out, complete)
+    sample_ids, pb_var_names = annotate_pseudo_bulk(
+        pseudo_bulk_h5ad, pb_out, complete, modality_label=pb_modality
+    )
 
     # Emit cells only for pseudo-bulks that exist in the h5ad AND have all cells on disk.
     usable = [s for s in sample_ids.astype(str) if s in complete]
@@ -741,8 +797,20 @@ def rebuild(
         writer = StreamingCSRWriter(sc_out, len(target_var), compression)
         obs_frames: list[pd.DataFrame] = []
 
+        subsample_rng = np.random.default_rng(subsample_seed)
+        n_capped = 0
         for position, sample_id in enumerate(usable):
             rows = by_sample[sample_id].sort_values(["chunk_id", "row_idx"])
+            if max_cells_per_pb > 0 and len(rows) > max_cells_per_pb:
+                # Uniform over the distinct cells, not weighted by n_copies: the
+                # aggregation-consistency sampler draws uniformly from whatever is
+                # stored, so a weighted pick here would bias it twice. Kept in
+                # (chunk_id, row_idx) order so the reads below stay sequential.
+                keep = subsample_rng.choice(
+                    len(rows), size=max_cells_per_pb, replace=False
+                )
+                rows = rows.iloc[np.sort(keep)]
+                n_capped += 1
             blocks, obs_parts = [], []
             for chunk_id, group in rows.groupby("chunk_id", sort=True):
                 row_idx = group["row_idx"].to_numpy(dtype=np.int64)
@@ -796,17 +864,41 @@ def rebuild(
             obs.index = pd.Index(
                 [f"{name}#{i}" for i, name in enumerate(obs.index)], name="cell_id"
             )
-        for column in ("dataset_id", "donor_id", "tissue_general", "cell_type", "sample_id"):
+        # What BulkSCDataset splits rows on downstream (--sc-label).
+        obs["modality"] = sc_modality
+        for column in (
+            "dataset_id", "donor_id", "tissue_general", "cell_type", "sample_id",
+            "modality",
+        ):
             if column in obs.columns:
                 obs[column] = pd.Categorical(obs[column])
-        ordered = [c for c in obs.columns if c not in ("pseudobulk_id", "sample_id", "n_copies")]
-        obs = obs[ordered + ["sample_id", "pseudobulk_id", "n_copies"]]
+        tail = ["sample_id", "pseudobulk_id", "n_copies", "modality"]
+        ordered = [c for c in obs.columns if c not in tail]
+        obs = obs[ordered + tail]
 
-        writer.finalize(obs, target_var)
+        writer.finalize(
+            obs,
+            target_var,
+            uns={
+                # Self-describing: verify_rebuilt reads this to decide whether the
+                # stored cells are supposed to reproduce their pseudo-bulk.
+                "max_cells_per_pseudobulk": int(max_cells_per_pb),
+                "subsample_seed": int(subsample_seed),
+                "expand_copies": bool(expand_copies),
+                "sc_modality": str(sc_modality),
+                "pb_modality": str(pb_modality),
+            },
+        )
         print(
             f"Wrote {sc_out}: {writer.n_obs} cells x {len(target_var)} genes, "
             f"{writer.nnz} nonzeros ({sc_out.stat().st_size / 1e9:.2f} GB)"
         )
+        if max_cells_per_pb > 0:
+            print(
+                f"Capped at {max_cells_per_pb} cells/pseudo-bulk: {n_capped} of "
+                f"{len(usable)} pseudo-bulks were subsampled. Their stored cells no "
+                f"longer sum to the pseudo-bulk, so --verify-rebuilt cannot check them."
+            )
     finally:
         reader.close()
 
@@ -816,8 +908,25 @@ def rebuild(
 def verify_rebuilt(
     pb_path: Path, sc_path: Path, n_samples: int, seed: int, rtol: float, atol: float
 ) -> bool:
-    """Re-sum cells from the WRITTEN cell file and compare to the written pseudo-bulk."""
+    """Re-sum cells from the WRITTEN cell file and compare to the written pseudo-bulk.
+
+    Skipped when the file was written with a per-pseudo-bulk cell cap: only a subset of
+    each pseudo-bulk's cells is stored, so the sums are *expected* to differ and a
+    comparison would report a mismatch that is not one.
+    """
     with h5py.File(sc_path, "r") as sc, h5py.File(pb_path, "r") as pb:
+        cap = 0
+        if "uns/max_cells_per_pseudobulk" in sc:
+            cap = int(sc["uns/max_cells_per_pseudobulk"][()])
+        if cap > 0:
+            print(
+                f"\nSKIPPED: the cell file stores at most {cap} cells per pseudo-bulk "
+                f"(--max-cells-per-pb), so its cells are not meant to sum to the "
+                f"pseudo-bulk. Nothing was verified. Rebuild without the cap to check "
+                f"the mapping itself."
+            )
+            return True
+
         sc_ids = sc["obs/pseudobulk_id"][:]
         copies = sc["obs/n_copies"][:].astype(np.float64)
         sc_indptr, sc_data, sc_indices = sc["X/indptr"][:], sc["X/data"], sc["X/indices"]
@@ -911,6 +1020,24 @@ def parse_args(argv=None) -> argparse.Namespace:
                                     "pseudo-bulk. Default emits unique cells with an n_copies weight.")
     rebuild_group.add_argument("--limit-samples", type=int, default=0, metavar="N",
                                help="Only write the first N pseudo-bulks (0 = all). Useful for a trial run.")
+    rebuild_group.add_argument("--max-cells-per-pb", type=int, default=0, metavar="N",
+                               help="Store at most N distinct source cells per pseudo-bulk "
+                                    "(0 = all). Keeps the cell file small when only a few "
+                                    "cells per pseudo-bulk are ever used, as in "
+                                    "aggregation-consistency training. The stored cells then "
+                                    "no longer sum to their pseudo-bulk, so --verify-rebuilt "
+                                    "skips the comparison. With --expand-copies the cap "
+                                    "applies to distinct cells, so the rows written per "
+                                    "pseudo-bulk are the sum of their n_copies.")
+    rebuild_group.add_argument("--subsample-seed", type=int, default=0,
+                               help="Seed for the --max-cells-per-pb draw (default: 0). "
+                                    "Independent of --seed, which must match the generator.")
+    rebuild_group.add_argument("--pb-modality-label", type=str, default="pseudobulk",
+                               help="Value written to obs['modality'] on the pseudo-bulk file. "
+                                    "Must match --pb-label at training time (default: pseudobulk).")
+    rebuild_group.add_argument("--sc-modality-label", type=str, default="sc",
+                               help="Value written to obs['modality'] on the cell file. "
+                                    "Must match --sc-label at training time (default: sc).")
     rebuild_group.add_argument("--compression", choices=("none", "lzf", "gzip"), default="lzf")
     rebuild_group.add_argument("--max-open-chunks", type=int, default=16)
     rebuild_group.add_argument("--verify-rebuilt", type=int, default=0, metavar="N",
@@ -1040,6 +1167,10 @@ def main(argv=None) -> int:
             limit_samples=args.limit_samples,
             compression=None if args.compression == "none" else args.compression,
             max_open_chunks=args.max_open_chunks,
+            max_cells_per_pb=args.max_cells_per_pb,
+            subsample_seed=args.subsample_seed,
+            pb_modality=args.pb_modality_label,
+            sc_modality=args.sc_modality_label,
         )
         if args.verify_rebuilt > 0:
             ok = verify_rebuilt(
