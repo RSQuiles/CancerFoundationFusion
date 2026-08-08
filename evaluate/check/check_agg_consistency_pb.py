@@ -159,17 +159,23 @@ def check_dataset_index() -> None:
 # 2. Sampler
 # --------------------------------------------------------------------------- #
 
-def make_sampler(n_sc_per_pb=3, n_pb=2, n_sc=4, n_bulk=2, group_pools=False):
-    """A BulkSCSampler with only the fields the agg pools/draw touch."""
+def make_sampler(
+    n_sc_per_pb=3, n_pb=2, n_sc=4, n_bulk=2, group_pools=False, subset=False
+):
+    """A BulkSCSampler with only the fields the agg pools/draw touch.
+
+    ``subset=True`` mimics the random_split path, where the sampler's indices are
+    Subset-local and ``subset_base_indices`` maps them back to obs rows. Note that
+    ``subset_indices`` is deliberately never set: it only exists on the non-Subset
+    construction path, so touching it here would hide a real AttributeError.
+    """
     sp = object.__new__(BulkSCSampler)
     sp.verbose = False
     sp.n_sc_per_pb = n_sc_per_pb
     sp.n_pb, sp.n_sc, sp.n_bulk = n_pb, n_sc, n_bulk
     sp.rng = np.random.default_rng(0)
-    sp.subset_indices = None
-    sp.subset_base_indices = None
 
-    # 12 SC rows (0..11), 3 PB rows (12,13,14). pb:12 (code 3) has no cells.
+    # 12 SC rows (0..11), 3 PB rows (12,13,14). pb id 3 has no cells.
     sp.sc_indices = np.arange(12, dtype=np.int64)
     sp.pb_indices = np.array([12, 13, 14], dtype=np.int64)
     sp.sc_pb_to_indices = {
@@ -183,11 +189,18 @@ def make_sampler(n_sc_per_pb=3, n_pb=2, n_sc=4, n_bulk=2, group_pools=False):
     sp.pb_indices_with_sc = sp.pb_indices
     sp.precomputed_agg = True
 
+    pb_ids = np.array([0] * 12 + [1, 2, 3], dtype=np.int64)
+    if subset:
+        # A non-identity local -> base map: base row b holds local row 14-b, so an
+        # implementation that skipped the translation would read the wrong ids.
+        sp.subset_base_indices = np.arange(14, -1, -1, dtype=np.int64)
+        pb_ids = pb_ids[::-1].copy()
+    else:
+        sp.subset_base_indices = np.arange(15, dtype=np.int64)
+
     base = object.__new__(BulkSCDataset)
     base.pb_id_column = "pseudobulk_id"
-    base._obs_arrays = {
-        "pseudobulk_id": np.array([0] * 12 + [1, 2, 3], dtype=np.int64)
-    }
+    base._obs_arrays = {"pseudobulk_id": pb_ids}
     sp.base_dataset = base
     sp._build_agg_pb_pools()
     return sp
@@ -222,6 +235,20 @@ def check_sampler() -> None:
     check("small pseudobulk sampled with replacement",
           len(drawn) == 9 and all(0 <= i < 5 for i in drawn), str(drawn))
 
+    # The random_split path: indices are Subset-local and must be translated through
+    # subset_base_indices before touching _obs_arrays. This is the construction path
+    # training actually uses, and the one where a missing translation shows up.
+    sub = make_sampler(subset=True)
+    check("Subset path: builds without touching non-existent attributes", True)
+    check("Subset path: ids read through subset_base_indices",
+          sub.pb_row_to_pb_id == {12: 1, 13: 2, 14: 3}, str(sub.pb_row_to_pb_id))
+    check("Subset path: unusable PB still excluded",
+          list(sub.pb_indices_with_sc) == [12, 13], str(list(sub.pb_indices_with_sc)))
+    drawn = sub._draw_agg_sc([12, 13])
+    check("Subset path: draws from the right pools",
+          all(0 <= i < 5 for i in drawn[:3]) and all(5 <= i < 12 for i in drawn[3:]),
+          str(drawn))
+
     # Group pools are restricted too, so a group-aware draw cannot pick an unusable PB.
     sp3 = make_sampler(group_pools=True)
     check("group pools restricted to usable pseudobulks",
@@ -243,7 +270,7 @@ def check_sampler() -> None:
     # Every pseudobulk unusable -> refuse rather than train on nothing.
     sp5 = object.__new__(BulkSCSampler)
     sp5.verbose = False
-    sp5.subset_indices = None
+    sp5.subset_base_indices = np.arange(13, dtype=np.int64)
     sp5.pb_indices = np.array([12], dtype=np.int64)
     sp5.sc_pb_to_indices = {}
     sp5.pb_group_to_indices = None

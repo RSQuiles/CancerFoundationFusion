@@ -833,11 +833,11 @@ class BulkSCSampler(Sampler[list[int]]):
             )
 
         pb_id_arr = self.base_dataset._obs_arrays[pb_id_column]
-        base_pb = (
-            self.subset_base_indices[self.pb_indices]
-            if self.subset_indices is not None
-            else self.pb_indices
-        )
+        # subset_base_indices is set on both construction paths — the Subset's own
+        # indices, or arange(len(dataset)) when there is no Subset — so this translation
+        # is the identity in the latter case and needs no branch. (subset_indices is
+        # vestigial: it only exists on the non-Subset path.)
+        base_pb = self.subset_base_indices[self.pb_indices]
         self.pb_local_to_pb_id = pb_id_arr[base_pb].astype(np.int64)
         # Built once: _draw_agg_sc runs per batch and must not rescan pb_indices.
         self.pb_row_to_pb_id = {
