@@ -153,6 +153,7 @@ def _run_pca_task(
     output_dir: Path,
     n_components: int,
     normalize: bool | None,
+    ablation_dir: Path | None,
 ) -> str:
     """Run a single downstream task using PCA embeddings as baseline.
 
@@ -170,6 +171,9 @@ def _run_pca_task(
             output_dir=output_dir,
             embedder=pca_embedder,
             normalize=normalize,
+            # No checkpoint to derive it from; survival needs it to name its CSV
+            # directory {ablation}_pca_baseline.
+            ablation_dir=ablation_dir,
         )
         return "ok"
     except Exception:
@@ -270,6 +274,7 @@ def run_ablation(
                     task_name=task,
                     output_dir=output_dir,
                     normalize=normalize,
+                    ablation_dir=ablation_dir,
                 )
                 results_summary[model_name][task] = "ok"
                 log.info("  [%s] done.", task)
@@ -303,7 +308,7 @@ def run_ablation(
                 task, cfg_file.name, _normalization_label(normalize),
             )
             status = _run_pca_task(
-                task, cfg_file, output_dir, pca_n_components, normalize
+                task, cfg_file, output_dir, pca_n_components, normalize, ablation_dir
             )
             results_summary[pca_name][task] = status
             if status == "ok":

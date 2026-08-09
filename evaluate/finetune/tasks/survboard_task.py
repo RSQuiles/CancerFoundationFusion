@@ -17,6 +17,9 @@ CSV format (matches driver_unimodal.py):
     Columns  = event-time grid (float) + metadata cols
     Metadata = model_type, modality, project, cancer, split
 
+Output path, one directory per (ablation, model) — see ``survival_layout.py``:
+    {survboard_results_dir}/{COHORT}/{CANCER}/{ablation}_{model}/split_{fold}.csv
+
 Single-fold usage (fold_index = 0 ... 24):
     The runner trains one model; compute_metrics() returns C-index + saves CSV.
 
@@ -46,6 +49,11 @@ from torch.utils.data import DataLoader, Dataset
 
 from evaluate.finetune.downstream_task import DownstreamTask, TaskRegistry
 from evaluate.finetune.normalization import resolve_policy
+from evaluate.finetune.survival_layout import (
+    model_name_from_checkpoint,
+    storage_name,
+    survival_csv_dir,
+)
 from evaluate.finetune.tasks.components import EmbeddingPredHead, LinearPredHead
 from evaluate.finetune.utils import parquet_to_adata, translate_gene_symbols, strip_ensembl_versions, deduplicate_var_names
 from evaluate.finetune.pca_baseline import PCAEmbedder
@@ -517,19 +525,23 @@ class SurvBoardTask(DownstreamTask):
         return train_dataset, test_dataset, embedding_dim
 
     def _clear_survival_csvs(self) -> None:
-        """Remove all split_*.csv files written by previous runs for this model."""
+        """Remove all split_*.csv files written by previous runs of this model.
+
+        Scoped to this ablation's own directory. It used to clear by bare model name,
+        so a run also deleted the CSVs of every same-named model in other ablations.
+        """
         results_dir = self._resolve_results_dir()
-        model_name  = self.get_model_name()
+        name        = self.get_storage_name()
         removed     = 0
         for cohort, cancer, _ in self._block_info:
-            out_dir = results_dir / cohort / cancer / model_name
+            out_dir = survival_csv_dir(results_dir, cohort, cancer, name)
             if not out_dir.exists():
                 continue
             for csv_path in out_dir.glob("split_*.csv"):
                 csv_path.unlink()
                 removed += 1
         if removed:
-            log.info(f"Cleared {removed} previous survival function CSV(s) for model '{model_name}'.")
+            log.info(f"Cleared {removed} previous survival function CSV(s) under '{name}'.")
 
     def _prepare_all_folds(self, embedder: Any) -> tuple[Dataset, Dataset, int]:
         """
@@ -602,7 +614,7 @@ class SurvBoardTask(DownstreamTask):
 
             self._test_idx   = test_idx
             self._fold_index = fold_id
-            self._save_survival_csvs(test_risk, train_idx, self.get_model_name())
+            self._save_survival_csvs(test_risk, train_idx, self.get_storage_name())
             log.info(f"Saved survival functions for Fold: {fold_id}")
 
             c_idx = _c_index(test_times, test_risk, test_events.astype(bool))
@@ -768,7 +780,7 @@ class SurvBoardTask(DownstreamTask):
 
             self._test_idx   = test_idx
             self._fold_index = fold_id
-            self._save_survival_csvs(test_risk, train_idx, self.get_model_name())
+            self._save_survival_csvs(test_risk, train_idx, self.get_storage_name())
 
             c_idx = _c_index(test_times, test_risk, test_events.astype(bool))
             fold_c_indices.append(c_idx)
@@ -876,9 +888,31 @@ class SurvBoardTask(DownstreamTask):
         if isinstance(self.embedder, PCAEmbedder):
             model_name = "pca_baseline"
         else:
-            model_name = Path(getattr(self.task_cfg, "pretrained_model_path", "unknown")).parent.name
+            model_name = model_name_from_checkpoint(
+                getattr(self.task_cfg, "pretrained_model_path", "unknown")
+            )
         log.info(f"Model name: {model_name}")
         return model_name
+
+    def get_storage_name(self) -> str:
+        """Directory name the survival CSVs are written under: ``{ablation}_{model}``.
+
+        The PCA baseline has no checkpoint of its own — its ablation comes from the
+        ``ablation_dir`` key, which ``run_ablation_downstream`` sets per run. Passing
+        the config's ``pretrained_model_path`` for it would name the CSVs after
+        whichever checkpoint the YAML happens to mention.
+        """
+        is_pca = isinstance(self.embedder, PCAEmbedder)
+        name = storage_name(
+            model_name      = self.get_model_name(),
+            checkpoint_path = (
+                None if is_pca
+                else getattr(self.task_cfg, "pretrained_model_path", None)
+            ),
+            ablation_dir    = getattr(self.task_cfg, "ablation_dir", None),
+        )
+        log.info(f"Survival CSV directory: {name}")
+        return name
 
     def compute_metrics(
         self,
@@ -907,7 +941,7 @@ class SurvBoardTask(DownstreamTask):
         c_idx = _c_index(times, risk, events)
 
         train_idx = self._all_fold_splits[0][0]
-        self._save_survival_csvs(risk, train_idx, self.get_model_name())
+        self._save_survival_csvs(risk, train_idx, self.get_storage_name())
 
         n_events = int(events.sum())
         log.info(
@@ -923,9 +957,9 @@ class SurvBoardTask(DownstreamTask):
 
     def _save_survival_csvs(
         self,
-        test_risk:  np.ndarray,
-        train_idx:  np.ndarray,
-        model_name: str,
+        test_risk:    np.ndarray,
+        train_idx:    np.ndarray,
+        storage_name: str,
     ) -> None:
         """
         Fit a cancer-specific KM baseline for each (cohort, cancer) block and
@@ -935,8 +969,8 @@ class SurvBoardTask(DownstreamTask):
         fitted only on that cancer type's training patients.  Test-patient survival
         is then:  S(t | x) = S0_cancer(t) ^ exp(risk(x))
 
-        Output path:
-            {survboard_results_dir}/{cohort}/{cancer}/{model_name}/split_{fold_index}.csv
+        Output path (``storage_name`` is ``{ablation}_{model}``):
+            {survboard_results_dir}/{cohort}/{cancer}/{storage_name}/split_{fold_index}.csv
         """
         results_dir  = self._resolve_results_dir()
         fold         = self._fold_index
@@ -976,13 +1010,16 @@ class SurvBoardTask(DownstreamTask):
                 )
 
             sf_df = pd.DataFrame(surv_mat, columns=time_grid)
-            sf_df["model_type"] = model_name
-            sf_df["modality"]   = f"{model_name}_embeddings"
+            # {ablation}_{model}, so a CSV found on its own says which run made it.
+            # Both columns are dropped as metadata on read; do NOT add a new column
+            # here, it would be parsed as a time-grid value.
+            sf_df["model_type"] = storage_name
+            sf_df["modality"]   = f"{storage_name}_embeddings"
             sf_df["project"]    = cohort
             sf_df["cancer"]     = cancer
             sf_df["split"]      = fold
 
-            out_dir  = results_dir / cohort / cancer / model_name
+            out_dir  = survival_csv_dir(results_dir, cohort, cancer, storage_name)
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"split_{fold}.csv"
             sf_df.to_csv(out_path, index=False)

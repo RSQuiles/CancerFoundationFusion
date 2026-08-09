@@ -110,6 +110,34 @@ python evaluate/finetune/run_downstream_task.py \
 Available tasks: `cancer_annot` (cancer type classification), `deconv` (cell type deconvolution).
 Config YAML files: `evaluate/finetune/cancer_annot_config_normalized.yaml`, `evaluate/finetune/deconv_config_normalized.yaml`.
 
+### Survival: on-disk layout and the metrics pass
+The `survival` task writes survival functions to
+`{survboard_results_dir}/{COHORT}/{CANCER}/{ablation}_{model}/split_{fold}.csv`. The
+`{ablation}_` prefix is **required for correctness**: model names (`unified`, `dat`,
+`bulk_baseline`, …) repeat across ablation directories that share one
+`survboard_results_dir`, so the older bare-`{model}` layout had several models writing
+to, reading from and `_clear_survival_csvs`-ing the same files. `evaluate/finetune/
+survival_layout.py` is the only place that name is composed; the writer
+(`tasks/survboard_task.py`) and both readers go through it. **There is no fallback to
+the old layout** — pre-cutover CSVs cannot be attributed to an ablation and are ignored.
+
+The task itself writes only `c_index`. Antolini concordance, IBS and D-calibration
+come from a separate CPU pass that must run before the `benchmark` plot:
+
+```bash
+# One ablation dir, from the survival task config (needs the SurvBoard env: pycox,
+# sksurv, survival_evaluation)
+python evaluate/finetune/tasks/evaluate_survboard_metrics.py --config <survival cfg> --ablation
+
+# Many ablation dirs from one config; --dry-run needs none of that env and reports
+# resolved directory names, collisions and orphaned pre-cutover CSVs
+python evaluate/finetune/scripts/run_ablation_survboard_metrics.py \
+    --config evaluate/finetune/scripts/ablation_survboard_metrics.yaml [--dry-run]
+```
+
+`evaluate/check/check_survival_layout.py` and `evaluate/check/check_survboard_sweep.py`
+self-check both offline.
+
 ### Ablation Studies
 ```bash
 python ablate/ablate.py --config ablate/example_ablation_config.json [--dry-run]
@@ -169,6 +197,10 @@ evaluate/
 │   └── check_*.py            # Standalone self-checks (no checkpoint needed)
 ├── finetune/
 │   ├── normalization.py           # NormalizationPolicy: the ONE place input normalization is decided
+│   ├── survival_layout.py         # The ONE place survival-CSV directory names are composed
+│   ├── scripts/
+│   │   ├── run_ablation_survboard_metrics.py  # SurvBoard metrics over N ablation dirs
+│   │   └── ablation_survboard_metrics.yaml    # its config (the downstream-sweep dirs)
 │   ├── downstream_task.py         # DownstreamTask abstract base class + TaskRegistry
 │   ├── base_downstream_runner.py  # BaseDownstreamRunner (shared training loop, DDP, checkpointing)
 │   ├── downstream_tasks_impl.py   # CancTypeClassTask, DeconvTask implementations

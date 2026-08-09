@@ -30,9 +30,15 @@ Usage
 
 Expected file layout produced by SurvBoardTask
 ----------------------------------------------
-    {results_dir}/{COHORT}/{CANCER}/{model_name}/split_0.csv
-    {results_dir}/{COHORT}/{CANCER}/{model_name}/split_1.csv
+    {results_dir}/{COHORT}/{CANCER}/{ablation}_{model}/split_0.csv
+    {results_dir}/{COHORT}/{CANCER}/{ablation}_{model}/split_1.csv
     ...
+
+The directory is named ``{ablation}_{model}`` — see ``evaluate/finetune/
+survival_layout.py``, which both this reader and the writer go through. Model names
+repeat across ablation directories, so the older bare-``{model}`` layout silently
+shared CSVs between ablations. There is no fallback to it: CSVs written before the
+change are ambiguous by construction, so re-run the survival task instead.
 
 Each CSV: rows = test patients, columns = float time-grid values + metadata
     (model_type, modality, project, cancer, split).
@@ -60,6 +66,18 @@ from pycox.evaluation.eval_surv import EvalSurv
 from scipy.stats import chi2
 from sksurv.nonparametric import kaplan_meier_estimator
 from survival_evaluation.utility import to_array
+
+# survboard_metrics.sh runs this file by path from evaluate/finetune/scripts/, so the
+# repo root is not on sys.path by default.
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from evaluate.finetune.survival_layout import (  # noqa: E402
+    model_name_from_checkpoint,
+    storage_name as make_storage_name,
+    survival_csv_dir,
+)
 
 log = logging.getLogger(__name__)
 
@@ -139,13 +157,15 @@ def _count_folds(splits_dir: Path, cohort: str, cancer: str) -> int:
 
 
 def _load_survival_csv(
-    results_dir: Path, cohort: str, cancer: str, model_name: str, fold: int
+    results_dir: Path, cohort: str, cancer: str, storage_name: str, fold: int
 ) -> pd.DataFrame | None:
     """
     Load a survival-function CSV and return it as a (time_grid × patients) DataFrame.
     Returns None if the file does not exist.
+
+    ``storage_name`` is the ``{ablation}_{model}`` directory, not the model name.
     """
-    path = results_dir / cohort / cancer / model_name / f"split_{fold}.csv"
+    path = survival_csv_dir(results_dir, cohort, cancer, storage_name) / f"split_{fold}.csv"
     if not path.exists():
         return None
 
@@ -242,11 +262,22 @@ def evaluate_all(
     cancer_types: list[str],
     model_name:   str,
     ibs_grid_len: int,
+    storage_name: str | None = None,
 ) -> None:
-    rows: list[dict] = []
+    """Score one model and write its metrics under ``{ablation_dir}/{model_name}/``.
 
-    log.info(f"Evaluating model '{model_name}' across {len(cohorts)} cohort(s) "
-             f"and {len(cancer_types)} cancer type(s).")
+    ``model_name`` selects where results are WRITTEN; ``storage_name`` selects where
+    the survival functions are READ from. They differ — the CSV directory is
+    ``{ablation}_{model}`` — and must not be conflated. ``storage_name`` defaults to
+    the name derived from ``ablation_dir``, which is what every caller wants.
+    """
+    rows: list[dict] = []
+    storage_name = storage_name or make_storage_name(
+        model_name, ablation_dir=ablation_dir
+    )
+
+    log.info(f"Evaluating model '{model_name}' (survival CSVs: {storage_name}/) "
+             f"across {len(cohorts)} cohort(s) and {len(cancer_types)} cancer type(s).")
 
     for cohort in cohorts:
         for cancer in cancer_types:
@@ -265,7 +296,7 @@ def evaluate_all(
 
             n_found = 0
             for fold in range(n_folds):
-                surv_df = _load_survival_csv(results_dir, cohort, cancer, model_name, fold)
+                surv_df = _load_survival_csv(results_dir, cohort, cancer, storage_name, fold)
                 if surv_df is None:
                     log.debug(f"  {cohort}/{cancer} fold {fold}: CSV not found, skipping.")
                     continue
@@ -300,22 +331,34 @@ def evaluate_all(
             if n_found:
                 log.info(f"{cohort}/{cancer}: {n_found}/{n_folds} folds evaluated.")
             else:
-                log.warning(f"{cohort}/{cancer}: no survival CSVs found under "
-                            f"{results_dir / cohort / cancer / model_name}/")
+                log.warning(
+                    f"{cohort}/{cancer}: no survival CSVs found under "
+                    f"{survival_csv_dir(results_dir, cohort, cancer, storage_name)}/"
+                )
 
     if not rows:
-        log.error("No metrics computed — check --results-dir and --model-name.")
+        log.error(
+            "No metrics computed for '%s' — nothing under %s/*/*/%s/. Survival CSVs "
+            "are now written per ablation as {ablation}_{model}; anything left from "
+            "before that change is under the bare model name and is deliberately "
+            "not read, because it was shared between ablations. Re-run the survival "
+            "task for this model.",
+            model_name, results_dir, storage_name,
+        )
         sys.exit(1)
 
     detail_df = pd.DataFrame(rows)
 
     # ---- Aggregated metrics (mean across all folds and cancer types) --------
     mean_keys = ["antolini_concordance", "ibs", "d_calibration", "event_rate"]
-    aggregated: dict[str, float | int] = {
+    aggregated: dict[str, float | int | str] = {
         k: float(detail_df[k].mean()) for k in mean_keys
     }
     aggregated["n_events"]     = int(detail_df["n_events"].sum())
     aggregated["n_folds_evaluated"] = len(detail_df)
+    # Which CSVs these numbers came from, so a results JSON can be traced back to
+    # the survival run that produced it.
+    aggregated["survival_dir"] = storage_name
 
     # ---- Save outputs -------------------------------------------------------
     out_dir = ablation_dir / model_name / "metrics"
@@ -420,13 +463,27 @@ def main() -> None:
             log.error(f"{name} does not exist: {path}")
             sys.exit(1)
 
-    def get_model_name(pretrained_path):
-        model_name = Path(pretrained_path).parent.name
-        log.info(f"Model name: {model_name}")
-        return model_name
+    # model -> the {ablation}_{model} directory its survival CSVs live in.
+    storage: dict[str, str] = {}
 
     if not args.ablation:
-        models = [get_model_name(pretrained_path)]
+        # Single model: resolve exactly as the writer does — the checkpoint decides
+        # the ablation, not the config's ablation_dir, which is easy to leave stale.
+        model = model_name_from_checkpoint(pretrained_path)
+        log.info(f"Model name: {model}")
+        models = [model]
+        storage[model] = make_storage_name(
+            model, checkpoint_path=pretrained_path, ablation_dir=ablation_dir
+        )
+        if pretrained_path.parent.parent.name != ablation_dir.name:
+            log.warning(
+                "pretrained_model_path is under '%s' but ablation_dir is '%s'. "
+                "Survival CSVs are read from '%s' (the checkpoint wins, as at write "
+                "time), while metrics are written under %s. Fix whichever key is "
+                "stale.",
+                pretrained_path.parent.parent.name, ablation_dir.name,
+                storage[model], ablation_dir / model / "metrics",
+            )
     else:
         models = [model_dir.name for model_dir in _discover_model_dirs(ablation_dir)]
         log.info(f"Found models: {models}")
@@ -441,6 +498,7 @@ def main() -> None:
             cancer_types = cancer_types,
             model_name   = model,
             ibs_grid_len = int(cfg.get("ibs_grid_len", 100)),
+            storage_name = storage.get(model),   # None -> derived from ablation_dir
         )
 
 

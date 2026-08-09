@@ -12,7 +12,7 @@ be evaluated with one command:
 Nothing is re-trained. The survival functions must already exist — they are written
 by the ``survival`` downstream task (``run_ablation_downstream.py``) to
 
-    {survboard_results_dir}/{COHORT}/{CANCER}/{model_name}/split_{fold}.csv
+    {survboard_results_dir}/{COHORT}/{CANCER}/{ablation}_{model}/split_{fold}.csv
 
 and this script only reads them and writes, per model,
 
@@ -26,14 +26,21 @@ Requires the SurvBoard environment (pycox, sksurv, survival_evaluation) — the 
 one ``scripts/survboard_metrics.sh`` activates. ``--dry-run`` and ``--list`` do not
 import any of it, so the plan can be checked anywhere.
 
-Model-name collisions
----------------------
-Survival CSVs are keyed by MODEL NAME ONLY, not by ablation directory
-(``survboard_task.py:985``). Two ablation directories that both contain, say,
-``unified/`` and share one ``survboard_results_dir`` therefore write to the same
-CSVs, and whichever ran last is what both get scored on. A pre-flight check reports
-every such collision; give the affected ablations distinct ``survboard_results_dir``
-values and re-run the survival task if you hit one.
+Directory naming
+----------------
+The CSV directory is ``{ablation_dir_basename}_{model}`` — see
+``evaluate/finetune/survival_layout.py``, which the writer and every reader go
+through. It used to be the bare model name, which meant two ablations both holding a
+``unified/`` shared one set of CSVs and were scored on whichever ran last.
+
+Two consequences:
+
+* CSVs written before that change are orphaned. ``--dry-run`` reports them so they
+  can be deleted; they are never read, because they cannot be attributed to an
+  ablation. Re-run the survival task.
+* A pre-flight check still runs, since two entries pointing at ablation directories
+  with the same basename under different roots (this config has such a pair) would
+  collide again.
 
 Config
 ------
@@ -67,6 +74,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from evaluate.analysis_config import deep_merge, interpolate, read_config_file
+from evaluate.finetune.survival_layout import storage_name, survival_csv_dir
 
 logging.basicConfig(
     level=logging.INFO,
@@ -258,30 +266,59 @@ def _has_metrics(ablation_dir: Path, model: str) -> bool:
         return False
 
 
-def check_collisions(plan: list[tuple[AblationJob, list[str]]]) -> int:
-    """Warn where one model name is shared by ablations writing to one results dir.
+def job_storage_name(job: AblationJob, model: str) -> str:
+    """The ``{ablation}_{model}`` directory this model's CSVs live in."""
+    return storage_name(model, ablation_dir=job.ablation_dir)
 
-    Returns the number of colliding names. See the module docstring: the survival
-    CSVs carry no ablation identity, so such models are all scored on whichever run
-    wrote last.
+
+def find_orphans(job: AblationJob, models: list[str]) -> list[str]:
+    """Models with CSVs left under the pre-cutover bare-``{model}`` directory.
+
+    Those files are never read — they could not be attributed to an ablation, which
+    is the whole reason for the rename — so report them for deletion. Stops at the
+    first (cohort, cancer) hit per model.
+    """
+    orphans: list[str] = []
+    for model in models:
+        for cohort in job.cohorts:
+            hit = False
+            for cancer in job.cancer_types:
+                legacy = survival_csv_dir(job.results_dir, cohort, cancer, model)
+                if legacy.is_dir() and any(legacy.glob("split_*.csv")):
+                    orphans.append(model)
+                    hit = True
+                    break
+            if hit:
+                break
+    return orphans
+
+
+def check_collisions(plan: list[tuple[AblationJob, list[str]]]) -> int:
+    """Warn where two ablations resolve to the same CSV directory.
+
+    Since the directory carries the ablation basename this can only happen when two
+    entries point at ablation directories with the same basename under different
+    roots — which this config does have (``outputs`` vs ``outputs_rquiles``, both
+    ``ablation_paired_counts``). Such models would read each other's CSVs.
     """
     owners: dict[tuple[str, str], list[str]] = {}
     for job, models in plan:
         for model in models:
-            owners.setdefault((str(job.results_dir), model), []).append(job.name)
+            key = (str(job.results_dir), job_storage_name(job, model))
+            owners.setdefault(key, []).append(job.name)
 
-    collisions = {k: v for k, v in owners.items() if len(v) > 1}
-    for (results_dir, model), names in sorted(collisions.items()):
+    collisions = {k: v for k, v in owners.items() if len(set(v)) > 1}
+    for (results_dir, name), names in sorted(collisions.items()):
         log.warning(
-            "COLLISION: model '%s' appears in %s, all sharing survboard_results_dir "
-            "%s — they read the SAME survival CSVs, so these numbers cannot "
-            "distinguish the ablations.",
-            model, ", ".join(sorted(names)), results_dir,
+            "COLLISION: %s all resolve to the survival directory '%s' under "
+            "survboard_results_dir %s — they read the SAME CSVs, so these numbers "
+            "cannot distinguish them.",
+            ", ".join(sorted(set(names))), name, results_dir,
         )
     if collisions:
         log.warning(
-            "%d colliding model name(s). Give the affected ablations distinct "
-            "'survboard_results_dir' values and re-run the survival task.",
+            "%d colliding survival directory name(s). Give the affected ablations "
+            "distinct 'survboard_results_dir' values and re-run the survival task.",
             len(collisions),
         )
     return len(collisions)
@@ -315,7 +352,8 @@ def run_job(job: AblationJob, models: list[str]) -> dict[str, str]:
             statuses[model] = "skip"
             continue
 
-        log.info("  [%s/%s] evaluating ...", job.name, model)
+        name = job_storage_name(job, model)
+        log.info("  [%s/%s] evaluating (survival CSVs: %s/) ...", job.name, model, name)
         try:
             evaluate_all(
                 data_dir     = job.data_dir.resolve(),
@@ -326,15 +364,16 @@ def run_job(job: AblationJob, models: list[str]) -> dict[str, str]:
                 cancer_types = job.cancer_types,
                 model_name   = model,
                 ibs_grid_len = job.ibs_grid_len,
+                storage_name = name,
             )
             statuses[model] = "ok"
         except SystemExit:
             # evaluate_all exits when it found no survival CSVs at all. That is a
             # missing model, not a broken sweep, so keep going.
             log.warning(
-                "  [%s/%s] no survival CSVs under %s — has the survival task run "
-                "for this model?",
-                job.name, model, job.results_dir / "<COHORT>/<CANCER>" / model,
+                "  [%s/%s] no survival CSVs under %s — has the survival task been "
+                "re-run for this model since CSVs became per-ablation?",
+                job.name, model, job.results_dir / "<COHORT>" / "<CANCER>" / name,
             )
             statuses[model] = "no-data"
         except Exception:
@@ -430,9 +469,20 @@ def main() -> None:
             print(f"  cancer_types  : {len(job.cancer_types)} "
                   f"({', '.join(job.cancer_types[:6])}"
                   f"{', ...' if len(job.cancer_types) > 6 else ''})")
-            print(f"  models        : {', '.join(models) if models else '(none found)'}")
+            if models:
+                print("  models        :")
+                for model in models:
+                    print(f"    {model:<30} -> {job_storage_name(job, model)}/")
+            else:
+                print("  models        : (none found)")
             if missing:
                 print(f"  MISSING PATHS : {'; '.join(missing)}")
+            elif models:
+                orphans = find_orphans(job, models)
+                if orphans:
+                    print(f"  ORPHANED CSVs : {', '.join(orphans)} — left under the "
+                          f"pre-cutover bare model name in {job.results_dir}; never "
+                          f"read, safe to delete")
         print()
         check_collisions(plan)
         sys.exit(0)

@@ -5,8 +5,13 @@
 # format for external evaluation with SurvBoard's evaluate_metrics.py.
 #
 # Survival functions are written to:
-#   {survboard_results_dir}/{COHORT}/{CANCER}/cff/split_{fold_index}.csv
+#   {survboard_results_dir}/{COHORT}/{CANCER}/{ablation}_{model}/split_{fold_index}.csv
 # (or {save_dir}/survival_functions_cff/... if survboard_results_dir is unset)
+#
+# {ablation}_{model} comes from evaluate/finetune/survival_layout.py: the model is the
+# checkpoint's directory, the ablation is its parent. The prefix is what lets several
+# ablations share one survboard_results_dir — without it, every 'unified' across
+# ablations wrote to the same CSVs.
 #
 # Run:
 #   cd evaluate/finetune/scripts && bash survival.sh
@@ -22,7 +27,14 @@ finetune:
     # Root directory containing {COHORT}_{CANCER}.parquet files.
     survboard_data_dir: /cluster/work/boeva/bulkFM/data/processed/survboard
 
-    # Ablation directory where results will be written to
+    # Ablation directory where results will be written to.
+    #
+    # Also names the survival-CSV directory ({basename}_{model}) for the PCA
+    # baseline, which has no checkpoint of its own to derive it from. For a real
+    # model the checkpoint wins, so a stale value here cannot mislabel its CSVs —
+    # but it DOES decide where metrics land, and it disagrees with
+    # pretrained_model_path above. run_ablation_downstream.py overrides both per
+    # model, so this only matters for a hand-run survival.sh.
     ablation_dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_aggfix
 
     # Cohorts and cancer types to include.  Every combination that has a

@@ -117,6 +117,7 @@ def main(
     output_dir: str | Path | None = None,
     embedder=None,
     normalize: bool | None = None,
+    ablation_dir: str | Path | None = None,
 ) -> dict:
     """
     Main entry point for running a downstream task.
@@ -138,6 +139,11 @@ def main(
         anywhere.  None leaves the decision to the task config's ``normalize:``
         key, which itself defaults to False.  See
         ``evaluate/finetune/normalization.py``.
+    ablation_dir : str or Path or None
+        The ablation directory this model belongs to, folded into the task config.
+        The survival task names its output directory ``{ablation}_{model}`` and the
+        PCA baseline has no checkpoint to derive that from, so a sweep must pass it.
+        See ``evaluate/finetune/survival_layout.py``.
 
     Returns
     -------
@@ -184,6 +190,12 @@ def main(
         OmegaConf.set_struct(cfg, False)
         cfg.finetune[task_name][CANONICAL_KEY] = bool(normalize)
         cfg.finetune[task_name][SOURCE_KEY] = "cli"
+
+    # Same idea for the ablation directory: the caller knows it, the config's own key
+    # is hand-written and goes stale. Survival names its CSV directory from this.
+    if ablation_dir is not None:
+        OmegaConf.set_struct(cfg, False)
+        cfg.finetune[task_name]["ablation_dir"] = str(ablation_dir)
     policy = resolve_policy(cfg.finetune[task_name], None)
     log.info("Normalization policy for '%s': %s", task_name, policy.describe())
 

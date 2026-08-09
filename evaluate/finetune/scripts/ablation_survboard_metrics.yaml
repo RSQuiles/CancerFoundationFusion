@@ -12,7 +12,7 @@
 #
 # This computes NOTHING from checkpoints. It reads the survival functions the
 # 'survival' downstream task already wrote to
-#   {survboard_results_dir}/{COHORT}/{CANCER}/{model}/split_{fold}.csv
+#   {survboard_results_dir}/{COHORT}/{CANCER}/{ablation}_{model}/split_{fold}.csv
 # and writes, per model,
 #   {ablation_dir}/{model}/metrics/results_survival.json          (antolini, ibs,
 #                                                                  d_calibration;
@@ -92,20 +92,28 @@ ablations:
     ablation_dir: ${work}/outputs/save_CFF/ablation_paired_mix
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Model-name collisions — read this before trusting a cross-ablation comparison
+# Directory naming, and what happened to the old CSVs
 # ─────────────────────────────────────────────────────────────────────────────
-# The survival CSVs are keyed by MODEL NAME ONLY (survboard_task.py:985); the
-# ablation directory does not appear in the path. Every ablation above inherits one
-# survboard_results_dir from task_config, and names like 'unified', 'dat' and
-# 'bulk_baseline' recur across these directories — so those models all read the same
-# CSVs, i.e. whichever survival run wrote last, and their metrics cannot tell the
-# ablations apart.
+# Survival CSVs live in {ablation_dir basename}_{model}, e.g.
+#   functions/TCGA/BRCA/ablation_big_condition_unified/split_5.csv
+# so the eight ablations above can share one survboard_results_dir safely. The
+# naming lives in evaluate/finetune/survival_layout.py; writer and reader both go
+# through it. --dry-run prints the resolved directory for every model.
 #
-# --dry-run lists every collision. To resolve one, give the ablation its own
-# results dir here, e.g.
+# Until this change the directory was the bare model name, and names like 'unified',
+# 'dat' and 'bulk_baseline' recur across these ablations — so those models shared one
+# set of CSVs and were scored on whichever survival run wrote last.
+#
+# CSVs from before the change are ORPHANED: they cannot be attributed to an ablation,
+# so nothing reads them. --dry-run lists which models still have them, and they can
+# be deleted. Re-run the survival task to regenerate under the new layout.
+#
+# The pre-flight collision check still runs, because two entries whose ablation
+# directories share a basename under different roots would collide again — this
+# config has exactly such a pair (paired_counts under outputs vs outputs_rquiles),
+# though only one of the two is listed. If one ever fires, give that ablation its own
+# results dir:
 #
 #   - name: big_condition
 #     ablation_dir: ${work}/outputs/save_CFF/ablation_big_condition
 #     survboard_results_dir: ${work}/outputs/survival/functions/big_condition
-#
-# and re-run the survival task with a matching survboard_results_dir before scoring.
