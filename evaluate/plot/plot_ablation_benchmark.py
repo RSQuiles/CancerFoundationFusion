@@ -17,6 +17,15 @@ highlighted with a coloured background and a star in the title.
 
 Layout:  rows = tasks,  columns = metrics within that task.
 
+With ``--per-task`` each task is written to its own figure instead, named after
+``--output`` with the task appended (``benchmark_deconv.png``). Colours, bar order
+and group bands are computed once across all tasks and shared, so the separate
+figures stay comparable with each other and with the combined one.
+
+Every bar is labelled with its value and, unless ``--no-bar-names``, with the
+model's display name — so a dense figure can be read without tracing colours back
+to the legend.
+
 Alternatively a YAML config selects individual runs — possibly from different
 ablation directories — gives them display names, and optionally arranges them
 into groups (see ``--config`` and :func:`load_config` for the schema).
@@ -24,6 +33,9 @@ into groups (see ``--config`` and :func:`load_config` for the schema).
 Usage
 -----
     python evaluate/plot/ablation_benchmark.py --ablation-dir path/to/ablation
+
+    # One figure per task rather than a single grid:
+    python evaluate/plot/ablation_benchmark.py --config comparison.yaml --per-task
 
     # Override which metric is "primary" for one or more tasks:
     python evaluate/plot/ablation_benchmark.py \\
@@ -43,6 +55,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass, field
@@ -254,6 +267,13 @@ class BenchmarkConfig:
     figsize: tuple[float, float] | None = None
     metrics: dict[str, list[str]] = field(default_factory=dict)
     primary: dict[str, str] = field(default_factory=dict)
+    # One figure per task instead of one combined grid; see plot_benchmark().
+    per_task: bool = False
+    # Only used when per_task is set. None -> derived from the single-row layout,
+    # keeping `figsize`'s width when one was given.
+    per_task_figsize: tuple[float, float] | None = None
+    # Print each model's display name above its bar, in addition to the legend.
+    bar_names: bool = True
 
     @property
     def grouped(self) -> bool:
@@ -272,6 +292,15 @@ def load_config(path: Path) -> BenchmarkConfig:
         title:   "Unified vs. big-condition"     # optional figure title
         output:  figures/comparison.png          # optional; else <config>.png
         figsize: [22, 14]                        # optional, inches
+
+        per_task: true            # one figure per task instead of one grid.
+                                  # Each is written next to `output` with the task
+                                  # appended: comparison_canc_type_class.png, ...
+        per_task_figsize: [30, 8] # optional; only read when per_task is set.
+                                  # Omitted -> derived from the single-row layout,
+                                  # reusing figsize's width if one was given.
+        bar_names: false          # default true: print each model's display name
+                                  # above its bar as well as in the legend.
 
         metrics:                                 # optional metric subsets
           canc_type_class: [accuracy, f1_weighted]
@@ -306,6 +335,14 @@ def load_config(path: Path) -> BenchmarkConfig:
     groups = parse_groups(raw, path, is_model_dir)
     figsize = parse_figsize(raw, path)
 
+    # parse_figsize reads the 'figsize' key by name, so borrow it for the per-task
+    # variant by presenting that value under the same key.
+    per_task_figsize = (
+        parse_figsize({"figsize": raw["per_task_figsize"]}, path)
+        if raw.get("per_task_figsize")
+        else None
+    )
+
     metrics = {
         str(task): _as_metric_list(value, f"metrics['{task}']")
         for task, value in (raw.get("metrics") or {}).items()
@@ -321,6 +358,9 @@ def load_config(path: Path) -> BenchmarkConfig:
         figsize=figsize,
         metrics=metrics,
         primary=primary,
+        per_task=bool(raw.get("per_task", False)),
+        per_task_figsize=per_task_figsize,
+        bar_names=bool(raw.get("bar_names", True)),
     )
 
 
@@ -452,88 +492,110 @@ def _build_task_metrics(
 # Plot
 # --------------------------------------------------------------------------- #
 
-def plot_benchmark(
-    results: dict[str, dict[str, dict[str, float]]],
-    primary_overrides: dict[str, str],
-    output: Path | None,
-    show: bool,
-    figsize: tuple[float, float] | None,
-    metric_subsets: dict[str, list[str]] | None = None,
-    groups: list[tuple[str | None, list[str]]] | None = None,
-    title: str = "Ablation Benchmark",
+def task_output_path(output: Path, task: str) -> Path:
+    """``comparison.png`` + ``deconv`` -> ``comparison_deconv.png``.
+
+    ``_norm`` is reused so the display-string tasks that
+    ``collect_model_metrics`` invents for drug sensitivity ("Drug Sensitivity
+    Prediction (IC50 Regression)") also produce a clean filename.
+    """
+    return output.with_name(f"{output.stem}_{_norm(task)}{output.suffix}")
+
+
+def _legend_inches(n_models: int, ncol: int) -> float:
+    """Vertical space the shared legend needs, in inches.
+
+    Computed rather than hardcoded because the old fixed 6% reserve only happened
+    to fit the combined figure: a per-task figure is a third of the height, so the
+    same fraction is a third of the space for exactly as many legend rows.
+    """
+    rows = math.ceil(n_models / max(ncol, 1))
+    return 0.23 * rows + 0.45          # row height + frame/title padding
+
+
+def _apply_name_headroom(
+    fig,
+    axes_list: list,
+    model_names: list[str],
+    fontsize: float,
+    padding: float,
 ) -> None:
+    """Extend each axes' y-range so the rotated model names fit above the bars.
+
+    The names sit at a fixed offset in *points*, so how much data-space they need
+    depends on the axes' physical height — a fraction that works for a tall
+    combined grid clips badly on a short per-task figure. Measure instead: convert
+    the label's height in points into a fraction of the axes, per axes.
     """
-    Generate the benchmark grid.
+    # Rotated 90 degrees, the label's vertical extent is its rendered *length*.
+    # 0.62 * fontsize is a good average advance for DejaVu Sans, matplotlib's
+    # default; erring high only leaves a little extra whitespace.
+    longest = max((len(n) for n in model_names), default=0)
+    needed_pt = padding + 0.62 * fontsize * longest + 4.0
 
-    Grid layout:  rows = tasks,  columns = metrics within each task.
-    Within every subplot, one bar per model.
-    The primary metric column is highlighted with a coloured background and ★.
+    fig.canvas.draw()
+    for ax in axes_list:
+        ax_pt = ax.get_window_extent().height * 72.0 / fig.dpi
+        if ax_pt <= 0:
+            continue
+        lo, hi = ax.get_ylim()
+        # Cap the expansion: a pathologically short axes would otherwise blow the
+        # scale up so far the bars vanish.
+        frac = min(needed_pt / ax_pt, 1.2)
+        ax.set_ylim(lo, hi + (hi - lo) * frac)
 
-    ``metric_subsets`` optionally restricts (and orders) the metrics plotted for
-    individual tasks — see :func:`_build_task_metrics`.
 
-    ``groups`` optionally arranges the bars into named groups: each group gets a
-    base hue (lightened across its members), a gap and a shaded band, and its
-    name is printed under the bottom row of subplots.
+def _render_figure(
+    tasks: list[str],
+    results: dict[str, dict[str, dict[str, float]]],
+    task_metrics: dict[str, list[str]],
+    primary: dict[str, str],
+    model_names: list[str],
+    x_positions: np.ndarray,
+    colors: list,
+    spans: list[tuple[float, float, str | None]],
+    named_groups: bool,
+    grouped: bool,
+    figsize: tuple[float, float] | None,
+    title: str,
+    bar_names: bool,
+    output: Path | None,
+):
+    """Draw one figure covering *tasks* (rows) x their metrics (columns).
+
+    Returns the Figure; the caller decides whether to save, show or close it.
     """
-    if not results:
-        print("No results found — nothing to plot.", file=sys.stderr)
-        sys.exit(1)
-
-    all_tasks, task_metrics, primary = _build_task_metrics(
-        results, primary_overrides, metric_subsets
-    )
-    model_names = list(results.keys())
-    n_models    = len(model_names)
-    n_tasks     = len(all_tasks)
-    n_cols      = max((len(task_metrics[t]) for t in all_tasks), default=1)
-
-    if n_tasks == 0:
-        print("No tasks found — nothing to plot.", file=sys.stderr)
-        sys.exit(1)
-
-    # Colour palette — one fixed colour per model, shared across all subplots.
-    # A single unnamed group carries no grouping information, so it is drawn
-    # like the ungrouped case (distinct colour per bar) rather than as shades
-    # of one hue.
-    spans: list[tuple[float, float, str | None]] = []
-    use_groups = bool(groups) and (
-        len(groups) > 1 or any(name for name, _ in groups)
-    )
-    if use_groups:
-        x_list, colors, spans = _grouped_layout(model_names, groups)
-        x_positions = np.asarray(x_list, dtype=float)
-        named_groups = any(name for _, _, name in spans)
-    else:
-        cmap   = plt.get_cmap("tab10") if n_models <= 10 else plt.get_cmap("tab20")
-        colors = [cmap(i % cmap.N) for i in range(n_models)]
-        x_positions = np.arange(n_models, dtype=float)
-        named_groups = False
+    n_models = len(model_names)
+    n_tasks  = len(tasks)
+    n_cols   = max((len(task_metrics[t]) for t in tasks), default=1)
 
     # Widen the figure in proportion to the gaps inserted between groups
     # (width_scale is exactly 1.0 when there are none).
     width_scale = float(x_positions.max() - x_positions.min() + 1) / n_models
 
+    ncol_legend = min(n_models, 6)
+    legend_in   = _legend_inches(n_models, ncol_legend)
+
     col_w, row_h = 2.6, 3.2
     fig_w = figsize[0] if figsize else max(n_cols * col_w * width_scale + 1.5, 6.0)
-    fig_h = figsize[1] if figsize else max(n_tasks * row_h + 1.2, 4.0)
+    fig_h = figsize[1] if figsize else max(n_tasks * row_h + legend_in + 0.8, 4.0)
 
-    fig, axes = plt.subplots(
-        n_tasks, n_cols,
-        figsize=(fig_w, fig_h),
-        squeeze=False,
-    )
+    fig, axes = plt.subplots(n_tasks, n_cols, figsize=(fig_w, fig_h), squeeze=False)
 
     bar_width = 0.75
 
     # Bottom-most visible subplot per column — where group names are printed.
     # (Tasks have different metric counts, so the grid is ragged.)
     last_visible_row: dict[int, int] = {}
-    for row, task in enumerate(all_tasks):
+    for row, task in enumerate(tasks):
         for col in range(len(task_metrics[task])):
             last_visible_row[col] = row
 
-    for row, task in enumerate(all_tasks):
+    # Axes that ended up with bars, so the rotated-name headroom can be applied to
+    # exactly those, after layout, when their real pixel height is known.
+    axes_with_bars: list = []
+
+    for row, task in enumerate(tasks):
         metrics_for_task = task_metrics[task]
         primary_metric   = primary.get(task)
 
@@ -569,7 +631,14 @@ def plot_benchmark(
                     edgecolor="white",
                     linewidth=0.5,
                 )
-                ax.bar_label(bar, fmt="%.3f", padding=3, fontsize=7)
+                ax.bar_label(bar, fmt="%.3f", padding=2, fontsize=6)
+                if bar_names:
+                    # Above the value label (padding is in points, so this clears
+                    # it regardless of the data scale), rotated to fit dense grids.
+                    ax.bar_label(
+                        bar, labels=[model_name], padding=13, fontsize=6,
+                        rotation=90, color="#333333",
+                    )
                 any_bar = True
 
             # Subplot title: metric name + direction + star for primary.
@@ -587,6 +656,9 @@ def plot_benchmark(
             ax.set_xticks([])
             ax.grid(axis="y", linestyle="--", alpha=0.4, zorder=0)
             ax.set_axisbelow(True)
+
+            if any_bar:
+                axes_with_bars.append(ax)
 
             # Grouped mode: shaded band behind each group + a fixed x-range so
             # every subplot lines up with the group labels under the figure.
@@ -637,10 +709,10 @@ def plot_benchmark(
     fig.legend(
         handles=legend_handles,
         loc="lower center",
-        ncol=min(n_models, 6),
+        ncol=ncol_legend,
         frameon=True,
         fontsize=9,
-        title="Experiment" if groups else "Model",
+        title="Experiment" if grouped else "Model",
         title_fontsize=9,
         bbox_to_anchor=(0.5, 0.0),
     )
@@ -653,15 +725,147 @@ def plot_benchmark(
     )
 
     fig.suptitle(title, fontsize=13, fontweight="bold", y=1.01)
-    plt.tight_layout(rect=[0, 0.06, 1, 1])
+    # Reserve exactly the legend's height rather than a fixed 6%, so the same code
+    # works for a tall combined grid and a short single-task figure.
+    plt.tight_layout(rect=[0, min(legend_in / fig_h, 0.5), 1, 1])
+
+    # After layout, so each axes' real height is known: the names are drawn at a
+    # point offset and are invisible to the autoscaler, so the y-range has to be
+    # widened by hand. Measuring beats guessing here — the same label needs a much
+    # larger fraction of a short axes than of a tall one.
+    if bar_names and axes_with_bars:
+        _apply_name_headroom(fig, axes_with_bars, model_names, fontsize=6, padding=13)
 
     if output is not None:
         output.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(output, bbox_inches="tight", dpi=150)
         print(f"Saved to {output}")
 
+    return fig
+
+
+def plot_benchmark(
+    results: dict[str, dict[str, dict[str, float]]],
+    primary_overrides: dict[str, str],
+    output: Path | None,
+    show: bool,
+    figsize: tuple[float, float] | None,
+    metric_subsets: dict[str, list[str]] | None = None,
+    groups: list[tuple[str | None, list[str]]] | None = None,
+    title: str = "Ablation Benchmark",
+    per_task: bool = False,
+    per_task_figsize: tuple[float, float] | None = None,
+    bar_names: bool = True,
+) -> list[Path]:
+    """
+    Generate the benchmark grid.
+
+    Grid layout:  rows = tasks,  columns = metrics within each task.
+    Within every subplot, one bar per model.
+    The primary metric column is highlighted with a coloured background and ★.
+
+    ``metric_subsets`` optionally restricts (and orders) the metrics plotted for
+    individual tasks — see :func:`_build_task_metrics`.
+
+    ``groups`` optionally arranges the bars into named groups: each group gets a
+    base hue (lightened across its members), a gap and a shaded band, and its
+    name is printed under the bottom row of subplots.
+
+    ``per_task`` writes one figure per task instead of a single grid, each named
+    after ``output`` with the task appended. Colours, ordering and group bands are
+    computed once and shared, so the per-task figures stay comparable with each
+    other and with the combined one.
+
+    ``bar_names`` prints each model's display name above its bar as well as in the
+    legend.
+
+    Returns the list of paths written (empty when ``output`` is None).
+    """
+    if not results:
+        print("No results found — nothing to plot.", file=sys.stderr)
+        sys.exit(1)
+
+    all_tasks, task_metrics, primary = _build_task_metrics(
+        results, primary_overrides, metric_subsets
+    )
+    model_names = list(results.keys())
+    n_models    = len(model_names)
+
+    if not all_tasks:
+        print("No tasks found — nothing to plot.", file=sys.stderr)
+        sys.exit(1)
+
+    # Colour palette — one fixed colour per model, shared across all subplots.
+    # A single unnamed group carries no grouping information, so it is drawn
+    # like the ungrouped case (distinct colour per bar) rather than as shades
+    # of one hue.
+    spans: list[tuple[float, float, str | None]] = []
+    use_groups = bool(groups) and (
+        len(groups) > 1 or any(name for name, _ in groups)
+    )
+    if use_groups:
+        x_list, colors, spans = _grouped_layout(model_names, groups)
+        x_positions = np.asarray(x_list, dtype=float)
+        named_groups = any(name for _, _, name in spans)
+    else:
+        cmap   = plt.get_cmap("tab10") if n_models <= 10 else plt.get_cmap("tab20")
+        colors = [cmap(i % cmap.N) for i in range(n_models)]
+        x_positions = np.arange(n_models, dtype=float)
+        named_groups = False
+
+    common = dict(
+        results=results,
+        task_metrics=task_metrics,
+        primary=primary,
+        model_names=model_names,
+        x_positions=x_positions,
+        colors=colors,
+        spans=spans,
+        named_groups=named_groups,
+        grouped=bool(groups),
+        bar_names=bar_names,
+    )
+
+    written: list[Path] = []
+
+    if per_task:
+        # Height is derived per figure unless the caller pinned it: a combined
+        # figsize sized for N task rows is N times too tall for one row. The width
+        # is kept, since it is set by the number of bars, which does not change.
+        task_size = per_task_figsize or (
+            (figsize[0], _single_row_height(n_models)) if figsize else None
+        )
+        for task in all_tasks:
+            out = task_output_path(output, task) if output is not None else None
+            fig = _render_figure(
+                tasks=[task],
+                figsize=task_size,
+                title=f"{title} — {TASK_LABELS.get(task, task)}".replace("\n", " "),
+                output=out,
+                **common,
+            )
+            if out is not None:
+                written.append(out)
+            if not show:
+                plt.close(fig)
+    else:
+        fig = _render_figure(
+            tasks=all_tasks, figsize=figsize, title=title, output=output, **common
+        )
+        if output is not None:
+            written.append(output)
+        if not show:
+            plt.close(fig)
+
     if show:
         plt.show()
+
+    return written
+
+
+def _single_row_height(n_models: int) -> float:
+    """Figure height for a one-task figure: the row plus the legend it needs."""
+    return 3.2 + _legend_inches(n_models, min(n_models, 6)) + 0.8
 
 
 # --------------------------------------------------------------------------- #
@@ -720,6 +924,36 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Figure width and height in inches (auto if omitted).",
     )
+    parser.add_argument(
+        "--per-task",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Write one figure per downstream task instead of a single combined "
+            "grid. Each is saved next to --output with the task name appended "
+            "(benchmark_deconv.png, ...). Overrides the config's 'per_task' key."
+        ),
+    )
+    parser.add_argument(
+        "--per-task-figsize",
+        nargs=2,
+        type=float,
+        metavar=("W", "H"),
+        default=None,
+        help=(
+            "Size of each per-task figure in inches. Omitted: the width comes from "
+            "--figsize and the height is derived from the single-row layout."
+        ),
+    )
+    parser.add_argument(
+        "--bar-names",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Print each model's display name above its bar as well as in the "
+            "legend (default: on). Overrides the config's 'bar_names' key."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -731,6 +965,10 @@ def main() -> None:
     primary_overrides: dict[str, str] = {}
     title = "Ablation Benchmark"
     figsize = tuple(args.figsize) if args.figsize else None
+    # CLI wins over the config; None means "not specified on the CLI".
+    per_task = bool(args.per_task) if args.per_task is not None else False
+    per_task_figsize = tuple(args.per_task_figsize) if args.per_task_figsize else None
+    bar_names = bool(args.bar_names) if args.bar_names is not None else True
 
     if args.config is not None:
         # ---- Config-driven: hand-picked runs, possibly across ablations ----
@@ -742,6 +980,9 @@ def main() -> None:
         config = load_config(config_path)
         title  = config.title
         figsize = figsize or config.figsize
+        per_task = args.per_task if args.per_task is not None else config.per_task
+        per_task_figsize = per_task_figsize or config.per_task_figsize
+        bar_names = args.bar_names if args.bar_names is not None else config.bar_names
 
         print(f"Loading experiments from {config_path} ...")
         results, groups = collect_from_config(config)
@@ -808,6 +1049,9 @@ def main() -> None:
         metric_subsets=metric_subsets or None,
         groups=groups,
         title=title,
+        per_task=per_task,
+        per_task_figsize=per_task_figsize,
+        bar_names=bar_names,
     )
 
 
