@@ -54,17 +54,18 @@ def rows_of(cells) -> dict[int, list[int]]:
 
 def check_wrapping() -> None:
     print("\n-- per-task wrapping (max 2 per row) --")
-    for n, expected in (
-        (1, {0: [1]}),                       # centred in a 2-column grid
-        (2, {0: [0, 2]}),
-        (3, {0: [0, 2], 1: [1]}),            # lone second row centred
-        (4, {0: [0, 2], 1: [0, 2]}),
-        (5, {0: [0, 2], 1: [0, 2], 2: [1]}),
+    for n, expected, expected_cols in (
+        (1, {0: [0]}, 1),                       # single column, fills its figure
+        (2, {0: [0, 2]}, 2),
+        (3, {0: [0, 2], 1: [1]}, 2),            # lone second row centred
+        (4, {0: [0, 2], 1: [0, 2]}, 2),
+        (5, {0: [0, 2], 1: [0, 2], 2: [1]}, 2),
     ):
         metrics = {"t": [f"m{i}" for i in range(n)]}
         cells, n_rows, n_cols = pab._plan_cells(["t"], metrics, pab.PER_TASK_MAX_COLS)
-        check(f"{n} metric(s) -> {len(expected)} row(s), {n_cols} col(s)",
-              rows_of(cells) == expected and n_rows == len(expected) and n_cols == 2,
+        check(f"{n} metric(s) -> {len(expected)} row(s), {expected_cols} col(s)",
+              rows_of(cells) == expected and n_rows == len(expected)
+              and n_cols == expected_cols,
               f"{rows_of(cells)} rows={n_rows} cols={n_cols}")
 
     # Centring means the lone cell's midpoint equals the midpoint of a full row.
@@ -100,6 +101,7 @@ def check_group_labels_wrapped() -> None:
         (3, {(1, 1)}),               # only the centred bottom cell
         (4, {(1, 0), (1, 2)}),
         (2, {(0, 0), (0, 2)}),
+        (1, {(0, 0)}),
     ):
         cells, n_rows, _ = pab._plan_cells(
             ["t"], {"t": [f"m{i}" for i in range(n)]}, pab.PER_TASK_MAX_COLS
@@ -108,11 +110,26 @@ def check_group_labels_wrapped() -> None:
         check(f"{n} metric(s): bottom row only", labels == expected, str(sorted(labels)))
 
 
-def render(n_metrics: int, n_models: int = 19, figsize=(24, 8), max_cols=2):
+def render(n_metrics: int, n_models: int = 19, figsize=None, max_cols=2, n_groups=5):
+    """One per-task figure, auto-sized unless *figsize* is given.
+
+    Several groups with names of realistic length, since a narrow group with a long
+    name is exactly the case the group-label fitting has to handle.
+    """
     names = [f"experiment/name_{i}" for i in range(n_models)]
     metrics = [f"metric_{i}" for i in range(n_metrics)]
     results = {n: {"t": {m: 0.5 + 0.02 * i for m in metrics}} for i, n in enumerate(names)}
-    groups = [("Group one", names[: n_models // 2]), ("Group two", names[n_models // 2:])]
+    labels = ["Base comparison", "Paired alignment objectives", "Paired mix",
+              "Big condition", "Baseline"]
+    per = max(n_models // n_groups, 1)
+    groups = [
+        (labels[g % len(labels)], names[g * per: (g + 1) * per])
+        for g in range(n_groups)
+    ]
+    groups = [(label, members) for label, members in groups if members]
+    assigned = sum(len(m) for _, m in groups)
+    if assigned < n_models:                     # remainder joins the last group
+        groups[-1] = (groups[-1][0], groups[-1][1] + names[assigned:])
     x, colors, spans = grouped_layout(names, groups)
     return pab._render_figure(
         tasks=["t"], results=results, task_metrics={"t": metrics},
@@ -148,13 +165,19 @@ def check_names_fit() -> None:
 
 
 def check_centred_on_canvas() -> None:
+    """A short row sits in the middle, and the saved crop keeps it there."""
     print("\n-- centred subplot is centred on the figure --")
-    fig = render(1)
-    ax = fig.axes[0]
-    pos = ax.get_position()
-    centre = (pos.x0 + pos.x1) / 2
-    check("lone axes centred", abs(centre - 0.5) < 0.02, f"centre={centre:.3f}")
-    check("and not full width", pos.width < 0.75, f"width={pos.width:.3f}")
+    fig = render(3)
+    # Bottom row holds one subplot; it must be centred on the pair above it.
+    by_row = sorted(fig.axes, key=lambda a: -a.get_position().y0)
+    top = [a.get_position() for a in by_row[:2]]
+    lone = by_row[2].get_position()
+    check("lone bottom axes centred on the row above",
+          abs((lone.x0 + lone.x1) / 2 - (min(p.x0 for p in top) + max(p.x1 for p in top)) / 2)
+          < 0.01)
+    check("and the same width as one of them",
+          abs(lone.width - top[0].width) < 0.01,
+          f"{lone.width:.3f} vs {top[0].width:.3f}")
 
     # The footnote must not hold the saved crop out to the figure's right edge.
     bbox = fig.get_tightbbox(fig.canvas.get_renderer())
@@ -165,6 +188,72 @@ def check_centred_on_canvas() -> None:
     matplotlib.pyplot.close(fig)
 
 
+def check_auto_size() -> None:
+    """Figures must be sized from their content, not from a hardcoded default."""
+    print("\n-- auto sizing --")
+    narrow = pab._figure_width(2, 24, 1.2, bar_names=True)
+    wide   = pab._figure_width(2, 48, 1.2, bar_names=True)
+    check("width grows with the number of bars", wide > narrow,
+          f"{narrow:.1f} vs {wide:.1f}")
+    # Proportionally, once past the MIN_COL_INCHES floor that a handful of bars hits.
+    check("twice the bars, twice the plotting width",
+          abs((wide - 1.5) - 2 * (narrow - 1.5)) < 0.01,
+          f"{wide - 1.5:.2f} vs 2 x {narrow - 1.5:.2f}")
+    check("a handful of bars still gets a usable width",
+          pab._figure_width(2, 3, 1.0, bar_names=True) >= 6.0)
+    check("dropping bar names narrows it a lot",
+          pab._figure_width(2, 48, 1.2, bar_names=False) < 0.6 * wide)
+    check("fewer metric columns -> proportionally narrower",
+          abs(pab._figure_width(4, 48, 1.2, True) - 1.5
+              - 2 * (pab._figure_width(2, 48, 1.2, True) - 1.5)) < 0.01)
+    check("height grows with the number of rows",
+          pab._figure_height(2, 48) > pab._figure_height(1, 48))
+
+    # The point of the exercise: a document-shaped figure, not a 4:1 ribbon.
+    for n_metrics, limit in ((4, 2.0), (2, 3.0)):
+        fig = render(n_metrics, n_models=48)
+        aspect = fig.get_figwidth() / fig.get_figheight()
+        check(f"{n_metrics} metrics, 48 models: aspect {aspect:.2f} <= {limit}",
+              aspect <= limit,
+              f"{fig.get_figwidth():.1f} x {fig.get_figheight():.1f}")
+        matplotlib.pyplot.close(fig)
+
+
+def check_labels_do_not_collide() -> None:
+    """Adjacent bars' labels must stay clear at the auto width.
+
+    This is what pins BAR_SLOT_INCHES and the value-label rotation: narrowing the
+    figure any further merges the numbers of neighbouring bars into one string.
+    """
+    print("\n-- labels of adjacent bars --")
+    selectors = {
+        "values": lambda t: round(t.get_fontsize(), 1) == 6.0,
+        "names":  lambda t: round(t.get_fontsize(), 1) == float(pab.BAR_NAME_FONTSIZE),
+        # Group names are the italic ones, under the bottom row.
+        "groups": lambda t: t.get_style() == "italic",
+    }
+    for n_models in (6, 20, 48):
+        fig = render(4, n_models=n_models)
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+
+        for what, keep in selectors.items():
+            worst = 1.0
+            # Per axes: labels in different subplots share x ranges and would
+            # register as false overlaps.
+            for ax in fig.axes:
+                texts = sorted(
+                    (t for t in ax.texts if keep(t)),
+                    key=lambda t: t.get_window_extent(renderer).x0,
+                )
+                for a, b in zip(texts, texts[1:]):
+                    gap = b.get_window_extent(renderer).x0 - a.get_window_extent(renderer).x1
+                    worst = min(worst, gap)
+            check(f"{n_models:>2} models: {what} clear of each other",
+                  worst >= 0, f"{worst:.1f}px overlap")
+        matplotlib.pyplot.close(fig)
+
+
 def check_font_sizes() -> None:
     print("\n-- label sizes --")
     check("bar names larger than the value labels", pab.BAR_NAME_FONTSIZE > 6)
@@ -172,12 +261,12 @@ def check_font_sizes() -> None:
     check("legend larger than the old 9", pab.LEGEND_FONTSIZE > 9)
 
     fig = render(2)
-    sizes = {
-        round(t.get_fontsize(), 1)
-        for ax in fig.axes for t in ax.texts if t.get_rotation() == 90
-    }
-    check("bar names drawn at BAR_NAME_FONTSIZE",
-          sizes == {float(pab.BAR_NAME_FONTSIZE)}, str(sizes))
+    # Select by size, not rotation: in a dense figure the value labels are turned
+    # 90 degrees too, so rotation no longer distinguishes them.
+    names = [t for ax in fig.axes for t in ax.texts
+             if round(t.get_fontsize(), 1) == float(pab.BAR_NAME_FONTSIZE)]
+    check("bar names drawn at BAR_NAME_FONTSIZE", bool(names))
+    check("and rotated", {t.get_rotation() for t in names} == {90.0})
     legend = fig.legends[0]
     check("legend drawn at LEGEND_FONTSIZE",
           round(legend.get_texts()[0].get_fontsize(), 1) == float(pab.LEGEND_FONTSIZE))
@@ -190,6 +279,8 @@ def main() -> None:
     check_group_labels_wrapped()
     check_names_fit()
     check_centred_on_canvas()
+    check_auto_size()
+    check_labels_do_not_collide()
     check_font_sizes()
 
     print()

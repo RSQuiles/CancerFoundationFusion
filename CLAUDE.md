@@ -111,13 +111,22 @@ count — those bars come from an earlier run and may not be comparable with the
 neighbours. `evaluate/check/check_benchmark_fallback.py` self-checks it.
 
 **Per-task layout.** `per_task` figures place at most `PER_TASK_MAX_COLS` (2) metrics
-per row, wrapping onto further rows and centring a short row, so a single-metric task
-gets one centred subplot. The combined grid is unaffected: one row per task, short
-rows left-aligned so columns line up across tasks. Bar names, group names and the
-legend are sized by `BAR_NAME_FONTSIZE` / `GROUP_NAME_FONTSIZE` / `LEGEND_FONTSIZE`;
-the y-range is then widened to fit the rotated names, measured per axes.
-`evaluate/check/check_benchmark_layout.py` self-checks the layout and asserts no name
-overflows its axes.
+per row, wrapping onto further rows and centring a short row. The combined grid is
+unaffected: one row per task, short rows left-aligned so columns line up across tasks.
+Bar names, group names and the legend are sized by `BAR_NAME_FONTSIZE` /
+`GROUP_NAME_FONTSIZE` / `LEGEND_FONTSIZE`; the y-range is then widened to fit the
+rotated names, measured per axes.
+
+**Figure size is derived from the content** — `BAR_SLOT_INCHES` per bar for width,
+`ROW_INCHES` per subplot row plus the legend for height — so `figsize` should not
+normally be set. `figsize` describes the combined grid only and is **not** inherited
+by per-task figures (`per_task_figsize` overrides those); inheriting it is what used
+to make them come out at four columns' width for two columns of content. The width
+floor is the rotated model name above each bar, so **`bar_names: false` is the lever**
+when a dense figure is still too wide for a document — 48 runs give ~22x13in with
+names, ~12x12in without. Below ~0.32in per bar the value labels rotate too, otherwise
+adjacent numbers merge. `evaluate/check/check_benchmark_layout.py` self-checks all of
+this, including that no two labels of adjacent bars overlap.
 
 ### Downstream Tasks
 ```bash

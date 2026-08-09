@@ -29,8 +29,12 @@ With ``--per-task`` each task is written to its own figure instead, named after
 and group bands are computed once across all tasks and shared, so the separate
 figures stay comparable with each other and with the combined one. These figures
 place at most two metrics per row (``PER_TASK_MAX_COLS``), wrapping onto further
-rows and centring a row that ends up short — so a task with a single metric gets
-one centred subplot rather than a stretched one.
+rows and centring a row that ends up short.
+
+Figures are sized from their content unless a size is given: width from how many
+bars a subplot must hold, height from the number of rows and the legend. The floor
+on width is the rotated model name above each bar, so ``--no-bar-names`` (they stay
+in the legend) is the lever when a dense figure is still too wide for a document.
 
 Every bar is labelled with its value and, unless ``--no-bar-names``, with the
 model's display name — so a dense figure can be read without tracing colours back
@@ -68,6 +72,7 @@ import json
 import math
 import re
 import sys
+import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -83,7 +88,10 @@ from evaluate.plot.experiment_selection import (  # noqa: E402
     GROUP_SHADES as _GROUP_SHADES,
     as_str_list as _as_metric_list,
     grouped_layout as _grouped_layout,
-    is_model_dir,
+    # Superseded here by is_benchmark_model_dir, which also accepts a model whose
+    # results live in metrics_old/. Kept as a re-export: it was part of this
+    # module's surface before that, and callers still import it from here.
+    is_model_dir,  # noqa: F401
     load_raw_config,
     parse_figsize,
     parse_groups,
@@ -151,6 +159,25 @@ PER_TASK_MAX_COLS = 2
 BAR_NAME_FONTSIZE   = 9
 GROUP_NAME_FONTSIZE = 11
 LEGEND_FONTSIZE     = 11
+
+# Auto-sizing, in inches. Width is per bar rather than per subplot: a subplot
+# holding 48 bars needs a different width from one holding 4, and the old flat
+# 2.6in per column is why every real config had to hardcode `figsize`.
+#
+# What sets the floor is the rotated model name above each bar — turned 90° its
+# footprint is the font's line height, so bars any narrower than that and the names
+# touch. Without them the bars can be packed much tighter, which is the single
+# biggest lever on how wide (and so how document-shaped) a dense figure comes out.
+# A rotated BAR_NAME_FONTSIZE label measures 0.130in across (check_benchmark_layout
+# asserts adjacent names stay clear), so 0.17 leaves ~0.04in of air — near the floor.
+BAR_SLOT_INCHES       = 0.17   # bar names on
+BAR_SLOT_INCHES_PLAIN = 0.09   # bar names off
+MIN_COL_INCHES        = 2.6    # keeps a 2-bar subplot from collapsing
+ROW_INCHES            = 4.6    # tall rows, so a wrapped figure reads closer to square
+
+# Width of a horizontal "0.408" value label. Bars narrower than this get their
+# value labels rotated, otherwise adjacent numbers merge into one string.
+_VALUE_LABEL_INCHES = 0.32
 
 
 # --------------------------------------------------------------------------- #
@@ -654,10 +681,7 @@ def _plan_cells(
     Returns ``(cells, n_grid_rows, n_cols)``.
     """
     widest = max((len(task_metrics[t]) for t in tasks), default=1) or 1
-    # When wrapping, the grid is always max_cols wide even for a task with a single
-    # metric: that subplot is then centred at the same width as every other
-    # per-task figure's, instead of being stretched across the whole page.
-    n_cols = max_cols if max_cols else widest
+    n_cols = min(max_cols, widest) if max_cols else widest
 
     cells: list[_Cell] = []
     row = 0
@@ -677,6 +701,59 @@ def _plan_cells(
             row += 1
 
     return cells, max(row, 1), n_cols
+
+
+def _fit_group_labels(
+    spans: list[tuple[float, float, str | None]],
+    axes_width_in: float,
+    fontsize: float,
+) -> tuple[float, dict[str, str]]:
+    """Wrap group names, and shrink them, to the width each group actually has.
+
+    A group is only as wide as its bars: "Paired mix" spans two of them. At a
+    readable font size the names of adjacent narrow groups run into each other,
+    and the narrower the figure the worse it gets — so wrap them onto several
+    lines, and scale down (never below 3/4) when even the longest single word
+    does not fit, since that word is what wrapping cannot help with.
+
+    Returns ``(fontsize, {group_name: wrapped_text})``.
+    """
+    named = [(lo, hi, name) for lo, hi, name in spans if name]
+    if not named:
+        return fontsize, {}
+
+    # Matches the xlim the subplots are given: spans plus 0.7 padding each side.
+    total = spans[-1][1] - spans[0][0] + 1.4
+    if total <= 0 or axes_width_in <= 0:
+        return fontsize, {}
+
+    available = {
+        name: (hi - lo + 1) / total * axes_width_in for lo, hi, name in named
+    }
+
+    def char_inches(size: float) -> float:
+        return 0.62 * size / 72.0
+
+    longest_word = {
+        name: len(max(name.split(), key=len, default="")) for name in available
+    }
+    need = max(
+        longest_word[name] * char_inches(fontsize) / width
+        for name, width in available.items()
+        if width > 0
+    )
+    size = fontsize * min(1.0, max(0.75, 1.0 / need)) if need > 1 else fontsize
+
+    wrapped = {}
+    for name, width in available.items():
+        # Floor the wrap width: breaking a name into two-character shreds is worse
+        # than letting the narrowest group's label overhang a little.
+        max_chars = max(int(width / char_inches(size)), 8)
+        # break_long_words=False: overhanging slightly beats "Big cond / ition".
+        wrapped[name] = "\n".join(
+            textwrap.wrap(name, max_chars, break_long_words=False)
+        ) or name
+    return size, wrapped
 
 
 def _group_label_cells(
@@ -779,8 +856,9 @@ def _render_figure(
     ncol_legend = min(n_models, 6)
     legend_in   = _legend_inches(n_models, ncol_legend)
 
-    col_w = 2.6
-    fig_w = figsize[0] if figsize else max(n_cols * col_w * width_scale + 1.5, 6.0)
+    fig_w = figsize[0] if figsize else _figure_width(
+        n_cols, n_models, width_scale, bar_names
+    )
     fig_h = figsize[1] if figsize else _figure_height(n_grid_rows, n_models)
 
     fig = plt.figure(figsize=(fig_w, fig_h))
@@ -788,6 +866,20 @@ def _render_figure(
     gridspec = fig.add_gridspec(n_grid_rows, 2 * n_cols)
 
     bar_width = 0.75
+
+    # How much width each bar actually gets, so the value labels can be turned
+    # before they run into each other. "0.408" is ~0.25in wide at 6pt; below that
+    # the numbers of adjacent bars merge into one unreadable string.
+    span = float(x_positions.max() - x_positions.min() + 1)
+    pitch_in = (fig_w / max(n_cols, 1)) / max(span, 1.0)
+    dense = pitch_in < _VALUE_LABEL_INCHES
+    group_fontsize, group_labels = _fit_group_labels(
+        spans, 0.85 * fig_w / max(n_cols, 1), GROUP_NAME_FONTSIZE
+    )
+    value_rotation = 90 if dense else 0
+    # Rotated, a value label stands ~22pt tall, so the model name above it has to
+    # start that much higher.
+    name_padding = 28.0 if dense else 13.0
 
     # Axes that ended up with bars, so the rotated-name headroom can be applied to
     # exactly those, after layout, when their real pixel height is known.
@@ -825,12 +917,14 @@ def _render_figure(
                 edgecolor="white",
                 linewidth=0.5,
             )
-            ax.bar_label(bar, fmt="%.3f", padding=2, fontsize=6)
+            ax.bar_label(
+                bar, fmt="%.3f", padding=2, fontsize=6, rotation=value_rotation
+            )
             if bar_names:
                 # Above the value label (padding is in points, so this clears
                 # it regardless of the data scale), rotated to fit dense grids.
                 ax.bar_label(
-                    bar, labels=[model_name], padding=13,
+                    bar, labels=[model_name], padding=name_padding,
                     fontsize=BAR_NAME_FONTSIZE, rotation=90, color="#333333",
                 )
             any_bar = True
@@ -881,10 +975,10 @@ def _render_figure(
                     continue
                 centre = ((span_lo + span_hi) / 2 - ax_x0) / ax_width
                 ax.text(
-                    centre, -0.02, group_name,
+                    centre, -0.02, group_labels.get(group_name, group_name),
                     transform=ax.transAxes,
                     ha="center", va="top",
-                    fontsize=GROUP_NAME_FONTSIZE, color="dimgrey", style="italic",
+                    fontsize=group_fontsize, color="dimgrey", style="italic",
                 )
 
         # Task label as the y-axis label of the task's first subplot. When a task
@@ -928,7 +1022,7 @@ def _render_figure(
     if bar_names and axes_with_bars:
         _apply_name_headroom(
             fig, axes_with_bars, model_names,
-            fontsize=BAR_NAME_FONTSIZE, padding=13,
+            fontsize=BAR_NAME_FONTSIZE, padding=name_padding,
         )
         # That first tight_layout saw the names sticking out above the axes and
         # shrank the axes to make room. They now sit inside, so lay out again to
@@ -939,7 +1033,7 @@ def _render_figure(
         plt.tight_layout(rect=layout_rect)
         _apply_name_headroom(
             fig, axes_with_bars, model_names,
-            fontsize=BAR_NAME_FONTSIZE, padding=13,
+            fontsize=BAR_NAME_FONTSIZE, padding=name_padding,
         )
 
     # Right-aligned to the rightmost subplot, not to the figure edge. Saving uses
@@ -1048,20 +1142,16 @@ def plot_benchmark(
 
     if per_task:
         for task in all_tasks:
-            # Height is derived per figure unless the caller pinned it: a combined
-            # figsize sized for N task rows is N times too tall, and a task whose
-            # metrics wrap onto two rows needs more than one whose do not. The
-            # width is kept — it is set by the number of bars, which is constant.
-            n_rows = math.ceil(
-                len(task_metrics[task]) / PER_TASK_MAX_COLS
-            ) or 1
-            task_size = per_task_figsize or (
-                (figsize[0], _figure_height(n_rows, n_models)) if figsize else None
-            )
+            # Auto-sized unless the caller pinned per_task_figsize. `figsize`
+            # deliberately does NOT carry over, in either dimension: it describes
+            # the combined grid, which is as many task rows tall and as many metric
+            # columns wide as the widest task. Reusing its width was what made
+            # per-task figures come out at 4 columns' width for 2 columns of
+            # content — the auto width below is derived from the bars themselves.
             out = task_output_path(output, task) if output is not None else None
             fig = _render_figure(
                 tasks=[task],
-                figsize=task_size,
+                figsize=per_task_figsize,
                 title=f"{title} — {TASK_LABELS.get(task, task)}".replace("\n", " "),
                 output=out,
                 max_cols=PER_TASK_MAX_COLS,
@@ -1088,8 +1178,24 @@ def plot_benchmark(
 
 def _figure_height(n_grid_rows: int, n_models: int) -> float:
     """Figure height in inches: the subplot rows plus the legend they need."""
-    row_h = 3.2
-    return max(n_grid_rows * row_h + _legend_inches(n_models, min(n_models, 6)) + 0.8, 4.0)
+    return max(
+        n_grid_rows * ROW_INCHES + _legend_inches(n_models, min(n_models, 6)) + 0.8,
+        4.0,
+    )
+
+
+def _figure_width(
+    n_cols: int, n_models: int, width_scale: float, bar_names: bool
+) -> float:
+    """Figure width in inches, from how many bars each subplot has to hold.
+
+    ``width_scale`` folds in the gaps inserted between groups (1.0 when there are
+    none). Turning bar names off shrinks this a lot — that is the lever to reach
+    for when a figure with many models is still too wide for a document.
+    """
+    slot = BAR_SLOT_INCHES if bar_names else BAR_SLOT_INCHES_PLAIN
+    col_in = max(MIN_COL_INCHES, n_models * slot)
+    return max(n_cols * col_in * width_scale + 1.5, 6.0)
 
 
 # --------------------------------------------------------------------------- #

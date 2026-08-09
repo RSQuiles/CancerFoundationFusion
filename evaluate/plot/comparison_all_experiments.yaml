@@ -27,13 +27,25 @@ output: /cluster/work/boeva/rquiles/outputs/save_CFF/comparison_all_experiments.
 #   comparison_all_experiments_survival.png
 # Colours, bar order and group bands are computed once across all tasks, so the
 # three figures stay comparable. Set false (or pass --no-per-task) for the
-# combined grid, which then uses `figsize` instead.
+# combined grid. Per-task figures place at most two metrics per row, wrapping and
+# centring a short row, so the 4-metric tasks come out as a 2x2.
 per_task: true
 
-# 48 bars per subplot; the auto-derived size is far too small either way.
-# Both tuned by rendering.
-figsize: [46, 18]          # the combined grid, when per_task is false
-per_task_figsize: [46, 11] # each single-task figure
+# No figsize: the size is derived from the content. Width comes from the number of
+# bars a subplot has to hold (BAR_SLOT_INCHES per bar, plus the group gaps), height
+# from the number of subplot rows and the legend. For these 48 runs that is roughly
+#   per-task, 4 metrics -> 21.5 x 12.7 in     (was 46 x 11)
+#   per-task, 1 metric  -> 11.5 x  8.1 in
+#   combined grid       -> 42   x 17.3 in
+#
+# The old hardcoded 46in was the combined grid's width for FOUR metric columns, and
+# per_task_figsize repeated it for TWO — which is why the per-task figures came out
+# twice as wide as their content. Set figsize / per_task_figsize again only to
+# override a specific figure; neither is inherited by the other any more.
+#
+# Width is floored by the rotated model names: one per bar, each ~0.13in across. If
+# these are still too wide for a document, `bar_names: false` drops them (they stay
+# in the legend) and the same figure comes out near-square, about 12 x 12 in.
 
 # Print each model's display name above its bar as well as in the legend — with 48
 # bars, tracing a colour back to an 8-row legend is otherwise hopeless. The names
