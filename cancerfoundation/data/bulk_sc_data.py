@@ -549,60 +549,34 @@ class BulkSCSampler(Sampler[list[int]]):
         else:
             self.sc_groups = None
 
-        # Source-pool alias: in --precomputed-pb mode the pseudobulk SOURCE is the set of
-        # precomputed PB rows (pb_group_to_indices), not cells aggregated on the fly from
-        # the SC pool. Every place that reasons about "what the source can supply per
-        # tissue" (class-aware shared tissues, CDD label refresh) goes through this alias,
-        # so the two modes share one code path. With precomputed_pb=False the alias is the
-        # SC pool, preserving the original behaviour exactly.
-        # Assigned here (not below) because the class-aware CDD block further down reads
-        # self.verbose before that later assignment would run.
+        # The pseudobulk source pools are built in a fixed order below and must stay in
+        # it: the aggregation-consistency filter can drop whole tissues, and
+        # _build_source_pools derives from the result. See each method's docstring.
         self.verbose = verbose
         self.precomputed_pb = precomputed_pb
-        self.source_group_to_indices = (
-            self.pb_group_to_indices if precomputed_pb else self.sc_group_to_indices
-        )
-        if self.source_group_to_indices is not None:
-            self.source_groups = sorted(
-                g for g, idxs in self.source_group_to_indices.items() if len(idxs) > 0
-            )
-        else:
-            self.source_groups = None
 
-        # Class-aware CDD sampling: tissue groups present in BOTH the source (SC cells, or
-        # precomputed PB rows in --precomputed-pb mode) and bulk (target) pools with enough
-        # samples, excluding non-tissue codes (e.g. "unknown"). When enabled, batches draw
-        # the same tissues in both domains so the CDD loss is non-trivial.
+        # Restrict the PB draw pool to pseudobulks whose constituent cells are actually
+        # in this split. A PB without them cannot supply an aggregation target, and
+        # falling back to unrelated cells (as sample_paired_batch does for pairs) would
+        # train the model to match a pseudobulk against cells it never contained.
+        # Built HERE, before the alias below: the filtering can drop a tissue group
+        # entirely, and everything downstream that reasons about "which tissues exist"
+        # (source_groups, shared_groups, refresh_cdd_labels) reads the alias. Building it
+        # afterwards left those lists naming tissues the sampler could no longer draw,
+        # which surfaced as a KeyError in sample_class_aware_batch.
+        self.agg_consistency = agg_consistency
+        self.precomputed_agg = precomputed_pb and agg_consistency
+        self.pb_indices_with_sc = self.pb_indices
+        self.pb_group_to_indices_agg = self.pb_group_to_indices
+        if self.precomputed_agg:
+            self._build_agg_pb_pools()
+
         self.class_aware_cdd = class_aware_cdd
         self.n_cdd_classes = n_cdd_classes
         self.cdd_bulk_class_frac = min(max(cdd_bulk_class_frac, 0.0), 1.0)
         self.cdd_min_class_count = cdd_min_class_count
         self.cdd_exclude_group_codes = set(cdd_exclude_group_codes or ())
-        exclude_codes = self.cdd_exclude_group_codes
-        self.shared_groups = None
-        if class_aware_cdd:
-            if self.source_group_to_indices is None or self.bulk_group_to_indices is None:
-                raise ValueError(
-                    "class_aware_cdd requires pb_group_column (tissue) so both the source "
-                    "and bulk group pools exist"
-                    + (" (precomputed_pb: check that precomputed PB rows exist)."
-                       if precomputed_pb else ".")
-                )
-            min_c = max(1, cdd_min_class_count)
-            self.shared_groups = sorted(
-                g for g in self.source_groups
-                if g not in exclude_codes
-                and len(self.source_group_to_indices.get(g, [])) >= min_c
-                and len(self.bulk_group_to_indices.get(g, [])) >= min_c
-            )
-            if len(self.shared_groups) == 0:
-                raise ValueError(
-                    "class_aware_cdd: no tissue is present in both bulk and source "
-                    f"({'precomputed PB' if precomputed_pb else 'SC'}) pools with enough "
-                    "samples. Check the tissue labels / exclude list."
-                )
-            if self.verbose:
-                print(f"[CDD] class-aware sampling over {len(self.shared_groups)} shared tissues.")
+        self._build_source_pools()
 
         self.world_size = max(1, world_size)
         self.batch_size = batch_size
@@ -623,8 +597,8 @@ class BulkSCSampler(Sampler[list[int]]):
         # constituent cells of every drawn PB row so the loss has something to compare
         # against. That makes the batch the same size as the on-the-fly case plus the
         # n_pb precomputed rows themselves.
-        self.agg_consistency = agg_consistency
-        self.precomputed_agg = precomputed_pb and agg_consistency
+        # (agg_consistency / precomputed_agg and the restricted pools are set further up,
+        # before the source-pool alias that depends on them.)
         if self.precomputed_pb:
             if self.verbose:
                 print("[PSEUDOBULK] Using precomputed pseudobulks!")
@@ -636,15 +610,6 @@ class BulkSCSampler(Sampler[list[int]]):
                 self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb
         else:
             self.raw_batch_size = self.n_bulk + self.n_sc + self.n_pb * self.n_sc_per_pb
-
-        # Restrict the PB draw pool to pseudobulks whose constituent cells are actually
-        # in this split. A PB without them cannot supply an aggregation target, and
-        # falling back to unrelated cells (as sample_paired_batch does for pairs) would
-        # train the model to match a pseudobulk against cells it never contained.
-        self.pb_indices_with_sc = self.pb_indices
-        self.pb_group_to_indices_agg = self.pb_group_to_indices
-        if self.precomputed_agg:
-            self._build_agg_pb_pools()
 
         if precomputed_pb and len(self.pb_indices) == 0:
             raise ValueError(
@@ -811,6 +776,77 @@ class BulkSCSampler(Sampler[list[int]]):
             self.paired_common_ids = np.array(common_ids, dtype=np.int64)
             print(f"Paired sampling: {len(common_ids)} PB–bulk pairs found.")
 
+    def _build_source_pools(self) -> None:
+        """Alias the source pool, then derive ``source_groups`` and ``shared_groups``.
+
+        The one place that decides "which tissues can the pseudobulk source supply".
+        Keeping the alias and the two derived lists together is what stops the
+        class-aware CDD tissue list from drifting away from the pool the samplers
+        actually draw from — they used to be computed at different points in
+        ``__init__``, and with ``--agg-consistency`` the later filtering could drop a
+        tissue that ``shared_groups`` still named, which surfaced as a ``KeyError`` in
+        ``sample_class_aware_batch``.
+
+        Must run *after* :meth:`_build_agg_pb_pools`.
+
+        The alias: in ``--precomputed-pb`` mode the source is the set of precomputed PB
+        rows, not cells aggregated on the fly from the SC pool — restricted to the rows
+        with constituent cells when aggregation consistency is on. With
+        ``precomputed_pb=False`` it is the SC pool, preserving the original behaviour.
+        """
+        if self.precomputed_pb:
+            self.source_group_to_indices = (
+                self.pb_group_to_indices_agg
+                if self.precomputed_agg
+                else self.pb_group_to_indices
+            )
+        else:
+            self.source_group_to_indices = self.sc_group_to_indices
+
+        if self.source_group_to_indices is not None:
+            self.source_groups = sorted(
+                g for g, idxs in self.source_group_to_indices.items() if len(idxs) > 0
+            )
+        else:
+            self.source_groups = None
+
+        # Class-aware CDD sampling: tissue groups present in BOTH the source (SC cells, or
+        # precomputed PB rows in --precomputed-pb mode) and bulk (target) pools with enough
+        # samples, excluding non-tissue codes (e.g. "unknown"). When enabled, batches draw
+        # the same tissues in both domains so the CDD loss is non-trivial.
+        self.shared_groups = None
+        if not self.class_aware_cdd:
+            return
+
+        if self.source_group_to_indices is None or self.bulk_group_to_indices is None:
+            raise ValueError(
+                "class_aware_cdd requires pb_group_column (tissue) so both the source "
+                "and bulk group pools exist"
+                + (" (precomputed_pb: check that precomputed PB rows exist)."
+                   if self.precomputed_pb else ".")
+            )
+        min_c = max(1, self.cdd_min_class_count)
+        self.shared_groups = sorted(
+            g for g in self.source_groups
+            if g not in self.cdd_exclude_group_codes
+            and len(self.source_group_to_indices.get(g, [])) >= min_c
+            and len(self.bulk_group_to_indices.get(g, [])) >= min_c
+        )
+        if len(self.shared_groups) == 0:
+            raise ValueError(
+                "class_aware_cdd: no tissue is present in both bulk and source "
+                f"({'precomputed PB' if self.precomputed_pb else 'SC'}) pools with "
+                "enough samples."
+                + (" Aggregation consistency restricts the source to pseudobulks with "
+                   "constituent SC cells, so check the [PSEUDOBULK] lines above for how "
+                   "much that removed."
+                   if self.precomputed_agg else " Check the tissue labels / exclude list.")
+            )
+        if self.verbose:
+            print(
+                f"[CDD] class-aware sampling over {len(self.shared_groups)} shared tissues."
+            )
+
     def _build_agg_pb_pools(self) -> None:
         """Restrict the precomputed-PB pools to pseudobulks that have SC cells here.
 
@@ -880,6 +916,20 @@ class BulkSCSampler(Sampler[list[int]]):
             self.pb_group_to_indices_agg = {
                 g: idxs for g, idxs in self.pb_group_to_indices_agg.items() if len(idxs)
             }
+            # Worth reporting separately from the row count: a dropped tissue leaves the
+            # class-aware CDD pool, so a run with aggregation can end up covering fewer
+            # tissues than the otherwise-identical run without it.
+            n_groups_dropped = (
+                len(self.pb_group_to_indices) - len(self.pb_group_to_indices_agg)
+            )
+            if n_groups_dropped:
+                print(
+                    f"[PSEUDOBULK] {n_groups_dropped} of "
+                    f"{len(self.pb_group_to_indices)} tissue groups retain no "
+                    f"pseudobulk with constituent SC cells and leave the "
+                    f"aggregation-consistency pool (and, with class-aware CDD, its "
+                    f"shared-tissue set)."
+                )
             if not self.pb_group_to_indices_agg:
                 raise ValueError(
                     "No tissue group retains a precomputed pseudobulk with constituent "
@@ -1071,8 +1121,9 @@ class BulkSCSampler(Sampler[list[int]]):
                 else self.pb_group_to_indices
             )
             if group_pool is not None:
-                groups = sorted(group_pool) if self.precomputed_agg else self.source_groups
-                pb_groups = self.rng.choice(groups, size=self.n_pb, replace=True)
+                # source_groups is derived from this very pool (see the alias in
+                # __init__), so it never names a tissue the pool cannot serve.
+                pb_groups = self.rng.choice(self.source_groups, size=self.n_pb, replace=True)
                 pb_sel = [
                     int(self.sample(group_pool[g], size=1, balanced=False)[0])
                     for g in pb_groups

@@ -287,6 +287,141 @@ def check_sampler() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 2b. Class-aware CDD batches
+# --------------------------------------------------------------------------- #
+
+def make_class_aware_sampler(n_sc_per_pb=3, n_pb=2, n_sc=4, n_bulk=2, agg=True):
+    """A sampler with a tissue whose every pseudobulk lacks constituent SC cells.
+
+    Calls the real ``_build_agg_pb_pools`` and ``_build_source_pools`` in the order
+    ``__init__`` calls them, so the pool-consistency invariant is exercised rather than
+    re-implemented. Tissue 0 holds only pseudobulk row 14, whose id (3) has no cells —
+    so it must disappear from every derived list.
+    """
+    sp = object.__new__(BulkSCSampler)
+    sp.verbose = False
+    sp.n_sc_per_pb = n_sc_per_pb
+    sp.n_pb, sp.n_sc, sp.n_bulk = n_pb, n_sc, n_bulk
+    sp.rng = np.random.default_rng(0)
+    sp.sample_balanced = False
+    sp.subset_base_indices = np.arange(21, dtype=np.int64)
+
+    # 12 SC rows, 3 PB rows (12,13,14), 6 bulk rows (15..20).
+    sp.sc_indices = np.arange(12, dtype=np.int64)
+    sp.pb_indices = np.array([12, 13, 14], dtype=np.int64)
+    sp.bulk_indices = np.arange(15, 21, dtype=np.int64)
+    sp.sc_pb_to_indices = {
+        1: np.arange(0, 5, dtype=np.int64),
+        2: np.arange(5, 12, dtype=np.int64),
+    }
+    # Tissue 0 -> PB 14 only (id 3, no cells). Tissues 1 and 2 are usable.
+    sp.pb_group_to_indices = {
+        0: np.array([14]), 1: np.array([12]), 2: np.array([13]),
+    }
+    sp.bulk_group_to_indices = {
+        0: np.array([15, 16]), 1: np.array([17, 18]), 2: np.array([19, 20]),
+    }
+    sp.sc_group_to_indices = {1: np.arange(0, 5), 2: np.arange(5, 12)}
+
+    base = object.__new__(BulkSCDataset)
+    base.pb_id_column = "pseudobulk_id"
+    # Must agree with sc_pb_to_indices above: SC rows 0-4 belong to pseudobulk 1, rows
+    # 5-11 to pseudobulk 2. Bulk rows carry the "no pseudobulk" fill.
+    base._obs_arrays = {
+        "pseudobulk_id": np.array(
+            [1] * 5 + [2] * 7 + [1, 2, 3] + [0] * 6, dtype=np.int64
+        )
+    }
+    sp.base_dataset = base
+
+    # The __init__ order under test.
+    sp.precomputed_pb = True
+    sp.agg_consistency = agg
+    sp.precomputed_agg = agg
+    sp.pb_indices_with_sc = sp.pb_indices
+    sp.pb_group_to_indices_agg = sp.pb_group_to_indices
+    if sp.precomputed_agg:
+        sp._build_agg_pb_pools()
+
+    sp.class_aware_cdd = True
+    sp.n_cdd_classes = 3
+    sp.cdd_bulk_class_frac = 1.0
+    sp.cdd_min_class_count = 1
+    sp.cdd_exclude_group_codes = set()
+    sp._build_source_pools()
+
+    sp.sample = lambda idx, size, modality=None, balanced=False: sp.rng.choice(
+        idx, size=size, replace=len(idx) < size
+    )
+    return sp
+
+
+def check_class_aware() -> None:
+    print("\n[class-aware CDD: pool consistency]")
+
+    sp = make_class_aware_sampler()
+    check("unusable tissue dropped from the agg pool",
+          sorted(sp.pb_group_to_indices_agg) == [1, 2],
+          str(sorted(sp.pb_group_to_indices_agg)))
+    check("source alias points at the filtered pool",
+          sp.source_group_to_indices is sp.pb_group_to_indices_agg)
+    check("source_groups excludes the unusable tissue",
+          sp.source_groups == [1, 2], str(sp.source_groups))
+    check("shared_groups excludes the unusable tissue",
+          sp.shared_groups == [1, 2], str(sp.shared_groups))
+    check("shared_groups is a subset of the pool it draws from",
+          set(sp.shared_groups) <= set(sp.pb_group_to_indices_agg),
+          f"{sp.shared_groups} vs {sorted(sp.pb_group_to_indices_agg)}")
+
+    # The regression itself: this raised KeyError before the pools were reordered.
+    try:
+        batch = sp.sample_class_aware_batch()
+        ok, detail = True, ""
+    except KeyError as exc:
+        batch, ok, detail = None, False, f"KeyError: {exc}"
+    check("class-aware batch samples without KeyError", ok, detail)
+
+    if batch is not None:
+        expected = sp.n_bulk + sp.n_sc + sp.n_pb * (1 + sp.n_sc_per_pb)
+        check("class-aware batch has the agg layout length",
+              len(batch) == expected, f"{len(batch)} != {expected}")
+        pb_rows = batch[sp.n_sc:sp.n_sc + sp.n_pb]
+        check("only usable pseudobulks are drawn",
+              all(r in (12, 13) for r in pb_rows), str(pb_rows))
+        agg_rows = batch[sp.n_sc + sp.n_pb:sp.n_sc + sp.n_pb + sp.n_pb * sp.n_sc_per_pb]
+        ids = base_ids = sp.base_dataset._obs_arrays["pseudobulk_id"]
+        groups = {}
+        for k, r in enumerate(agg_rows):
+            groups.setdefault(k // sp.n_sc_per_pb, []).append(int(ids[r]))
+        check("each agg block matches its pseudobulk",
+              all(set(v) == {int(base_ids[pb_rows[k]])} for k, v in groups.items()),
+              str(groups))
+
+    # A CDD refresh must not re-admit the dropped tissue: refresh_cdd_labels rebuilds
+    # shared_groups from source_groups / source_group_to_indices, which is the latent
+    # second occurrence of the same inconsistency.
+    sp2 = make_class_aware_sampler()
+    row_to_bulk_local = np.full(21, -1, dtype=np.int64)
+    row_to_bulk_local[sp2.bulk_indices] = np.arange(len(sp2.bulk_indices))
+    # Label every bulk row as tissue 0 — the tissue with no usable pseudobulk.
+    pseudo_label = np.zeros(len(sp2.bulk_indices), dtype=np.int64)
+    sp2.refresh_cdd_labels(pseudo_label, row_to_bulk_local)
+    check("CDD refresh does not re-admit the dropped tissue",
+          0 not in (sp2.shared_groups or []), str(sp2.shared_groups))
+    try:
+        sp2.sample_class_aware_batch()
+        ok, detail = True, ""
+    except KeyError as exc:
+        ok, detail = False, f"KeyError: {exc}"
+    check("class-aware batch still samples after a CDD refresh", ok, detail)
+
+    # Without aggregation the pools are unfiltered, so every tissue stays available.
+    sp3 = make_class_aware_sampler(agg=False)
+    check("without agg all tissues remain shared",
+          sp3.shared_groups == [0, 1, 2], str(sp3.shared_groups))
+
+
+# --------------------------------------------------------------------------- #
 # 3. Collator
 # --------------------------------------------------------------------------- #
 
@@ -494,6 +629,7 @@ def check_loss() -> None:
 def main() -> None:
     check_dataset_index()
     check_sampler()
+    check_class_aware()
     check_collator()
     check_loss()
 
