@@ -101,6 +101,15 @@ under different gene panels are not comparable.
 `python evaluate/check/check_unified_table.py` self-checks both scripts offline (no
 cluster, GPU or checkpoints needed).
 
+**`metrics_old` fallback.** `plot_ablation_benchmark.py` fills anything missing from
+`{model}/metrics/` — a whole `results_{task}.json`, or individual metrics inside one —
+from a sibling `{model}/metrics_old/`, so a partially recomputed sweep still plots in
+full (`mv metrics metrics_old` before re-running). `metrics/` always wins where both
+have a value; a model with only `metrics_old/` is still picked up, including by
+`all_models: true`. Every substitution prints a `[metrics_old]` line plus a summary
+count — those bars come from an earlier run and may not be comparable with their
+neighbours. `evaluate/check/check_benchmark_fallback.py` self-checks it.
+
 ### Downstream Tasks
 ```bash
 python evaluate/finetune/run_downstream_task.py \

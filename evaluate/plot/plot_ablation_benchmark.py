@@ -15,6 +15,13 @@ For each task, every numeric metric gets its own subplot.  Within each
 subplot all models are compared as bars.  The primary metric per task is
 highlighted with a coloured background and a star in the title.
 
+Anything missing from ``metrics/`` — a whole task file, or individual metrics
+within one — is filled in from a sibling ``metrics_old/`` when that directory
+exists.  ``metrics/`` always wins where both have a value.  Every substitution is
+reported on stderr and counted in a summary line, because a bar filled from
+``metrics_old`` was produced by an earlier run and may not be comparable with its
+neighbours.
+
 Layout:  rows = tasks,  columns = metrics within that task.
 
 With ``--per-task`` each task is written to its own figure instead, named after
@@ -136,16 +143,26 @@ _PRIMARY_EDGE = "#F9A825"   # amber border
 # Data collection
 # --------------------------------------------------------------------------- #
 
-def collect_model_metrics(model_dir: Path) -> dict[str, dict[str, float]]:
-    """
-    Read one model directory and return ``{task_name: {metric: value, ...}}``.
+# Sibling of metrics/ consulted for anything metrics/ does not provide. Named
+# rather than configurable: it is a convention for parking a previous run's results
+# (`mv metrics metrics_old`) so a partially recomputed sweep still plots in full.
+FALLBACK_METRICS_DIRNAME = "metrics_old"
 
-    A model directory is recognised by having a ``metrics/`` subfolder
-    containing at least one ``results_*.json`` file.
-    """
+# (model, task, (metric, ...)) for every value taken from the fallback directory.
+# A whole task read from there is recorded with keys=None.
+_FALLBACK_EVENTS: list[tuple[str, str, tuple[str, ...] | None]] = []
+
+
+def fallback_events() -> list[tuple[str, str, tuple[str, ...] | None]]:
+    """Substitutions made from ``metrics_old`` so far, for a caller's summary."""
+    return list(_FALLBACK_EVENTS)
+
+
+def _read_metrics_dir(metrics_dir: Path) -> dict[str, dict[str, float]]:
+    """Read one ``metrics/``-shaped directory into ``{task: {metric: value}}``."""
     per_task: dict[str, dict[str, float]] = {}
 
-    for jf in sorted((model_dir / "metrics").glob("results_*.json")):
+    for jf in sorted(metrics_dir.glob("results_*.json")):
         task_name = jf.stem[len("results_"):]
         if task_name in TASK_LABELS.keys():
             try:
@@ -176,6 +193,81 @@ def collect_model_metrics(model_dir: Path) -> dict[str, dict[str, float]]:
     return per_task
 
 
+def collect_model_metrics(
+    model_dir: Path,
+    fallback_dirname: str | None = FALLBACK_METRICS_DIRNAME,
+) -> dict[str, dict[str, float]]:
+    """
+    Read one model directory and return ``{task_name: {metric: value, ...}}``.
+
+    A model directory is recognised by having a ``metrics/`` subfolder
+    containing at least one ``results_*.json`` file — or, with a fallback
+    configured, such a file under ``{fallback_dirname}/``.
+
+    Whatever ``metrics/`` does not provide is filled in from
+    ``{fallback_dirname}/`` (default ``metrics_old``): a task with no results file
+    is taken from there wholesale, and a task that has one keeps every value it
+    holds while missing metrics are borrowed. ``metrics/`` therefore always wins on
+    a key both provide. Pass ``fallback_dirname=None`` to read ``metrics/`` alone.
+
+    Every substitution is reported on stderr and recorded in
+    :func:`fallback_events`. Mixing two runs in one figure is useful when only part
+    of a sweep has been recomputed, but it is not something to discover afterwards.
+    """
+    per_task = _read_metrics_dir(model_dir / "metrics")
+
+    if not fallback_dirname:
+        return per_task
+
+    old_dir = model_dir / fallback_dirname
+    if not old_dir.is_dir():
+        return per_task
+
+    for task, old_values in _read_metrics_dir(old_dir).items():
+        if task not in per_task:
+            per_task[task] = dict(old_values)
+            _FALLBACK_EVENTS.append((model_dir.name, task, None))
+            print(
+                f"[{fallback_dirname}] {model_dir.name}: task '{task}' taken from "
+                f"{fallback_dirname}/ (absent from metrics/)",
+                file=sys.stderr,
+            )
+            continue
+
+        borrowed = tuple(k for k in old_values if k not in per_task[task])
+        if not borrowed:
+            continue
+        for key in borrowed:
+            per_task[task][key] = old_values[key]
+        _FALLBACK_EVENTS.append((model_dir.name, task, borrowed))
+        print(
+            f"[{fallback_dirname}] {model_dir.name}: {task} <- "
+            f"{len(borrowed)} metric(s) from {fallback_dirname}/ "
+            f"({', '.join(sorted(borrowed))})",
+            file=sys.stderr,
+        )
+
+    return per_task
+
+
+def _has_results(directory: Path) -> bool:
+    """True if *directory* holds at least one ``results_*.json``."""
+    return directory.is_dir() and any(directory.glob("results_*.json"))
+
+
+def is_benchmark_model_dir(path: Path) -> bool:
+    """``is_model_dir``, but a model with only ``metrics_old/`` still counts.
+
+    Kept separate from the shared :func:`is_model_dir`, which looks exclusively at
+    ``metrics/`` and is also used by ``plot_unified_metrics_table`` with different
+    filename patterns.
+    """
+    return _has_results(path / "metrics") or (
+        bool(FALLBACK_METRICS_DIRNAME)
+        and _has_results(path / FALLBACK_METRICS_DIRNAME)
+    )
+
+
 def collect_metrics(ablation_dir: Path) -> dict[str, dict[str, dict[str, float]]]:
     """
     Walk ablation_dir and return:
@@ -184,7 +276,7 @@ def collect_metrics(ablation_dir: Path) -> dict[str, dict[str, dict[str, float]]
     results: dict[str, dict[str, dict[str, float]]] = {}
 
     for model_dir in sorted(ablation_dir.iterdir()):
-        if not model_dir.is_dir() or not is_model_dir(model_dir):
+        if not model_dir.is_dir() or not is_benchmark_model_dir(model_dir):
             continue
         results[model_dir.name] = collect_model_metrics(model_dir)
 
@@ -332,7 +424,9 @@ def load_config(path: Path) -> BenchmarkConfig:
     unique across the whole config, since they label the bars.
     """
     raw = load_raw_config(path)
-    groups = parse_groups(raw, path, is_model_dir)
+    # is_benchmark_model_dir, not is_model_dir: a run whose results have been parked
+    # in metrics_old/ must still be discovered by 'all_models'.
+    groups = parse_groups(raw, path, is_benchmark_model_dir)
     figsize = parse_figsize(raw, path)
 
     # parse_figsize reads the 'figsize' key by name, so borrow it for the per-task
@@ -383,9 +477,10 @@ def collect_from_config(
     for group_name, members in config.groups:
         names: list[str] = []
         for name, model_dir in members:
-            if not is_model_dir(model_dir):
+            if not is_benchmark_model_dir(model_dir):
                 print(
-                    f"[warning] no metrics/results_*.json under {model_dir} "
+                    f"[warning] no results_*.json under {model_dir}/metrics "
+                    f"or {model_dir}/{FALLBACK_METRICS_DIRNAME} "
                     f"— skipping '{name}'.",
                     file=sys.stderr,
                 )
@@ -1039,6 +1134,20 @@ def main() -> None:
     n_models = len(results)
     n_tasks  = len({t for m in results.values() for t in m})
     print(f"Found {n_models} model(s) and {n_tasks} task(s).")
+
+    events = fallback_events()
+    if events:
+        n_keys  = sum(len(keys) for _, _, keys in events if keys)
+        n_whole = sum(1 for _, _, keys in events if keys is None)
+        parts = ([f"{n_keys} metric(s)"] if n_keys else []) + \
+                ([f"{n_whole} whole task(s)"] if n_whole else [])
+        print(
+            f"NOTE: {' and '.join(parts)} across "
+            f"{len({m for m, _, _ in events})} model(s) came from "
+            f"{FALLBACK_METRICS_DIRNAME}/ rather than metrics/ — see the "
+            f"[{FALLBACK_METRICS_DIRNAME}] lines above. Those bars are from an "
+            f"earlier run."
+        )
 
     plot_benchmark(
         results=results,
