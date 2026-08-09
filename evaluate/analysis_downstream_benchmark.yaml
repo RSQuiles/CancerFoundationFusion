@@ -25,12 +25,12 @@ env:
   # needs the scib environment.
 
 defaults:
-  steps: [downstream, benchmark]
+  steps: [downstream]
   seed: 0
 
   downstream:
     # Cancer type prediction, drug sensitivity, deconvolution, survival.
-    tasks: [canc_type_class, deconv, survival]
+    tasks: [drug_sensitivity_v2]
     config_dir: null        # null -> evaluate/finetune/configs
     models: null            # null -> every model dir holding a checkpoint
 

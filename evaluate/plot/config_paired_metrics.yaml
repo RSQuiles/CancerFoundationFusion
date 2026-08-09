@@ -28,8 +28,8 @@ vars:
   work: /cluster/work/boeva/rquiles
   save: /cluster/work/boeva/rquiles/outputs/save_CFF
 
-title: "Internal alignment metrics: paired experiments"
-output: ${save}/paired_unified_metrics.png
+title: "Internal Alignment Metrics: Paired Experiments"
+output: ${save}/unified_metrics_paired.png
 # figsize: [26, 22]      # inches; omitted -> derived from the grid size
 dpi: 150
 

@@ -17,7 +17,7 @@
 # 'unified', 'dat', 'contrastive' and 'bulk_baseline' each recur in several
 # directories. That is also why no group uses 'all_models: true'.
 
-title: "All experiments — downstream benchmark"
+title: "Non-precomputed Experiments — downstream benchmark"
 output: /cluster/work/boeva/rquiles/outputs/save_CFF/comparison_all_experiments.png
 
 # One figure per task rather than a single grid. Files are named after `output`
