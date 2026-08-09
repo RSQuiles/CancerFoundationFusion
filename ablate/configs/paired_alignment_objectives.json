@@ -33,19 +33,6 @@
     "Arms 5/6 abort at startup with a message naming the column if it is missing."
   ],
 
-  "_batch_arithmetic": [
-    "batch_size 64 with bulk_ratio = pb_ratio = 0.45 gives n_bulk = n_pb = 29,",
-    "n_sc = 6. paired_sampling requires n_bulk == n_pb, hence the equal ratios.",
-    "Rows actually embedded per step, by batch kind:",
-    "  standard, arms 3/4 : n_bulk + n_sc + n_pb                    =  64",
-    "  standard, arms 5/6 : n_bulk + n_sc + n_pb * (1 + 5)          = 209",
-    "  paired  (all arms) : n_bulk + n_pb * (1 + n_sc_per_pseudobulk) = 203",
-    "n_sc_per_pseudobulk is 5 rather than the default 10 to keep arms 5/6 at ~209",
-    "rows, comparable to monitor_align's 256 at the same max_seq_len. Raising it",
-    "multiplies the arm-5/6 step cost directly. The three lengths must stay distinct:",
-    "BulkSCCollator infers the batch kind from len(examples) and raises on a collision."
-  ],
-
   "base_config": {
     "trainer": {
       "gpus": 1,
@@ -60,13 +47,13 @@
       "wandb_entity": "rquiles",
       "wandb": "ablation_paired_alignment_objectives",
       "compile": true,
-      "ckpt_every_n_steps": 100,
+      "ckpt_every_n_steps": 1000,
       "save_every": false,
       "resume_from_checkpoint": "last"
     },
     "data": {
       "train_path": "/cluster/work/boeva/rquiles/data/eheiss_RAW_paired/pipeline_ready",
-      "conditions": ["tissue_general", "modality"],
+      "conditions": ["modality"],
       "zero_percentages": [0.2, 0.4, 0.6],
       "bulk_ratio": 0.45,
       "pb_ratio": 0.45,
@@ -75,20 +62,20 @@
       "pb_id_column": "pseudobulk_id",
       "pb_group_column": "tissue_general",
       "trunc_by_sample": true,
-      "balanced_sampler": false,
+      "balanced_sampler": true,
       "balanced_labels": ["tissue_general"]
     },
     "model": {
       "nlayers": 8,
       "nheads": 8,
       "embsize": 256,
-      "d_hid": 512,
+      "d_hid": 1024,
       "attn_impl": "flex",
       "grad_checkpoint": "true",
       "lr": 0.0001,
       "warmup_ratio_or_step": 10000,
       "max_seq_len": 1200,
-      "batch_size": 64,
+      "batch_size": 128,
       "input_style": "binned",
       "input_data": "counts",
       "loss": "mse",
@@ -118,7 +105,7 @@
           "wandb_name": "bulk_baseline"
         },
         "data": {
-          "train_path": "/cluster/work/boeva/rquiles/data/bulk_counts/pipeline_ready",
+          "train_path": "/cluster/work/boeva/rquiles/data/eheiss_RAW_bulk/pipeline_ready",
           "conditions": ["tissue_general"],
           "precomputed_pb": false,
           "pb_id_column": null
@@ -136,7 +123,7 @@
           "wandb_name": "sc_baseline"
         },
         "data": {
-          "train_path": "/cluster/work/boeva/rquiles/data/sc_counts/pipeline_ready",
+          "train_path": "/cluster/work/boeva/rquiles/data/eheiss_RAW_sc/pipeline_ready",
           "conditions": ["tissue_general"],
           "precomputed_pb": false,
           "pb_id_column": null
@@ -177,7 +164,7 @@
           "paired_sampling": true,
           "cdd": true,
           "cdd_class_aware": true,
-          "cdd_cluster_warmup_steps": 50
+          "cdd_cluster_warmup_steps": 0
         }
       }
     },
@@ -215,7 +202,7 @@
           "paired_sampling": true,
           "cdd": true,
           "cdd_class_aware": true,
-          "cdd_cluster_warmup_steps": 50,
+          "cdd_cluster_warmup_steps": 0,
           "agg_consistency": true,
           "agg_fn": "mean"
         }
@@ -229,12 +216,12 @@
     "enabled": true,
     "python_executable": "python",
     "sbatch_args": [
-      "--time=24:00:00",
+      "--time=48:00:00",
       "--partition=gpu",
       "--ntasks-per-node=1",
       "--gres=gpu:rtx4090:1",
       "--cpus-per-task=4",
-      "--mem-per-cpu=16G"
+      "--mem-per-cpu=32G"
     ],
     "environment": {},
     "job_name_prefix": "ab_align"

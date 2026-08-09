@@ -70,7 +70,7 @@ finetune:
     epochs: 30
     
     # Batch size for training and evaluation
-    batch_size: 16
+    batch_size: 64
     
     # L2 weight decay applied to all head parameters via Adam
     weight_decay: 0

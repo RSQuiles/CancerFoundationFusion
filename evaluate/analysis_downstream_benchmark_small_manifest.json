@@ -1,0 +1,15 @@
+{
+  "config": "/cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/analysis_downstream_benchmark_small.yaml",
+  "mode": "per-experiment",
+  "only_steps": null,
+  "jobs": [
+    {
+      "job_name": "bench_base_comparison_ablation",
+      "job_id": "9462974",
+      "experiments": [
+        "base_comparison_ablation"
+      ],
+      "payload": "/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/analysis/payload.json"
+    }
+  ]
+}

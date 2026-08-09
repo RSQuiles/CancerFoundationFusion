@@ -1,0 +1,90 @@
+# Every experiment defined in ablate/configs/, ready for:
+#   python evaluate/run_analysis.py --config evaluate/analysis_all_experiments.yaml --dry-run
+#
+# Derived from the 12 files in ablate/configs/. Field mapping used:
+#   ablation_dir  <- base_config.trainer.save_dir   (the parent holding the model dirs;
+#                    the per-ablation save_dir overrides just append /<model>)
+#   adata_dir     <- base_config.data.train_path + "/h5ads"
+#                    (bulk_sc_data_preprocessing.py writes the vocab-filtered h5ads to
+#                    <data-path>/h5ads/, which is what build_eval_adata globs)
+#   build.precomputed_pb <- base_config.data.precomputed_pb
+#   metrics.group_column <- base_config.data.pb_group_column  (tissue_general everywhere)
+#
+# 12 configs collapse to 10 directories, because two pairs target the same save_dir:
+#   big_condition.json + fill.json        -> ablation_big_condition
+#                                            (fill.json re-runs only dat + cdd)
+#   paired_counts.json + paired_config_cscs.json -> ablation_paired_counts
+#                                            (the latter is the CSCS Alps variant)
+# Experiment names must be unique, so each directory appears once below.
+
+vars:
+  work: /cluster/work/boeva/rquiles
+
+env:
+  container_image: /cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif
+  binds: [/cluster]
+  conda_env: bulkFM
+  python: python
+  nv: true
+
+defaults:
+  # 'benchmark' is deliberately NOT here: plot_ablation_benchmark.py exits 1 when a
+  # model dir has no metrics/results_*.json, and only small_partition_ablation.json
+  # declares downstream_tasks. Add 'benchmark' per experiment once you have run
+  # evaluate/finetune/run_downstream_task.py for it.
+  # 'paired_umap' is likewise per-experiment: it needs a cell-line matched paired
+  # h5ad, so only the paired_* experiments below enable it.
+  steps: [build, metrics, scib, diagnose, umap]
+
+  # Shared settings for the opt-in paired plot. The file is the one plot_paired.sh
+  # uses; it lives outside ${work}, but env.binds already covers /cluster.
+  paired_umap:
+    input_h5ad: /cluster/work/boeva/bulkFM/data/processed/paired_samples.h5ad
+    n_cell_lines: 10
+    cell_line_col: cell_line
+  seed: 0
+  # All these configs train with input_data: counts on raw-counts h5ads, and binning
+  # is scale-invariant, so embedding the values as-is matches training.
+  normalized: true
+
+  build:
+    rebuild: always           # only builds eval.h5ad when it is missing
+    modality_sample_size: 10000   # per modality, NOT a total
+    precomputed_pb: false   # overridden to true for the three that train that way
+    panel_strategy: consensus
+    n_pca_components: 50
+    n_hvg_baseline: 2000
+    batch_size: 64
+
+  metrics:
+    batch_size: 64
+    group_column: tissue_general
+    skip_existing: true
+
+  scib: {n_max: 500}
+  diagnose: {n_max: 500}
+
+  umap:
+    source: eval            # figure and metric tables come from the same vectors
+    color: [tissue_general]
+    skip_unknown: true
+
+experiments:
+
+  - name: partition                           # small_partition_ablation.json (6 models)
+    ablation_dir: ${work}/outputs/save_CFF/ablation_partition
+    adata_dir: ${work}/data/small_partition/pipeline_ready/h5ads
+    steps: [build, metrics, scib, diagnose, umap]
+
+
+slurm:
+  enabled: true
+  mode: single-job      # 9 jobs; use single-job to run them all sequentially
+  job_name_prefix: analysis
+  sbatch_args:
+    - --time=2:00:00
+    - --partition=gpu
+    - --gres=gpu:rtx4090:1
+    - --ntasks-per-node=1
+    - --cpus-per-task=4
+    - --mem-per-cpu=32G

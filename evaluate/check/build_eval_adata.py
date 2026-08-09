@@ -151,6 +151,8 @@ def load_all_modalities(
     """
     prefixes = [
         ("subsampled",  MOD_SC),
+        ("partition",  MOD_SC),
+        ("sc",  MOD_SC),
         ("pretraining_sc", MOD_SC),
         ("pretraining_bulk", MOD_BULK),
         ("pseudo_bulk", MOD_PB),

@@ -3,17 +3,18 @@
 #SBATCH --output=slurm_outputs/add_fields_%j.out
 #SBATCH --time=10:00:00
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=128G
 
 source ~/.bashrc
 conda activate bulkFM
 
-OUT_DIR="/cluster/work/boeva/rquiles/data/eheiss_RAW"
+OUT_DIR="/cluster/work/boeva/rquiles/data/eheiss_RAW_tissue"
 
 echo "=== Step 4: Inferring tissue_general ==="
 python -u add_fields.py \
-    --input /cluster/work/boeva/rquiles/data/eheiss_RAW/pretraining_bulk_RAW.h5ad \
+    --input /cluster/work/boeva/rquiles/eheiss_datasets/bulk/pretraining_bulk_RAW.h5ad \
+    --no-tissue-fill \
     --tissue-fill-lognorm \
     --output $OUT_DIR \
     --field tissue_general \
@@ -34,7 +35,7 @@ python -u add_fields.py \
     --output $OUT_DIR \
     --field modality=pseudobulk
 
-# --- Step 3: Infer tissue_general for bulk file ---
+# --- Step 3:Add modality=bulk for bulk file ---
 echo "=== Step 3: Adding modality=bulk ==="
 python -u add_fields.py \
     --input /cluster/work/boeva/rquiles/eheiss_datasets/bulk/pretraining_bulk_RAW.h5ad \

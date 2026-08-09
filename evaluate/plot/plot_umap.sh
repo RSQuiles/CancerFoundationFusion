@@ -31,14 +31,14 @@ ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_conditio
 # and can disagree for reasons that have nothing to do with the models.
 SCRIPT_ARGS=(
     --ablation-dir $ABLATION_DIR
-    --adata-dir /cluster/work/boeva/rquiles/data/eheiss_RAW/pipeline_ready/h5ads
     --color tissue_general
-    --sample-size 75_000
+    --tissues blood lung
+    --eval-adata $ABLATION_DIR/eval.h5ad
+    --sample-size 50_000
     --skip-unknown
 )
-
-    # --eval-adata $ABLATION_DIR/eval.h5ad
-
+    
+    # --adata-dir /cluster/work/boeva/rquiles/data/eheiss_RAW_tissue
 
 # --run-name paired_counts_dat
 # --ckpt "/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts/contrastive/step_step=340000_epoch_epoch=00.ckpt"

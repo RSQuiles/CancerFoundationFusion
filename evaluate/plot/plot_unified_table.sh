@@ -30,7 +30,7 @@ for arg in "$@"; do
     fi
 done
 
-CONFIG="${POSITIONAL[0]:-$SCRIPT_DIR/example_unified_metrics_config.yaml}"
+CONFIG="${POSITIONAL[0]:-$SCRIPT_DIR/config_non_paired_metrics.yaml}"
 STYLE="${POSITIONAL[1]:-heatmap}"
 
 SCRIPT_ARGS=(

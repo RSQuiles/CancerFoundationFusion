@@ -30,7 +30,7 @@ defaults:
 
   downstream:
     # Cancer type prediction, drug sensitivity, deconvolution, survival.
-    tasks: [canc_type_class, deconv, survival]
+    tasks: [canc_type_class, deconv, survival, drug_sensitivity_v2]
     config_dir: null        # null -> evaluate/finetune/configs
     models: null            # null -> every model dir holding a checkpoint
 
@@ -60,44 +60,9 @@ experiments:
 
   # ── pretrained on NORMALIZED bulk -> normalize the downstream input too ───────
 
-  - name: paired_aggfix                       # paired_aggfix.json -> ablation_paired_dataset
-    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_dataset
-    # base arm: bulk_chunk_0000.h5ad  x_max 12.94, non-integral.
-    # Its bulk_baseline arm had no bulk file to scan, but that arm trains on
-    # data/bulk_cpm/pipeline_ready — CPM, i.e. also normalized — so one value serves
-    # both arms here. (normalize is per experiment, not per arm.)
-    downstream: {normalize: true}
-
-  - name: small_partition_ablation            # small_partition_ablation.json -> ablation_partition
-    ablation_dir: ${work}/outputs/save_CFF/ablation_partition
+  - name: base_comparison_ablation            # base_comparison_ablation.json
+    ablation_dir: ${work}/outputs/save_CFF/ablation_base_comparison
     downstream: {normalize: true}             # bulk_chunk_0000.h5ad  x_max 8.33, non-integral
-
-  # ── pretrained on RAW COUNTS -> leave the downstream input raw ────────────────
-
-  - name: big_condition                       # big_condition.json (+ fill.json, same dir)
-    ablation_dir: ${work}/outputs/save_CFF/ablation_big_condition
-    downstream: {normalize: false}            # pretraining_bulk_RAW.h5ad  x_max 1.2e7, integral
-
-  - name: eheiss_data                         # eheiss_data.json -> ablation_united_data
-    ablation_dir: ${work}/outputs/save_CFF/ablation_united_data
-    downstream: {normalize: false}            # pretraining_bulk_RAW.h5ad  x_max 1.2e7, integral
-
-  - name: paired_corn                         # paired_corn.json
-    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_corn
-    downstream: {normalize: false}            # both arms: x_max 1.14e6, integral
-
-  # NOTE the root: paired_counts.json says 'outputs_rquiles', not 'outputs' like
-  # every other config. Copied verbatim rather than "corrected" — confirm which root
-  # actually holds the checkpoints, or this reports "No model directories with
-  # checkpoints found". (analysis_all_experiments.yaml guesses 'outputs' for the same
-  # directory; the two disagree deliberately, so settle it once and fix both.)
-  - name: paired_counts                       # paired_counts.json / paired_config_cscs.json
-    ablation_dir: ${work}/outputs_rquiles/save_CFF/ablation_paired_counts
-    downstream: {normalize: false}            # both arms: x_max 1.14e6, integral
-
-  - name: paired_mix                          # paired_mix.json
-    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_mix
-    downstream: {normalize: false}            # bulk_chunk_0000.h5ad  x_max 1.14e6, integral
 
   # ── excluded ─────────────────────────────────────────────────────────────────
   # example_ablation_config.json -> ablation_test on data/mixed_test is a template
@@ -124,11 +89,10 @@ experiments:
 
 slurm:
   enabled: true
-  mode: single-job    # 9 independent jobs; downstream is far too slow to serialise
+  mode: per-experiment    # 9 independent jobs; downstream is far too slow to serialise
   job_name_prefix: bench
   sbatch_args:
     - --time=24:00:00     # run_ablation_benchmark.sh allowed 16h for these 4 tasks
-                          # on ONE ablation dir; these dirs hold 4-6 models each
     - --partition=gpu
     - --gres=gpu:rtx4090:1
     - --ntasks-per-node=1

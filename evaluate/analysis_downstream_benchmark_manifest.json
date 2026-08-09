@@ -1,0 +1,21 @@
+{
+  "config": "/cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/analysis_downstream_benchmark.yaml",
+  "mode": "single-job",
+  "only_steps": null,
+  "jobs": [
+    {
+      "job_name": "bench_all",
+      "job_id": "9463102",
+      "experiments": [
+        "paired_aggfix",
+        "small_partition_ablation",
+        "big_condition",
+        "eheiss_data",
+        "paired_corn",
+        "paired_counts",
+        "paired_mix"
+      ],
+      "payload": "/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_dataset/analysis/payload_all.json"
+    }
+  ]
+}
