@@ -1,0 +1,111 @@
+# SurvBoard metrics for every model of every ablation directory in the downstream
+# sweep.
+#
+#   python evaluate/finetune/scripts/run_ablation_survboard_metrics.py \
+#       --config evaluate/finetune/scripts/ablation_survboard_metrics.yaml --dry-run
+#   python evaluate/finetune/scripts/run_ablation_survboard_metrics.py \
+#       --config evaluate/finetune/scripts/ablation_survboard_metrics.yaml
+#   ... --only big_condition            # one ablation
+#
+# Needs the SurvBoard environment (pycox, sksurv, survival_evaluation) — see
+# scripts/ablation_survboard_metrics.sh. --dry-run / --list need nothing.
+#
+# This computes NOTHING from checkpoints. It reads the survival functions the
+# 'survival' downstream task already wrote to
+#   {survboard_results_dir}/{COHORT}/{CANCER}/{model}/split_{fold}.csv
+# and writes, per model,
+#   {ablation_dir}/{model}/metrics/results_survival.json          (antolini, ibs,
+#                                                                  d_calibration;
+#                                                                  keeps c_index)
+#   {ablation_dir}/{model}/metrics/results_survival_detailed.csv  (per cohort/cancer/fold)
+# so run it AFTER the 'downstream' step of analysis_downstream_benchmark*.yaml and
+# BEFORE the 'benchmark' plot — three of the four survival bars do not exist until
+# this has run.
+
+vars:
+  work: /cluster/work/boeva/rquiles
+
+# Base defaults come from the survival task config's finetune.survival block:
+# survboard_data_dir, splits_dir, survboard_results_dir, cohorts, cancer_types.
+# Inheriting rather than copying is deliberate — survboard_results_dir must be the
+# directory the task actually WROTE to, and the cancer_types list must be the one it
+# ran on. Every other key in that file (checkpoint, ablation_dir, fold_index, the
+# training hyperparameters) is ignored here.
+task_config: evaluate/finetune/configs/survival_pred_config.yaml
+
+defaults:
+  # Uncomment to override what task_config supplies:
+  # survboard_data_dir:    /cluster/work/boeva/bulkFM/data/processed/survboard
+  # splits_dir:            /cluster/work/boeva/bulkFM/data/processed/survboard/splits
+  # survboard_results_dir: ${work}/outputs/survival/functions
+  # cohorts:               [TCGA, ICGC]
+  # cancer_types:          [KIRC, LGG, ...]
+
+  ibs_grid_len: 100
+
+  # null -> every sub-directory of ablation_dir holding a checkpoint or a metrics/
+  # directory. The metrics/ clause is what includes pca_baseline/, which has no
+  # checkpoint but does get scored by the survival task.
+  models: null
+
+  # false: recompute even where results_survival.json already holds SurvBoard
+  # metrics. Cheap (it is CSV reading, not GPU work) and it keeps the numbers in
+  # step with the CSVs. Set true, or pass --skip-existing, to resume a run.
+  skip_existing: false
+
+# Union of the experiments in evaluate/analysis_downstream_benchmark.yaml and
+# evaluate/analysis_downstream_benchmark_small.yaml — the same directories, in the
+# same order, with the same names, so the two configs can be compared line by line.
+# The 'normalize' settings there are irrelevant here: normalization affects
+# embedding, and this step reads survival functions that already exist.
+ablations:
+
+  # ── from analysis_downstream_benchmark_small.yaml ────────────────────────────
+
+  - name: base_comparison_ablation            # base_comparison_ablation.json
+    ablation_dir: ${work}/outputs/save_CFF/ablation_base_comparison
+
+  # ── from analysis_downstream_benchmark.yaml ──────────────────────────────────
+
+  - name: paired_aggfix                       # paired_aggfix.json -> ablation_paired_dataset
+    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_dataset
+
+  - name: small_partition_ablation            # small_partition_ablation.json -> ablation_partition
+    ablation_dir: ${work}/outputs/save_CFF/ablation_partition
+
+  - name: big_condition                       # big_condition.json (+ fill.json, same dir)
+    ablation_dir: ${work}/outputs/save_CFF/ablation_big_condition
+
+  - name: eheiss_data                         # eheiss_data.json -> ablation_united_data
+    ablation_dir: ${work}/outputs/save_CFF/ablation_united_data
+
+  - name: paired_corn                         # paired_corn.json
+    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_corn
+
+  # NOTE the root: paired_counts.json says 'outputs_rquiles', not 'outputs' like
+  # every other config. Copied verbatim from analysis_downstream_benchmark.yaml
+  # rather than "corrected"; --dry-run reports MISSING PATHS if it is wrong.
+  - name: paired_counts                       # paired_counts.json / paired_config_cscs.json
+    ablation_dir: ${work}/outputs_rquiles/save_CFF/ablation_paired_counts
+
+  - name: paired_mix                          # paired_mix.json
+    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_mix
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Model-name collisions — read this before trusting a cross-ablation comparison
+# ─────────────────────────────────────────────────────────────────────────────
+# The survival CSVs are keyed by MODEL NAME ONLY (survboard_task.py:985); the
+# ablation directory does not appear in the path. Every ablation above inherits one
+# survboard_results_dir from task_config, and names like 'unified', 'dat' and
+# 'bulk_baseline' recur across these directories — so those models all read the same
+# CSVs, i.e. whichever survival run wrote last, and their metrics cannot tell the
+# ablations apart.
+#
+# --dry-run lists every collision. To resolve one, give the ablation its own
+# results dir here, e.g.
+#
+#   - name: big_condition
+#     ablation_dir: ${work}/outputs/save_CFF/ablation_big_condition
+#     survboard_results_dir: ${work}/outputs/survival/functions/big_condition
+#
+# and re-run the survival task with a matching survboard_results_dir before scoring.
