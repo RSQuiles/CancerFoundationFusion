@@ -110,6 +110,15 @@ have a value; a model with only `metrics_old/` is still picked up, including by
 count — those bars come from an earlier run and may not be comparable with their
 neighbours. `evaluate/check/check_benchmark_fallback.py` self-checks it.
 
+**Per-task layout.** `per_task` figures place at most `PER_TASK_MAX_COLS` (2) metrics
+per row, wrapping onto further rows and centring a short row, so a single-metric task
+gets one centred subplot. The combined grid is unaffected: one row per task, short
+rows left-aligned so columns line up across tasks. Bar names, group names and the
+legend are sized by `BAR_NAME_FONTSIZE` / `GROUP_NAME_FONTSIZE` / `LEGEND_FONTSIZE`;
+the y-range is then widened to fit the rotated names, measured per axes.
+`evaluate/check/check_benchmark_layout.py` self-checks the layout and asserts no name
+overflows its axes.
+
 ### Downstream Tasks
 ```bash
 python evaluate/finetune/run_downstream_task.py \

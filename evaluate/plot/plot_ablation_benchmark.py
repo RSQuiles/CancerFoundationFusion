@@ -27,7 +27,10 @@ Layout:  rows = tasks,  columns = metrics within that task.
 With ``--per-task`` each task is written to its own figure instead, named after
 ``--output`` with the task appended (``benchmark_deconv.png``). Colours, bar order
 and group bands are computed once across all tasks and shared, so the separate
-figures stay comparable with each other and with the combined one.
+figures stay comparable with each other and with the combined one. These figures
+place at most two metrics per row (``PER_TASK_MAX_COLS``), wrapping onto further
+rows and centring a row that ends up short — so a task with a single metric gets
+one centred subplot rather than a stretched one.
 
 Every bar is labelled with its value and, unless ``--no-bar-names``, with the
 model's display name — so a dense figure can be read without tracing colours back
@@ -137,6 +140,17 @@ METRIC_LABELS: dict[str, str] = {
 # Background colour for the primary-metric subplot.
 _PRIMARY_BG   ="#FFFDE7"   # very light yellow
 _PRIMARY_EDGE = "#F9A825"   # amber border
+
+# Metrics per row in a per-task figure. The combined grid keeps one row per task
+# however many metrics it has; a single-task figure has the width to spare, so it
+# wraps instead of shrinking every subplot. A row that ends up short is centred.
+PER_TASK_MAX_COLS = 2
+
+# The three labels that identify a bar: its name above it, its group under the
+# bottom row, and the legend. Sized together, since they are read together.
+BAR_NAME_FONTSIZE   = 9
+GROUP_NAME_FONTSIZE = 11
+LEGEND_FONTSIZE     = 11
 
 
 # --------------------------------------------------------------------------- #
@@ -602,10 +616,88 @@ def _legend_inches(n_models: int, ncol: int) -> float:
 
     Computed rather than hardcoded because the old fixed 6% reserve only happened
     to fit the combined figure: a per-task figure is a third of the height, so the
-    same fraction is a third of the space for exactly as many legend rows.
+    same fraction is a third of the space for exactly as many legend rows. Scales
+    with the legend's font size, which is what sets the row height.
     """
     rows = math.ceil(n_models / max(ncol, 1))
-    return 0.23 * rows + 0.45          # row height + frame/title padding
+    row_in = 0.23 * (LEGEND_FONTSIZE / 9.0)
+    return row_in * rows + 0.45        # rows + frame/title padding
+
+
+@dataclass(frozen=True)
+class _Cell:
+    """One subplot: a (task, metric) placed on the grid.
+
+    ``col`` is in half-columns. Every cell spans two of them, so a row holding
+    fewer cells than the grid is wide can be centred on an odd offset — which is
+    what puts a lone metric in the middle instead of hard left.
+    """
+
+    row:    int
+    col:    int
+    task:   str
+    metric: str
+
+
+def _plan_cells(
+    tasks: list[str],
+    task_metrics: dict[str, list[str]],
+    max_cols: int | None,
+) -> tuple[list[_Cell], int, int]:
+    """Lay the (task, metric) subplots out on a grid.
+
+    ``max_cols`` caps the metrics per row; a task with more wraps onto further
+    rows and a short row is centred. ``None`` keeps the original behaviour — one
+    row per task, as wide as the widest task, short rows left-aligned — so the
+    combined grid is unchanged.
+
+    Returns ``(cells, n_grid_rows, n_cols)``.
+    """
+    widest = max((len(task_metrics[t]) for t in tasks), default=1) or 1
+    # When wrapping, the grid is always max_cols wide even for a task with a single
+    # metric: that subplot is then centred at the same width as every other
+    # per-task figure's, instead of being stretched across the whole page.
+    n_cols = max_cols if max_cols else widest
+
+    cells: list[_Cell] = []
+    row = 0
+    for task in tasks:
+        metrics = task_metrics.get(task) or []
+        if not metrics:
+            row += 1          # keep an empty row so the task still gets its label
+            continue
+        for start in range(0, len(metrics), n_cols):
+            chunk = metrics[start:start + n_cols]
+            # Centre only when wrapping. In the combined grid a task with fewer
+            # metrics than its neighbours has always been left-aligned, and its
+            # columns line up with theirs; centring would break that.
+            offset = (2 * n_cols - 2 * len(chunk)) // 2 if max_cols else 0
+            for i, metric in enumerate(chunk):
+                cells.append(_Cell(row, offset + 2 * i, task, metric))
+            row += 1
+
+    return cells, max(row, 1), n_cols
+
+
+def _group_label_cells(
+    cells: list[_Cell], n_grid_rows: int, wrapped: bool
+) -> set[tuple[int, int]]:
+    """Which cells print the group names underneath.
+
+    Wrapped: the bottom grid row only. Anything higher would collide with the
+    titles of the row beneath it.
+
+    Unwrapped: the bottom-most cell of each column, as before — the combined grid
+    is ragged, so a column whose last task has that metric may end above the
+    figure's final row.
+    """
+    if wrapped:
+        return {(c.row, c.col) for c in cells if c.row == n_grid_rows - 1}
+
+    last_row: dict[int, int] = {}
+    for cell in cells:
+        last_row[cell.col] = max(last_row.get(cell.col, -1), cell.row)
+    return {(row, col) for col, row in last_row.items()}
 
 
 def _apply_name_headroom(
@@ -621,6 +713,10 @@ def _apply_name_headroom(
     depends on the axes' physical height — a fraction that works for a tall
     combined grid clips badly on a short per-task figure. Measure instead: convert
     the label's height in points into a fraction of the axes, per axes.
+
+    Idempotent: the pre-expansion limits are remembered per axes and every call
+    recomputes from those, so this can be re-run after a second layout pass
+    without the expansions compounding.
     """
     # Rotated 90 degrees, the label's vertical extent is its rendered *length*.
     # 0.62 * fontsize is a good average advance for DejaVu Sans, matplotlib's
@@ -633,10 +729,16 @@ def _apply_name_headroom(
         ax_pt = ax.get_window_extent().height * 72.0 / fig.dpi
         if ax_pt <= 0:
             continue
-        lo, hi = ax.get_ylim()
-        # Cap the expansion: a pathologically short axes would otherwise blow the
-        # scale up so far the bars vanish.
-        frac = min(needed_pt / ax_pt, 1.2)
+        lo, hi = getattr(ax, "_bar_name_base_ylim", None) or ax.get_ylim()
+        ax._bar_name_base_ylim = (lo, hi)
+        # Growing the range by `frac` leaves only frac/(1+frac) of the axes above a
+        # bar that reaches the old top — the axes' physical height does not change,
+        # so the new headroom is a share of it, not an addition to it. Solving
+        # frac/(1+frac) * ax_pt = needed_pt gives the denominator below; using
+        # needed_pt/ax_pt directly (as this did) clips the tallest bar's label.
+        # The floor on the denominator caps the expansion: a pathologically short
+        # axes would otherwise blow the scale up until the bars vanish.
+        frac = min(needed_pt / max(ax_pt - needed_pt, 0.25 * ax_pt), 3.0)
         ax.set_ylim(lo, hi + (hi - lo) * frac)
 
 
@@ -655,14 +757,20 @@ def _render_figure(
     title: str,
     bar_names: bool,
     output: Path | None,
+    max_cols: int | None = None,
 ):
-    """Draw one figure covering *tasks* (rows) x their metrics (columns).
+    """Draw one figure covering *tasks* x their metrics.
+
+    Without ``max_cols`` the layout is one row per task, as wide as the widest
+    task. With it, a task's metrics wrap onto further rows of at most that many
+    subplots and a short row is centred — see :func:`_plan_cells`.
 
     Returns the Figure; the caller decides whether to save, show or close it.
     """
     n_models = len(model_names)
-    n_tasks  = len(tasks)
-    n_cols   = max((len(task_metrics[t]) for t in tasks), default=1)
+
+    cells, n_grid_rows, n_cols = _plan_cells(tasks, task_metrics, max_cols)
+    label_cells = _group_label_cells(cells, n_grid_rows, wrapped=bool(max_cols))
 
     # Widen the figure in proportion to the gaps inserted between groups
     # (width_scale is exactly 1.0 when there are none).
@@ -671,130 +779,125 @@ def _render_figure(
     ncol_legend = min(n_models, 6)
     legend_in   = _legend_inches(n_models, ncol_legend)
 
-    col_w, row_h = 2.6, 3.2
+    col_w = 2.6
     fig_w = figsize[0] if figsize else max(n_cols * col_w * width_scale + 1.5, 6.0)
-    fig_h = figsize[1] if figsize else max(n_tasks * row_h + legend_in + 0.8, 4.0)
+    fig_h = figsize[1] if figsize else _figure_height(n_grid_rows, n_models)
 
-    fig, axes = plt.subplots(n_tasks, n_cols, figsize=(fig_w, fig_h), squeeze=False)
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    # Two grid columns per subplot, so a centred row can sit on an odd offset.
+    gridspec = fig.add_gridspec(n_grid_rows, 2 * n_cols)
 
     bar_width = 0.75
-
-    # Bottom-most visible subplot per column — where group names are printed.
-    # (Tasks have different metric counts, so the grid is ragged.)
-    last_visible_row: dict[int, int] = {}
-    for row, task in enumerate(tasks):
-        for col in range(len(task_metrics[task])):
-            last_visible_row[col] = row
 
     # Axes that ended up with bars, so the rotated-name headroom can be applied to
     # exactly those, after layout, when their real pixel height is known.
     axes_with_bars: list = []
+    # First subplot of each task carries the task label.
+    labelled_tasks: set[str] = set()
+    first_axes = None
 
-    for row, task in enumerate(tasks):
-        metrics_for_task = task_metrics[task]
-        primary_metric   = primary.get(task)
+    for cell in cells:
+        task, metric = cell.task, cell.metric
+        ax = fig.add_subplot(gridspec[cell.row, cell.col:cell.col + 2])
+        if first_axes is None:
+            first_axes = ax
 
-        for col in range(n_cols):
-            ax = axes[row][col]
+        is_primary = metric == primary.get(task)
 
-            # Hide unused columns for tasks with fewer metrics.
-            if col >= len(metrics_for_task):
-                ax.set_visible(False)
+        # Highlight primary metric subplot.
+        if is_primary:
+            ax.set_facecolor(_PRIMARY_BG)
+            for spine in ax.spines.values():
+                spine.set_edgecolor(_PRIMARY_EDGE)
+                spine.set_linewidth(1.8)
+
+        any_bar = False
+        for model_idx, model_name in enumerate(model_names):
+            value = results.get(model_name, {}).get(task, {}).get(metric)
+            if value is None or not isinstance(value, (int, float)):
                 continue
 
-            metric     = metrics_for_task[col]
-            is_primary = metric == primary_metric
-
-            # Highlight primary metric subplot.
-            if is_primary:
-                ax.set_facecolor(_PRIMARY_BG)
-                for spine in ax.spines.values():
-                    spine.set_edgecolor(_PRIMARY_EDGE)
-                    spine.set_linewidth(1.8)
-
-            any_bar = False
-            for model_idx, model_name in enumerate(model_names):
-                value = results.get(model_name, {}).get(task, {}).get(metric)
-                if value is None or not isinstance(value, (int, float)):
-                    continue
-
-                bar = ax.bar(
-                    x_positions[model_idx], float(value),
-                    width=bar_width,
-                    color=colors[model_idx],
-                    zorder=3,
-                    edgecolor="white",
-                    linewidth=0.5,
+            bar = ax.bar(
+                x_positions[model_idx], float(value),
+                width=bar_width,
+                color=colors[model_idx],
+                zorder=3,
+                edgecolor="white",
+                linewidth=0.5,
+            )
+            ax.bar_label(bar, fmt="%.3f", padding=2, fontsize=6)
+            if bar_names:
+                # Above the value label (padding is in points, so this clears
+                # it regardless of the data scale), rotated to fit dense grids.
+                ax.bar_label(
+                    bar, labels=[model_name], padding=13,
+                    fontsize=BAR_NAME_FONTSIZE, rotation=90, color="#333333",
                 )
-                ax.bar_label(bar, fmt="%.3f", padding=2, fontsize=6)
-                if bar_names:
-                    # Above the value label (padding is in points, so this clears
-                    # it regardless of the data scale), rotated to fit dense grids.
-                    ax.bar_label(
-                        bar, labels=[model_name], padding=13, fontsize=6,
-                        rotation=90, color="#333333",
-                    )
-                any_bar = True
+            any_bar = True
 
-            # Subplot title: metric name + direction + star for primary.
-            direction    = " ↓" if metric in LOWER_IS_BETTER else " ↑"
-            star         = " ★" if is_primary else ""
-            metric_label = METRIC_LABELS.get(metric, metric)
-            ax.set_title(
-                metric_label + direction + star,
-                fontsize=9,
-                fontweight="bold" if is_primary else "normal",
-                color=_PRIMARY_EDGE if is_primary else "black",
-                pad=4,
+        # Subplot title: metric name + direction + star for primary.
+        direction    = " ↓" if metric in LOWER_IS_BETTER else " ↑"
+        star         = " ★" if is_primary else ""
+        metric_label = METRIC_LABELS.get(metric, metric)
+        ax.set_title(
+            metric_label + direction + star,
+            fontsize=9,
+            fontweight="bold" if is_primary else "normal",
+            color=_PRIMARY_EDGE if is_primary else "black",
+            pad=4,
+        )
+
+        ax.set_xticks([])
+        ax.grid(axis="y", linestyle="--", alpha=0.4, zorder=0)
+        ax.set_axisbelow(True)
+
+        if any_bar:
+            axes_with_bars.append(ax)
+
+        # Grouped mode: shaded band behind each group + a fixed x-range so
+        # every subplot lines up with the group labels under the figure.
+        if spans:
+            ax.set_xlim(spans[0][0] - 0.7, spans[-1][1] + 0.7)
+            for span_idx, (span_lo, span_hi, _) in enumerate(spans):
+                ax.axvspan(
+                    span_lo - 0.45, span_hi + 0.45,
+                    color=_GROUP_SHADES[span_idx % len(_GROUP_SHADES)],
+                    alpha=0.18, zorder=0,
+                )
+
+        if not any_bar:
+            ax.text(
+                0.5, 0.5, "No data",
+                ha="center", va="center", transform=ax.transAxes,
+                color="grey", fontsize=9,
             )
 
-            ax.set_xticks([])
-            ax.grid(axis="y", linestyle="--", alpha=0.4, zorder=0)
-            ax.set_axisbelow(True)
-
-            if any_bar:
-                axes_with_bars.append(ax)
-
-            # Grouped mode: shaded band behind each group + a fixed x-range so
-            # every subplot lines up with the group labels under the figure.
-            if spans:
-                ax.set_xlim(spans[0][0] - 0.7, spans[-1][1] + 0.7)
-                for span_idx, (span_lo, span_hi, _) in enumerate(spans):
-                    ax.axvspan(
-                        span_lo - 0.45, span_hi + 0.45,
-                        color=_GROUP_SHADES[span_idx % len(_GROUP_SHADES)],
-                        alpha=0.18, zorder=0,
-                    )
-
-            if not any_bar:
+        # Group names, printed under the bottom-most subplots.
+        if named_groups and (cell.row, cell.col) in label_cells:
+            ax_x0, ax_x1 = ax.get_xlim()
+            ax_width = ax_x1 - ax_x0
+            for span_lo, span_hi, group_name in spans:
+                if not group_name:
+                    continue
+                centre = ((span_lo + span_hi) / 2 - ax_x0) / ax_width
                 ax.text(
-                    0.5, 0.5, "No data",
-                    ha="center", va="center", transform=ax.transAxes,
-                    color="grey", fontsize=9,
+                    centre, -0.02, group_name,
+                    transform=ax.transAxes,
+                    ha="center", va="top",
+                    fontsize=GROUP_NAME_FONTSIZE, color="dimgrey", style="italic",
                 )
 
-            # Group names, printed under the last visible subplot of each column.
-            if named_groups and last_visible_row.get(col) == row:
-                ax_x0, ax_x1 = ax.get_xlim()
-                ax_width = ax_x1 - ax_x0
-                for span_lo, span_hi, group_name in spans:
-                    if not group_name:
-                        continue
-                    centre = ((span_lo + span_hi) / 2 - ax_x0) / ax_width
-                    ax.text(
-                        centre, -0.02, group_name,
-                        transform=ax.transAxes,
-                        ha="center", va="top",
-                        fontsize=7.5, color="dimgrey", style="italic",
-                    )
-
-        # Task label as the y-axis label of the first (leftmost) subplot.
-        axes[row][0].set_ylabel(
-            TASK_LABELS.get(task, task),
-            fontsize=10,
-            fontweight="bold",
-            labelpad=8,
-        )
+        # Task label as the y-axis label of the task's first subplot. When a task
+        # wraps, only the first row is labelled — repeating it down the left edge
+        # (or, worse, on a centred lone subplot) reads as a new task.
+        if task not in labelled_tasks:
+            ax.set_ylabel(
+                TASK_LABELS.get(task, task),
+                fontsize=10,
+                fontweight="bold",
+                labelpad=8,
+            )
+            labelled_tasks.add(task)
 
     # Shared legend below the figure.
     legend_handles = [
@@ -806,30 +909,49 @@ def _render_figure(
         loc="lower center",
         ncol=ncol_legend,
         frameon=True,
-        fontsize=9,
+        fontsize=LEGEND_FONTSIZE,
         title="Experiment" if grouped else "Model",
-        title_fontsize=9,
+        title_fontsize=LEGEND_FONTSIZE,
         bbox_to_anchor=(0.5, 0.0),
-    )
-
-    fig.text(
-        0.99, 0.005,
-        "★ = primary metric",
-        ha="right", va="bottom", fontsize=8,
-        color=_PRIMARY_EDGE, style="italic",
     )
 
     fig.suptitle(title, fontsize=13, fontweight="bold", y=1.01)
     # Reserve exactly the legend's height rather than a fixed 6%, so the same code
     # works for a tall combined grid and a short single-task figure.
-    plt.tight_layout(rect=[0, min(legend_in / fig_h, 0.5), 1, 1])
+    layout_rect = [0, min(legend_in / fig_h, 0.5), 1, 1]
+    plt.tight_layout(rect=layout_rect)
 
     # After layout, so each axes' real height is known: the names are drawn at a
     # point offset and are invisible to the autoscaler, so the y-range has to be
     # widened by hand. Measuring beats guessing here — the same label needs a much
     # larger fraction of a short axes than of a tall one.
     if bar_names and axes_with_bars:
-        _apply_name_headroom(fig, axes_with_bars, model_names, fontsize=6, padding=13)
+        _apply_name_headroom(
+            fig, axes_with_bars, model_names,
+            fontsize=BAR_NAME_FONTSIZE, padding=13,
+        )
+        # That first tight_layout saw the names sticking out above the axes and
+        # shrank the axes to make room. They now sit inside, so lay out again to
+        # reclaim that band — otherwise the taller the names, the emptier the
+        # figure. The headroom is then recomputed for the new (larger) axes;
+        # _apply_name_headroom works from the pre-expansion limits, so the two
+        # passes do not compound.
+        plt.tight_layout(rect=layout_rect)
+        _apply_name_headroom(
+            fig, axes_with_bars, model_names,
+            fontsize=BAR_NAME_FONTSIZE, padding=13,
+        )
+
+    # Right-aligned to the rightmost subplot, not to the figure edge. Saving uses
+    # bbox_inches="tight", so a footnote pinned at x=0.99 would hold the crop out
+    # to the figure's right edge while the empty left margin was trimmed away —
+    # which makes a centred lone subplot come out visibly off-centre.
+    fig.text(
+        max((ax.get_position().x1 for ax in fig.axes), default=0.99), 0.005,
+        "★ = primary metric",
+        ha="right", va="bottom", fontsize=8,
+        color=_PRIMARY_EDGE, style="italic",
+    )
 
     if output is not None:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -867,9 +989,10 @@ def plot_benchmark(
     name is printed under the bottom row of subplots.
 
     ``per_task`` writes one figure per task instead of a single grid, each named
-    after ``output`` with the task appended. Colours, ordering and group bands are
-    computed once and shared, so the per-task figures stay comparable with each
-    other and with the combined one.
+    after ``output`` with the task appended, and lays its metrics out at most
+    ``PER_TASK_MAX_COLS`` per row with a short row centred. Colours, ordering and
+    group bands are computed once and shared, so the per-task figures stay
+    comparable with each other and with the combined one.
 
     ``bar_names`` prints each model's display name above its bar as well as in the
     legend.
@@ -924,19 +1047,24 @@ def plot_benchmark(
     written: list[Path] = []
 
     if per_task:
-        # Height is derived per figure unless the caller pinned it: a combined
-        # figsize sized for N task rows is N times too tall for one row. The width
-        # is kept, since it is set by the number of bars, which does not change.
-        task_size = per_task_figsize or (
-            (figsize[0], _single_row_height(n_models)) if figsize else None
-        )
         for task in all_tasks:
+            # Height is derived per figure unless the caller pinned it: a combined
+            # figsize sized for N task rows is N times too tall, and a task whose
+            # metrics wrap onto two rows needs more than one whose do not. The
+            # width is kept — it is set by the number of bars, which is constant.
+            n_rows = math.ceil(
+                len(task_metrics[task]) / PER_TASK_MAX_COLS
+            ) or 1
+            task_size = per_task_figsize or (
+                (figsize[0], _figure_height(n_rows, n_models)) if figsize else None
+            )
             out = task_output_path(output, task) if output is not None else None
             fig = _render_figure(
                 tasks=[task],
                 figsize=task_size,
                 title=f"{title} — {TASK_LABELS.get(task, task)}".replace("\n", " "),
                 output=out,
+                max_cols=PER_TASK_MAX_COLS,
                 **common,
             )
             if out is not None:
@@ -958,9 +1086,10 @@ def plot_benchmark(
     return written
 
 
-def _single_row_height(n_models: int) -> float:
-    """Figure height for a one-task figure: the row plus the legend it needs."""
-    return 3.2 + _legend_inches(n_models, min(n_models, 6)) + 0.8
+def _figure_height(n_grid_rows: int, n_models: int) -> float:
+    """Figure height in inches: the subplot rows plus the legend they need."""
+    row_h = 3.2
+    return max(n_grid_rows * row_h + _legend_inches(n_models, min(n_models, 6)) + 0.8, 4.0)
 
 
 # --------------------------------------------------------------------------- #
