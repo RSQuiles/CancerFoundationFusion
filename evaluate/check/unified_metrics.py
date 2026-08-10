@@ -71,6 +71,7 @@ except ImportError:
     log.warning("Could not load CancerFoundation")
 
 from evaluate.utils import (  # re-exports looks_like_counts without the training stack
+    MODALITY_COL as _MODALITY_COL,
     MOD_BULK,
     MOD_PAIRED_BULK,
     MOD_PAIRED_PB,
@@ -78,11 +79,10 @@ from evaluate.utils import (  # re-exports looks_like_counts without the trainin
     MOD_PB,
     MOD_SC,
     MOD_SYNTH_PB,
+    canonicalize_modality_column,
     generate_pseudobulk_adata,
     looks_like_counts,
 )
-
-_MODALITY_COL = "_eval_modality"
 
 # ---------------------------------------------------------------------------
 # Checkpoint helpers
@@ -1037,18 +1037,43 @@ def run_single_model(
     provenance = dict(eval_adata.uns.get("eval_provenance", {}) or {})
     current_hash = str(provenance.get("panel_hash", "unknown"))
 
+    # Which modalities these numbers describe. Also keys the cache: a metrics file
+    # written when the SC rows were labelled "subsampled" is missing whole families
+    # that this eval AnnData can now produce, and panel_hash alone cannot see that.
+    present = {
+        lbl: int((eval_adata.obs[_MODALITY_COL].astype(str) == lbl).sum())
+        for lbl in eval_adata.obs[_MODALITY_COL].astype(str).unique()
+    } if _MODALITY_COL in eval_adata.obs.columns else {}
+
     if skip_existing and metrics_file.exists():
         with metrics_file.open() as f:
             cached = json.load(f)
         cached_hash = str(cached.get("panel_hash", "unknown"))
-        if cached_hash == current_hash:
+        cached_mods = cached.get("modalities")
+        if cached_hash != current_hash:
+            log.warning(
+                "  Ignoring cache %s: it was computed under gene panel %s but this "
+                "eval AnnData uses %s. Recomputing.",
+                metrics_file, cached_hash, current_hash,
+            )
+        elif cached_mods is None:
+            # Pre-stamp cache: it may have been written under the legacy label
+            # vocabulary, in which case it is silently missing agg_synth_*.
+            log.warning(
+                "  Ignoring cache %s: it predates modality stamping, so whether it "
+                "saw the same modalities as this eval AnnData (%s) is unknown. "
+                "Recomputing once.",
+                metrics_file, sorted(present),
+            )
+        elif sorted(cached_mods) != sorted(present):
+            log.warning(
+                "  Ignoring cache %s: it was computed over modalities %s but this "
+                "eval AnnData has %s. Recomputing.",
+                metrics_file, sorted(cached_mods), sorted(present),
+            )
+        else:
             log.info("  Cached — loading %s", metrics_file)
             return cached
-        log.warning(
-            "  Ignoring cache %s: it was computed under gene panel %s but this "
-            "eval AnnData uses %s. Recomputing.",
-            metrics_file, cached_hash, current_hash,
-        )
 
     metrics: dict = {}
 
@@ -1071,7 +1096,9 @@ def run_single_model(
     # NB: these are ``_eval_modality`` *labels*, not the filename prefixes
     # build_eval_adata globs on. This used to read _get("subsampled") — a prefix
     # that is never a label — so sc_adata was always None and every agg_synth_*
-    # metric was silently skipped.
+    # metric was silently skipped. eval.h5ad files written back when the prefix WAS
+    # the label hit the same wall from the other side; main() runs them through
+    # canonicalize_modality_column first, so only labels reach here.
     sc_adata,          sc_emb          = _get(MOD_SC)
     bulk_adata,        bulk_emb        = _get(MOD_BULK)
     pb_adata,          pb_emb          = _get(MOD_PB)
@@ -1080,10 +1107,6 @@ def run_single_model(
     paired_bulk_adata, paired_bulk_emb = _get(MOD_PAIRED_BULK)
     synth_pb_adata,    synth_pb_emb    = _get(MOD_SYNTH_PB)
 
-    present = {
-        lbl: int((eval_adata.obs[_MODALITY_COL].astype(str) == lbl).sum())
-        for lbl in eval_adata.obs[_MODALITY_COL].astype(str).unique()
-    } if _MODALITY_COL in eval_adata.obs.columns else {}
     log.info("  Modality rows available: %s", present or "<none>")
 
     # Why each metric family did not run. Reported at the end: a short metrics dict
@@ -1243,6 +1266,10 @@ def run_single_model(
         skipped["agg_synth_*"] = (
             "missing " + ", ".join(missing) if missing else "no model to embed live"
         )
+        if missing and present:
+            # Naming what *is* there turns "missing 'sc' rows" from a contradiction
+            # (the rows are listed right above) into a readable label mismatch.
+            skipped["agg_synth_*"] += f"; labels present: {sorted(present)}"
 
     # ── Metric 4: contrastive / distributional alignment ──────────────────
     # This compares the bulk and pseudobulk *distributions*, so any pseudobulk rows
@@ -1311,9 +1338,11 @@ def run_single_model(
     if skipped:
         metrics["skipped_families"] = skipped
 
-    # Stamp the panel these numbers describe, so a later --skip-existing run can
-    # tell whether the cache is still valid (see the top of this function).
+    # Stamp the panel and the modalities these numbers describe, so a later
+    # --skip-existing run can tell whether the cache is still valid (see the top of
+    # this function).
     metrics["panel_hash"] = current_hash
+    metrics["modalities"] = present
     if provenance:
         metrics["shared_panel"] = provenance.get("shared_panel")
         metrics["panel_strategy"] = provenance.get("panel_strategy")
@@ -1400,10 +1429,11 @@ def run_ablation(
             per_model_per_bin[name] = row[per_bin_col]
     if per_bin_col in df.columns:
         df = df.drop(columns=[per_bin_col])
-    # skipped_families is a nested dict too; it lives in the per-model JSON, not the
-    # flat CSV that compare_experiments.py and _plot_metrics read.
-    if "skipped_families" in df.columns:
-        df = df.drop(columns=["skipped_families"])
+    # skipped_families and modalities are nested dicts too; they live in the
+    # per-model JSON, not the flat CSV that compare_experiments.py and _plot_metrics
+    # read.
+    df = df.drop(columns=[c for c in ("skipped_families", "modalities")
+                          if c in df.columns])
 
     csv_path = ablation_dir / "unified_metrics.csv"
     df.to_csv(csv_path)
@@ -1681,6 +1711,10 @@ def main(argv=None) -> int:
     log.info("Loading eval AnnData from %s ...", eval_path)
     eval_adata = ad.read_h5ad(eval_path)
     log.info("  %d cells, obsm keys: %s", eval_adata.n_obs, list(eval_adata.obsm.keys()))
+    # An eval.h5ad built before the label vocabulary was fixed carries filename
+    # prefixes ("subsampled") instead of labels ("sc"), which matches no metric
+    # family and skips agg_synth_* while still listing the rows as present.
+    canonicalize_modality_column(eval_adata, log=log)
 
     normalized = not args.not_normalized
     # Common kwargs for run_single_model (do_scib is ablation-level only)

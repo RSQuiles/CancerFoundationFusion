@@ -7,7 +7,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import anndata as ad
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
@@ -15,13 +14,13 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 
 def _import_looks_like_counts():
-    """Import ``looks_like_counts`` without requiring the training stack.
+    """Import ``looks_like_counts`` without requiring the whole training stack.
 
     ``cancerfoundation/__init__.py`` eagerly imports the dataset (and therefore
     bionemo, tokenizers, pytorch_lightning), which the scIB evaluation environment
     does not have — that is why ``unified_metrics.py`` guards its CancerFoundation
-    import. The helper itself only needs numpy/scipy, so fall back to loading its
-    module by path rather than duplicating the function.
+    import. Falling back to loading ``preprocess.py`` by path skips that, though the
+    module itself still imports torch.
     """
     try:
         from cancerfoundation.data.preprocess import looks_like_counts
@@ -37,7 +36,20 @@ def _import_looks_like_counts():
         return mod.looks_like_counts
 
 
-looks_like_counts = _import_looks_like_counts()
+_looks_like_counts_impl = None
+
+
+def looks_like_counts(X):
+    """Lazy proxy for ``cancerfoundation.data.preprocess.looks_like_counts``.
+
+    Resolved on first call rather than at import, so that importing this module for
+    the modality vocabulary alone — as ``check/check_modality_labels.py`` and the
+    plain-environment steps do — does not require torch.
+    """
+    global _looks_like_counts_impl
+    if _looks_like_counts_impl is None:
+        _looks_like_counts_impl = _import_looks_like_counts()
+    return _looks_like_counts_impl(X)
 
 # ---------------------------------------------------------------------------
 # Canonical ``_eval_modality`` vocabulary
@@ -62,6 +74,115 @@ MOD_SYNTH_PB = "synth_pb"
 SC_MODALITIES = (MOD_SC, MOD_PAIRED_SC)
 BULK_MODALITIES = (MOD_BULK, MOD_PAIRED_BULK)
 PB_MODALITIES = (MOD_PB, MOD_PAIRED_PB, MOD_SYNTH_PB)
+
+CANONICAL_MODALITIES = (
+    MOD_SC, MOD_BULK, MOD_PB, MOD_PAIRED_SC, MOD_PAIRED_PB, MOD_PAIRED_BULK,
+    MOD_SYNTH_PB,
+)
+
+# Filename prefix -> label, in the order build_eval_adata.py globs them. The glob is
+# ``{prefix}*.h5ad`` and prefix-anchored, so "sc" never picks up "paired_sc_*.h5ad"
+# and "bulk" never picks up "pseudo_bulk_*.h5ad"; the order still matters for the
+# order modalities are concatenated in.
+MODALITY_FILE_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("subsampled",       MOD_SC),
+    ("partition",        MOD_SC),
+    ("sc",               MOD_SC),
+    ("pretraining_sc",   MOD_SC),
+    ("pretraining_bulk", MOD_BULK),
+    ("pseudo_bulk",      MOD_PB),
+    ("bulk",             MOD_BULK),
+    ("paired_sc",        MOD_PAIRED_SC),
+    ("paired_pb",        MOD_PAIRED_PB),
+    ("paired_bulk",      MOD_PAIRED_BULK),
+)
+
+# Labels seen in the wild that are not canonical. Two sources:
+#   * eval.h5ad files built before June 2026, when build_eval_adata.py wrote the
+#     *filename prefix* into the obs column ("subsampled" for SC rows). Those files
+#     are expensive to rebuild and are still the input to metrics/umaps/diagnose, so
+#     they are translated on read rather than declared unreadable.
+#   * hand-written or externally produced h5ads using an obvious synonym.
+# Keys are matched case-insensitively with '-'/' ' folded to '_'; see
+# :func:`canonical_modality`.
+MODALITY_ALIASES: dict[str, str] = {
+    # legacy prefix-as-label
+    **{prefix: label for prefix, label in MODALITY_FILE_PREFIXES},
+    # synonyms
+    "single_cell": MOD_SC,
+    "singlecell": MOD_SC,
+    "scrna": MOD_SC,
+    "sc_rna": MOD_SC,
+    "cells": MOD_SC,
+    "bulk_rna": MOD_BULK,
+    "pb": MOD_PB,
+    "pseudobulks": MOD_PB,
+    "synthetic_pb": MOD_SYNTH_PB,
+    "synth_pseudobulk": MOD_SYNTH_PB,
+}
+
+
+def canonical_modality(label: object) -> str:
+    """Map one ``_eval_modality`` value onto the canonical vocabulary.
+
+    Unknown labels are returned unchanged (lower-cased/underscored inputs that are
+    already canonical pass through): a label this module has never heard of is not
+    an error, it simply matches nothing, and silently renaming it to a canonical one
+    would be worse than leaving it visible in the "rows available" line.
+    """
+    text = str(label).strip()
+    if text in CANONICAL_MODALITIES:
+        return text
+    key = text.lower().replace("-", "_").replace(" ", "_")
+    if key in CANONICAL_MODALITIES:
+        return key
+    return MODALITY_ALIASES.get(key, text)
+
+
+def canonicalize_modality_column(
+    adata, modality_col: str = MODALITY_COL, log=None
+) -> dict[str, str]:
+    """Rewrite ``adata.obs[modality_col]`` in place to canonical labels.
+
+    Every consumer matches on the canonical labels, so an eval.h5ad carrying a legacy
+    label silently loses whole metric families — SC rows written as "subsampled" make
+    ``_get(MOD_SC)`` return None and every ``agg_synth_*`` metric is skipped with
+    "missing 'sc' rows" while the modality is plainly listed as present. Call this
+    once, immediately after reading the file.
+
+    Returns ``{old_label: new_label}`` for the labels actually rewritten (empty when
+    the file is already canonical), and logs both the rewrites and any label that
+    matched nothing.
+    """
+    if modality_col not in adata.obs.columns:
+        return {}
+
+    old = adata.obs[modality_col].astype(str)
+    renames = {
+        lbl: canonical_modality(lbl)
+        for lbl in dict.fromkeys(old.to_numpy().tolist())
+    }
+    unknown = sorted(
+        lbl for lbl, new in renames.items() if new not in CANONICAL_MODALITIES
+    )
+    renames = {lbl: new for lbl, new in renames.items() if new != lbl}
+
+    if renames:
+        adata.obs[modality_col] = old.map(lambda v: renames.get(v, v)).astype(str)
+
+    emit_info = log.info if log is not None else print
+    emit_warn = log.warning if log is not None else print
+    for lbl, new in renames.items():
+        emit_info(
+            f"  Canonicalized {modality_col} label {lbl!r} -> {new!r} "
+            f"({int((old == lbl).sum())} rows)"
+        )
+    if unknown:
+        emit_warn(
+            f"  Unrecognised {modality_col} label(s): {unknown} - they match no "
+            f"metric family. Known labels: {list(CANONICAL_MODALITIES)}"
+        )
+    return renames
 
 
 def detect_scale_by_modality(adata, modality_col: str = "_eval_modality") -> dict:
@@ -108,7 +229,7 @@ def log_scale_table(scale: dict, log=None) -> None:
 
 
 def generate_pseudobulk_adata(
-    sc_adata: ad.AnnData,
+    sc_adata: "ad.AnnData",
     group_column: str = "tissue_general",
     n_sc_per_pb: int = 10,
     agg_method: str = "sum",
@@ -116,7 +237,7 @@ def generate_pseudobulk_adata(
     seed: int = 0,
     is_log1p: bool | None = None,
     normalize: bool = False,
-) -> ad.AnnData | None:
+) -> "ad.AnnData | None":
     """Aggregate SC expression within tissue groups to create pseudobulk profiles.
 
     For each pseudobulk, ``n_sc_per_pb`` cells are drawn from a single randomly
@@ -133,6 +254,10 @@ def generate_pseudobulk_adata(
     Returns an AnnData with pseudobulk expression profiles sharing the same
     ``var`` as ``sc_adata``, or ``None`` if generation is not possible.
     """
+    # Imported here, not at module scope: the modality vocabulary above is the one
+    # thing every consumer shares, and check_modality_labels.py must be able to test
+    # it in an environment with only numpy/pandas.
+    import anndata as ad
     import scipy.sparse as sp
 
     if group_column not in sc_adata.obs.columns:

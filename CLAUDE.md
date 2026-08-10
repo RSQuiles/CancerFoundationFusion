@@ -52,6 +52,27 @@ container, `scib` needs the conda env with `scib_metrics` (the container lacks i
 `{model}/metrics/results_{task}.json` that `benchmark` plots — `benchmark` itself is
 plot-only and computes nothing. Enabling `downstream` requires `downstream.tasks`.
 
+### The `_eval_modality` vocabulary
+`evaluate/utils.py` is the ONE place the labels are defined (`MOD_SC = "sc"`,
+`MOD_BULK`, `MOD_PB`, `MOD_PAIRED_*`, `MOD_SYNTH_PB`). **A filename prefix is not a
+label**: `build_eval_adata.py` globs `subsampled*.h5ad`, `partition*`,
+`pretraining_sc*` … and writes `sc`, per `MODALITY_FILE_PREFIXES`. Consumers match on
+the labels; matching on a prefix is what silently disabled `agg_synth_*`.
+
+eval.h5ad files built before June 2026 stored the *prefix* in the column, which shows
+up as `Modality rows available: {'subsampled': 5000, ...}` next to
+`SKIPPED agg_synth_* missing 'sc' rows`. Every reader of eval.h5ad
+(`unified_metrics.py`, `umaps.py`, `diagnose_scib.py`) therefore calls
+`canonicalize_modality_column(adata)` right after `read_h5ad`; it rewrites known
+aliases, leaves unknown labels alone and warns about them. Add a new SC/bulk filename
+convention to `MODALITY_FILE_PREFIXES` and it becomes an alias automatically.
+`python evaluate/check/check_modality_labels.py` self-checks this offline (no
+anndata/torch needed).
+
+`unified_metrics.json` stamps `modalities` alongside `panel_hash`, and
+`--skip-existing` recomputes when either differs — so an old cache computed under the
+legacy labels is refreshed once rather than served back without `agg_synth_*`.
+
 ### Downstream normalization (`--normalize`)
 `run_ablation_downstream.py --normalize / --no-normalize` forces one normalization
 policy across every task and model, overriding each task config's `normalize:` key;
@@ -248,6 +269,7 @@ evaluate/
 ├── analysis_config.py        # Config schema/loader for run_analysis.py
 ├── example_analysis_config.yaml
 ├── check_analysis_plan.py    # Self-checks for the orchestrator (no cluster needed)
+├── utils.py                  # The ONE place the `_eval_modality` vocabulary is defined
 ├── check/
 │   ├── build_eval_adata.py   # Builds eval.h5ad: per-model embeddings + PCA baseline
 │   ├── unified_metrics.py    # Unified-FM metrics + scIB batch-integration benchmark

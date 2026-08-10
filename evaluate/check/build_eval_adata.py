@@ -73,12 +73,9 @@ from cancerfoundation.data.bulk_sc_collator import BULK_MODALITY
 from cancerfoundation.model.model import CancerFoundation
 from evaluate.utils import (
     MODALITY_COL as _MODALITY_COL,
+    MODALITY_FILE_PREFIXES,
     MOD_BULK,
-    MOD_PAIRED_BULK,
-    MOD_PAIRED_PB,
-    MOD_PAIRED_SC,
     MOD_PB,
-    MOD_SC,
     MOD_SYNTH_PB,
     SC_MODALITIES,
     detect_scale_by_modality,
@@ -143,26 +140,16 @@ def load_all_modalities(
 ) -> ad.AnnData:
     """Load all modality h5ad files and return one AnnData with _eval_modality column.
 
-    Note the left column is a *filename prefix* and the right one is the
-    ``_eval_modality`` label written to obs — they are not the same vocabulary.
-    Consumers must match on the labels (imported from ``evaluate.utils``), never on
-    the prefixes; matching on "subsampled" is what silently disabled the
-    ``agg_synth_*`` metrics.
+    The table lives in ``evaluate.utils.MODALITY_FILE_PREFIXES``: its left column is
+    a *filename prefix* and its right one the ``_eval_modality`` label written to obs
+    — they are not the same vocabulary. Consumers must match on the labels (imported
+    from ``evaluate.utils``), never on the prefixes; matching on "subsampled" is what
+    silently disabled the ``agg_synth_*`` metrics. The same table also seeds
+    ``MODALITY_ALIASES``, so eval.h5ad files built when the prefix *was* the label
+    are still read correctly.
     """
-    prefixes = [
-        ("subsampled",  MOD_SC),
-        ("partition",  MOD_SC),
-        ("sc",  MOD_SC),
-        ("pretraining_sc", MOD_SC),
-        ("pretraining_bulk", MOD_BULK),
-        ("pseudo_bulk", MOD_PB),
-        ("bulk",        MOD_BULK),
-        ("paired_sc",   MOD_PAIRED_SC),
-        ("paired_pb",   MOD_PAIRED_PB),
-        ("paired_bulk", MOD_PAIRED_BULK),
-    ]
     parts: list[ad.AnnData] = []
-    for prefix, label in prefixes:
+    for prefix, label in MODALITY_FILE_PREFIXES:
         adata = _load_prefix(adata_dir, prefix, sample_size, seed)
         if adata is None:
             log.info("No %s*.h5ad files found — skipping.", prefix)

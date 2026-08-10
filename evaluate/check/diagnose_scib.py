@@ -48,9 +48,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from evaluate.utils import BULK_MODALITIES, MOD_PB, MOD_SYNTH_PB, PB_MODALITIES
-
-_MODALITY_COL = "_eval_modality"
+from evaluate.utils import (
+    BULK_MODALITIES,
+    MODALITY_COL as _MODALITY_COL,
+    MOD_PB,
+    MOD_SYNTH_PB,
+    PB_MODALITIES,
+    canonicalize_modality_column,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +452,7 @@ def main(argv=None) -> int:
     print(f"Loading {path} ...")
     adata = ad.read_h5ad(path)
     print(f"  {adata.n_obs} cells, obsm: {list(adata.obsm.keys())}")
+    canonicalize_modality_column(adata)
 
     df = report(adata, args.group_column, args.n_max, args.seed, tuple(args.ks))
     if args.out_csv is not None and df is not None:

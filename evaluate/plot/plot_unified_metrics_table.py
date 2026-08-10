@@ -137,7 +137,7 @@ DEFAULT_METRICS: list[str] = [m.key for m in METRIC_META if m.key != "contrastiv
 # Bookkeeping / provenance keys — never plottable, hidden from --list.
 NON_METRIC_KEYS: set[str] = {
     "model", "checkpoint", "panel_hash", "shared_panel", "panel_strategy",
-    "recon_mae_per_bin", "skipped_families",
+    "recon_mae_per_bin", "skipped_families", "modalities",
     "contrastive_bulk_source", "contrastive_pb_source",
 }
 

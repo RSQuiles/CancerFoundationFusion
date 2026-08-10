@@ -79,6 +79,7 @@ from evaluate.utils import (
     MOD_SC,
     MOD_SYNTH_PB,
     SC_MODALITIES,
+    canonicalize_modality_column,
     generate_pseudobulk_adata,
 )
 
@@ -1023,6 +1024,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         import anndata as ad
         eval_adata = ad.read_h5ad(eval_adata_path)
         print(f"  {eval_adata.n_obs} cells, obsm keys: {list(eval_adata.obsm.keys())}")
+        # Older eval.h5ad files label SC rows with the filename prefix
+        # ("subsampled"); _EVAL_MOD_TO_MODALITY would pass that straight through and
+        # the plot would carry a modality the legend does not know.
+        canonicalize_modality_column(eval_adata)
 
     # ---- ablation mode ----
     if args.ablation_dir is not None:
