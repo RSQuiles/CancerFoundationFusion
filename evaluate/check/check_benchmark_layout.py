@@ -464,15 +464,15 @@ def check_aliases() -> None:
         t.get_text() for t in ax.texts
         if round(t.get_fontsize(), 1) == default.bar_name
     }
-    check("bars are labelled with handles, not names",
-          all(re.fullmatch(r"\d+\.\d+", t) for t in drawn) and drawn,
+    check("bars are labelled with parenthesised handles, not names",
+          all(re.fullmatch(r"\(\d+\.\d+\)", t) for t in drawn) and drawn,
           str(sorted(drawn)))
     legend_texts = [t.get_text() for t in fig.legends[0].get_texts()]
     check("legend maps handle to model",
           all(re.fullmatch(r"\d+\.\d+: experiment/name_\d+", t) for t in legend_texts),
           str(legend_texts[:2]))
-    check("every bar's handle appears in the legend",
-          drawn <= {t.split(":")[0] for t in legend_texts})
+    check("every bar's handle appears in the legend, unbracketed",
+          {t.strip("()") for t in drawn} <= {t.split(":")[0] for t in legend_texts})
     matplotlib.pyplot.close(fig)
 
     print("\n-- opting out --")
@@ -490,7 +490,7 @@ def check_aliases() -> None:
 
     print("\n-- handles need less headroom --")
     long_names = [f"experiment/name_{i}" for i in range(6)]
-    handles = ["1.1", "1.2", "1.3", "2.1", "2.2", "3.1"]
+    handles = ["(1.1)", "(1.2)", "(1.3)", "(2.1)", "(2.2)", "(3.1)"]
     check("the reserved band shrinks",
           pab._name_band_points(handles, 9, 13)
           < 0.5 * pab._name_band_points(long_names, 9, 13))

@@ -1101,8 +1101,17 @@ def _render_figure(
     """
     fonts = fonts or FontSizes()
     n_models = len(model_names)
-    # What is actually written above each bar — a handle when one was built.
-    bar_labels = [(aliases or {}).get(name, name) for name in model_names]
+    # What is written above each bar, and what the legend says it means. The handle
+    # is parenthesised on the bar so a bare "2.3" beside a value cannot be misread
+    # as part of the number; the legend keeps it unbracketed as the key.
+    alias_of = aliases or {}
+    bar_labels = [
+        f"({alias_of[name]})" if name in alias_of else name for name in model_names
+    ]
+    legend_labels = [
+        f"{alias_of[name]}: {name}" if name in alias_of else name
+        for name in model_names
+    ]
 
     cells, n_grid_rows, n_cols = _plan_cells(tasks, task_metrics, max_cols)
     label_cells = _group_label_cells(cells, n_grid_rows, wrapped=bool(max_cols))
@@ -1279,12 +1288,9 @@ def _render_figure(
 
     # Shared legend below the figure.
     legend_handles = [
-        mpatches.Patch(
-            color=colors[i],
-            # "1.2: base/contrastive" — the handle on the bar, then what it is.
-            label=f"{bar_labels[i]}: {name}" if bar_labels[i] != name else name,
-        )
-        for i, name in enumerate(model_names)
+        # "1.2: base/contrastive" — the handle from the bar, then what it is.
+        mpatches.Patch(color=colors[i], label=legend_labels[i])
+        for i in range(n_models)
     ]
     fig.legend(
         handles=legend_handles,
