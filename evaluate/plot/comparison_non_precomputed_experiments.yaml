@@ -17,8 +17,8 @@
 # 'unified', 'dat', 'contrastive' and 'bulk_baseline' each recur in several
 # directories. That is also why no group uses 'all_models: true'.
 
-title: "All experiments — downstream benchmark"
-output: /cluster/work/boeva/rquiles/outputs/save_CFF/comparison_all_experiments.png
+title: "Non-Precompted Experiments — Downstream Benchmark"
+output: /cluster/work/boeva/rquiles/outputs/save_CFF/comparison_non_precomputed.png
 
 # One figure per task rather than a single grid. Files are named after `output`
 # with the task appended:
@@ -32,8 +32,8 @@ per_task: true
 
 # 48 bars per subplot; the auto-derived size is far too small either way.
 # Both tuned by rendering.
-figsize: [46, 18]          # the combined grid, when per_task is false
-per_task_figsize: [46, 11] # each single-task figure
+figsize: [30, 20]          # the combined grid, when per_task is false
+per_task_figsize: [30, 20] # each single-task figure
 
 # Print each model's display name above its bar as well as in the legend — with 48
 # bars, tracing a colour back to an 8-row legend is otherwise hopeless. The names
@@ -62,120 +62,98 @@ primary:
 
 groups:
 
-  # ── unified-FM feature ablations ─────────────────────────────────────────────
-
-  # base_comparison_ablation.json declares 4 arms, but the directory on disk also
-  # holds bulk_baseline and sc_baseline; both are listed so the plot matches reality.
-  - name: "Base comparison"
-    dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison
+  # ── Log1p-normalized data, NonPaired ─────────────────────────────────────────────
+  - name: "Log1p Normalized & Non-Paired"
     experiments:
-      - {name: "base/unified",     model: unified_baseline}
-      - {name: "base/contrastive", model: contrastive}
-      - {name: "base/aggregation", model: aggregation}
-      - {name: "base/dat",         model: dat}
-      - {name: "base/bulk_only",   model: bulk_baseline}
-      - {name: "base/sc_only",     model: sc_baseline}
+      - name: "base/unified"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/unified_baseline
 
-  - name: "Big condition"
-    dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition
+      - name: "base/contrastive"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/contrastive
+
+      - name: "base/aggregation"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/aggregation
+
+      - name: "base/dat"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/dat
+
+      - name: "part/base"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition/base_model
+
+      - name: "part/zinb"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition/zinb_reconstruction
+
+      - name: "part/denoise_zinb"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition/denoise_zinb
+
+      - name: "part/contrastive"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition/contrastive
+
+      - name: "part/agg_contrast"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition/agg_contrastive
+
+      - name: "part/all_features"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition/dat_agg_contrastive_denoise_zinb
+
+  # ── Log1p-normalized data, Paired ─────────────────────────────────────────────
+  - name: "Log1p Normalized & Paired"
     experiments:
-      - {name: "bigcond/unified", model: unified}
-      - {name: "bigcond/dat",     model: dat}
-      - {name: "bigcond/mmd",     model: mmd}
-      - {name: "bigcond/cdd",     model: cdd}
+      - name: "Unified"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_aggfix/unified
 
-  - name: "United data"
-    dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_united_data
+      - name: "Contrastive"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_aggfix/unified
+
+      - name: "DAT"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_aggfix/dat
+
+  # ── Count data, Paired ─────────────────────────────────────────────
+  - name: "Counts & Paired"
     experiments:
-      - {name: "united/unified", model: unified}
-      - {name: "united/dat",     model: dat}
-      - {name: "united/mmd",     model: mmd}
-      - {name: "united/cdd",     model: cdd}
+      - name: "pcounts/bulk_only"
+        path: /cluster/work/boeva/rquiles/outputs_rquiles/save_CFF/ablation_paired_counts/bulk_baseline
 
-  # NOTE: monitor_align's cdd arm trained on corrupted pseudobulks (fixed but not
-  # retrained), so treat that one bar as unreliable rather than as a result.
-  - name: "Monitor align"
-    dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_monitor_align
+      - name: "pcounts/unified"
+        path: /cluster/work/boeva/rquiles/outputs_rquiles/save_CFF/ablation_paired_counts/unified
+
+      - name: "pcounts/dat"
+        path: /cluster/work/boeva/rquiles/outputs_rquiles/save_CFF/ablation_paired_counts/dat
+
+      - name: "pcounts/contrastive"
+        path: /cluster/work/boeva/rquiles/outputs_rquiles/save_CFF/ablation_paired_counts/contrastive
+
+      - name: "pcounts/aggregation"
+        path: /cluster/work/boeva/rquiles/outputs_rquiles/save_CFF/ablation_paired_counts/aggregation
+
+      - name: "pcorn/bulk_only"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn/bulk_baseline
+
+      - name: "pcorn/unified"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn/unified
+
+      - name: "pcorn/dat"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn/dat
+
+      - name: "pcorn/contrastive"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn/contrastive
+
+      - name: "pcorn/aggregation"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn/aggregation
+
+      - name: "pmix/unified"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_mix/unified
+
+      - name: "pmix/dat_agg"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_mix/dat_agg
+
+  # ── baselines ─────────────────────────────────────────────────────────────────
+  - name: "Baselines"
     experiments:
-      - {name: "monitor/unified",   model: unified}
-      - {name: "monitor/condition", model: condition}
-      - {name: "monitor/mmd",       model: mmd}
-      - {name: "monitor/dat",       model: dat}
-      - {name: "monitor/cdd",       model: cdd}
+      - name: "SC Baseline"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/sc_baseline
 
-  # ── paired datasets ──────────────────────────────────────────────────────────
+      - name: "Bulk Baseline"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/bulk_baseline
 
-  - name: "Paired dataset"
-    dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_dataset
-    experiments:
-      - {name: "pdata/bulk_only",   model: bulk_baseline}
-      - {name: "pdata/unified",     model: unified}
-      - {name: "pdata/dat",         model: dat}
-      - {name: "pdata/contrastive", model: contrastive}
-
-  # NOTE the root: paired_counts.json says 'outputs_rquiles', not 'outputs' like
-  # every other config. Kept verbatim; if this group comes back empty, that is the
-  # first thing to check.
-  - name: "Paired counts"
-    dir: /cluster/work/boeva/rquiles/outputs_rquiles/save_CFF/ablation_paired_counts
-    experiments:
-      - {name: "pcounts/bulk_only",   model: bulk_baseline}
-      - {name: "pcounts/unified",     model: unified}
-      - {name: "pcounts/dat",         model: dat}
-      - {name: "pcounts/contrastive", model: contrastive}
-      - {name: "pcounts/aggregation", model: aggregation}
-
-  - name: "Paired CORN"
-    dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn
-    experiments:
-      - {name: "pcorn/bulk_only",   model: bulk_baseline}
-      - {name: "pcorn/unified",     model: unified}
-      - {name: "pcorn/dat",         model: dat}
-      - {name: "pcorn/contrastive", model: contrastive}
-      - {name: "pcorn/aggregation", model: aggregation}
-
-  - name: "Paired mix"
-    dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_mix
-    experiments:
-      - {name: "pmix/unified", model: unified}
-      - {name: "pmix/dat_agg", model: dat_agg}
-
-  # Union of paired_alignment_objectives.json and fill.json, which target the same
-  # directory (fill.json re-runs only paired_cdd and paired_cdd_agg).
-  - name: "Paired alignment objectives"
-    dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_alignment_objectives
-    experiments:
-      - {name: "palign/bulk_only",      model: bulk_baseline}
-      - {name: "palign/sc_only",        model: sc_baseline}
-      - {name: "palign/mmd",            model: paired_mmd}
-      - {name: "palign/cdd",            model: paired_cdd}
-      - {name: "palign/mmd_agg",        model: paired_mmd_agg}
-      - {name: "palign/cdd_agg",        model: paired_cdd_agg}
-
-  # ── no unified-FM features ───────────────────────────────────────────────────
-
-  - name: "Partition"
-    dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition
-    experiments:
-      - {name: "part/base",          model: base_model}
-      - {name: "part/zinb",          model: zinb_reconstruction}
-      - {name: "part/denoise_zinb",  model: denoise_zinb}
-      - {name: "part/contrastive",   model: contrastive}
-      - {name: "part/agg_contrast",  model: agg_contrastive}
-      - {name: "part/all_features",  model: dat_agg_contrastive_denoise_zinb}
-
-  # ── baseline ─────────────────────────────────────────────────────────────────
-
-  # ONE PCA bar, not one per group. With downstream.pca_baseline: true every
-  # ablation dir gets its own pca_baseline/, but PCA is re-fitted on each task's own
-  # training split and never touches the checkpoint — so all ten are the same number
-  # and plotting them all would be ten identical bars. Any directory serves; this one
-  # is in the current sweep. Deliberately excluded from every group above.
-  - name: "Baseline"
-    experiments:
       - name: "PCA"
         path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition/pca_baseline
-
-# ── excluded ─────────────────────────────────────────────────────────────────
-# example_ablation_config.json -> ablation_test on data/mixed_test: a template that
-# has never been trained.

@@ -8,4 +8,4 @@
 source $surv
 
 python plot_ablation_benchmark.py \
-    --config comparison_all_experiments.yaml
+    --config comparison_precomputed_experiments.yaml
