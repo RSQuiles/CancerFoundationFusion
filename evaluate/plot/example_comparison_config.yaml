@@ -23,6 +23,24 @@ metrics:
 # primary:
 #   deconv: rmse
 
+# Text size. font_scale multiplies every label; font_sizes pins individual roles in
+# points, on top of the scale. Roles: bar_name, value, group_name, legend,
+# metric_title, task_label, tick, suptitle, footnote, no_data.
+# Raising bar_name widens the figure, so the rotated names above the bars stay clear
+# of each other. Both also exist as --font-scale / --font-size role=size.
+# font_scale: 1.4
+# font_sizes:
+#   value: 6                 # keep the numbers small while everything else grows
+
+# Y-axis ceiling per metric. Metrics bounded by 1 (accuracy, f1, precision, recall,
+# c_index, antolini_concordance, ibs, and anything matching pearson / spearman /
+# auroc / auprc / r2 / concordance) already stop at 1 rather than just above the
+# best run. Use this to cap an unbounded metric, or 0/null to autoscale a bounded
+# one. Also available as --y-max metric=value.
+# y_max:
+#   d_calibration: 40
+#   ibs: 0                   # autoscale this one instead
+
 groups:
   - name: "Big condition"
     dir: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition

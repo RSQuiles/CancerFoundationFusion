@@ -52,6 +52,25 @@ per_task: true
 # are rotated and the y-range is widened to fit them.
 bar_names: true
 
+# Text size. `font_scale` multiplies everything; `font_sizes` then pins individual
+# roles in points. Raising `bar_name` widens the figure, because the rotated names
+# must not touch — that is the one size with a knock-on effect on the layout.
+# Roles: bar_name, value, group_name, legend, metric_title, task_label, tick,
+#        suptitle, footnote, no_data.
+font_scale: 1.0
+# font_sizes:
+#   bar_name: 11
+#   value: 7
+#   legend: 13
+
+# Y-axis ceilings. Metrics bounded by 1 — accuracy, f1, precision, recall, c_index,
+# antolini_concordance, ibs and anything matching pearson/spearman/auroc/... — stop
+# at 1 automatically, so a 0.42 accuracy reads as 42% of the way rather than as a
+# full bar. Unbounded ones (rmse_present, d_calibration) autoscale. Override here
+# to cap an unbounded metric, or set 0 to autoscale a bounded one.
+# y_max:
+#   d_calibration: 40
+
 # Metric subsets, in plot order. Keys verified against what each task actually
 # returns today — see canc_type_pred.py:251-262, deconv.py:502-506, and the
 # aggregate written by tasks/evaluate_survboard_metrics.py.

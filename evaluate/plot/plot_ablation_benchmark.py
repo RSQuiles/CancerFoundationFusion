@@ -40,6 +40,14 @@ Every bar is labelled with its value and, unless ``--no-bar-names``, with the
 model's display name — so a dense figure can be read without tracing colours back
 to the legend.
 
+Text size is set by ``--font-scale`` / ``--font-size role=size`` (config keys
+``font_scale`` / ``font_sizes``); see :class:`FontSizes` for the roles.
+
+A metric with a known ceiling gets an axis that stops there — accuracy runs to 1,
+not to just above the best model — so bar heights mean the same thing in every
+figure. ``--y-max metric=value`` (config ``y_max``) overrides it; see
+:data:`METRIC_UPPER_BOUND` and :func:`metric_upper_bound`.
+
 Alternatively a YAML config selects individual runs — possibly from different
 ablation directories — gives them display names, and optionally arranges them
 into groups (see ``--config`` and :func:`load_config` for the schema).
@@ -63,6 +71,10 @@ Usage
 
     # Compare hand-picked runs across ablations, grouped:
     python evaluate/plot/ablation_benchmark.py --config comparison.yaml
+
+    # Bigger text, but keep the numbers small; cap an unbounded metric:
+    python evaluate/plot/ablation_benchmark.py --config comparison.yaml \\
+        --font-scale 1.4 --font-size value=6 --y-max d_calibration=40
 """
 
 from __future__ import annotations
@@ -73,7 +85,7 @@ import math
 import re
 import sys
 import textwrap
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -112,6 +124,31 @@ TASK_PRIMARY_METRIC: dict[str, str] = {
 
 # Metrics where lower is better — shown with a ↓ indicator.
 LOWER_IS_BETTER: set[str] = {"mae", "mse", "rmse", "ibs", "d_calibration"}
+
+# Metrics with a known ceiling: the y-axis stops there rather than just above the
+# best run. Autoscaling makes 0.42 accuracy look like a full bar, hides how much
+# headroom is left, and stops two figures of the same metric being comparable by
+# eye. Errors (mae/rmse/mse) and unbounded statistics (d_calibration) are absent on
+# purpose — they have no ceiling to draw.
+METRIC_UPPER_BOUND: dict[str, float] = {
+    "accuracy": 1.0, "balanced_accuracy": 1.0,
+    "f1": 1.0, "f1_weighted": 1.0, "f1_macro": 1.0, "f1_micro": 1.0,
+    "precision": 1.0, "precision_macro": 1.0, "precision_weighted": 1.0,
+    "recall": 1.0, "recall_macro": 1.0, "recall_weighted": 1.0,
+    "auroc": 1.0, "mean_auroc": 1.0, "auprc": 1.0, "average_precision": 1.0,
+    "c_index": 1.0, "antolini_concordance": 1.0,
+    "ibs": 1.0,               # integrated Brier score
+    "event_rate": 1.0,
+    "r2": 1.0, "mean_r2": 1.0,
+}
+
+# Families whose members are all bounded by 1, matched as substrings so that
+# task-specific variants (mean_pearson_r_present, ic50_spearman_rho, ...) are
+# covered without listing every one.
+_BOUNDED_BY_1_SUBSTRINGS: tuple[str, ...] = (
+    "pearson", "spearman", "kendall", "concordance", "accuracy", "auroc", "auprc",
+    "_auc", "auc_", "f1", "precision", "recall", "c_index", "jaccard", "dice",
+)
 
 # Informational / count metrics that are not meaningful to plot as bars.
 SKIP_METRICS: set[str] = {
@@ -156,9 +193,68 @@ PER_TASK_MAX_COLS = 2
 
 # The three labels that identify a bar: its name above it, its group under the
 # bottom row, and the legend. Sized together, since they are read together.
+# These are the defaults of FontSizes below; every one can be overridden per figure.
 BAR_NAME_FONTSIZE   = 9
 GROUP_NAME_FONTSIZE = 11
 LEGEND_FONTSIZE     = 11
+
+
+@dataclass(frozen=True)
+class FontSizes:
+    """Point size of every piece of text in the figure.
+
+    Configs set these through ``font_scale`` (multiply everything) and/or
+    ``font_sizes`` (pin individual roles) — see :func:`resolve_font_sizes`. They are
+    resolved once per figure and passed down, rather than read from the module
+    constants at each call site, so one figure can be typeset large for a poster
+    and another small for a paper in the same run.
+    """
+
+    bar_name:     float = BAR_NAME_FONTSIZE     # rotated name above each bar
+    value:        float = 6.0                   # the number above each bar
+    group_name:   float = GROUP_NAME_FONTSIZE   # group label under the bottom row
+    legend:       float = LEGEND_FONTSIZE       # legend entries and its title
+    metric_title: float = 9.0                   # per-subplot metric name
+    task_label:   float = 10.0                  # task name on the y-axis
+    tick:         float = 10.0                  # y-axis tick labels (matplotlib default)
+    suptitle:     float = 13.0                  # figure title
+    footnote:     float = 8.0                   # "★ = primary metric"
+    no_data:      float = 9.0                   # placeholder in an empty subplot
+
+
+# Role -> what a caller may name in `font_sizes`. Kept explicit so a typo is an
+# error rather than a silently ignored key.
+FONT_ROLES: tuple[str, ...] = tuple(f.name for f in fields(FontSizes))
+
+
+def resolve_font_sizes(
+    scale: float = 1.0,
+    overrides: dict[str, float] | None = None,
+) -> FontSizes:
+    """Build a :class:`FontSizes` from a global scale and per-role overrides.
+
+    ``scale`` multiplies the defaults; ``overrides`` then pins individual roles to
+    an absolute size, so ``font_scale: 1.5`` with ``font_sizes: {value: 6}`` means
+    "half again bigger, except keep the numbers small".
+    """
+    if scale <= 0:
+        raise ValueError(f"font_scale must be positive, got {scale}")
+
+    unknown = sorted(set(overrides or {}) - set(FONT_ROLES))
+    if unknown:
+        raise KeyError(
+            f"Unknown font_sizes key(s): {unknown}. Valid roles: {list(FONT_ROLES)}"
+        )
+
+    defaults = FontSizes()
+    resolved = {
+        role: float(getattr(defaults, role)) * scale for role in FONT_ROLES
+    }
+    for role, size in (overrides or {}).items():
+        if float(size) <= 0:
+            raise ValueError(f"font_sizes['{role}'] must be positive, got {size}")
+        resolved[role] = float(size)
+    return FontSizes(**resolved)
 
 # Auto-sizing, in inches. Width is per bar rather than per subplot: a subplot
 # holding 48 bars needs a different width from one holding 4, and the old flat
@@ -168,9 +264,11 @@ LEGEND_FONTSIZE     = 11
 # footprint is the font's line height, so bars any narrower than that and the names
 # touch. Without them the bars can be packed much tighter, which is the single
 # biggest lever on how wide (and so how document-shaped) a dense figure comes out.
-# A rotated BAR_NAME_FONTSIZE label measures 0.130in across (check_benchmark_layout
-# asserts adjacent names stay clear), so 0.17 leaves ~0.04in of air — near the floor.
-BAR_SLOT_INCHES       = 0.17   # bar names on
+# A rotated 9pt label measures 0.130in across (check_benchmark_layout asserts
+# adjacent names stay clear), so 0.17 leaves ~0.04in of air — near the floor. The
+# slot tracks the bar-name font size, otherwise raising it would silently start
+# overlapping; _bar_slot_inches() reproduces 0.17 exactly at the 9pt default.
+BAR_SLOT_INCHES       = 0.17   # bar names on, at BAR_NAME_FONTSIZE
 BAR_SLOT_INCHES_PLAIN = 0.09   # bar names off
 MIN_COL_INCHES        = 2.6    # keeps a 2-bar subplot from collapsing
 ROW_INCHES            = 4.6    # tall rows, so a wrapped figure reads closer to square
@@ -407,6 +505,11 @@ class BenchmarkConfig:
     per_task_figsize: tuple[float, float] | None = None
     # Print each model's display name above its bar, in addition to the legend.
     bar_names: bool = True
+    # Multiplies every label size; font_sizes then pins individual roles.
+    font_scale: float = 1.0
+    font_sizes: dict[str, float] = field(default_factory=dict)
+    # metric -> y-axis ceiling; 0 or null forces autoscaling for that metric.
+    y_max: dict[str, float] = field(default_factory=dict)
 
     @property
     def grouped(self) -> bool:
@@ -434,6 +537,18 @@ def load_config(path: Path) -> BenchmarkConfig:
                                   # reusing figsize's width if one was given.
         bar_names: false          # default true: print each model's display name
                                   # above its bar as well as in the legend.
+
+        font_scale: 1.4           # multiply every label size (default 1.0)
+        font_sizes:               # …then pin individual roles, in points
+          bar_name: 11            # roles: bar_name, value, group_name, legend,
+          value: 7                #        metric_title, task_label, tick,
+          legend: 13              #        suptitle, footnote, no_data
+                                  # Raising bar_name widens the figure, so that
+                                  # neighbouring names stay clear of each other.
+
+        y_max:                    # y-axis ceiling per metric. Metrics bounded by 1
+          d_calibration: 20       # (accuracy, correlations, C-index, ...) already
+          rmse_present: 0         # stop at 1; 0/null forces autoscaling instead.
 
         metrics:                                 # optional metric subsets
           canc_type_class: [accuracy, f1_weighted]
@@ -486,6 +601,19 @@ def load_config(path: Path) -> BenchmarkConfig:
         str(task): str(value) for task, value in (raw.get("primary") or {}).items()
     }
 
+    font_sizes = {
+        str(role): float(size)
+        for role, size in (raw.get("font_sizes") or {}).items()
+    }
+    # Validate here, at load time, so a typo names the config rather than surfacing
+    # deep inside the renderer.
+    resolve_font_sizes(float(raw.get("font_scale", 1.0) or 1.0), font_sizes)
+
+    y_max = {
+        str(metric): (0.0 if value is None else float(value))
+        for metric, value in (raw.get("y_max") or {}).items()
+    }
+
     return BenchmarkConfig(
         groups=groups,
         title=str(raw.get("title") or "Ablation Benchmark"),
@@ -496,6 +624,9 @@ def load_config(path: Path) -> BenchmarkConfig:
         per_task=bool(raw.get("per_task", False)),
         per_task_figsize=per_task_figsize,
         bar_names=bool(raw.get("bar_names", True)),
+        font_scale=float(raw.get("font_scale", 1.0) or 1.0),
+        font_sizes=font_sizes,
+        y_max=y_max,
     )
 
 
@@ -638,7 +769,41 @@ def task_output_path(output: Path, task: str) -> Path:
     return output.with_name(f"{output.stem}_{_norm(task)}{output.suffix}")
 
 
-def _legend_inches(n_models: int, ncol: int) -> float:
+def metric_upper_bound(
+    metric: str, overrides: dict[str, float] | None = None
+) -> float | None:
+    """Ceiling for a metric's y-axis, or None to let matplotlib autoscale.
+
+    Resolution: caller override -> exact name -> known bounded family. A
+    non-positive override forces autoscaling for that one metric.
+    """
+    if overrides and metric in overrides:
+        value = overrides[metric]
+        return float(value) if value is not None and float(value) > 0 else None
+    if metric in METRIC_UPPER_BOUND:
+        return METRIC_UPPER_BOUND[metric]
+    lowered = metric.lower()
+    if any(token in lowered for token in _BOUNDED_BY_1_SUBSTRINGS):
+        return 1.0
+    return None
+
+
+def _apply_metric_ylim(ax, values: list[float], bound: float | None) -> None:
+    """Pin the y-axis top to the metric's ceiling, when it has one and it fits.
+
+    Bars start at 0 unless something is negative (a correlation can be). If a value
+    somehow exceeds the ceiling the top is left autoscaled rather than clipping the
+    bar out of sight.
+    """
+    if not values:
+        return
+    lo, hi = ax.get_ylim()
+    bottom = min(0.0, min(values), lo)
+    top = bound if (bound is not None and max(values) <= bound) else hi
+    ax.set_ylim(bottom, top)
+
+
+def _legend_inches(n_models: int, ncol: int, fontsize: float = LEGEND_FONTSIZE) -> float:
     """Vertical space the shared legend needs, in inches.
 
     Computed rather than hardcoded because the old fixed 6% reserve only happened
@@ -647,8 +812,17 @@ def _legend_inches(n_models: int, ncol: int) -> float:
     with the legend's font size, which is what sets the row height.
     """
     rows = math.ceil(n_models / max(ncol, 1))
-    row_in = 0.23 * (LEGEND_FONTSIZE / 9.0)
+    row_in = 0.23 * (fontsize / 9.0)
     return row_in * rows + 0.45        # rows + frame/title padding
+
+
+def _bar_slot_inches(bar_name_fontsize: float) -> float:
+    """Width one bar needs so its rotated name clears the neighbouring one.
+
+    Rotated 90°, the name's horizontal footprint is the font's line height, so the
+    slot has to track the font size. Returns BAR_SLOT_INCHES at the default 9pt.
+    """
+    return 0.130 / 9.0 * bar_name_fontsize + 0.04
 
 
 @dataclass(frozen=True)
@@ -777,6 +951,41 @@ def _group_label_cells(
     return {(row, col) for col, row in last_row.items()}
 
 
+def _name_band_points(
+    model_names: list[str], fontsize: float, padding: float
+) -> float:
+    """Vertical space the rotated model names occupy above a bar, in points.
+
+    Rotated 90°, a label's extent is its rendered *length*; 0.62 * fontsize is a
+    good average advance for DejaVu Sans, matplotlib's default, and erring high
+    only costs a little whitespace.
+    """
+    longest = max((len(n) for n in model_names), default=0)
+    return padding + 0.62 * fontsize * longest + 4.0
+
+
+def _fit_titles_over_names(
+    fig,
+    capped: list[tuple[object, dict, float]],
+    needed_pt: float,
+    base_pad: float = 4.0,
+) -> None:
+    """Push each capped subplot's title above the names that overflow its frame.
+
+    An axis pinned to its metric's ceiling cannot be stretched to fit the rotated
+    names, so whatever does not fit under the ceiling is drawn above the frame
+    (bar labels are annotations and are not clipped). Only the *overflow* needs
+    reserving, so measure how much room is already there between the tallest bar
+    and the ceiling — padding by the full band leaves the title floating.
+    """
+    fig.canvas.draw()
+    for ax, title_kwargs, top_value in capped:
+        height_pt = ax.get_window_extent().height * 72.0 / fig.dpi
+        lo, hi = ax.get_ylim()
+        inside_pt = (hi - top_value) / (hi - lo) * height_pt if hi > lo else 0.0
+        ax.set_title(**title_kwargs, pad=base_pad + max(0.0, needed_pt - inside_pt))
+
+
 def _apply_name_headroom(
     fig,
     axes_list: list,
@@ -795,11 +1004,7 @@ def _apply_name_headroom(
     recomputes from those, so this can be re-run after a second layout pass
     without the expansions compounding.
     """
-    # Rotated 90 degrees, the label's vertical extent is its rendered *length*.
-    # 0.62 * fontsize is a good average advance for DejaVu Sans, matplotlib's
-    # default; erring high only leaves a little extra whitespace.
-    longest = max((len(n) for n in model_names), default=0)
-    needed_pt = padding + 0.62 * fontsize * longest + 4.0
+    needed_pt = _name_band_points(model_names, fontsize, padding)
 
     fig.canvas.draw()
     for ax in axes_list:
@@ -835,6 +1040,8 @@ def _render_figure(
     bar_names: bool,
     output: Path | None,
     max_cols: int | None = None,
+    fonts: FontSizes | None = None,
+    y_max: dict[str, float] | None = None,
 ):
     """Draw one figure covering *tasks* x their metrics.
 
@@ -842,8 +1049,12 @@ def _render_figure(
     task. With it, a task's metrics wrap onto further rows of at most that many
     subplots and a short row is centred — see :func:`_plan_cells`.
 
+    ``fonts`` sizes every label; ``y_max`` overrides the per-metric y-axis ceiling
+    (see :func:`metric_upper_bound`).
+
     Returns the Figure; the caller decides whether to save, show or close it.
     """
+    fonts = fonts or FontSizes()
     n_models = len(model_names)
 
     cells, n_grid_rows, n_cols = _plan_cells(tasks, task_metrics, max_cols)
@@ -854,12 +1065,12 @@ def _render_figure(
     width_scale = float(x_positions.max() - x_positions.min() + 1) / n_models
 
     ncol_legend = min(n_models, 6)
-    legend_in   = _legend_inches(n_models, ncol_legend)
+    legend_in   = _legend_inches(n_models, ncol_legend, fonts.legend)
 
     fig_w = figsize[0] if figsize else _figure_width(
-        n_cols, n_models, width_scale, bar_names
+        n_cols, n_models, width_scale, bar_names, fonts
     )
-    fig_h = figsize[1] if figsize else _figure_height(n_grid_rows, n_models)
+    fig_h = figsize[1] if figsize else _figure_height(n_grid_rows, n_models, fonts)
 
     fig = plt.figure(figsize=(fig_w, fig_h))
     # Two grid columns per subplot, so a centred row can sit on an odd offset.
@@ -872,18 +1083,23 @@ def _render_figure(
     # the numbers of adjacent bars merge into one unreadable string.
     span = float(x_positions.max() - x_positions.min() + 1)
     pitch_in = (fig_w / max(n_cols, 1)) / max(span, 1.0)
-    dense = pitch_in < _VALUE_LABEL_INCHES
+    dense = pitch_in < _VALUE_LABEL_INCHES * (fonts.value / 6.0)
     group_fontsize, group_labels = _fit_group_labels(
-        spans, 0.85 * fig_w / max(n_cols, 1), GROUP_NAME_FONTSIZE
+        spans, 0.85 * fig_w / max(n_cols, 1), fonts.group_name
     )
     value_rotation = 90 if dense else 0
-    # Rotated, a value label stands ~22pt tall, so the model name above it has to
-    # start that much higher.
-    name_padding = 28.0 if dense else 13.0
+    # Rotated, a value label stands ~5 characters tall, so the model name above it
+    # has to start that much higher.
+    name_padding = (
+        (0.62 * fonts.value * 5 + 6.0) if dense else (fonts.value + 7.0)
+    )
 
     # Axes that ended up with bars, so the rotated-name headroom can be applied to
     # exactly those, after layout, when their real pixel height is known.
     axes_with_bars: list = []
+    # (axes, title kwargs, tallest bar) for axes pinned to a metric ceiling: their
+    # titles are repositioned instead, since their limits must not move.
+    capped_axes: list[tuple[object, dict, float]] = []
     # First subplot of each task carries the task label.
     labelled_tasks: set[str] = set()
     first_axes = None
@@ -904,6 +1120,7 @@ def _render_figure(
                 spine.set_linewidth(1.8)
 
         any_bar = False
+        plotted: list[float] = []
         for model_idx, model_name in enumerate(model_names):
             value = results.get(model_name, {}).get(task, {}).get(metric)
             if value is None or not isinstance(value, (int, float)):
@@ -917,35 +1134,53 @@ def _render_figure(
                 edgecolor="white",
                 linewidth=0.5,
             )
+            plotted.append(float(value))
             ax.bar_label(
-                bar, fmt="%.3f", padding=2, fontsize=6, rotation=value_rotation
+                bar, fmt="%.3f", padding=2, fontsize=fonts.value,
+                rotation=value_rotation,
             )
             if bar_names:
                 # Above the value label (padding is in points, so this clears
                 # it regardless of the data scale), rotated to fit dense grids.
                 ax.bar_label(
                     bar, labels=[model_name], padding=name_padding,
-                    fontsize=BAR_NAME_FONTSIZE, rotation=90, color="#333333",
+                    fontsize=fonts.bar_name, rotation=90, color="#333333",
                 )
             any_bar = True
+
+        # Stop the axis at the metric's ceiling (1.0 for a rate or a correlation)
+        # instead of just above the best run, so bar heights mean the same thing in
+        # every figure.
+        bound = metric_upper_bound(metric, y_max)
+        capped = bool(plotted) and bound is not None and max(plotted) <= bound
+        _apply_metric_ylim(ax, plotted, bound)
 
         # Subplot title: metric name + direction + star for primary.
         direction    = " ↓" if metric in LOWER_IS_BETTER else " ↑"
         star         = " ★" if is_primary else ""
         metric_label = METRIC_LABELS.get(metric, metric)
-        ax.set_title(
-            metric_label + direction + star,
-            fontsize=9,
+        title_kwargs = dict(
+            label=metric_label + direction + star,
+            fontsize=fonts.metric_title,
             fontweight="bold" if is_primary else "normal",
             color=_PRIMARY_EDGE if is_primary else "black",
-            pad=4,
         )
+        ax.set_title(**title_kwargs, pad=4)
+
+        # A capped axis cannot also be stretched to fit the rotated names — that is
+        # what the y-range used to be inflated for. Names are annotations, so they
+        # render above the frame instead, and the title is pushed clear of them
+        # once the layout is known.
+        if bar_names and capped and any_bar:
+            capped_axes.append((ax, title_kwargs, max(plotted)))
 
         ax.set_xticks([])
         ax.grid(axis="y", linestyle="--", alpha=0.4, zorder=0)
         ax.set_axisbelow(True)
 
-        if any_bar:
+        # Only uncapped axes get the headroom treatment; a capped one must keep the
+        # limit it was just given.
+        if any_bar and not capped:
             axes_with_bars.append(ax)
 
         # Grouped mode: shaded band behind each group + a fixed x-range so
@@ -963,7 +1198,7 @@ def _render_figure(
             ax.text(
                 0.5, 0.5, "No data",
                 ha="center", va="center", transform=ax.transAxes,
-                color="grey", fontsize=9,
+                color="grey", fontsize=fonts.no_data,
             )
 
         # Group names, printed under the bottom-most subplots.
@@ -987,11 +1222,13 @@ def _render_figure(
         if task not in labelled_tasks:
             ax.set_ylabel(
                 TASK_LABELS.get(task, task),
-                fontsize=10,
+                fontsize=fonts.task_label,
                 fontweight="bold",
                 labelpad=8,
             )
             labelled_tasks.add(task)
+
+        ax.tick_params(axis="y", labelsize=fonts.tick)
 
     # Shared legend below the figure.
     legend_handles = [
@@ -1003,13 +1240,13 @@ def _render_figure(
         loc="lower center",
         ncol=ncol_legend,
         frameon=True,
-        fontsize=LEGEND_FONTSIZE,
+        fontsize=fonts.legend,
         title="Experiment" if grouped else "Model",
-        title_fontsize=LEGEND_FONTSIZE,
+        title_fontsize=fonts.legend,
         bbox_to_anchor=(0.5, 0.0),
     )
 
-    fig.suptitle(title, fontsize=13, fontweight="bold", y=1.01)
+    fig.suptitle(title, fontsize=fonts.suptitle, fontweight="bold", y=1.01)
     # Reserve exactly the legend's height rather than a fixed 6%, so the same code
     # works for a tall combined grid and a short single-task figure.
     layout_rect = [0, min(legend_in / fig_h, 0.5), 1, 1]
@@ -1019,22 +1256,25 @@ def _render_figure(
     # point offset and are invisible to the autoscaler, so the y-range has to be
     # widened by hand. Measuring beats guessing here — the same label needs a much
     # larger fraction of a short axes than of a tall one.
-    if bar_names and axes_with_bars:
-        _apply_name_headroom(
-            fig, axes_with_bars, model_names,
-            fontsize=BAR_NAME_FONTSIZE, padding=name_padding,
-        )
-        # That first tight_layout saw the names sticking out above the axes and
-        # shrank the axes to make room. They now sit inside, so lay out again to
-        # reclaim that band — otherwise the taller the names, the emptier the
-        # figure. The headroom is then recomputed for the new (larger) axes;
-        # _apply_name_headroom works from the pre-expansion limits, so the two
-        # passes do not compound.
+    if bar_names and (axes_with_bars or capped_axes):
+        name_band = _name_band_points(model_names, fonts.bar_name, name_padding)
+
+        def fit_names() -> None:
+            # Uncapped axes make room by growing their y-range; capped ones keep
+            # their limit and move the title instead.
+            _apply_name_headroom(
+                fig, axes_with_bars, model_names,
+                fontsize=fonts.bar_name, padding=name_padding,
+            )
+            _fit_titles_over_names(fig, capped_axes, name_band)
+
+        fit_names()
+        # That first tight_layout sized the axes around names that then moved, so
+        # lay out again and re-fit against the new axes heights — otherwise the
+        # taller the names, the emptier the figure. Both fitters work from a
+        # remembered base, so the two passes do not compound.
         plt.tight_layout(rect=layout_rect)
-        _apply_name_headroom(
-            fig, axes_with_bars, model_names,
-            fontsize=BAR_NAME_FONTSIZE, padding=name_padding,
-        )
+        fit_names()
 
     # Right-aligned to the rightmost subplot, not to the figure edge. Saving uses
     # bbox_inches="tight", so a footnote pinned at x=0.99 would hold the crop out
@@ -1067,6 +1307,9 @@ def plot_benchmark(
     per_task: bool = False,
     per_task_figsize: tuple[float, float] | None = None,
     bar_names: bool = True,
+    font_scale: float = 1.0,
+    font_sizes: dict[str, float] | None = None,
+    y_max: dict[str, float] | None = None,
 ) -> list[Path]:
     """
     Generate the benchmark grid.
@@ -1091,8 +1334,18 @@ def plot_benchmark(
     ``bar_names`` prints each model's display name above its bar as well as in the
     legend.
 
+    ``font_scale`` multiplies every label's size and ``font_sizes`` pins individual
+    roles (see :class:`FontSizes`). Raising the bar-name size widens the figure, so
+    that names of neighbouring bars keep clear of each other.
+
+    ``y_max`` overrides the per-metric y-axis ceiling; by default a metric bounded
+    by 1 (accuracy, a correlation, C-index, ...) gets an axis that stops at 1
+    instead of just above the best run — see :func:`metric_upper_bound`.
+
     Returns the list of paths written (empty when ``output`` is None).
     """
+    fonts = resolve_font_sizes(font_scale, font_sizes)
+
     if not results:
         print("No results found — nothing to plot.", file=sys.stderr)
         sys.exit(1)
@@ -1136,6 +1389,8 @@ def plot_benchmark(
         named_groups=named_groups,
         grouped=bool(groups),
         bar_names=bar_names,
+        fonts=fonts,
+        y_max=y_max,
     )
 
     written: list[Path] = []
@@ -1176,24 +1431,31 @@ def plot_benchmark(
     return written
 
 
-def _figure_height(n_grid_rows: int, n_models: int) -> float:
+def _figure_height(
+    n_grid_rows: int, n_models: int, fonts: FontSizes | None = None
+) -> float:
     """Figure height in inches: the subplot rows plus the legend they need."""
-    return max(
-        n_grid_rows * ROW_INCHES + _legend_inches(n_models, min(n_models, 6)) + 0.8,
-        4.0,
-    )
+    fonts = fonts or FontSizes()
+    legend_in = _legend_inches(n_models, min(n_models, 6), fonts.legend)
+    return max(n_grid_rows * ROW_INCHES + legend_in + 0.8, 4.0)
 
 
 def _figure_width(
-    n_cols: int, n_models: int, width_scale: float, bar_names: bool
+    n_cols: int,
+    n_models: int,
+    width_scale: float,
+    bar_names: bool,
+    fonts: FontSizes | None = None,
 ) -> float:
     """Figure width in inches, from how many bars each subplot has to hold.
 
     ``width_scale`` folds in the gaps inserted between groups (1.0 when there are
-    none). Turning bar names off shrinks this a lot — that is the lever to reach
-    for when a figure with many models is still too wide for a document.
+    none). The per-bar slot tracks the bar-name font size, so raising it widens the
+    figure rather than making the names overlap. Turning bar names off shrinks this
+    a lot — the lever to reach for when a dense figure is too wide for a document.
     """
-    slot = BAR_SLOT_INCHES if bar_names else BAR_SLOT_INCHES_PLAIN
+    fonts = fonts or FontSizes()
+    slot = _bar_slot_inches(fonts.bar_name) if bar_names else BAR_SLOT_INCHES_PLAIN
     col_in = max(MIN_COL_INCHES, n_models * slot)
     return max(n_cols * col_in * width_scale + 1.5, 6.0)
 
@@ -1284,7 +1546,62 @@ def parse_args() -> argparse.Namespace:
             "legend (default: on). Overrides the config's 'bar_names' key."
         ),
     )
+    parser.add_argument(
+        "--font-scale",
+        type=float,
+        default=None,
+        metavar="FACTOR",
+        help=(
+            "Multiply every label's font size (1.0 = the defaults). Raising the "
+            "bar-name size also widens the figure so names stay clear. Overrides "
+            "the config's 'font_scale' key."
+        ),
+    )
+    parser.add_argument(
+        "--font-size",
+        nargs="*",
+        default=[],
+        metavar="ROLE=SIZE",
+        help=(
+            "Pin individual label sizes in points, e.g. "
+            "--font-size bar_name=11 legend=13. Applied on top of --font-scale. "
+            f"Roles: {', '.join(FONT_ROLES)}."
+        ),
+    )
+    parser.add_argument(
+        "--y-max",
+        nargs="*",
+        default=[],
+        metavar="METRIC=VALUE",
+        help=(
+            "Y-axis ceiling per metric, e.g. --y-max d_calibration=20. Metrics "
+            "bounded by 1 (accuracy, correlations, C-index, ...) already stop at 1; "
+            "pass 0 to autoscale one instead. Merged over the config's 'y_max'."
+        ),
+    )
     return parser.parse_args()
+
+
+def _parse_pairs(items: list[str], what: str) -> dict[str, float]:
+    """Parse ``NAME=NUMBER`` CLI pairs, reporting anything malformed."""
+    out: dict[str, float] = {}
+    for item in items or []:
+        if "=" not in item:
+            print(
+                f"WARNING: ignoring malformed --{what} entry '{item}' "
+                f"(expected name=number)",
+                file=sys.stderr,
+            )
+            continue
+        name, value = item.split("=", 1)
+        try:
+            out[name.strip()] = float(value)
+        except ValueError:
+            print(
+                f"WARNING: ignoring --{what} entry '{item}' (not a number)",
+                file=sys.stderr,
+            )
+    return out
 
 
 def main() -> None:
@@ -1299,6 +1616,9 @@ def main() -> None:
     per_task = bool(args.per_task) if args.per_task is not None else False
     per_task_figsize = tuple(args.per_task_figsize) if args.per_task_figsize else None
     bar_names = bool(args.bar_names) if args.bar_names is not None else True
+    font_scale = args.font_scale if args.font_scale is not None else 1.0
+    font_sizes = _parse_pairs(args.font_size, "font-size")
+    y_max = _parse_pairs(args.y_max, "y-max")
 
     if args.config is not None:
         # ---- Config-driven: hand-picked runs, possibly across ablations ----
@@ -1313,6 +1633,12 @@ def main() -> None:
         per_task = args.per_task if args.per_task is not None else config.per_task
         per_task_figsize = per_task_figsize or config.per_task_figsize
         bar_names = args.bar_names if args.bar_names is not None else config.bar_names
+        font_scale = (
+            args.font_scale if args.font_scale is not None else config.font_scale
+        )
+        # CLI pairs win per role/metric; the config supplies the rest.
+        font_sizes = {**config.font_sizes, **font_sizes}
+        y_max = {**config.y_max, **y_max}
 
         print(f"Loading experiments from {config_path} ...")
         results, groups = collect_from_config(config)
@@ -1396,6 +1722,9 @@ def main() -> None:
         per_task=per_task,
         per_task_figsize=per_task_figsize,
         bar_names=bar_names,
+        font_scale=font_scale,
+        font_sizes=font_sizes or None,
+        y_max=y_max or None,
     )
 
 

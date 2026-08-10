@@ -117,6 +117,24 @@ Bar names, group names and the legend are sized by `BAR_NAME_FONTSIZE` /
 `GROUP_NAME_FONTSIZE` / `LEGEND_FONTSIZE`; the y-range is then widened to fit the
 rotated names, measured per axes.
 
+**Font sizes** are set per figure by `font_scale` (multiplies everything) and
+`font_sizes` (pins individual roles in points), as config keys or `--font-scale` /
+`--font-size role=size`. Roles are the fields of `FontSizes`: `bar_name`, `value`,
+`group_name`, `legend`, `metric_title`, `task_label`, `tick`, `suptitle`, `footnote`,
+`no_data`. An unknown role is an error at config-load time. Raising `bar_name` widens
+the figure — the rotated names must not touch, so the per-bar slot tracks that size.
+
+**Y-axis upper limits** come from the metric. Anything in `METRIC_UPPER_BOUND`, or
+matching a bounded family (pearson/spearman/auroc/auprc/f1/precision/recall/r2/
+concordance/accuracy), gets an axis that stops at 1 instead of just above the best
+run, so a 0.42 accuracy reads as 42% of the way and two figures of the same metric
+are comparable by eye. Errors (`rmse`, `mae`) and unbounded statistics
+(`d_calibration`) autoscale. `y_max: {metric: value}` (or `--y-max metric=value`)
+caps an unbounded metric, and `0`/`null` restores autoscaling for a bounded one. A
+value above its ceiling leaves the axis autoscaled rather than clipping the bar.
+A capped axis cannot also be stretched to fit the rotated names, so those overflow
+above the frame and the subplot title is measured up out of their way.
+
 **Figure size is derived from the content** — `BAR_SLOT_INCHES` per bar for width,
 `ROW_INCHES` per subplot row plus the legend for height — so `figsize` should not
 normally be set. `figsize` describes the combined grid only and is **not** inherited

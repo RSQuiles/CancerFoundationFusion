@@ -110,6 +110,170 @@ def check_group_labels_wrapped() -> None:
         check(f"{n} metric(s): bottom row only", labels == expected, str(sorted(labels)))
 
 
+def render_metrics(
+    metrics: dict[str, float],
+    n_models: int = 8,
+    font_scale: float = 1.0,
+    font_sizes: dict[str, float] | None = None,
+    **kwargs,
+):
+    """One figure whose metrics take the given (identical) value per model."""
+    names = [f"experiment/name_{i}" for i in range(n_models)]
+    results = {n: {"t": dict(metrics)} for n in names}
+    kwargs.setdefault("fonts", pab.resolve_font_sizes(font_scale, font_sizes))
+    return pab._render_figure(
+        tasks=["t"], results=results, task_metrics={"t": list(metrics)},
+        primary={"t": next(iter(metrics))}, model_names=names,
+        x_positions=np.arange(n_models, dtype=float),
+        colors=[(0.2, 0.4, 0.8, 1.0)] * n_models, spans=[],
+        named_groups=False, grouped=False, figsize=None, title="t",
+        bar_names=True, output=None, max_cols=2, **kwargs,
+    )
+
+
+def axes_by_metric(fig, metrics) -> dict[str, object]:
+    """Map metric -> axes. Subplots are created in metric order.
+
+    Not by title: the title shows METRIC_LABELS ("Accuracy"), not the key.
+    """
+    return dict(zip(metrics, fig.axes))
+
+
+def check_y_limits() -> None:
+    """A metric with a known ceiling gets an axis that stops there."""
+    print("\n-- y-axis upper limits --")
+    values = {
+        "accuracy": 0.42,               # bounded, well under the ceiling
+        "c_index": 0.91,                # bounded, close to it
+        "mean_pearson_r_present": 0.6,  # bounded by the substring family
+        "rmse_present": 3.7,            # no ceiling
+        "d_calibration": 22.0,          # no ceiling
+    }
+    fig = render_metrics(values)
+    axes = axes_by_metric(fig, values)
+    for metric in ("accuracy", "c_index", "mean_pearson_r_present"):
+        top = axes[metric].get_ylim()[1]
+        check(f"{metric} stops at 1.0", abs(top - 1.0) < 1e-9, f"top={top}")
+    for metric, value in (("rmse_present", 3.7), ("d_calibration", 22.0)):
+        top = axes[metric].get_ylim()[1]
+        check(f"{metric} autoscales above its data", top > value, f"top={top}")
+    check("bars start at zero", all(ax.get_ylim()[0] == 0 for ax in fig.axes))
+    matplotlib.pyplot.close(fig)
+
+    print("\n-- y_max overrides --")
+    values = {"accuracy": 0.42, "d_calibration": 22.0}
+    fig = render_metrics(values, y_max={"d_calibration": 40, "accuracy": 0})
+    axes = axes_by_metric(fig, values)
+    check("override caps an unbounded metric",
+          abs(axes["d_calibration"].get_ylim()[1] - 40.0) < 1e-9,
+          str(axes["d_calibration"].get_ylim()))
+    check("zero override restores autoscaling",
+          axes["accuracy"].get_ylim()[1] != 1.0,
+          str(axes["accuracy"].get_ylim()))
+    matplotlib.pyplot.close(fig)
+
+    print("\n-- data above the ceiling --")
+    # A value over the ceiling must not be clipped out of sight.
+    fig = render_metrics({"accuracy": 1.4})
+    top = fig.axes[0].get_ylim()[1]
+    check("axis is left autoscaled", top > 1.4, f"top={top}")
+    matplotlib.pyplot.close(fig)
+
+    print("\n-- negative values --")
+    fig = render_metrics({"mean_pearson_r_present": -0.3})
+    lo, hi = fig.axes[0].get_ylim()
+    check("bottom drops below zero", lo < 0, f"{lo}")
+    check("top still the ceiling", abs(hi - 1.0) < 1e-9, f"{hi}")
+    matplotlib.pyplot.close(fig)
+
+    print("\n-- names on a capped axis --")
+    # A capped axis cannot grow to fit the rotated names, so they overflow above
+    # the frame and the title has to be measured out of their way. A bar at 0.97
+    # leaves almost no room under the ceiling, which is the hard case.
+    fig = render_metrics({"accuracy": 0.97})
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    ax = fig.axes[0]
+    check("the cap survived the name fitting",
+          abs(ax.get_ylim()[1] - 1.0) < 1e-9, str(ax.get_ylim()))
+    names = [t for t in ax.texts
+             if round(t.get_fontsize(), 1) == float(pab.BAR_NAME_FONTSIZE)]
+    top_of_names = max(t.get_window_extent(renderer).y1 for t in names)
+    check("names overflow the frame, as intended",
+          top_of_names > ax.get_window_extent().y1)
+    check("and the title clears them",
+          ax.title.get_window_extent(renderer).y0 >= top_of_names - 1.0,
+          f"title y0={ax.title.get_window_extent(renderer).y0:.1f} "
+          f"names top={top_of_names:.1f}")
+    matplotlib.pyplot.close(fig)
+
+
+def check_font_options() -> None:
+    """font_scale / font_sizes resolution, validation, and what gets drawn."""
+    print("\n-- font size resolution --")
+    default = pab.resolve_font_sizes()
+    check("defaults match the module constants",
+          default.bar_name == pab.BAR_NAME_FONTSIZE
+          and default.legend == pab.LEGEND_FONTSIZE
+          and default.group_name == pab.GROUP_NAME_FONTSIZE)
+
+    scaled = pab.resolve_font_sizes(2.0)
+    check("scale multiplies every role",
+          all(getattr(scaled, r) == 2 * getattr(default, r) for r in pab.FONT_ROLES))
+
+    pinned = pab.resolve_font_sizes(2.0, {"value": 5})
+    check("an override pins one role absolutely", pinned.value == 5.0)
+    check("and leaves the others scaled", pinned.bar_name == 2 * default.bar_name)
+
+    for bad, exc, label in (
+        (lambda: pab.resolve_font_sizes(0), ValueError, "zero scale"),
+        (lambda: pab.resolve_font_sizes(-1), ValueError, "negative scale"),
+        (lambda: pab.resolve_font_sizes(1, {"nope": 8}), KeyError, "unknown role"),
+        (lambda: pab.resolve_font_sizes(1, {"value": 0}), ValueError, "zero size"),
+    ):
+        try:
+            bad()
+            check(f"rejects {label}", False)
+        except exc:
+            check(f"rejects {label}", True)
+
+    print("\n-- fonts reach the figure --")
+    fig = render_metrics({"accuracy": 0.5}, font_scale=2.0)
+    ax = fig.axes[0]
+    names = [t for t in ax.texts if round(t.get_fontsize(), 1) == 2 * default.bar_name]
+    check("bar names drawn at the scaled size", bool(names))
+    check("title scaled",
+          abs(ax.title.get_fontsize() - 2 * default.metric_title) < 1e-6)
+    check("legend scaled",
+          abs(fig.legends[0].get_texts()[0].get_fontsize() - 2 * default.legend) < 1e-6)
+    check("y ticks scaled",
+          abs(ax.get_yticklabels()[0].get_fontsize() - 2 * default.tick) < 1e-6)
+    matplotlib.pyplot.close(fig)
+
+    print("\n-- bigger names widen the figure --")
+    narrow = pab._figure_width(2, 40, 1.2, True, pab.resolve_font_sizes(1.0))
+    wide   = pab._figure_width(2, 40, 1.2, True, pab.resolve_font_sizes(2.0))
+    check("width grows with the bar-name size", wide > narrow, f"{narrow:.1f} -> {wide:.1f}")
+    check("slot reproduces BAR_SLOT_INCHES at the default size",
+          abs(pab._bar_slot_inches(pab.BAR_NAME_FONTSIZE) - pab.BAR_SLOT_INCHES) < 0.005)
+
+    # The whole point of widening: names must still not touch.
+    fig = render_metrics({"accuracy": 0.5, "c_index": 0.5}, n_models=30, font_scale=1.8)
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    worst = 1.0
+    for ax in fig.axes:
+        texts = sorted(
+            (t for t in ax.texts if round(t.get_fontsize(), 1) == 1.8 * default.bar_name),
+            key=lambda t: t.get_window_extent(renderer).x0,
+        )
+        for a, b in zip(texts, texts[1:]):
+            worst = min(worst,
+                        b.get_window_extent(renderer).x0 - a.get_window_extent(renderer).x1)
+    check("names stay clear at font_scale 1.8", worst >= 0, f"{worst:.1f}px overlap")
+    matplotlib.pyplot.close(fig)
+
+
 def render(n_metrics: int, n_models: int = 19, figsize=None, max_cols=2, n_groups=5):
     """One per-task figure, auto-sized unless *figsize* is given.
 
@@ -273,6 +437,75 @@ def check_font_sizes() -> None:
     matplotlib.pyplot.close(fig)
 
 
+def check_config_keys() -> None:
+    """font_scale / font_sizes / y_max must survive the config round trip."""
+    import tempfile
+
+    print("\n-- config keys --")
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        model = root / "run" / "metrics"
+        model.mkdir(parents=True)
+        (model / "results_survival.json").write_text('{"c_index": 0.7}')
+
+        cfg = root / "cmp.yaml"
+        cfg.write_text(
+            "title: t\n"
+            "font_scale: 1.5\n"
+            "font_sizes: {bar_name: 12, legend: 14}\n"
+            "y_max: {d_calibration: 30, ibs: 0}\n"
+            f"experiments:\n  - {{name: A, path: {(root / 'run').as_posix()}}}\n",
+            encoding="utf-8",
+        )
+        config = pab.load_config(cfg)
+        check("font_scale parsed", config.font_scale == 1.5)
+        check("font_sizes parsed", config.font_sizes == {"bar_name": 12.0, "legend": 14.0})
+        check("y_max parsed", config.y_max == {"d_calibration": 30.0, "ibs": 0.0})
+
+        bad = root / "bad.yaml"
+        bad.write_text(
+            "font_sizes: {nope: 12}\n"
+            f"experiments:\n  - {{name: A, path: {(root / 'run').as_posix()}}}\n",
+            encoding="utf-8",
+        )
+        try:
+            pab.load_config(bad)
+            check("an unknown font role is rejected at load time", False)
+        except KeyError:
+            check("an unknown font role is rejected at load time", True)
+
+        check("null y_max means autoscale",
+              pab.metric_upper_bound("ibs", config.y_max) is None)
+
+        # plot_benchmark is the seam between the config and the renderer; make sure
+        # it forwards both rather than dropping them on the floor.
+        captured: dict = {}
+        original = pab._render_figure
+
+        def spy(**kwargs):
+            captured.update(kwargs)
+            return original(**kwargs)
+
+        pab._render_figure = spy
+        try:
+            pab.plot_benchmark(
+                results={"A": {"survival": {"c_index": 0.7, "d_calibration": 22.0}}},
+                primary_overrides={}, output=None, show=False, figsize=None,
+                font_scale=2.0, font_sizes={"value": 5}, y_max={"d_calibration": 60},
+            )
+        finally:
+            pab._render_figure = original
+        matplotlib.pyplot.close("all")
+
+        check("plot_benchmark forwards resolved fonts",
+              captured.get("fonts") is not None
+              and captured["fonts"].value == 5.0
+              and captured["fonts"].bar_name == 2 * pab.BAR_NAME_FONTSIZE,
+              str(captured.get("fonts")))
+        check("plot_benchmark forwards y_max",
+              captured.get("y_max") == {"d_calibration": 60})
+
+
 def main() -> None:
     check_wrapping()
     check_combined_unchanged()
@@ -282,6 +515,9 @@ def main() -> None:
     check_auto_size()
     check_labels_do_not_collide()
     check_font_sizes()
+    check_font_options()
+    check_y_limits()
+    check_config_keys()
 
     print()
     if FAILED:
