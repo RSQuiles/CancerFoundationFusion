@@ -117,6 +117,13 @@ Bar names, group names and the legend are sized by `BAR_NAME_FONTSIZE` /
 `GROUP_NAME_FONTSIZE` / `LEGEND_FONTSIZE`; the y-range is then widened to fit the
 rotated names, measured per axes.
 
+**Bar aliases** (`bar_aliases`, default on): each bar is labelled with a short
+`{group}.{member}` handle — 1.1, 1.2, 2.3 — numbered from the config's group order,
+and the legend reads `1.2: base/contrastive`. Ungrouped runs are numbered straight
+through. `--no-bar-aliases` prints full display names on the bars as before; those
+are long enough to force the figure taller, since the reserved band above the bars
+scales with the longest label.
+
 **Font sizes** are set per figure by `font_scale` (multiplies everything) and
 `font_sizes` (pins individual roles in points), as config keys or `--font-scale` /
 `--font-size role=size`. Roles are the fields of `FontSizes`: `bar_name`, `value`,

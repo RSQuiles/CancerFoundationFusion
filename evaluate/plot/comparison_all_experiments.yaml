@@ -47,10 +47,17 @@ per_task: true
 # these are still too wide for a document, `bar_names: false` drops them (they stay
 # in the legend) and the same figure comes out near-square, about 12 x 12 in.
 
-# Print each model's display name above its bar as well as in the legend — with 48
-# bars, tracing a colour back to an 8-row legend is otherwise hopeless. The names
-# are rotated and the y-range is widened to fit them.
+# Label every bar, not just the legend — with 48 bars, tracing a colour back to an
+# 8-row legend is otherwise hopeless.
 bar_names: true
+
+# The label is a short {group}.{member} handle: the six runs of "Base comparison"
+# become 1.1 … 1.6, "Big condition" 2.1 … 2.4, and the legend reads
+# "1.2: base/contrastive". The numbering follows the group order below, so a run
+# keeps the same handle across every per-task figure. Set false to print the full
+# display names on the bars instead — legible, but they are long enough to force
+# the figure taller.
+bar_aliases: true
 
 # Text size. `font_scale` multiplies everything; `font_sizes` then pins individual
 # roles in points. Raising `bar_name` widens the figure, because the rotated names

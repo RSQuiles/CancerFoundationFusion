@@ -36,9 +36,11 @@ bars a subplot must hold, height from the number of rows and the legend. The flo
 on width is the rotated model name above each bar, so ``--no-bar-names`` (they stay
 in the legend) is the lever when a dense figure is still too wide for a document.
 
-Every bar is labelled with its value and, unless ``--no-bar-names``, with the
-model's display name — so a dense figure can be read without tracing colours back
-to the legend.
+Every bar is labelled with its value and, unless ``--no-bar-names``, with a short
+``{group}.{member}`` handle (1.1, 1.2, 2.3, …) whose meaning the legend spells out
+as ``1.2: base/contrastive`` — so a dense figure can be read without tracing
+colours back to the legend. ``--no-bar-aliases`` puts the full display names on the
+bars instead.
 
 Text size is set by ``--font-scale`` / ``--font-size role=size`` (config keys
 ``font_scale`` / ``font_sizes``); see :class:`FontSizes` for the roles.
@@ -503,8 +505,10 @@ class BenchmarkConfig:
     # Only used when per_task is set. None -> derived from the single-row layout,
     # keeping `figsize`'s width when one was given.
     per_task_figsize: tuple[float, float] | None = None
-    # Print each model's display name above its bar, in addition to the legend.
+    # Print a label above each bar, in addition to the legend.
     bar_names: bool = True
+    # That label is a short {group}.{member} handle; the legend carries alias: model.
+    bar_aliases: bool = True
     # Multiplies every label size; font_sizes then pins individual roles.
     font_scale: float = 1.0
     font_sizes: dict[str, float] = field(default_factory=dict)
@@ -535,8 +539,12 @@ def load_config(path: Path) -> BenchmarkConfig:
         per_task_figsize: [30, 8] # optional; only read when per_task is set.
                                   # Omitted -> derived from the single-row layout,
                                   # reusing figsize's width if one was given.
-        bar_names: false          # default true: print each model's display name
-                                  # above its bar as well as in the legend.
+        bar_names: false          # default true: label each bar as well as the
+                                  # legend.
+        bar_aliases: false        # default true: that label is a short
+                                  # {group}.{member} handle (1.1, 1.2, 2.3, ...)
+                                  # and the legend reads "1.2: base/contrastive".
+                                  # false prints full display names on the bars.
 
         font_scale: 1.4           # multiply every label size (default 1.0)
         font_sizes:               # …then pin individual roles, in points
@@ -624,6 +632,7 @@ def load_config(path: Path) -> BenchmarkConfig:
         per_task=bool(raw.get("per_task", False)),
         per_task_figsize=per_task_figsize,
         bar_names=bool(raw.get("bar_names", True)),
+        bar_aliases=bool(raw.get("bar_aliases", True)),
         font_scale=float(raw.get("font_scale", 1.0) or 1.0),
         font_sizes=font_sizes,
         y_max=y_max,
@@ -801,6 +810,40 @@ def _apply_metric_ylim(ax, values: list[float], bound: float | None) -> None:
     bottom = min(0.0, min(values), lo)
     top = bound if (bound is not None and max(values) <= bound) else hi
     ax.set_ylim(bottom, top)
+
+
+def build_aliases(
+    model_names: list[str],
+    groups: list[tuple[str | None, list[str]]] | None,
+) -> dict[str, str]:
+    """Short handle per model: ``{group}.{member}``, both 1-based.
+
+    Group 1's runs are 1.1, 1.2, …; group 2's third run is 2.3. Ungrouped runs are
+    numbered straight through (1, 2, 3, …).
+
+    A full display name printed above every bar is what forces a dense figure to be
+    wide and tall — 48 of them, rotated, each as long as "palign/contrastive". A
+    three-character handle costs one legend lookup and buys back the space, and the
+    number itself carries the grouping, which a colour shade does not.
+    """
+    aliases: dict[str, str] = {}
+    grouped = bool(groups) and (len(groups) > 1 or any(name for name, _ in groups))
+    n_groups = 0
+    if grouped:
+        for group_idx, (_, members) in enumerate(groups, start=1):
+            for member_idx, name in enumerate(members, start=1):
+                aliases[name] = f"{group_idx}.{member_idx}"
+            n_groups = group_idx
+
+    # The ungrouped case, and any model the groups did not cover — the latter goes
+    # into a trailing implicit group so its handle cannot read like a group index.
+    leftover = 1
+    for name in model_names:
+        if name in aliases:
+            continue
+        aliases[name] = f"{n_groups + 1}.{leftover}" if grouped else str(leftover)
+        leftover += 1
+    return aliases
 
 
 def _legend_inches(n_models: int, ncol: int, fontsize: float = LEGEND_FONTSIZE) -> float:
@@ -1042,6 +1085,7 @@ def _render_figure(
     max_cols: int | None = None,
     fonts: FontSizes | None = None,
     y_max: dict[str, float] | None = None,
+    aliases: dict[str, str] | None = None,
 ):
     """Draw one figure covering *tasks* x their metrics.
 
@@ -1050,12 +1094,15 @@ def _render_figure(
     subplots and a short row is centred — see :func:`_plan_cells`.
 
     ``fonts`` sizes every label; ``y_max`` overrides the per-metric y-axis ceiling
-    (see :func:`metric_upper_bound`).
+    (see :func:`metric_upper_bound`). ``aliases`` maps a model to the short handle
+    printed above its bars, with the legend carrying ``alias: model``.
 
     Returns the Figure; the caller decides whether to save, show or close it.
     """
     fonts = fonts or FontSizes()
     n_models = len(model_names)
+    # What is actually written above each bar — a handle when one was built.
+    bar_labels = [(aliases or {}).get(name, name) for name in model_names]
 
     cells, n_grid_rows, n_cols = _plan_cells(tasks, task_metrics, max_cols)
     label_cells = _group_label_cells(cells, n_grid_rows, wrapped=bool(max_cols))
@@ -1143,7 +1190,7 @@ def _render_figure(
                 # Above the value label (padding is in points, so this clears
                 # it regardless of the data scale), rotated to fit dense grids.
                 ax.bar_label(
-                    bar, labels=[model_name], padding=name_padding,
+                    bar, labels=[bar_labels[model_idx]], padding=name_padding,
                     fontsize=fonts.bar_name, rotation=90, color="#333333",
                 )
             any_bar = True
@@ -1232,7 +1279,11 @@ def _render_figure(
 
     # Shared legend below the figure.
     legend_handles = [
-        mpatches.Patch(color=colors[i], label=name)
+        mpatches.Patch(
+            color=colors[i],
+            # "1.2: base/contrastive" — the handle on the bar, then what it is.
+            label=f"{bar_labels[i]}: {name}" if bar_labels[i] != name else name,
+        )
         for i, name in enumerate(model_names)
     ]
     fig.legend(
@@ -1257,13 +1308,13 @@ def _render_figure(
     # widened by hand. Measuring beats guessing here — the same label needs a much
     # larger fraction of a short axes than of a tall one.
     if bar_names and (axes_with_bars or capped_axes):
-        name_band = _name_band_points(model_names, fonts.bar_name, name_padding)
+        name_band = _name_band_points(bar_labels, fonts.bar_name, name_padding)
 
         def fit_names() -> None:
             # Uncapped axes make room by growing their y-range; capped ones keep
             # their limit and move the title instead.
             _apply_name_headroom(
-                fig, axes_with_bars, model_names,
+                fig, axes_with_bars, bar_labels,
                 fontsize=fonts.bar_name, padding=name_padding,
             )
             _fit_titles_over_names(fig, capped_axes, name_band)
@@ -1310,6 +1361,7 @@ def plot_benchmark(
     font_scale: float = 1.0,
     font_sizes: dict[str, float] | None = None,
     y_max: dict[str, float] | None = None,
+    bar_aliases: bool = True,
 ) -> list[Path]:
     """
     Generate the benchmark grid.
@@ -1331,8 +1383,10 @@ def plot_benchmark(
     group bands are computed once and shared, so the per-task figures stay
     comparable with each other and with the combined one.
 
-    ``bar_names`` prints each model's display name above its bar as well as in the
-    legend.
+    ``bar_names`` labels each bar as well as the legend. ``bar_aliases`` makes that
+    label a short ``{group}.{member}`` handle (1.1, 1.2, 2.3, …) and puts
+    ``alias: model`` in the legend — see :func:`build_aliases`. Turn it off to print
+    full display names on the bars, as before.
 
     ``font_scale`` multiplies every label's size and ``font_sizes`` pins individual
     roles (see :class:`FontSizes`). Raising the bar-name size widens the figure, so
@@ -1391,6 +1445,9 @@ def plot_benchmark(
         bar_names=bar_names,
         fonts=fonts,
         y_max=y_max,
+        # Built once from the shared ordering, so a run keeps the same handle in
+        # the combined grid and in every per-task figure.
+        aliases=build_aliases(model_names, groups) if bar_aliases else None,
     )
 
     written: list[Path] = []
@@ -1547,6 +1604,17 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--bar-aliases",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Label bars with a short {group}.{member} handle (1.1, 1.2, 2.3, ...) "
+            "and put 'alias: model' in the legend (default: on). "
+            "--no-bar-aliases prints full display names on the bars instead. "
+            "Overrides the config's 'bar_aliases' key."
+        ),
+    )
+    parser.add_argument(
         "--font-scale",
         type=float,
         default=None,
@@ -1616,6 +1684,7 @@ def main() -> None:
     per_task = bool(args.per_task) if args.per_task is not None else False
     per_task_figsize = tuple(args.per_task_figsize) if args.per_task_figsize else None
     bar_names = bool(args.bar_names) if args.bar_names is not None else True
+    bar_aliases = bool(args.bar_aliases) if args.bar_aliases is not None else True
     font_scale = args.font_scale if args.font_scale is not None else 1.0
     font_sizes = _parse_pairs(args.font_size, "font-size")
     y_max = _parse_pairs(args.y_max, "y-max")
@@ -1633,6 +1702,9 @@ def main() -> None:
         per_task = args.per_task if args.per_task is not None else config.per_task
         per_task_figsize = per_task_figsize or config.per_task_figsize
         bar_names = args.bar_names if args.bar_names is not None else config.bar_names
+        bar_aliases = (
+            args.bar_aliases if args.bar_aliases is not None else config.bar_aliases
+        )
         font_scale = (
             args.font_scale if args.font_scale is not None else config.font_scale
         )
@@ -1722,6 +1794,7 @@ def main() -> None:
         per_task=per_task,
         per_task_figsize=per_task_figsize,
         bar_names=bar_names,
+        bar_aliases=bar_aliases,
         font_scale=font_scale,
         font_sizes=font_sizes or None,
         y_max=y_max or None,

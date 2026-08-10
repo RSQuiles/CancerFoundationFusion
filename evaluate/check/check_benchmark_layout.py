@@ -18,6 +18,7 @@ Needs matplotlib and numpy; no cluster, GPU, checkpoints or metric files.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -274,7 +275,8 @@ def check_font_options() -> None:
     matplotlib.pyplot.close(fig)
 
 
-def render(n_metrics: int, n_models: int = 19, figsize=None, max_cols=2, n_groups=5):
+def render(n_metrics: int, n_models: int = 19, figsize=None, max_cols=2,
+           n_groups=5, bar_aliases: bool = True):
     """One per-task figure, auto-sized unless *figsize* is given.
 
     Several groups with names of realistic length, since a narrow group with a long
@@ -295,12 +297,13 @@ def render(n_metrics: int, n_models: int = 19, figsize=None, max_cols=2, n_group
     if assigned < n_models:                     # remainder joins the last group
         groups[-1] = (groups[-1][0], groups[-1][1] + names[assigned:])
     x, colors, spans = grouped_layout(names, groups)
+    aliases = pab.build_aliases(names, groups) if bar_aliases else None
     return pab._render_figure(
         tasks=["t"], results=results, task_metrics={"t": metrics},
         primary={"t": metrics[0]}, model_names=names,
         x_positions=np.asarray(x, float), colors=colors, spans=spans,
         named_groups=True, grouped=True, figsize=figsize, title="t",
-        bar_names=True, output=None, max_cols=max_cols,
+        bar_names=True, output=None, max_cols=max_cols, aliases=aliases,
     )
 
 
@@ -437,6 +440,62 @@ def check_font_sizes() -> None:
     matplotlib.pyplot.close(fig)
 
 
+def check_aliases() -> None:
+    """Bars carry a short {group}.{member} handle; the legend maps it to the model."""
+    print("\n-- alias numbering --")
+    names = ["a", "b", "c", "d", "e", "f"]
+    groups = [("G1", ["a", "b", "c"]), ("G2", ["d", "e"]), ("G3", ["f"])]
+    check("group.member, both 1-based",
+          pab.build_aliases(names, groups)
+          == {"a": "1.1", "b": "1.2", "c": "1.3", "d": "2.1", "e": "2.2", "f": "3.1"})
+    check("ungrouped runs are numbered straight through",
+          pab.build_aliases(names, None)
+          == {n: str(i + 1) for i, n in enumerate(names)})
+    check("a single unnamed group counts as ungrouped",
+          pab.build_aliases(names, [(None, names)])["f"] == "6")
+    check("a model outside every group lands in a trailing group",
+          pab.build_aliases(names + ["z"], groups)["z"] == "4.1")
+
+    print("\n-- aliases on the figure --")
+    fig = render(2, n_models=6, n_groups=3)
+    ax = fig.axes[0]
+    default = pab.resolve_font_sizes()
+    drawn = {
+        t.get_text() for t in ax.texts
+        if round(t.get_fontsize(), 1) == default.bar_name
+    }
+    check("bars are labelled with handles, not names",
+          all(re.fullmatch(r"\d+\.\d+", t) for t in drawn) and drawn,
+          str(sorted(drawn)))
+    legend_texts = [t.get_text() for t in fig.legends[0].get_texts()]
+    check("legend maps handle to model",
+          all(re.fullmatch(r"\d+\.\d+: experiment/name_\d+", t) for t in legend_texts),
+          str(legend_texts[:2]))
+    check("every bar's handle appears in the legend",
+          drawn <= {t.split(":")[0] for t in legend_texts})
+    matplotlib.pyplot.close(fig)
+
+    print("\n-- opting out --")
+    fig = render(2, n_models=6, n_groups=3, bar_aliases=False)
+    ax = fig.axes[0]
+    drawn = {
+        t.get_text() for t in ax.texts
+        if round(t.get_fontsize(), 1) == default.bar_name
+    }
+    check("bars carry full display names", all(t.startswith("experiment/") for t in drawn),
+          str(sorted(drawn)[:2]))
+    check("legend is unprefixed",
+          all(":" not in t for t in fig.legends[0].get_texts()[0].get_text()))
+    matplotlib.pyplot.close(fig)
+
+    print("\n-- handles need less headroom --")
+    long_names = [f"experiment/name_{i}" for i in range(6)]
+    handles = ["1.1", "1.2", "1.3", "2.1", "2.2", "3.1"]
+    check("the reserved band shrinks",
+          pab._name_band_points(handles, 9, 13)
+          < 0.5 * pab._name_band_points(long_names, 9, 13))
+
+
 def check_config_keys() -> None:
     """font_scale / font_sizes / y_max must survive the config round trip."""
     import tempfile
@@ -516,6 +575,7 @@ def main() -> None:
     check_labels_do_not_collide()
     check_font_sizes()
     check_font_options()
+    check_aliases()
     check_y_limits()
     check_config_keys()
 

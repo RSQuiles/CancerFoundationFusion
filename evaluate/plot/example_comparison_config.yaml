@@ -23,6 +23,11 @@ metrics:
 # primary:
 #   deconv: rmse
 
+# Label each bar with a short {group}.{member} handle (1.1, 1.2, 2.3, ...), with the
+# legend reading "1.2: base/contrastive". Default true; --no-bar-aliases prints the
+# full display names on the bars instead, and --no-bar-names drops them entirely.
+# bar_aliases: false
+
 # Text size. font_scale multiplies every label; font_sizes pins individual roles in
 # points, on top of the scale. Roles: bar_name, value, group_name, legend,
 # metric_title, task_label, tick, suptitle, footnote, no_data.
