@@ -101,6 +101,13 @@ under different gene panels are not comparable.
 `python evaluate/check/check_unified_table.py` self-checks both scripts offline (no
 cluster, GPU or checkpoints needed).
 
+**Both scripts write a `{stem}.csv` beside every figure** holding exactly the numbers
+plotted — for the benchmark one row per model (with its group and alias) and one
+column per metric, for the table one row per run. `plot_ablation_benchmark.py` in
+`per_task` mode writes one CSV per task, matching its PNGs; in combined mode the
+columns are prefixed `task::metric`. Values are raw, never the within-column colour
+scores. `--no-csv` on either script turns it off.
+
 **`metrics_old` fallback.** `plot_ablation_benchmark.py` fills anything missing from
 `{model}/metrics/` — a whole `results_{task}.json`, or individual metrics inside one —
 from a sibling `{model}/metrics_old/`, so a partially recomputed sweep still plots in

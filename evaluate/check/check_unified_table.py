@@ -397,6 +397,56 @@ def check_rendering(tmp: Path, results: dict, groups: list) -> None:
     check("all-missing column renders as n/a", ok)
 
 
+def check_csv_output(tmp: Path, results: dict, groups: list) -> None:
+    """The figure's numbers are written beside it as {stem}.csv."""
+    import csv as csv_module
+
+    from evaluate.plot.plot_unified_metrics_table import (
+        csv_output_path,
+        write_table_csv,
+    )
+
+    print("\n[csv]")
+    config = load_config(tmp / "cfg.yaml")
+    specs = resolve_metrics(results, config)
+
+    out = tmp / "csv_test.png"
+    check("path is the figure's, with a .csv suffix",
+          csv_output_path(out) == tmp / "csv_test.csv")
+
+    path = write_table_csv(out, results, specs, groups)
+    check("csv written", path.is_file())
+
+    rows = list(csv_module.DictReader(path.open(encoding="utf-8")))
+    run_order = [name for _, names in groups for name in names]
+    check("one row per run, in plot order",
+          [r["run"] for r in rows] == run_order, str([r["run"] for r in rows]))
+    check("group column filled",
+          all(r["group"] for r in rows if any(g for g, _ in groups)),
+          str(rows[0]))
+    check("one column per plotted metric, keyed by metric key",
+          set(rows[0]) == {"group", "run"} | {s.key for s in specs},
+          str(sorted(set(rows[0]) - {"group", "run"})))
+
+    # Values must be the raw numbers, not the colour scores.
+    first = rows[0]
+    for spec in specs:
+        raw = results[run_order[0]].get(spec.key)
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            check(f"value round-trips ({spec.key})",
+                  abs(float(first[spec.key]) - float(raw)) < 1e-12,
+                  f"{first[spec.key]} vs {raw}")
+            break
+
+    # A metric no run has becomes an empty cell rather than a crash.
+    ghost = specs + [MetricSpec("never_computed", "Ghost", UP, "Other")]
+    rows = list(csv_module.DictReader(
+        write_table_csv(tmp / "csv_ghost.png", results, ghost, groups)
+        .open(encoding="utf-8")))
+    check("a metric no run has is an empty cell",
+          all(r["never_computed"] == "" for r in rows))
+
+
 def check_cli(tmp: Path) -> None:
     print("\n[cli]")
     script = ROOT / "evaluate" / "plot" / "plot_unified_metrics_table.py"
@@ -541,6 +591,7 @@ def main() -> None:
         check_config_errors(tmp)
         check_vars(tmp)
         check_rendering(tmp, results, groups)
+        check_csv_output(tmp, results, groups)
         check_cli(tmp)
         check_example_config()
         check_benchmark_untouched()

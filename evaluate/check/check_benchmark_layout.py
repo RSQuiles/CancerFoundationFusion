@@ -496,6 +496,90 @@ def check_aliases() -> None:
           < 0.5 * pab._name_band_points(long_names, 9, 13))
 
 
+def check_csv_output() -> None:
+    """Every figure gets its numbers written beside it as {stem}.csv."""
+    import csv as csv_module
+    import tempfile
+
+    print("\n-- csv beside the figure --")
+    results = {
+        "r1": {"survival": {"c_index": 0.7, "d_calibration": 22.0},
+               "deconv": {"mean_pearson_r_present": 0.4}},
+        "r2": {"survival": {"c_index": 0.6, "d_calibration": 30.0},
+               "deconv": {"mean_pearson_r_present": 0.5}},
+    }
+    groups = [("Group A", ["r1"]), ("Group B", ["r2"])]
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+
+        written = pab.plot_benchmark(
+            results=results, primary_overrides={}, output=root / "b.png",
+            show=False, figsize=None, groups=groups, per_task=True,
+        )
+        matplotlib.pyplot.close("all")
+        pngs = sorted(p.name for p in root.glob("*.png"))
+        csvs = sorted(p.name for p in root.glob("*.csv"))
+        check("one csv per per-task figure",
+              csvs == ["b_deconv.csv", "b_survival.csv"], str(csvs))
+        check("named after the figure it belongs to",
+              {p.stem for p in root.glob("*.csv")} == {Path(p).stem for p in written},
+              f"{csvs} vs {pngs}")
+
+        rows = list(csv_module.DictReader(
+            (root / "b_survival.csv").open(encoding="utf-8")))
+        check("one row per model, in plot order",
+              [r["model"] for r in rows] == ["r1", "r2"], str(rows))
+        check("carries group and alias",
+              rows[0]["group"] == "Group A" and rows[0]["alias"] == "1.1",
+              str(rows[0]))
+        check("bare metric names for a single task",
+              set(rows[0]) == {"group", "alias", "model", "c_index", "d_calibration"},
+              str(sorted(rows[0])))
+        check("values match the input", float(rows[1]["c_index"]) == 0.6)
+
+        for p in root.glob("*"):
+            p.unlink()
+        pab.plot_benchmark(
+            results=results, primary_overrides={}, output=root / "c.png",
+            show=False, figsize=None, groups=groups, per_task=False,
+        )
+        matplotlib.pyplot.close("all")
+        rows = list(csv_module.DictReader((root / "c.csv").open(encoding="utf-8")))
+        check("combined figure gets one csv",
+              sorted(p.name for p in root.glob("*.csv")) == ["c.csv"])
+        check("columns are task-prefixed when several tasks share the figure",
+              {"deconv::mean_pearson_r_present", "survival::c_index"} <= set(rows[0]),
+              str(sorted(rows[0])))
+
+        for p in root.glob("*"):
+            p.unlink()
+        pab.plot_benchmark(
+            results=results, primary_overrides={}, output=root / "d.png",
+            show=False, figsize=None, groups=groups, per_task=True, write_csv=False,
+        )
+        matplotlib.pyplot.close("all")
+        check("write_csv=False writes none", not list(root.glob("*.csv")))
+        check("but still writes the figures", bool(list(root.glob("*.png"))))
+
+        # Only the plotted metrics: a subset in the figure is a subset in the csv.
+        for p in root.glob("*"):
+            p.unlink()
+        pab.plot_benchmark(
+            results=results, primary_overrides={}, output=root / "e.png",
+            show=False, figsize=None, groups=groups, per_task=True,
+            metric_subsets={"survival": ["c_index"], "deconv": []},
+        )
+        matplotlib.pyplot.close("all")
+        rows = list(csv_module.DictReader(
+            (root / "e_survival.csv").open(encoding="utf-8")))
+        check("csv holds exactly the plotted metrics",
+              "c_index" in rows[0] and "d_calibration" not in rows[0],
+              str(sorted(rows[0])))
+        check("a task dropped from the figure has no csv",
+              not (root / "e_deconv.csv").exists())
+
+
 def check_config_keys() -> None:
     """font_scale / font_sizes / y_max must survive the config round trip."""
     import tempfile
@@ -576,6 +660,7 @@ def main() -> None:
     check_font_sizes()
     check_font_options()
     check_aliases()
+    check_csv_output()
     check_y_limits()
     check_config_keys()
 

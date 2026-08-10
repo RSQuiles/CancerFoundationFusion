@@ -16,6 +16,9 @@ Nothing is recomputed.  A YAML config selects individual runs — possibly from
 different ablation directories — gives them display names and arranges them into
 groups, using exactly the same grammar as ``example_comparison_config.yaml``.
 
+Alongside the figure a ``{stem}.csv`` is written holding the same numbers — one row
+per run, one column per plotted metric.  ``--no-csv`` turns that off.
+
 The default figure is an **annotated heatmap**: one row per run, one column per
 metric, the raw value printed in each cell and the cell coloured by a direction-aware
 per-column normalisation (green = best in that column).  ``style: rank_table`` and
@@ -46,6 +49,7 @@ numbers for magnitude and the colours for ordering only.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import sys
@@ -462,6 +466,50 @@ def resolve_metrics(
                     specs.append(scib_spec(tag, metric))
 
     return specs
+
+
+def csv_output_path(output: Path) -> Path:
+    """The CSV that accompanies a figure: same directory, same stem, ``.csv``."""
+    return output.with_suffix(".csv")
+
+
+def write_table_csv(
+    output: Path,
+    results: dict[str, dict],
+    specs: list[MetricSpec],
+    groups: list[tuple[str | None, list[str]]],
+) -> Path:
+    """Write the numbers behind the figure next to it, as ``{figure stem}.csv``.
+
+    One row per run in plot order, one column per plotted metric, keyed by the
+    metric's ``key`` rather than its column header — the header is shortened for
+    the figure, and scIB columns keep their ``scib:<tag>:<metric>`` form so they
+    are unambiguous. Values are the raw numbers, not the within-column colour
+    scores, and the rank table's derived "Mean rank" column is not included.
+    """
+    group_of: dict[str, str] = {}
+    for group_name, members in groups:
+        for name in members:
+            group_of[name] = group_name or ""
+
+    path = csv_output_path(output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["group", "run"] + [s.key for s in specs])
+        for _, members in groups:
+            for name in members:
+                row: list = [group_of.get(name, ""), name]
+                for spec in specs:
+                    value = results.get(name, {}).get(spec.key)
+                    row.append(
+                        value if isinstance(value, (int, float))
+                        and not isinstance(value, bool) else ""
+                    )
+                writer.writerow(row)
+
+    print(f"Saved to {path}")
+    return path
 
 
 def warn_panel_mismatch(results: dict[str, dict]) -> str | None:
@@ -1038,6 +1086,13 @@ def parse_args() -> argparse.Namespace:
         help="Do not open an interactive plot window.",
     )
     parser.add_argument(
+        "--no-csv", action="store_true",
+        help=(
+            "Do not write the plotted numbers beside the figure. By default a "
+            "{stem}.csv is written in the same directory."
+        ),
+    )
+    parser.add_argument(
         "--list", action="store_true",
         help="List every metric available in the selected runs, then exit.",
     )
@@ -1084,6 +1139,9 @@ def main() -> None:
     output: Path | None = args.output or config.output or config_path.with_suffix(".png")
 
     print(f"{len(results)} run(s), {len(specs)} metric(s), style '{config.style}'.")
+
+    if output is not None and not args.no_csv:
+        write_table_csv(output, results, specs, groups)
 
     if config.style == "bars":
         plot_bars(results, specs, groups, config, output,

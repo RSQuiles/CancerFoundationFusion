@@ -45,6 +45,10 @@ bars instead.
 Text size is set by ``--font-scale`` / ``--font-size role=size`` (config keys
 ``font_scale`` / ``font_sizes``); see :class:`FontSizes` for the roles.
 
+Every figure is written with a ``{stem}.csv`` beside it holding exactly the numbers
+it plots — one row per model, one column per metric — so ``--per-task`` yields one
+CSV per task. ``--no-csv`` turns that off.
+
 A metric with a known ceiling gets an axis that stops there — accuracy runs to 1,
 not to just above the best model — so bar heights mean the same thing in every
 figure. ``--y-max metric=value`` (config ``y_max``) overrides it; see
@@ -82,6 +86,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import re
@@ -846,6 +851,61 @@ def build_aliases(
     return aliases
 
 
+def csv_output_path(output: Path) -> Path:
+    """The CSV that accompanies a figure: same directory, same stem, ``.csv``."""
+    return output.with_suffix(".csv")
+
+
+def write_benchmark_csv(
+    output: Path,
+    tasks: list[str],
+    task_metrics: dict[str, list[str]],
+    results: dict[str, dict[str, dict[str, float]]],
+    model_names: list[str],
+    aliases: dict[str, str] | None,
+    groups: list[tuple[str | None, list[str]]] | None,
+) -> Path:
+    """Write the numbers behind a figure next to it, as ``{figure stem}.csv``.
+
+    One row per model in plot order, one column per plotted metric — exactly the
+    values the bars encode, so the figure can be re-read, re-plotted elsewhere or
+    pasted into a table without going back to the per-model JSONs.
+
+    With more than one task in the figure the columns are prefixed ``task::metric``,
+    since two tasks can have a metric of the same name. A per-task figure gets bare
+    metric names.
+    """
+    group_of: dict[str, str] = {}
+    for group_name, members in groups or []:
+        for name in members:
+            group_of[name] = group_name or ""
+
+    prefixed = len(tasks) > 1
+    columns: list[tuple[str, str, str]] = [          # (header, task, metric)
+        (f"{task}::{metric}" if prefixed else metric, task, metric)
+        for task in tasks
+        for metric in task_metrics.get(task, [])
+    ]
+
+    path = csv_output_path(output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["group", "alias", "model"] + [c[0] for c in columns])
+        for name in model_names:
+            row = [group_of.get(name, ""), (aliases or {}).get(name, ""), name]
+            for _, task, metric in columns:
+                value = results.get(name, {}).get(task, {}).get(metric)
+                row.append(
+                    value if isinstance(value, (int, float))
+                    and not isinstance(value, bool) else ""
+                )
+            writer.writerow(row)
+
+    print(f"Saved to {path}")
+    return path
+
+
 def _legend_inches(n_models: int, ncol: int, fontsize: float = LEGEND_FONTSIZE) -> float:
     """Vertical space the shared legend needs, in inches.
 
@@ -1368,6 +1428,7 @@ def plot_benchmark(
     font_sizes: dict[str, float] | None = None,
     y_max: dict[str, float] | None = None,
     bar_aliases: bool = True,
+    write_csv: bool = True,
 ) -> list[Path]:
     """
     Generate the benchmark grid.
@@ -1402,7 +1463,11 @@ def plot_benchmark(
     by 1 (accuracy, a correlation, C-index, ...) gets an axis that stops at 1
     instead of just above the best run — see :func:`metric_upper_bound`.
 
-    Returns the list of paths written (empty when ``output`` is None).
+    ``write_csv`` also writes the plotted numbers beside each figure as
+    ``{stem}.csv`` — one per figure, so ``per_task`` yields one CSV per task.
+
+    Returns the list of figure paths written (empty when ``output`` is None); the
+    CSVs sit next to them.
     """
     fonts = resolve_font_sizes(font_scale, font_sizes)
 
@@ -1438,6 +1503,10 @@ def plot_benchmark(
         x_positions = np.arange(n_models, dtype=float)
         named_groups = False
 
+    # Built once from the shared ordering, so a run keeps the same handle in the
+    # combined grid, in every per-task figure, and in the CSVs beside them.
+    alias_map = build_aliases(model_names, groups) if bar_aliases else None
+
     common = dict(
         results=results,
         task_metrics=task_metrics,
@@ -1451,9 +1520,7 @@ def plot_benchmark(
         bar_names=bar_names,
         fonts=fonts,
         y_max=y_max,
-        # Built once from the shared ordering, so a run keeps the same handle in
-        # the combined grid and in every per-task figure.
-        aliases=build_aliases(model_names, groups) if bar_aliases else None,
+        aliases=alias_map,
     )
 
     written: list[Path] = []
@@ -1477,6 +1544,9 @@ def plot_benchmark(
             )
             if out is not None:
                 written.append(out)
+                if write_csv:
+                    write_benchmark_csv(out, [task], task_metrics, results,
+                                        model_names, alias_map, groups)
             if not show:
                 plt.close(fig)
     else:
@@ -1485,6 +1555,9 @@ def plot_benchmark(
         )
         if output is not None:
             written.append(output)
+            if write_csv:
+                write_benchmark_csv(output, all_tasks, task_metrics, results,
+                                    model_names, alias_map, groups)
         if not show:
             plt.close(fig)
 
@@ -1607,6 +1680,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Print each model's display name above its bar as well as in the "
             "legend (default: on). Overrides the config's 'bar_names' key."
+        ),
+    )
+    parser.add_argument(
+        "--no-csv",
+        action="store_true",
+        help=(
+            "Do not write the plotted numbers beside each figure. By default every "
+            "figure gets a {stem}.csv in the same directory — one per task with "
+            "--per-task."
         ),
     )
     parser.add_argument(
@@ -1804,6 +1886,7 @@ def main() -> None:
         font_scale=font_scale,
         font_sizes=font_sizes or None,
         y_max=y_max or None,
+        write_csv=not args.no_csv,
     )
 
 
