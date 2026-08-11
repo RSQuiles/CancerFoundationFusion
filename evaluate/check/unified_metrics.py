@@ -84,6 +84,20 @@ from evaluate.utils import (  # re-exports looks_like_counts without the trainin
     looks_like_counts,
 )
 
+# Metric-family prefixes, in report order. Used both to say which families ran for a
+# model and to explain an empty panel in the ablation-level figure.
+_FAMILIES: tuple[str, ...] = (
+    "recon_", "paired_", "agg_paired_", "agg_synth_", "contrastive_", "geometry_",
+)
+
+# Bumped whenever this module starts emitting metrics an older run did not, so
+# --skip-existing refreshes those caches once instead of serving a JSON that is
+# silently missing whole columns. panel_hash and modalities cannot see this: the
+# embeddings and the rows are unchanged, only the set of numbers derived from them.
+#   1 -> pre-versioning
+#   2 -> scale-free L2 ratios, normalised energy distance, geometry_* (Aug 2026)
+METRICS_VERSION = 2
+
 # ---------------------------------------------------------------------------
 # Checkpoint helpers
 # ---------------------------------------------------------------------------
@@ -633,7 +647,50 @@ def compute_contrastive_metrics(
     n_max: int = 500,
     seed: int = 0,
 ) -> dict:
-    """Cosine similarity, L2 distances, MMD, and Sliced Wasserstein between bulk and pseudobulk distributions."""
+    """Cosine similarity, L2 distances, MMD, and Sliced Wasserstein between bulk and pseudobulk distributions.
+
+    Scale-free companions to the raw L2 numbers
+    -------------------------------------------
+    ``contrastive_cross_l2_mean`` is in raw embedding units, and the embedding's
+    overall scale is an arbitrary gauge — multiply every vector by 10 and the kNN
+    graph, the cosines and the UMAP are unchanged while ``cross_l2`` grows tenfold.
+    A small ``cross_l2`` is therefore NOT evidence that the modalities mix; it is
+    equally consistent with a shrunken embedding in which the two clouds remain
+    cleanly separated. Three ratios fix that, all invariant to a global rescaling:
+
+    ``contrastive_within_{bulk,pb}_over_cross_l2``
+        within-cloud mean distance / cross-modality mean distance. Both -> 1 when a
+        cross pair is statistically indistinguishable from a within pair, i.e. the
+        two clouds are interleaved. Well below 1 means crossing modalities costs
+        extra distance. Values above 1 are possible and mean one cloud is nested
+        inside the other (its own spread exceeds the gap between them).
+
+    ``contrastive_energy_distance``
+        The normalised energy distance
+        ``(2C - W_bulk - W_pb) / 2C`` for C = cross, W = within. The numerator is
+        Szekely's energy statistic: it is >= 0 always and 0 **iff the two samples
+        come from the same distribution** — not merely the same mean, but the same
+        distribution in every moment. So unlike ``cross_l2`` it has a fixed, meaningful
+        zero. Dividing by ``2C`` bounds it to [0, 1] and removes the scale.
+
+        Note it is exactly ``1 - (within_bulk_over_cross + within_pb_over_cross) / 2``,
+        so it is the symmetric summary of the two ratios above rather than independent
+        evidence; the ratios are kept because an asymmetry between them localises the
+        difference to one modality.
+
+        Calibration, for two clouds of equal spread whose centroids sit ``r`` typical
+        within-cloud distances apart: ``e = 1 - 1/sqrt(1 + r^2)``. So 0.11 means the
+        gap is half the within-cloud distance, 0.29 means they are equal (two
+        recognisable blobs) and 0.55 means the gap is twice the spread. Sampling noise
+        puts the floor around 1e-3 at ``n_max = 500``, and the estimator may come out
+        very slightly negative there; that is "indistinguishable", not an error.
+
+        Energy distance is an MMD with kernel ``-||x-y||``, so unlike ``contrastive_mmd``
+        it has no bandwidth to saturate when the clouds are far apart.
+
+    None of these detect collapse: if the whole embedding degenerates, every distance
+    goes to zero and ``e`` -> 0/0. That is what the ``geometry_*`` family is for.
+    """
     rng = np.random.default_rng(seed)
     if len(bulk_emb) > n_max:
         bulk_emb = bulk_emb[rng.choice(len(bulk_emb), n_max, replace=False)]
@@ -649,15 +706,39 @@ def compute_contrastive_metrics(
         s = e @ e.T
         return float(s[~np.eye(len(e), dtype=bool)].mean())
 
+    # Computed once: the ratios and the energy distance are all built from these.
+    # _pairwise_l2_mean excludes self-pairs, which is the estimator the energy
+    # statistic needs — leaving the diagonal zeros in would deflate the within terms
+    # and inflate the energy distance.
+    cross_l2       = _cross_l2_mean(bulk_emb, pb_emb)
+    within_bulk_l2 = _pairwise_l2_mean(bulk_emb)
+    within_pb_l2   = _pairwise_l2_mean(pb_emb)
+
+    if cross_l2 > 0:
+        ratio_bulk = within_bulk_l2 / cross_l2
+        ratio_pb   = within_pb_l2   / cross_l2
+        energy_raw = 2.0 * cross_l2 - within_bulk_l2 - within_pb_l2
+        energy_norm = energy_raw / (2.0 * cross_l2)
+    else:
+        # Every cross distance is 0: the two clouds sit on top of each other at a
+        # single point. Nothing here is defined, and reporting 0 ("perfectly aligned")
+        # would be the exact misreading these metrics exist to prevent.
+        ratio_bulk = ratio_pb = energy_raw = energy_norm = float("nan")
+
     return {
         # cosine-based (unit-sphere projected)
         "contrastive_cross_cosine_mean":   float((bn @ pn.T).mean()),
         "contrastive_within_bulk_cosine":  _within_cos(bn),
         "contrastive_within_pb_cosine":    _within_cos(pn),
-        # L2-based (raw embedding space)
-        "contrastive_cross_l2_mean":       _cross_l2_mean(bulk_emb, pb_emb),
-        "contrastive_within_bulk_l2":      _pairwise_l2_mean(bulk_emb),
-        "contrastive_within_pb_l2":        _pairwise_l2_mean(pb_emb),
+        # L2-based (raw embedding space — scale-dependent, read the ratios below)
+        "contrastive_cross_l2_mean":       cross_l2,
+        "contrastive_within_bulk_l2":      within_bulk_l2,
+        "contrastive_within_pb_l2":        within_pb_l2,
+        # L2-based, scale-free
+        "contrastive_within_bulk_over_cross_l2": float(ratio_bulk),
+        "contrastive_within_pb_over_cross_l2":   float(ratio_pb),
+        "contrastive_energy_distance":           float(energy_norm),
+        "contrastive_energy_raw":                float(energy_raw),
         # distributional
         "contrastive_mmd":                 _mmd(bulk_emb, pb_emb),
         "contrastive_wasserstein":         _sliced_wasserstein(bulk_emb, pb_emb, seed=seed),
@@ -667,7 +748,169 @@ def compute_contrastive_metrics(
 
 
 # ---------------------------------------------------------------------------
-# Metric 5: scIB batch integration benchmark (ablation-level, all models at once)
+# Metric 5: embedding geometry — participation ratio (collapse)
+# ---------------------------------------------------------------------------
+
+def _participation_ratio(emb: np.ndarray) -> float:
+    """Effective number of dimensions the embedding actually uses.
+
+    ``PR = (sum lambda)^2 / sum lambda^2`` over the eigenvalues of the (centred)
+    covariance. If ``k`` eigenvalues are equal and the rest are zero the expression
+    evaluates to exactly ``k``, so PR reads as a soft count of live directions:
+    1 = every point on one line (total collapse), d = isotropic.
+
+    This is the quantity ``contrastive_within_*_l2`` cannot supply. For iid x, y
+    ``E||x-y||^2 = 2 tr(Sigma) = 2 sum lambda`` exactly, so a mean pairwise distance
+    sees only the TOTAL variance and cannot tell a long thin line from a ball of the
+    same total. Collapse is concentration of the spectrum, which needs the second
+    term ``sum lambda^2``. PR is invariant to a global rescaling and to rotation, so
+    it is comparable across models whose embeddings differ in overall norm.
+    """
+    X = np.asarray(emb, dtype=np.float64)
+    if X.ndim != 2 or X.shape[0] < 2 or X.shape[1] < 1:
+        return float("nan")
+    # Centring is not optional. Uncentred, the mean vector becomes the dominant
+    # singular direction, so any cloud sitting far from the origin — which CLS-token
+    # embeddings routinely do — scores ~1 and the metric measures distance from the
+    # origin instead of degeneracy.
+    X = X - X.mean(axis=0, keepdims=True)
+    # Eigenvalues of the covariance via whichever Gram matrix is smaller; the
+    # 1/(n-1) factor cancels in the ratio.
+    G = X.T @ X if X.shape[0] >= X.shape[1] else X @ X.T
+    lam = np.clip(np.linalg.eigvalsh(G), 0.0, None)
+    denom = float((lam ** 2).sum())
+    if denom <= 0.0:
+        return float("nan")
+    return float(lam.sum() ** 2 / denom)
+
+
+def _pr_isotropic_ref(n: int, d: int) -> float:
+    """PR that perfectly isotropic data would score at this (n, d) — the ceiling.
+
+    The sample covariance of isotropic data has a spread spectrum (Marchenko-Pastur)
+    even though the population one does not, which inflates ``sum lambda^2`` and
+    biases PR down. With ``gamma = d/(n-1)`` the expectation is ``d/(1+gamma)``:
+    at d=512, n=500 an isotropic embedding scores ~253, not 512.
+
+    So a raw PR of "half the dimensions" can be perfectly healthy, and raw PR is only
+    comparable at equal n — which holds across models within one eval.h5ad, since
+    they share its rows, but not across datasets. ``geometry_pr_frac_*`` divides by
+    this reference and is the number to compare anywhere else.
+    """
+    if n < 2 or d < 1:
+        return float("nan")
+    return float(d / (1.0 + d / max(n - 1, 1)))
+
+
+def _modality_variance_fraction(A: np.ndarray, B: np.ndarray) -> float:
+    """Share of the pooled variance that lies along the bulk <-> pb axis.
+
+    Projects the pooled, centred cloud onto the unit vector joining the two modality
+    centroids and returns ``var_along / total_var``: 0 = modality contributes no more
+    than an arbitrary direction, 1 = the modality offset IS the embedding. It is the
+    linear, single-direction version of what scIB's ``pcr_comparison`` measures, and
+    it stays readable where that one clips to 0.
+
+    The raw fraction floors at ``1/d`` rather than 0, since an arbitrary direction in
+    isotropic data already carries that much, so the value is rescaled by
+    ``(f - 1/d) / (1 - 1/d)``.
+
+    Note this is NOT a ratio of participation ratios. Pooling two separated clouds
+    *lowers* PR — the offset contributes one dominant eigenvalue, which concentrates
+    the spectrum — so a PR ratio moves the wrong way and is non-monotone besides.
+    """
+    A = np.asarray(A, dtype=np.float64)
+    B = np.asarray(B, dtype=np.float64)
+    if A.ndim != 2 or B.ndim != 2 or A.shape[1] != B.shape[1]:
+        return float("nan")
+    if len(A) < 2 or len(B) < 2 or A.shape[1] < 2:
+        return float("nan")
+
+    w = A.mean(axis=0) - B.mean(axis=0)
+    norm_w = float(np.linalg.norm(w))
+    if norm_w <= 0.0:
+        return 0.0            # centroids coincide: there is no modality direction
+    w = w / norm_w
+
+    X = np.vstack([A, B])
+    X = X - X.mean(axis=0, keepdims=True)
+    total = float((X ** 2).sum() / len(X))          # = tr(Sigma)
+    if total <= 0.0:
+        return float("nan")
+    along = float(((X @ w) ** 2).sum() / len(X))
+
+    d = X.shape[1]
+    floor = 1.0 / d
+    return float(np.clip((along / total - floor) / (1.0 - floor), 0.0, 1.0))
+
+
+def compute_geometry_metrics(
+    clouds: dict[str, np.ndarray],
+    max_rows: int = 20000,
+    seed: int = 0,
+) -> dict:
+    """Participation ratio per modality and pooled, plus the modality variance share.
+
+    ``clouds`` maps a short name ("bulk", "pb", "sc") to that modality's embeddings.
+
+    Answers the question none of the ``contrastive_*`` metrics can: did the embedding
+    collapse? Read alongside ``contrastive_energy_distance``, because the two fail in
+    opposite directions — an energy distance of ~0 means "the modalities are
+    indistinguishable", which is the goal in a healthy space and vacuous in a
+    degenerate one where nothing is distinguishable from anything:
+
+        PR healthy + energy ~0  ->  genuinely mixed
+        PR collapsed + energy ~0 ->  degenerate; the alignment claim is empty
+    """
+    rng = np.random.default_rng(seed)
+    out: dict = {}
+    dims: set[int] = set()
+
+    def _cap(emb: np.ndarray) -> np.ndarray:
+        # PR is bounded by the sample size, so a model measured on more rows would
+        # score higher for that reason alone. The cap is applied identically to every
+        # model reading the same eval.h5ad, which is what keeps them comparable.
+        X = np.asarray(emb)
+        if len(X) > max_rows:
+            X = X[np.sort(rng.choice(len(X), max_rows, replace=False))]
+        return X
+
+    capped = {
+        name: _cap(emb)
+        for name, emb in clouds.items()
+        if emb is not None and len(emb) >= 2
+    }
+
+    def _pr_for(name: str, X: np.ndarray) -> None:
+        pr = _participation_ratio(X)
+        n, d = X.shape
+        dims.add(int(d))
+        ref = _pr_isotropic_ref(n, d)
+        out[f"geometry_pr_{name}"] = pr
+        out[f"geometry_pr_frac_{name}"] = (
+            float(pr / ref) if np.isfinite(pr) and np.isfinite(ref) and ref > 0
+            else float("nan")
+        )
+        out[f"geometry_pr_n_{name}"] = int(n)
+
+    for name in ("bulk", "pb", "sc"):
+        if name in capped:
+            _pr_for(name, capped[name])
+
+    # Pooled over the two modalities the contrastive family compares.
+    if "bulk" in capped and "pb" in capped and capped["bulk"].shape[1] == capped["pb"].shape[1]:
+        _pr_for("pooled", np.vstack([capped["bulk"], capped["pb"]]))
+        out["geometry_modality_var_frac"] = _modality_variance_fraction(
+            capped["bulk"], capped["pb"]
+        )
+
+    if len(dims) == 1:
+        out["geometry_dim"] = int(next(iter(dims)))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Metric 6: scIB batch integration benchmark (ablation-level, all models at once)
 # ---------------------------------------------------------------------------
 
 def run_scib_benchmark(
@@ -1051,11 +1294,21 @@ def run_single_model(
             cached = json.load(f)
         cached_hash = str(cached.get("panel_hash", "unknown"))
         cached_mods = cached.get("modalities")
+        cached_version = int(cached.get("metrics_version", 1))
         if cached_hash != current_hash:
             log.warning(
                 "  Ignoring cache %s: it was computed under gene panel %s but this "
                 "eval AnnData uses %s. Recomputing.",
                 metrics_file, cached_hash, current_hash,
+            )
+        elif cached_version != METRICS_VERSION:
+            # The embeddings and rows are unchanged, so neither of the other two keys
+            # would fire — but the cache predates whole metric families and would
+            # otherwise be served back with those columns silently absent.
+            log.warning(
+                "  Ignoring cache %s: written by metrics version %d, this is version "
+                "%d. Recomputing once to pick up the newer metrics.",
+                metrics_file, cached_version, METRICS_VERSION,
             )
         elif cached_mods is None:
             # Pre-stamp cache: it may have been written under the legacy label
@@ -1312,8 +1565,31 @@ def run_single_model(
         missing = "bulk-like" if bulk_for_contrast is None else "pseudobulk-like"
         skipped["contrastive_*"] = f"no {missing} rows in the eval AnnData"
 
+    # ── Metric 5: embedding geometry (collapse) ───────────────────────────
+    # Deliberately fed the FULL arrays, not the 500-row subsample the contrastive
+    # metrics use: PR is capped by the sample size, so more rows give a sharper
+    # estimate (compute_geometry_metrics applies its own, larger cap).
+    geometry_clouds = {
+        name: emb
+        for name, emb in (
+            ("bulk", bulk_for_contrast),
+            ("pb", pb_for_contrast),
+            ("sc", sc_emb),
+        )
+        if emb is not None and len(emb) >= 2
+    }
+    if geometry_clouds:
+        log.info(
+            "  Computing embedding geometry (participation ratio: %s) ...",
+            ", ".join(sorted(geometry_clouds)),
+        )
+        metrics.update(compute_geometry_metrics(geometry_clouds, seed=seed))
+    else:
+        skipped["geometry_*"] = (
+            "no modality has >= 2 embedded rows to measure the spectrum on"
+        )
+
     # ── Report which families ran and which did not ───────────────────────
-    _FAMILIES = ("recon_", "paired_", "agg_paired_", "agg_synth_", "contrastive_")
     computed = [
         fam for fam in _FAMILIES
         if any(k.startswith(fam) for k in metrics)
@@ -1344,6 +1620,7 @@ def run_single_model(
     # this function).
     metrics["panel_hash"] = current_hash
     metrics["modalities"] = present
+    metrics["metrics_version"] = METRICS_VERSION
     if provenance:
         metrics["shared_panel"] = provenance.get("shared_panel")
         metrics["panel_strategy"] = provenance.get("panel_strategy")
@@ -1443,7 +1720,7 @@ def run_ablation(
     # Which columns are missing across the board, so an empty panel in the figure is
     # explained in the same place the figure is produced.
     absent = {
-        fam for fam in ("recon_", "paired_", "agg_paired_", "agg_synth_", "contrastive_")
+        fam for fam in _FAMILIES
         if not any(str(c).startswith(fam) for c in df.columns)
     }
     if absent:
@@ -1536,8 +1813,16 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path, ncols: int = 5) -> None:
         ("contrastive_cross_l2_mean",          "Cross L2 Dist ↓"),
         ("contrastive_within_bulk_l2",         "Within-Bulk\nL2 Spread ↑"),
         ("contrastive_within_pb_l2",           "Within-PB\nL2 Spread ↑"),
+        # ── Contrastive — L2, scale-free (read these, not the raw L2 above) ─
+        ("contrastive_within_bulk_over_cross_l2", "Within-Bulk / Cross\nL2 ratio (→1) ↑"),
+        ("contrastive_within_pb_over_cross_l2",   "Within-PB / Cross\nL2 ratio (→1) ↑"),
+        ("contrastive_energy_distance",           "Energy Distance\n(normalised, 0=same) ↓"),
         # ── Distributional ─────────────────────────────────────────────────
         ("contrastive_wasserstein",            "Wasserstein ↓"),
+        # ── Embedding geometry — is the space degenerate? ──────────────────
+        ("geometry_pr_frac_pooled",            "Participation Ratio\n(frac. of isotropic) ↑"),
+        ("geometry_pr_pooled",                 "Participation Ratio\n(effective dims) ↑"),
+        ("geometry_modality_var_frac",         "Variance along the\nmodality axis ↓"),
     ]
 
     # Groups of columns that must share the same Y-axis for direct comparison.
@@ -1550,6 +1835,12 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path, ncols: int = 5) -> None:
             "paired_rank_median",
             "paired_rank_l2_mean",
             "paired_rank_l2_median",
+        }),
+        # Both ratios target the same 1.0, so an asymmetry between the modalities is
+        # only readable if the two panels share an axis.
+        frozenset({
+            "contrastive_within_bulk_over_cross_l2",
+            "contrastive_within_pb_over_cross_l2",
         }),
     ]
 

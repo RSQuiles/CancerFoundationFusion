@@ -69,9 +69,56 @@ convention to `MODALITY_FILE_PREFIXES` and it becomes an alias automatically.
 `python evaluate/check/check_modality_labels.py` self-checks this offline (no
 anndata/torch needed).
 
-`unified_metrics.json` stamps `modalities` alongside `panel_hash`, and
-`--skip-existing` recomputes when either differs — so an old cache computed under the
-legacy labels is refreshed once rather than served back without `agg_synth_*`.
+`unified_metrics.json` stamps `modalities` and `metrics_version` alongside
+`panel_hash`, and `--skip-existing` recomputes when any of the three differs — so an
+old cache computed under the legacy labels is refreshed once rather than served back
+without `agg_synth_*`, and a cache written before a metric family existed is refreshed
+rather than served back missing whole columns. **Bump `METRICS_VERSION` whenever
+`unified_metrics.py` starts emitting a metric it did not before**: the embeddings and
+rows are unchanged in that case, so neither of the other two keys can see it.
+
+### Reading the contrastive metrics: scale, collapse, and what they cannot say
+`contrastive_cross_l2_mean` and `contrastive_within_*_l2` are in **raw embedding
+units**, and the embedding's overall scale is an arbitrary gauge — rescale every
+vector and the kNN graph, the cosines and the UMAP are unchanged while those columns
+move. A small `cross_l2` is therefore **not** evidence that the modalities mix; it is
+equally consistent with a shrunken embedding whose two clouds stay cleanly separated,
+which is what makes them disagree with scIB's iLISI. `contrastive_cross_cosine_mean`
+is worse: the mean over all pairs factorises to `mean(bn)·mean(pn)`, so it can only
+approach 1 when *every* vector in both clouds points the same way — a value near 1 is
+arithmetically a collapse signature, not an alignment result. Read these instead:
+
+- **`contrastive_within_{bulk,pb}_over_cross_l2`** — within/cross mean distance. Both
+  → 1 when a cross pair is indistinguishable from a within pair. Above 1 means one
+  cloud is nested inside the other, so it is not "better than 1".
+- **`contrastive_energy_distance`** — normalised energy distance
+  `(2C − W_bulk − W_pb) / 2C` ∈ [0,1]. It is ≥ 0 and **0 iff the two modalities have
+  the same distribution** (every moment, not just the mean), so unlike `cross_l2` it
+  has a fixed zero. Calibration for equal-spread clouds whose centroids sit `r`
+  within-cloud distances apart: `e = 1 − 1/√(1+r²)` — 0.11 at r=0.5, 0.29 at r=1,
+  0.55 at r=2. It is exactly `1 − (ratio_bulk + ratio_pb)/2`, so it is the symmetric
+  summary of the two ratios, not independent evidence. Being an MMD with kernel
+  `−‖x−y‖`, it has no bandwidth to saturate the way `contrastive_mmd` does.
+- **`geometry_pr_*`** — participation ratio `(Σλ)²/Σλ²` over the centred covariance
+  spectrum: a soft count of the dimensions actually in use (1 = a line, d = isotropic).
+  **No normalisation of mean distances can replace it**: `E‖x−y‖² = 2·tr Σ` exactly,
+  so a mean pairwise distance carries only total variance and cannot tell a long thin
+  line from a ball. Two traps — PR must be computed on **centred** data (uncentred,
+  a cloud far from the origin scores ~1 for that reason alone), and it is biased down
+  when n ≈ d, so an isotropic embedding at d=512, n=500 scores ~253, not 512. Compare
+  raw PR only at equal n (true across models sharing one eval.h5ad) and use
+  `geometry_pr_frac_*`, which divides by that Marchenko–Pastur reference, anywhere else.
+- **`geometry_modality_var_frac`** — share of pooled variance along the bulk↔pb axis,
+  0 to 1. Note a PR *ratio* would move the wrong way here: pooling two separated
+  clouds **lowers** PR, because the offset adds one dominant eigenvalue.
+
+The two families answer different questions and must be read together — an energy
+distance near 0 means "the modalities are indistinguishable", which is the goal in a
+healthy space and vacuous in a degenerate one where nothing is distinguishable from
+anything. All of these are global; iLISI is local, so concentric clouds can still
+give `e ≈ 0` with healthy PR and iLISI ≈ 0. `evaluate/check/diagnose_scib.py` is the
+local check. `python evaluate/check/check_geometry_metrics.py` self-checks every claim
+above offline against closed-form synthetic geometry (no eval.h5ad, GPU or cluster).
 
 ### Downstream normalization (`--normalize`)
 `run_ablation_downstream.py --normalize / --no-normalize` forces one normalization
@@ -274,6 +321,7 @@ evaluate/
 │   ├── build_eval_adata.py   # Builds eval.h5ad: per-model embeddings + PCA baseline
 │   ├── unified_metrics.py    # Unified-FM metrics + scIB batch-integration benchmark
 │   ├── diagnose_scib.py      # Explains scIB numbers when they disagree with the UMAPs
+│   ├── check_geometry_metrics.py # Self-check: energy distance + participation ratio
 │   ├── compare_experiments.py# Cross-experiment bar charts from unified_metrics.csv
 │   └── check_*.py            # Standalone self-checks (no checkpoint needed)
 ├── finetune/

@@ -124,21 +124,53 @@ METRIC_META: list[MetricSpec] = [
     MetricSpec("contrastive_within_bulk_l2",      "Within-bulk\nL2",  UP,   "Contrastive"),
     MetricSpec("contrastive_within_pb_l2",        "Within-PB\nL2",    UP,   "Contrastive"),
     MetricSpec("contrastive_wasserstein",         "Wasserstein",      DOWN, "Contrastive"),
+    # Scale-free replacements for the raw L2 columns above. Both ratios target 1.0
+    # (a cross pair indistinguishable from a within pair); UP is right in practice
+    # because runs land below it, but a value ABOVE 1 means one cloud is nested
+    # inside the other and is not better than 1 — read the number, not just the hue.
+    MetricSpec("contrastive_within_bulk_over_cross_l2", "Within-bulk /\ncross L2", UP, "Contrastive"),
+    MetricSpec("contrastive_within_pb_over_cross_l2",   "Within-PB /\ncross L2",   UP, "Contrastive"),
+    # 0 iff the two modalities have the same distribution; bounded, scale-free.
+    MetricSpec("contrastive_energy_distance",     "Energy dist",      DOWN, "Contrastive"),
+    # ── Embedding geometry ─────────────────────────────────────────────────
+    # Effective dimensions in use. Only comparable at equal n, which holds across
+    # models sharing one eval.h5ad; use the frac column anywhere else.
+    MetricSpec("geometry_pr_frac_pooled",   "PR / isotropic",  UP,   "Geometry"),
+    MetricSpec("geometry_pr_pooled",        "PR (eff. dims)",  UP,   "Geometry"),
+    MetricSpec("geometry_pr_bulk",          "PR bulk",         UP,   "Geometry"),
+    MetricSpec("geometry_pr_pb",            "PR PB",           UP,   "Geometry"),
+    MetricSpec("geometry_pr_sc",            "PR SC",           UP,   "Geometry"),
+    # Share of pooled variance along the bulk<->pb axis: 0 = modality is no more than
+    # an arbitrary direction, 1 = the modality offset is the whole embedding.
+    MetricSpec("geometry_modality_var_frac", "Modality var\nshare", DOWN, "Geometry"),
     # Computed by unified_metrics.py but plotted by nothing else; off by default.
     MetricSpec("contrastive_mmd",                 "MMD",              DOWN, "Contrastive"),
+    MetricSpec("contrastive_energy_raw",          "Energy dist\n(raw)", DOWN, "Contrastive"),
+    MetricSpec("geometry_pr_frac_bulk",     "PR bulk /\nisotropic", UP, "Geometry"),
+    MetricSpec("geometry_pr_frac_pb",       "PR PB /\nisotropic",   UP, "Geometry"),
+    MetricSpec("geometry_pr_frac_sc",       "PR SC /\nisotropic",   UP, "Geometry"),
 ]
 
 METRIC_BY_KEY: dict[str, MetricSpec] = {m.key: m for m in METRIC_META}
 
-# The default column set: the same 17 metrics the existing bar grids show, in family
-# order, so the default figure and unified_metrics.png agree on what is being compared.
-DEFAULT_METRICS: list[str] = [m.key for m in METRIC_META if m.key != "contrastive_mmd"]
+# Catalogued but off the default figure, to keep the default column count readable.
+# Everything here is still selectable by name in a config's `metrics:` list.
+_OFF_BY_DEFAULT: set[str] = {
+    "contrastive_mmd", "contrastive_energy_raw",
+    "geometry_pr_frac_bulk", "geometry_pr_frac_pb", "geometry_pr_frac_sc",
+}
+
+# The default column set, in family order, so the default figure and
+# unified_metrics.png agree on what is being compared.
+DEFAULT_METRICS: list[str] = [m.key for m in METRIC_META if m.key not in _OFF_BY_DEFAULT]
 
 # Bookkeeping / provenance keys — never plottable, hidden from --list.
 NON_METRIC_KEYS: set[str] = {
     "model", "checkpoint", "panel_hash", "shared_panel", "panel_strategy",
-    "recon_mae_per_bin", "skipped_families", "modalities",
+    "recon_mae_per_bin", "skipped_families", "modalities", "metrics_version",
     "contrastive_bulk_source", "contrastive_pb_source",
+    "geometry_dim", "geometry_pr_n_bulk", "geometry_pr_n_pb",
+    "geometry_pr_n_sc", "geometry_pr_n_pooled",
 }
 
 # --------------------------------------------------------------------------- #

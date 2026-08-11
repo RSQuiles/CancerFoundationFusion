@@ -49,7 +49,13 @@ _METRIC_META: list[tuple[str, str]] = [
     ("contrastive_cross_l2_mean",       "Cross L2 Dist ↓"),
     ("contrastive_within_bulk_l2",      "Within-Bulk\nL2 Spread ↑"),
     ("contrastive_within_pb_l2",        "Within-PB\nL2 Spread ↑"),
+    ("contrastive_within_bulk_over_cross_l2", "Within-Bulk / Cross\nL2 ratio (→1) ↑"),
+    ("contrastive_within_pb_over_cross_l2",   "Within-PB / Cross\nL2 ratio (→1) ↑"),
+    ("contrastive_energy_distance",     "Energy Distance\n(normalised, 0=same) ↓"),
     ("contrastive_wasserstein",         "Wasserstein ↓"),
+    ("geometry_pr_frac_pooled",         "Participation Ratio\n(frac. of isotropic) ↑"),
+    ("geometry_pr_pooled",              "Participation Ratio\n(effective dims) ↑"),
+    ("geometry_modality_var_frac",      "Variance along the\nmodality axis ↓"),
 ]
 
 # Metrics that share a common Y-axis range for direct comparability
