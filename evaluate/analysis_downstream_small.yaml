@@ -25,8 +25,46 @@ env:
   # needs the scib environment.
 
 defaults:
-  steps: [downstream, benchmark]
+  # 'benchmark' is deliberately NOT here: plot_ablation_benchmark.py exits 1 when a
+  # model dir has no metrics/results_*.json, and only small_partition_ablation.json
+  # declares downstream_tasks. Add 'benchmark' per experiment once you have run
+  # evaluate/finetune/run_downstream_task.py for it.
+  # 'paired_umap' is likewise per-experiment: it needs a cell-line matched paired
+  # h5ad, so only the paired_* experiments below enable it.
+  steps: [build, metrics, scib, diagnose, umap, paired_umap]
+
+  # Shared settings for the opt-in paired plot. The file is the one plot_paired.sh
+  # uses; it lives outside ${work}, but env.binds already covers /cluster.
+  paired_umap:
+    input_h5ad: /cluster/work/boeva/bulkFM/data/processed/paired_samples.h5ad
+    n_cell_lines: 10
+    cell_line_col: cell_line
   seed: 0
+  # All these configs train with input_data: counts on raw-counts h5ads, and binning
+  # is scale-invariant, so embedding the values as-is matches training.
+  normalized: true
+
+  build:
+    rebuild: auto
+    modality_sample_size: 10000   # per modality, NOT a total
+    precomputed_pb: true   # overridden to true for the three that train that way
+    panel_strategy: consensus
+    n_pca_components: 50
+    n_hvg_baseline: 2000
+    batch_size: 64
+
+  metrics:
+    batch_size: 64
+    group_column: tissue_general
+    skip_existing: true
+
+  scib: {n_max: 500}
+  diagnose: {n_max: 500}
+
+  umap:
+    source: eval            # figure and metric tables come from the same vectors
+    color: [tissue_general]
+    skip_unknown: true
 
   downstream:
     # Cancer type prediction, drug sensitivity, deconvolution, survival.
@@ -40,12 +78,12 @@ defaults:
     # results computed under the old per-task normalization and mix them into the
     # same plot as freshly computed ones. Set it true only to resume an interrupted
     # sweep whose normalization you know already matches the value below.
-    skip_existing: false
+    skip_existing: true
 
     # No PCA reference bars, to avoid compute that was not asked for. Flip to true
     # (it writes {ablation_dir}/pca_baseline/metrics/) if you want the baseline in
     # the figure, as evaluate/finetune/run_ablation_benchmark.sh does.
-    pca_baseline: true
+    pca_baseline: false
     pca_n_components: 128
 
     # Overridden per experiment below — see the normalization note at the bottom.
@@ -60,9 +98,10 @@ experiments:
 
   # ── pretrained on NORMALIZED bulk -> normalize the downstream input too ───────
 
-  - name: base_comparison_ablation            # base_comparison_ablation.json
-    ablation_dir: ${work}/outputs/save_CFF/ablation_base_comparison
-    downstream: {normalize: true}             # bulk_chunk_0000.h5ad  x_max 8.33, non-integral
+  - name: paired_alignment_objectives            # base_comparison_ablation.json
+    steps: [scib, diagnose, umap, paired_umap]
+    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_alignment_objectives
+    adata_dir: ${work}/data/eheiss_RAW_paired/pipeline_ready/h5ads
 
   # ── excluded ─────────────────────────────────────────────────────────────────
   # example_ablation_config.json -> ablation_test on data/mixed_test is a template
@@ -90,11 +129,12 @@ experiments:
 slurm:
   enabled: true
   mode: per-experiment    # 9 independent jobs; downstream is far too slow to serialise
-  job_name_prefix: bench
+  job_name_prefix: down
   sbatch_args:
-    - --time=24:00:00     # run_ablation_benchmark.sh allowed 16h for these 4 tasks
-    - --partition=gpu
-    - --gres=gpu:rtx4090:1
+    - --time=20:00:00     # run_ablation_benchmark.sh allowed 16h for these 4 tasks
     - --ntasks-per-node=1
     - --cpus-per-task=4
     - --mem-per-cpu=32G
+
+    # - --partition=gpu
+    # - --gres=gpu:rtx4090:1

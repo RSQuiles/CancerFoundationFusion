@@ -23,7 +23,7 @@ mkdir -p "${SCRIPT_DIR}/slurm_outputs"
 # survboard_metrics.sh.
 source $surv
 
-CONFIG="${SCRIPT_DIR}/ablation_survboard_metrics.yaml"
+CONFIG="${SCRIPT_DIR}/ablation_survboard_fill.yaml"
 
 echo "=== SurvBoard metric sweep ==="
 python -u "${SCRIPT_DIR}/run_ablation_survboard_metrics.py" \

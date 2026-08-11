@@ -60,37 +60,8 @@ defaults:
 # embedding, and this step reads survival functions that already exist.
 ablations:
 
-  - name: paired_counts                       # paired_counts.json / paired_config_cscs.json
-    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_counts
-
-  # ── from analysis_downstream_benchmark_small.yaml ────────────────────────────
-
-  - name: base_comparison_ablation            # base_comparison_ablation.json
-    ablation_dir: ${work}/outputs/save_CFF/ablation_base_comparison
-
-  # ── from analysis_downstream_benchmark.yaml ──────────────────────────────────
-
-  - name: paired_aggfix                       # paired_aggfix.json -> ablation_paired_dataset
-    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_dataset
-
-  # - name: small_partition_ablation            # small_partition_ablation.json -> ablation_partition
-  #   ablation_dir: ${work}/outputs/save_CFF/ablation_partition
-
-  - name: big_condition                       # big_condition.json (+ fill.json, same dir)
-    ablation_dir: ${work}/outputs/save_CFF/ablation_big_condition
-
-  - name: eheiss_data                         # eheiss_data.json -> ablation_united_data
-    ablation_dir: ${work}/outputs/save_CFF/ablation_united_data
-
-  - name: paired_corn                         # paired_corn.json
-    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_corn
-
-  # NOTE the root: paired_counts.json says 'outputs_rquiles', not 'outputs' like
-  # every other config. Copied verbatim from analysis_downstream_benchmark.yaml
-  # rather than "corrected"; --dry-run reports MISSING PATHS if it is wrong.
-
-  - name: paired_mix                          # paired_mix.json
-    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_mix
+  - name: ablation_paired_alignment_objectives                       # paired_counts.json / paired_config_cscs.json
+    ablation_dir: ${work}/outputs/save_CFF/ablation_paired_alignment_objectives
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Directory naming, and what happened to the old CSVs

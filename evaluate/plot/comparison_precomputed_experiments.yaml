@@ -35,6 +35,12 @@ per_task: true
 figsize: [30, 20]          # the combined grid, when per_task is false
 per_task_figsize: [30, 20] # each single-task figure
 
+font_scale: 2.0
+font_sizes:
+  bar_name: 15
+  value: 15
+  legend: 15
+
 # Print each model's display name above its bar as well as in the legend — with 48
 # bars, tracing a colour back to an 8-row legend is otherwise hopeless. The names
 # are rotated and the y-range is widened to fit them.
@@ -63,46 +69,33 @@ primary:
 groups:
 
   # ── Non-Paired Data────────────────────────────────────────────
-
-  # base_comparison_ablation.json declares 4 arms, but the directory on disk also
-  # holds bulk_baseline and sc_baseline; both are listed so the plot matches reality
-
   - name: "Non-Paired Data"
     experiments:
-    - name: "bigcond/unified"
+    - name: "Unified"
       path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition/unified
 
-    - name: "bigcond/dat"
+    - name: "DAT"
       path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition/dat
 
-    - name: "bigcond/mmd"
+    - name: "MMD"
       path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition/mmd
 
-    - name: "bigcond/cdd"
+    - name: "CDD"
       path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition/cdd
 
   # ── Paired Data ──────────────────────────────────────────────────────────
-
-  # Union of paired_alignment_objectives.json and fill.json, which target the same
-  # directory (fill.json re-runs only paired_cdd and paired_cdd_agg).
   - name: "Paired Data"
     experiments:
-      - name: "palign/bulk_only"
-        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_alignment_objectives/bulk_baseline
-
-      - name: "palign/sc_only"
-        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_alignment_objectives/sc_baseline
-
-      - name: "palign/mmd"
+      - name: "MMD - Paired"
         path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_alignment_objectives/paired_mmd
 
-      - name: "palign/cdd"
+      - name: "CDD - Paired"
         path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_alignment_objectives/paired_cdd
 
-      - name: "palign/mmd_agg"
+      - name: "MDD + Agg - Paired"
         path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_alignment_objectives/paired_mmd_agg
 
-      - name: "palign/cdd_agg"
+      - name: "CDD + Agg - Paired"
         path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_alignment_objectives/paired_cdd_agg
 
   # ── baseline ─────────────────────────────────────────────────────────────────
@@ -115,11 +108,11 @@ groups:
   # ── baselines ─────────────────────────────────────────────────────────────────
   - name: "Baselines"
     experiments:
-      - name: "SC Baseline"
-        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/sc_baseline
-
       - name: "Bulk Baseline"
-        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/bulk_baseline
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_alignment_objectives/bulk_baseline
+
+      - name: "SC Baseline"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_alignment_objectives/sc_baseline
 
       - name: "PCA"
         path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition/pca_baseline

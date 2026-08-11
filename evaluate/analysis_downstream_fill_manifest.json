@@ -1,0 +1,15 @@
+{
+  "config": "/cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/analysis_downstream_fill.yaml",
+  "mode": "single-job",
+  "only_steps": null,
+  "jobs": [
+    {
+      "job_name": "down_all",
+      "job_id": "9465798",
+      "experiments": [
+        "big_condition"
+      ],
+      "payload": "/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition/analysis/payload_all.json"
+    }
+  ]
+}

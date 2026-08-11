@@ -55,11 +55,13 @@ annotate: true        # print the value in every cell
 metrics:
   - recon_pearson_r
   - recon_mae_bins
-  - agg_paired_cosine_pb_to_mean_sc
   - agg_synth_cosine_pb_to_mean_sc
   - contrastive_cross_cosine_mean
   - contrastive_within_bulk_cosine    # spread diagnostics, drawn grey
+  - contrastive_cross_l2_mean
   - contrastive_within_pb_cosine
+  - contrastive_within_bulk_l2
+  - contrastive_within_pb_l2
   - contrastive_wasserstein
 
 # Omit the whole block for no scIB columns. Tags are the four benchmarks
@@ -67,55 +69,46 @@ metrics:
 # nonpaired_bulk_vs_synth_pb (the last three only exist where the dataset has paired
 # rows, so paired_bulk_vs_paired_pb is blank for the non-paired experiments below).
 scib:
-  tags: [bulk_vs_pb]
+  tags: []
   # iLISI only, on purpose: it is the only global, label-free mixing measure here.
   # BRAS and kBET are computed per label group and skip labels holding a single batch,
   # which on tissue_general data leaves very few usable labels, and PCR comparison
   # clips to 0. Add the others knowingly - see the caveat block in
   # unified_metrics.run_scib_benchmark and evaluate/check/diagnose_scib.py.
-  metrics: [Isolated labels, iLISI]
+  metrics: [contrastive_cross_l2_mean]
 
 # Display names must be unique across the whole config (they label the rows), which is
 # why each carries its experiment in brackets - 'unified' alone appears in six
 # ablations. The group bracket down the left margin repeats the experiment name, so the
 # short tag in brackets is only there to disambiguate.
 groups:
-
-  - name: "Base comparison"                 # base_comparison_ablation.json
-    dir: ${save}/ablation_base_comparison
+  - name: "Log1p & Non-Paired"
     experiments:
-      - {name: "Unified baseline (base)", model: unified_baseline}
-      - {name: "Contrastive (base)",      model: contrastive}
-      - {name: "Aggregation (base)",      model: aggregation}
-      - {name: "DAT (base)",              model: dat}
+      - {name: "Unified - Log1p", dir: "${save}/ablation_base_comparison", model: unified_baseline}
+      - {name: "Contrastive - Log1p",      dir: "${save}/ablation_base_comparison", model: contrastive}
+      - {name: "Aggregation - Log1p",      dir: "${save}/ablation_base_comparison", model: aggregation}
+      - {name: "DAT - Log1p",              dir: "${save}/ablation_base_comparison", model: dat}
 
-  - name: "United data"                     # eheiss_data.json
-    dir: ${save}/ablation_united_data
+  - name: "Counts & Precomputed & Non-Paired"
     experiments:
-      - {name: "Unified (united)", model: unified}
-      - {name: "DAT (united)",     model: dat}
-      - {name: "MMD (united)",     model: mmd}
-      - {name: "CDD (united)",     model: cdd}
+      - {name: "Unified - Counts - Precomputed",      dir: "${save}/ablation_big_condition", model: unified}
+      - {name: "DAT - Counts - Precomputed",          dir: "${save}/ablation_big_condition", model: dat}
+      - {name: "MMD - Counts - Precomputed",          dir: "${save}/ablation_big_condition", model: mmd}
+      - {name: "CDD - Counts - Precomputed",          dir: "${save}/ablation_big_condition", model: cdd}
 
-  - name: "Big condition"                   # big_condition.json + fill.json
-    dir: ${save}/ablation_big_condition
-    experiments:
-      - {name: "Unified (big cond)", model: unified}
-      - {name: "DAT (big cond)",     model: dat}
-      - {name: "MMD (big cond)",     model: mmd}
-      - {name: "CDD (big cond)",     model: cdd}
+#   - name: "Test - Two Tissues"
+#     experiments:
+#       - {name: "Unified - Counts - Precomputed - Two Tissues",       dir: "${save}/ablation_monitor_align", model: unified}
+#       - {name: "Condition - Counts - Precomputed - Two Tissues",     dir: "${save}/ablation_monitor_align", model: condition}
+#       - {name: "MMD - Counts - Precomputed - Two Tissues",           dir: "${save}/ablation_monitor_align", model: mmd}
+#       - {name: "DAT - Counts - Precomputed - Two Tissues",           dir: "${save}/ablation_monitor_align", model: dat}
+#       - {name: "CDD - Counts - Precomputed - Two Tissues",          dir: "${save}/ablation_monitor_align", model: cdd}
 
-  - name: "Monitor align"                   # monitor_align.json
-    dir: ${save}/ablation_monitor_align
+  - name: "Baselines"
     experiments:
-      - {name: "Unified (monitor)",   model: unified}
-      - {name: "Condition (monitor)", model: condition}
-      - {name: "MMD (monitor)",       model: mmd}
-      - {name: "DAT (monitor)",       model: dat}
-      # Trained with distorted CDD source centroids (BulkSCCollator._aggregate_sc
-      # applied expm1 to raw counts); fixed on 2026-07-31 but this arm was not
-      # retrained. Do not read it as a clean test of the CDD objective.
-      - {name: "CDD (monitor)*",      model: cdd}
+      - {name: "Bulk baseline - Log1p",    dir: "${save}/ablation_paired_dataset", model: bulk_baseline}
+      - {name: "Bulk baseline - Counts", dir: "${save}/ablation_paired_counts", model: bulk_baseline}
+      - {name: "Bulk baseline - Counts - CORN",   dir: "${save}/ablation_paired_corn", model: bulk_baseline}
 
 # Excluded: example_ablation_config.json -> ablation_test on data/mixed_test. It is a
 # template (conditions: [tissue], downstream tasks it has never run), so it is left out

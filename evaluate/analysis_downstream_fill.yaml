@@ -1,0 +1,141 @@
+# Downstream benchmark + benchmark plot, for every experiment in ablate/configs/.
+#
+#   python evaluate/run_analysis.py --config evaluate/analysis_downstream_benchmark.yaml --dry-run
+#   python evaluate/run_analysis.py --config evaluate/analysis_downstream_benchmark.yaml
+#   python evaluate/run_analysis.py --config <this> --only monitor_align      # one experiment
+#
+# Steps are 'downstream' then 'benchmark' only. 'downstream' runs
+# evaluate/finetune/run_ablation_downstream.py, which writes
+# {model}/metrics/results_{task}.json; 'benchmark' then plots those. Nothing here
+# builds eval.h5ad or computes unified/scIB metrics — that is
+# evaluate/analysis_all_experiments.yaml. Because neither step reads the raw h5ads,
+# no 'adata_dir' is needed.
+#
+# ablation_dir <- base_config.trainer.save_dir in the matching ablate/configs/*.json.
+
+vars:
+  work: /cluster/work/boeva/rquiles
+
+env:
+  container_image: /cluster/customapps/biomed/boeva/fbarkmann/bionemo-framework_nightly.sif
+  binds: [/cluster]
+  python: python
+  nv: true                  # downstream fine-tunes on GPU
+  # conda_env is unset: neither 'downstream' (container) nor 'benchmark' (plain)
+  # needs the scib environment.
+
+defaults:
+  # 'benchmark' is deliberately NOT here: plot_ablation_benchmark.py exits 1 when a
+  # model dir has no metrics/results_*.json, and only small_partition_ablation.json
+  # declares downstream_tasks. Add 'benchmark' per experiment once you have run
+  # evaluate/finetune/run_downstream_task.py for it.
+  # 'paired_umap' is likewise per-experiment: it needs a cell-line matched paired
+  # h5ad, so only the paired_* experiments below enable it.
+  steps: [build, metrics, scib, diagnose, umap, paired_umap]
+
+  # Shared settings for the opt-in paired plot. The file is the one plot_paired.sh
+  # uses; it lives outside ${work}, but env.binds already covers /cluster.
+  paired_umap:
+    input_h5ad: /cluster/work/boeva/bulkFM/data/processed/paired_samples.h5ad
+    n_cell_lines: 10
+    cell_line_col: cell_line
+  seed: 0
+  # All these configs train with input_data: counts on raw-counts h5ads, and binning
+  # is scale-invariant, so embedding the values as-is matches training.
+  normalized: true
+
+  build:
+    rebuild: auto
+    modality_sample_size: 10000   # per modality, NOT a total
+    precomputed_pb: true   # overridden to true for the three that train that way
+    panel_strategy: consensus
+    n_pca_components: 50
+    n_hvg_baseline: 2000
+    batch_size: 64
+
+  metrics:
+    batch_size: 64
+    group_column: tissue_general
+    skip_existing: true
+
+  scib: {n_max: 500}
+  diagnose: {n_max: 500}
+
+  umap:
+    source: eval            # figure and metric tables come from the same vectors
+    color: [tissue_general]
+    skip_unknown: true
+
+  downstream:
+    # Cancer type prediction, drug sensitivity, deconvolution, survival.
+    tasks: [canc_type_class, deconv, survival, drug_sensitivity_v2]
+    config_dir: null        # null -> evaluate/finetune/configs
+    models: null            # null -> every model dir holding a checkpoint
+
+    # false on purpose. run_ablation_downstream's --skip-existing only tests whether
+    # results_{task}.json exists; unlike the panel-aware metrics cache it does NOT
+    # check what normalization produced it. Leaving it true here would silently serve
+    # results computed under the old per-task normalization and mix them into the
+    # same plot as freshly computed ones. Set it true only to resume an interrupted
+    # sweep whose normalization you know already matches the value below.
+    skip_existing: true
+
+    # No PCA reference bars, to avoid compute that was not asked for. Flip to true
+    # (it writes {ablation_dir}/pca_baseline/metrics/) if you want the baseline in
+    # the figure, as evaluate/finetune/run_ablation_benchmark.sh does.
+    pca_baseline: false
+    pca_n_components: 128
+
+    # Overridden per experiment below — see the normalization note at the bottom.
+    normalize: false
+
+  benchmark:
+    output: null            # null -> {ablation_dir}/benchmark.png
+    no_show: true
+    primary: {}             # e.g. {deconv: rmse}
+
+experiments:
+
+  # ── pretrained on NORMALIZED bulk -> normalize the downstream input too ───────
+
+  - name: big_condition            # base_comparison_ablation.json
+    steps: [scib]
+    ablation_dir: ${work}/outputs/save_CFF/ablation_big_condition
+    adata_dir: ${work}/data/eheiss_RAW_paired/pipeline_ready/h5ads
+
+  # ── excluded ─────────────────────────────────────────────────────────────────
+  # example_ablation_config.json -> ablation_test on data/mixed_test is a template
+  # that has never been trained; it is absent from the normalization table too.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# How 'normalize' was set
+# ─────────────────────────────────────────────────────────────────────────────
+# Each model is fed downstream data in the space it was PRETRAINED in:
+#   pretraining bulk NORMALIZED -> normalize: true   (CP10K+log1p the task input)
+#   pretraining bulk RAW/COUNTS -> normalize: false  (embed the task input as-is)
+#
+# Read the polarity carefully. 'downstream.normalize' is in "do it?" space and is a
+# different key from the experiment-level 'normalized' used by build/metrics, which
+# means the opposite ("already normalized, so skip"). This config sets only the
+# former; see evaluate/finetune/normalization.py.
+#
+# The verdicts come from the pretraining bulk files, NOT from the downstream task
+# inputs — those (TCGA, PRISM, pseudobulk, SurvBoard) are the same files for every
+# experiment. So on the normalize: true experiments the safeguard may fire and report
+# that a task input already looks log1p, and skip it. That is the intended behaviour,
+# not an error; it is logged per task and recorded in results_{task}.json under
+# "normalization". Check those lines before trusting a cross-experiment comparison.
+
+slurm:
+  enabled: true
+  mode: single-job   # 9 independent jobs; downstream is far too slow to serialise
+  job_name_prefix: down
+  sbatch_args:
+    - --time=1:00:00     # run_ablation_benchmark.sh allowed 16h for these 4 tasks
+    - --ntasks-per-node=1
+    - --cpus-per-task=4
+    - --mem-per-cpu=32G
+
+    # - --partition=gpu
+    # - --gres=gpu:rtx4090:1
+

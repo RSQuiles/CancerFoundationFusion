@@ -910,6 +910,7 @@ def run_scib_benchmark(
                 ilisi_knn=True,
                 pcr_comparison=pre_integrated_key is not None,
                 graph_connectivity=False,
+                kbet_per_label=False
             ),
             pre_integrated_embedding_obsm_key=pre_integrated_key,
             n_jobs=1,

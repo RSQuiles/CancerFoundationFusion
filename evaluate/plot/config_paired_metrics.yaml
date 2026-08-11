@@ -57,6 +57,7 @@ metrics:
   - recon_mae_bins
   - paired_cosine_sim_mean
   - paired_random_baseline_cosine     # reference level, drawn grey (no direction)
+  - paired_l2_mean
   - paired_rank_mean
   - paired_rank_l2_mean
   - agg_paired_cosine_pb_to_mean_sc
@@ -64,6 +65,9 @@ metrics:
   - contrastive_cross_cosine_mean
   - contrastive_within_bulk_cosine    # spread diagnostics, drawn grey
   - contrastive_within_pb_cosine
+  - contrastive_cross_l2_mean
+  - contrastive_within_bulk_l2
+  - contrastive_within_pb_l2
   - contrastive_wasserstein
 
 # Omit the whole block for no scIB columns. Tags are the four benchmarks
@@ -71,18 +75,24 @@ metrics:
 # nonpaired_bulk_vs_synth_pb (the last three only exist where the dataset has paired
 # rows, so paired_bulk_vs_paired_pb is blank for the non-paired experiments below).
 scib:
-  tags: [bulk_vs_pb, paired_bulk_vs_paired_pb]
+  tags: []
   # iLISI only, on purpose: it is the only global, label-free mixing measure here.
   # BRAS and kBET are computed per label group and skip labels holding a single batch,
   # which on tissue_general data leaves very few usable labels, and PCR comparison
   # clips to 0. Add the others knowingly - see the caveat block in
   # unified_metrics.run_scib_benchmark and evaluate/check/diagnose_scib.py.
-  metrics: [BRAS, iLISI]
+  metrics: [contrastive_cross_l2_mean]
 
 # Display names must be unique across the whole config (they label the rows), which is
 # why each carries its experiment in brackets - 'unified' alone appears in six
 # ablations. The group bracket down the left margin repeats the experiment name, so the
 # short tag in brackets is only there to disambiguate.
+
+# NOTE: paired_counts.json and paired_config_cscs.json both write to
+# '${work}/outputs_rquiles/save_CFF/ablation_paired_counts' - 'outputs_rquiles',
+# not 'outputs' like every other config. evaluate/analysis_all_experiments.yaml
+# uses 'outputs'; if this group comes back empty, that is the first thing to check.
+
 groups:
 
   # ── Paired datasets ─────────────────────────────────────────────────────────
@@ -90,45 +100,40 @@ groups:
   # families actually populate here. Four variants of the same ablation on
   # differently preprocessed inputs.
 
-  - name: "Paired · CPM"                    # paired_aggfix.json
-    dir: ${save}/ablation_paired_dataset
+  - name: "Log1p"
     experiments:
-      - {name: "Bulk baseline (cpm)", model: bulk_baseline}
-      - {name: "Unified (cpm)",       model: unified}
-      - {name: "DAT (cpm)",           model: dat}
-      - {name: "Contrastive (cpm)",   model: contrastive}
+      - {name: "Unified - Log1p",          dir: "${save}/ablation_paired_mix", model: unified}
+      - {name: "DAT + Agg - Log1p",        dir: "${save}/ablation_paired_mix", model: dat_agg}
 
-  - name: "Paired · counts"                 # paired_counts.json
-    # NOTE: paired_counts.json and paired_config_cscs.json both write to
-    # '${work}/outputs_rquiles/save_CFF/ablation_paired_counts' - 'outputs_rquiles',
-    # not 'outputs' like every other config. evaluate/analysis_all_experiments.yaml
-    # uses 'outputs'; if this group comes back empty, that is the first thing to check.
-    dir: ${save}/ablation_paired_counts
+  - name: "Counts"
     experiments:
-      - {name: "Bulk baseline (counts)", model: bulk_baseline}
-      - {name: "Unified (counts)",       model: unified}
-      - {name: "DAT (counts)",           model: dat}
-      - {name: "Contrastive (counts)",   model: contrastive}
-      - {name: "Aggregation (counts)",   model: aggregation}
+      - {name: "Unified - Counts",       dir: "${save}/ablation_paired_counts", model: unified}
+      - {name: "DAT - Counts",           dir: "${save}/ablation_paired_counts", model: dat}
+      - {name: "Contrastive - Counts",   dir: "${save}/ablation_paired_counts", model: contrastive}
+      - {name: "Aggregation - Counts",   dir: "${save}/ablation_paired_counts", model: aggregation}
 
-  - name: "Paired · CORN"                   # paired_corn.json
-    dir: ${save}/ablation_paired_corn
+  - name: "Counts - CORN"
     experiments:
-      - {name: "Bulk baseline (corn)", model: bulk_baseline}
-      - {name: "Unified (corn)",       model: unified}
-      - {name: "DAT (corn)",           model: dat}
-      - {name: "Contrastive (corn)",   model: contrastive}
-      - {name: "Aggregation (corn)",   model: aggregation}
+      - {name: "Unified - Counts - CORN",         dir: "${save}/ablation_paired_corn", model: unified}
+      - {name: "DAT - Counts - CORN",             dir: "${save}/ablation_paired_corn", model: dat}
+      - {name: "Contrastive - Counts - CORN",     dir: "${save}/ablation_paired_corn", model: contrastive}
+      - {name: "Aggregation - Counts - CORN",     dir: "${save}/ablation_paired_corn", model: aggregation}
 
-  - name: "Paired · mix"                    # paired_mix.json
-    dir: ${save}/ablation_paired_mix
+  - name: "Counts & Precomputed"
     experiments:
-      - {name: "Unified (mix)",     model: unified}
-      - {name: "DAT + agg (mix)",   model: dat_agg}
+      - {name: "MMD - Counts - Precomputed",         dir: "${save}/ablation_paired_alignment_objectives", model: paired_mmd}
+      - {name: "CDD - Precomputed",         dir: "${save}/ablation_paired_alignment_objectives", model: paired_cdd}
+      - {name: "MDD + Agg - Counts - Precomputed",   dir: "${save}/ablation_paired_alignment_objectives", model: paired_mmd_agg}
+      - {name: "CDD + Agg - Counts - Precomputed",   dir: "${save}/ablation_paired_alignment_objectives", model: paired_cdd_agg}
 
-# Excluded: example_ablation_config.json -> ablation_test on data/mixed_test. It is a
-# template (conditions: [tissue], downstream tasks it has never run), so it is left out
-# for the same reason evaluate/analysis_all_experiments.yaml leaves it out.
+  - name: "Baselines"
+    experiments:
+      - {name: "Bulk baseline - Log1p",    dir: "${save}/ablation_paired_dataset", model: bulk_baseline}
+      - {name: "Bulk baseline - Counts", dir: "${save}/ablation_paired_counts", model: bulk_baseline}
+      - {name: "Bulk baseline - Counts - CORN",   dir: "${save}/ablation_paired_corn", model: bulk_baseline}
+      - {name: "Bulk baseline - Counts - Precomputed",   dir: "${save}/ablation_paired_alignment_objectives", model: bulk_baseline}
+      - {name: "SC baseline - Counts - Precomputed",   dir: "${save}/ablation_paired_alignment_objectives", model: sc_baseline}
+
 
 # ── Alternatives ─────────────────────────────────────────────────────────────────
 #
