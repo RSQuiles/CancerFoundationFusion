@@ -13,9 +13,10 @@
 # ── Read this before comparing rows across groups ────────────────────────────────
 # Each ablation directory was evaluated on its OWN eval.h5ad, built from its own
 # adata_dir with its own gene panel. Numbers are therefore strictly comparable WITHIN
-# a group and only indicative ACROSS groups — the script detects this (the runs will
-# not share a panel_hash), warns per distinct panel on stderr, and prints a red
-# footnote on the figure. Two consequences worth expecting:
+# a group and only indicative ACROSS groups. The script can flag this (the runs will
+# not share a panel_hash) on stderr and as a red figure footnote, but that is off
+# unless you set 'panel_warning: true' — across groups it fires unconditionally and
+# tells you nothing new. Two consequences worth expecting:
 #   * The paired_* and agg_paired_* families are blank (n/a) for the experiments whose
 #     data has no paired bulk/pseudobulk rows — base comparison, big condition, united
 #     data, monitor align and partition. That is missing input, not a bad model.

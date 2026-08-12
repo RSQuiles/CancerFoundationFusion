@@ -162,9 +162,13 @@ colour* is a direction-aware, within-column normalisation (`normalize: minmax | 
 | rank`). The best run in a column is always fully green, so read the numbers for
 magnitude and the colours for ordering. `bars` shows the same absolute values with a
 zero-anchored axis, so bar length is proportional to the value. Metrics with no
-better/worse direction are drawn grey rather than ranked. The script warns and adds a
-figure footnote when the selected runs disagree on `panel_hash`, since metrics computed
-under different gene panels are not comparable.
+better/worse direction are drawn grey rather than ranked. `panel_warning: true` flags
+runs that disagree on `panel_hash` — on stderr and as a red figure footnote — since
+metrics computed under different gene panels are not comparable. It is **off by
+default**: a cross-experiment figure spans panels by construction, so there the
+warning fires on every run and says nothing the caption does not; turn it on for a
+within-group figure, where a disagreement would be a real surprise. The
+`contrastive_*` metrics are labelled **Domain alignment** in the family brackets.
 
 `python evaluate/check/check_unified_table.py` self-checks both scripts offline (no
 cluster, GPU or checkpoints needed).

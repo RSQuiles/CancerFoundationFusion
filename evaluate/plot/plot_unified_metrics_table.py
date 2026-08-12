@@ -115,23 +115,23 @@ METRIC_META: list[MetricSpec] = [
     MetricSpec("agg_synth_cosine_pb_to_mean_sc",  "Synth cos",        UP,   "Aggregation"),
     MetricSpec("agg_paired_l2_pb_to_mean_sc",     "Paired L2",        DOWN, "Aggregation"),
     MetricSpec("agg_synth_l2_pb_to_mean_sc",      "Synth L2",         DOWN, "Aggregation"),
-    # ── Contrastive ────────────────────────────────────────────────────────
-    MetricSpec("contrastive_cross_cosine_mean",   "Cross cos",        UP,   "Contrastive"),
-    MetricSpec("contrastive_within_bulk_cosine",  "Within-bulk\ncos", NONE, "Contrastive"),
-    MetricSpec("contrastive_within_pb_cosine",    "Within-PB\ncos",   NONE, "Contrastive"),
-    MetricSpec("contrastive_cross_l2_mean",       "Cross L2",         DOWN, "Contrastive"),
+    # ── Domain alignment (the contrastive_* keys) ──────────────────────────
+    MetricSpec("contrastive_cross_cosine_mean",   "Cross cos",        UP,   "Domain alignment"),
+    MetricSpec("contrastive_within_bulk_cosine",  "Within-bulk\ncos", NONE, "Domain alignment"),
+    MetricSpec("contrastive_within_pb_cosine",    "Within-PB\ncos",   NONE, "Domain alignment"),
+    MetricSpec("contrastive_cross_l2_mean",       "Cross L2",         DOWN, "Domain alignment"),
     # Spread, not distance: a near-zero spread means the embedding collapsed.
-    MetricSpec("contrastive_within_bulk_l2",      "Within-bulk\nL2",  UP,   "Contrastive"),
-    MetricSpec("contrastive_within_pb_l2",        "Within-PB\nL2",    UP,   "Contrastive"),
-    MetricSpec("contrastive_wasserstein",         "Wasserstein",      DOWN, "Contrastive"),
+    MetricSpec("contrastive_within_bulk_l2",      "Within-bulk\nL2",  UP,   "Domain alignment"),
+    MetricSpec("contrastive_within_pb_l2",        "Within-PB\nL2",    UP,   "Domain alignment"),
+    MetricSpec("contrastive_wasserstein",         "Wasserstein",      DOWN, "Domain alignment"),
     # Scale-free replacements for the raw L2 columns above. Both ratios target 1.0
     # (a cross pair indistinguishable from a within pair); UP is right in practice
     # because runs land below it, but a value ABOVE 1 means one cloud is nested
     # inside the other and is not better than 1 — read the number, not just the hue.
-    MetricSpec("contrastive_within_bulk_over_cross_l2", "Within-bulk /\ncross L2", UP, "Contrastive"),
-    MetricSpec("contrastive_within_pb_over_cross_l2",   "Within-PB /\ncross L2",   UP, "Contrastive"),
+    MetricSpec("contrastive_within_bulk_over_cross_l2", "Within-bulk /\ncross L2", UP, "Domain alignment"),
+    MetricSpec("contrastive_within_pb_over_cross_l2",   "Within-PB /\ncross L2",   UP, "Domain alignment"),
     # 0 iff the two modalities have the same distribution; bounded, scale-free.
-    MetricSpec("contrastive_energy_distance",     "Energy dist",      DOWN, "Contrastive"),
+    MetricSpec("contrastive_energy_distance",     "Energy dist",      DOWN, "Domain alignment"),
     # ── Embedding geometry ─────────────────────────────────────────────────
     # Effective dimensions in use. Only comparable at equal n, which holds across
     # models sharing one eval.h5ad; use the frac column anywhere else.
@@ -144,8 +144,8 @@ METRIC_META: list[MetricSpec] = [
     # an arbitrary direction, 1 = the modality offset is the whole embedding.
     MetricSpec("geometry_modality_var_frac", "Modality var\nshare", DOWN, "Geometry"),
     # Computed by unified_metrics.py but plotted by nothing else; off by default.
-    MetricSpec("contrastive_mmd",                 "MMD",              DOWN, "Contrastive"),
-    MetricSpec("contrastive_energy_raw",          "Energy dist\n(raw)", DOWN, "Contrastive"),
+    MetricSpec("contrastive_mmd",                 "MMD",              DOWN, "Domain alignment"),
+    MetricSpec("contrastive_energy_raw",          "Energy dist\n(raw)", DOWN, "Domain alignment"),
     MetricSpec("geometry_pr_frac_bulk",     "PR bulk /\nisotropic", UP, "Geometry"),
     MetricSpec("geometry_pr_frac_pb",       "PR PB /\nisotropic",   UP, "Geometry"),
     MetricSpec("geometry_pr_frac_sc",       "PR SC /\nisotropic",   UP, "Geometry"),
@@ -324,6 +324,7 @@ class TableConfig:
     transpose: bool = False
     annotate: bool = True
     dpi: int = 150
+    panel_warning: bool = False    # see load_config's schema
     metrics: list[str] = field(default_factory=list)          # [] -> DEFAULT_METRICS
     scib_tags: list[str] = field(default_factory=list)        # [] -> no scIB columns
     scib_metrics: list[str] = field(default_factory=list)
@@ -352,6 +353,11 @@ def load_config(path: Path) -> TableConfig:
         show_families: true    # family brackets under the grid
         transpose: false       # true -> metrics as rows, runs as columns
         annotate:  true        # print the value in each cell
+        panel_warning: false   # true -> flag runs that disagree on panel_hash,
+                               # on stderr and as a red footnote. Off by default:
+                               # a cross-experiment figure spans panels by
+                               # construction, so the warning fires on every run of
+                               # it and says nothing the reader does not already know.
 
         metrics:               # optional; omitted -> the curated default set
           - recon_pearson_r
@@ -411,6 +417,7 @@ def load_config(path: Path) -> TableConfig:
         transpose=bool(raw.get("transpose", False)),
         annotate=bool(raw.get("annotate", True)),
         dpi=int(raw.get("dpi") or 150),
+        panel_warning=bool(raw.get("panel_warning", False)),
         metrics=as_str_list(raw.get("metrics"), "metrics"),
         scib_tags=scib_tags,
         scib_metrics=scib_metrics,
@@ -550,6 +557,13 @@ def warn_panel_mismatch(results: dict[str, dict]) -> str | None:
     ``unified_metrics.py`` keys its metric cache on ``panel_hash`` precisely because
     metrics computed under different panels are not comparable.  Comparing across
     panels stays possible — it is flagged, not blocked.
+
+    **Opt-in**: only called when the config sets ``panel_warning: true``.  Every
+    cross-experiment figure spans panels by construction (each ablation dir is
+    evaluated on its own eval.h5ad), so on those configs the warning fires
+    unconditionally and adds no information — it just puts a red footnote on a
+    figure whose caption already has to say the same thing.  Turn it on for a
+    within-group figure, where disagreeing panels would be a genuine surprise.
     """
     by_hash: dict[str, list[str]] = {}
     for name, data in results.items():
@@ -1166,7 +1180,7 @@ def main() -> None:
         print("No plottable metrics in the selected runs.", file=sys.stderr)
         sys.exit(1)
 
-    footnote = warn_panel_mismatch(results)
+    footnote = warn_panel_mismatch(results) if config.panel_warning else None
     figsize = tuple(args.figsize) if args.figsize else config.figsize
     output: Path | None = args.output or config.output or config_path.with_suffix(".png")
 
