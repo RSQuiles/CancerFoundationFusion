@@ -173,6 +173,44 @@ within-group figure, where a disagreement would be a real surprise. The
 `python evaluate/check/check_unified_table.py` self-checks both scripts offline (no
 cluster, GPU or checkpoints needed).
 
+### Do the internal metrics predict downstream performance?
+`evaluate/check/correlate_metrics_downstream.py` Spearman-correlates each
+`unified_metrics.json` metric against one downstream result — by default
+`results_canc_type_class.json["accuracy"]` — across the selected runs, and draws the
+answer as a table. Same run-selection grammar; the target is read through
+`plot_ablation_benchmark.collect_model_metrics`, so the `metrics_old/` fallback
+applies. A run needs **both** files or it is dropped with a message.
+
+```bash
+python evaluate/check/correlate_metrics_downstream.py --config evaluate/check/example_correlation_config.yaml --no-show
+python evaluate/check/correlate_metrics_downstream.py --config <cfg> --list           # runs and per-metric n
+python evaluate/check/correlate_metrics_downstream.py --config <cfg> --scope within_group
+```
+
+Unlike the table above, the **colour is an absolute scale** (−1 → 0 → +1), so a pale
+row is a weak correlation however the other rows look. Three things decide whether a
+row means anything:
+
+- **`n`, printed per row and varying between rows** — `paired_*` metrics are absent on
+  datasets without paired inputs, so those rows describe far fewer runs. `min_runs`
+  (default 5) leaves an under-powered row unscored rather than reporting a 3-point rho.
+- **`q`**, Benjamini–Hochberg across the rows shown, because a figure tests every
+  metric at once; `*` marks q < 0.05, `**` q < 0.01. Read q, not p.
+- **`scope`** — `pooled` (default) correlates over all selected runs, which differ in
+  training data and gene panel as well as in the metric, so a strong pooled rho can be
+  carried entirely by between-experiment offsets. `within_group` computes rho inside
+  each group and averages it, combining the p-values by Fisher's method. **A metric
+  that only correlates pooled is describing the datasets, not the models** — run it
+  both ways before concluding anything.
+
+Sign follows the metric's own direction: a row marked ↓ should correlate *negatively*
+if it predicts the target. `python evaluate/check/check_correlation_table.py`
+self-checks the statistics against cases with an analytic answer.
+
+Note display names must be unique config-wide, so `all_models: true` on several
+ablation dirs collides on the shared model names (`unified`, `dat`, …) — name runs
+explicitly, as the example configs do.
+
 **Both scripts write a `{stem}.csv` beside every figure** holding exactly the numbers
 plotted — for the benchmark one row per model (with its group and alias) and one
 column per metric, for the table one row per run. `plot_ablation_benchmark.py` in
@@ -327,6 +365,7 @@ evaluate/
 │   ├── diagnose_scib.py      # Explains scIB numbers when they disagree with the UMAPs
 │   ├── check_geometry_metrics.py # Self-check: energy distance + participation ratio
 │   ├── compare_experiments.py# Cross-experiment bar charts from unified_metrics.csv
+│   ├── correlate_metrics_downstream.py # Spearman: internal metrics vs a task result
 │   └── check_*.py            # Standalone self-checks (no checkpoint needed)
 ├── finetune/
 │   ├── normalization.py           # NormalizationPolicy: the ONE place input normalization is decided

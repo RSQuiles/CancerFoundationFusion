@@ -1,0 +1,99 @@
+# Which internal metrics predict cancer-type classification accuracy?
+#
+#   python evaluate/check/correlate_metrics_downstream.py --config <this> --no-show
+#   python evaluate/check/correlate_metrics_downstream.py --config <this> --list
+#   python evaluate/check/correlate_metrics_downstream.py --config <this> \
+#       --scope within_group
+#
+# A run is only usable here if it has BOTH metrics/unified_metrics.json (the x side)
+# and metrics/results_canc_type_class.json (the y side). Runs missing either are
+# skipped with a message — so this needs the 'downstream' step to have been run for
+# the task below, not just the metrics step. `--list` shows what survived.
+#
+# ── Read this before drawing conclusions ────────────────────────────────────────
+# Pooling runs from several ablation directories correlates over runs that differ in
+# training data and gene panel as well as in the metric, so a strong pooled rho can
+# be carried entirely by between-experiment offsets rather than by anything the
+# metric measures within an experiment. Run it both ways:
+#     scope: pooled        — the headline number, easy to over-read
+#     scope: within_group  — rho computed inside each group, then averaged
+# A metric that only correlates pooled is describing the datasets, not the models.
+
+vars:
+  work: /cluster/work/boeva/rquiles
+  save: /cluster/work/boeva/rquiles/outputs/save_CFF
+
+title: "Internal metrics vs cancer-type accuracy"
+output: ${save}/metric_vs_accuracy.png
+dpi: 150
+
+target:
+  task: canc_type_class
+  # metric: accuracy      # omitted -> the task's primary metric (accuracy)
+
+scope: pooled             # pooled | within_group
+min_runs: 5               # rows correlated over fewer runs are left unscored
+sort: abs_rho             # abs_rho | rho | config
+
+# Omit 'metrics' entirely to correlate every internal metric the runs have — that is
+# the right first pass, since the point is to find out which ones matter. The subset
+# below is the focused version: the scale-free alignment metrics, the geometry family
+# and reconstruction, leaving out the raw-L2 columns whose value depends on the
+# embedding's arbitrary overall scale.
+metrics:
+  - recon_pearson_r
+  - recon_mae_bins
+  - contrastive_energy_distance
+  - contrastive_within_bulk_over_cross_l2
+  - contrastive_within_pb_over_cross_l2
+  - contrastive_cross_cosine_mean
+  - contrastive_within_bulk_cosine
+  - contrastive_within_pb_cosine
+  - geometry_pr_pooled
+  - geometry_pr_frac_pooled
+  - geometry_pr_bulk
+  - geometry_pr_pb
+  - geometry_modality_var_frac
+  - agg_synth_cosine_pb_to_mean_sc
+
+# Display names must be unique across the whole config — 'unified', 'dat' and
+# 'contrastive' each appear in several ablation directories, so `all_models: true` on
+# more than one of these dirs exits with a duplicate-name error. Name them explicitly,
+# as example_unified_metrics_config.yaml does.
+groups:
+
+  - name: "Paired · CPM"
+    dir: ${save}/ablation_paired_dataset
+    experiments:
+      - {name: "Bulk baseline (cpm)", model: bulk_baseline}
+      - {name: "Unified (cpm)",       model: unified}
+      - {name: "DAT (cpm)",           model: dat}
+      - {name: "Contrastive (cpm)",   model: contrastive}
+
+  - name: "Paired · counts"
+    dir: ${save}/ablation_paired_counts
+    experiments:
+      - {name: "Bulk baseline (counts)", model: bulk_baseline}
+      - {name: "Unified (counts)",       model: unified}
+      - {name: "DAT (counts)",           model: dat}
+      - {name: "Contrastive (counts)",   model: contrastive}
+      - {name: "Aggregation (counts)",   model: aggregation}
+
+  - name: "Base comparison"
+    dir: ${save}/ablation_base_comparison
+    experiments:
+      - {name: "Unified baseline (base)", model: unified_baseline}
+      - {name: "Contrastive (base)",      model: contrastive}
+      - {name: "Aggregation (base)",      model: aggregation}
+      - {name: "DAT (base)",              model: dat}
+
+  # The reference group: models trained without any of the alignment objectives.
+  - name: "Partition (no unified FM)"
+    dir: ${save}/ablation_partition
+    experiments:
+      - {name: "Base model (part)",         model: base_model}
+      - {name: "ZINB recon (part)",         model: zinb_reconstruction}
+      - {name: "Denoise ZINB (part)",       model: denoise_zinb}
+      - {name: "Contrastive (part)",        model: contrastive}
+      - {name: "Agg + contrastive (part)",  model: agg_contrastive}
+      - {name: "DAT+agg+contr+ZINB (part)", model: dat_agg_contrastive_denoise_zinb}
