@@ -406,6 +406,7 @@ class TableConfig:
     show_families: bool = True
     transpose: bool = False
     annotate: bool = True
+    legend_notes: bool = False     # see load_config's schema
     dpi: int = 150
     panel_warning: bool = False    # see load_config's schema
     # Multiplies every label size; font_sizes then pins individual roles.
@@ -439,6 +440,11 @@ def load_config(path: Path) -> TableConfig:
         show_families: true    # family brackets under the grid
         transpose: false       # true -> metrics as rows, runs as columns
         annotate:  true        # print the value in each cell
+        legend_notes: false    # true -> restore the explanatory captions: the
+                               # sentence under the colour bar and the "grey = … ·
+                               # n/a = …" line along the bottom. Off by default —
+                               # in a thesis or paper the caption says this, and
+                               # repeating it in the figure costs vertical space.
         panel_warning: false   # true -> flag runs that disagree on panel_hash,
                                # on stderr and as a red footnote. Off by default:
                                # a cross-experiment figure spans panels by
@@ -518,6 +524,7 @@ def load_config(path: Path) -> TableConfig:
         show_families=bool(raw.get("show_families", True)),
         transpose=bool(raw.get("transpose", False)),
         annotate=bool(raw.get("annotate", True)),
+        legend_notes=bool(raw.get("legend_notes", False)),
         dpi=int(raw.get("dpi") or 150),
         panel_warning=bool(raw.get("panel_warning", False)),
         font_scale=float(raw.get("font_scale", 1.0) or 1.0),
@@ -1065,18 +1072,23 @@ def plot_table(
     cbar.set_ticks([0.0, 0.5, 1.0])
     cbar.set_ticklabels(["worst", "mid", "best"])
     cbar.ax.tick_params(labelsize=fonts.colorbar_tick, length=0)
-    cbar.set_label(
-        f"numbers = absolute metric values   ·   colour = {mode} within each "
-        "metric, direction-aware (ranks the runs shown; not an absolute scale)",
-        fontsize=fonts.colorbar_label, color="dimgrey",
-    )
+    # Opt-in (`legend_notes`): what the numbers and the colours mean belongs in the
+    # caption of a written document, so it is off by default and the "worst/mid/best"
+    # ticks carry the colour bar on their own.
+    if config.legend_notes:
+        cbar.set_label(
+            f"numbers = absolute metric values   ·   colour = {mode} within each "
+            "metric, direction-aware (ranks the runs shown; not an absolute scale)",
+            fontsize=fonts.colorbar_label, color="dimgrey",
+        )
     cbar.outline.set_visible(False)
 
     fig.suptitle(config.title, fontsize=fonts.suptitle, fontweight="bold")
 
-    notes = ["grey = no better/worse direction", "n/a = metric not computed"]
-    fig.text(0.01, 0.005, "  ·  ".join(notes), ha="left", va="bottom",
-             fontsize=fonts.footnote, color="dimgrey", style="italic")
+    if config.legend_notes:
+        notes = ["grey = no better/worse direction", "n/a = metric not computed"]
+        fig.text(0.01, 0.005, "  ·  ".join(notes), ha="left", va="bottom",
+                 fontsize=fonts.footnote, color="dimgrey", style="italic")
     if footnote:
         fig.text(0.99, 0.005, footnote, ha="right", va="bottom",
                  fontsize=fonts.footnote, color="#C44E52", style="italic")
@@ -1277,6 +1289,13 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--legend-notes", action="store_true",
+        help=(
+            "Restore the explanatory captions: the sentence under the colour bar and "
+            "the 'grey = … · n/a = …' line along the bottom. Both are off by default."
+        ),
+    )
+    parser.add_argument(
         "--no-show", action="store_true",
         help="Do not open an interactive plot window.",
     )
@@ -1331,6 +1350,8 @@ def main() -> None:
         config.normalize = args.normalize
     if args.transpose:
         config.transpose = True
+    if args.legend_notes:
+        config.legend_notes = True
     if args.font_scale is not None:
         config.font_scale = args.font_scale
     # CLI roles are merged over the config's, so --font-size pins one role without
