@@ -15,6 +15,10 @@ Usage:
 
 If the file has no ``X_pca`` (the fill was skipped, or nothing was unknown), pass
 ``--recompute-pca`` to rebuild it here with the same recipe as ``add_fields.py``.
+
+Two flags handle cells the fill left unlabelled: ``--skip-unknown`` keeps them in the
+figure but draws them in near-invisible grey, while ``--drop-unknown`` leaves them out
+of it altogether. Both keep the UMAP itself fitted on every cell.
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ import pandas as pd
 import scanpy as sc
 import scipy.sparse as sp
 from anndata import AnnData
-from umap_render import compute_umap, save_umap_plot
+from umap_render import UNKNOWN_LABELS, compute_umap, save_umap_plot
 
 from utils import subsample_adata
 
@@ -108,6 +112,35 @@ def load_embedding_adata(args) -> AnnData:
     return AnnData(X=None, obs=adata.obs.copy(), obsm=obsm, shape=(adata.n_obs, 0))
 
 
+def drop_unknown_rows(adata: AnnData, column: str) -> AnnData:
+    """Return ``adata`` without the rows whose ``column`` holds an unknown label.
+
+    Shares ``UNKNOWN_LABELS`` with the colour mapper, so the rows hidden here are
+    exactly the rows ``--skip-unknown`` would have greyed out.
+    """
+    if column not in adata.obs.columns:
+        raise SystemExit(
+            f"--drop-unknown: '{column}' is not in obs "
+            f"(available: {list(adata.obs.columns)})"
+        )
+
+    keep = ~adata.obs[column].astype(str).str.strip().str.lower().isin(UNKNOWN_LABELS)
+    n_drop = int((~keep).sum())
+    if n_drop == 0:
+        print(f"No unknown '{column}' rows to drop", flush=True)
+        return adata
+    if not keep.any():
+        raise SystemExit(
+            f"--drop-unknown: every row has an unknown '{column}'; nothing left to plot"
+        )
+
+    print(
+        f"Dropping {n_drop} of {adata.n_obs} rows with unknown '{column}' from the figure",
+        flush=True,
+    )
+    return adata[keep.to_numpy()].copy()
+
+
 def main(args) -> None:
     adata = load_embedding_adata(args)
     print(
@@ -142,13 +175,19 @@ def main(args) -> None:
             random_state=args.seed,
         )
 
+    # Filtered only for the figure: the UMAP above was fitted on every cell, so the
+    # layout still matches the unfiltered plot, and --save-h5ad below keeps all rows.
+    plot_adata = (
+        drop_unknown_rows(adata, args.drop_unknown) if args.drop_unknown else adata
+    )
+
     out_dir = Path(args.out_dir)
     prefix = args.out_prefix or Path(args.adata).stem
     out_png = save_umap_plot(
-        adata,
+        plot_adata,
         out_dir / f"{prefix}.tissue_umap.png",
         color=args.color,
-        title=f"Pretraining Bulk — Inferred Tissue Labels",
+        title=f"{prefix} — tissue inference space (X_pca)",
         dpi=args.dpi,
         skip_unknown=args.skip_unknown,
     )
@@ -207,6 +246,21 @@ def build_argparser() -> argparse.ArgumentParser:
         action="store_true",
         help="Grey out 'unknown'/'nan' categories instead of giving them a colour",
     )
+    parser.add_argument(
+        "--drop-unknown",
+        type=str,
+        nargs="?",
+        const="tissue_general",
+        default=None,
+        metavar="COLUMN",
+        help=(
+            "Leave observations whose COLUMN is unknown/nan/none/n-a out of the figure "
+            "entirely (COLUMN defaults to tissue_general). Unlike --skip-unknown, which "
+            "still draws them in near-invisible grey, these rows are not plotted at all. "
+            "The UMAP is still fitted on every cell, so the layout matches the unfiltered "
+            "figure, and --save-h5ad still writes the full set."
+        ),
+    )
     parser.add_argument("--dpi", type=int, default=200, help="Figure DPI")
     parser.add_argument(
         "--save-h5ad",
@@ -228,3 +282,4 @@ def build_argparser() -> argparse.ArgumentParser:
 
 if __name__ == "__main__":
     main(build_argparser().parse_args())
+

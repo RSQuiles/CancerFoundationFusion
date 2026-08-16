@@ -29,6 +29,11 @@ _PB_MODALITY_ALIASES: frozenset[str] = frozenset({
     "pseudobulk", "synthpb", "pairedpb", "pseudo",
 })
 
+# Label values treated as "no value" when colouring. Module-level so callers that
+# drop these rows outright (plot_tissue_umap.py --drop-unknown) and the colour
+# mapper that greys them out (--skip-unknown) always mean the same rows.
+UNKNOWN_LABELS: frozenset[str] = frozenset({"unknown", "nan", "none", "n/a", ""})
+
 
 def _as_path(p: str | Path) -> Path:
     return p if isinstance(p, Path) else Path(p)
@@ -99,10 +104,9 @@ def _assign_colors(
         rgba = plt.get_cmap("viridis")(norm(vals)).astype(np.float32)
         return rgba, None, None
 
-    _SKIP = {"unknown", "nan", "none", "n/a", ""}
     all_categories = sorted(col.astype(str).unique())
     categories = (
-        [c for c in all_categories if c.lower() not in _SKIP]
+        [c for c in all_categories if c.lower() not in UNKNOWN_LABELS]
         if skip_unknown
         else all_categories
     )

@@ -582,6 +582,94 @@ def check_benchmark_untouched() -> None:
         check("replot_ablation_benchmark imports", False, repr(exc))
 
 
+def check_font_sizes(tmp: Path) -> None:
+    """The font_scale / font_sizes mechanism, and the layout it has to keep valid."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    import evaluate.plot.plot_unified_metrics_table as table_mod
+    from evaluate.plot.plot_unified_metrics_table import (
+        FONT_ROLES,
+        FontSizes,
+        METRIC_BY_KEY,
+        TableConfig,
+        resolve_font_sizes,
+    )
+
+    print("\n[font sizes]")
+
+    defaults = FontSizes()
+    check("defaults are the sizes the figure has always used",
+          (defaults.row_label, defaults.col_label, defaults.value,
+           defaults.suptitle) == (9, 8, 7.5, 13.0))
+    check("font_scale multiplies every role",
+          all(getattr(resolve_font_sizes(2.0), r) == getattr(defaults, r) * 2
+              for r in FONT_ROLES))
+    pinned = resolve_font_sizes(2.0, {"value": 6})
+    check("a font_sizes entry is absolute, not scaled",
+          pinned.value == 6.0 and pinned.row_label == defaults.row_label * 2)
+
+    for bad_scale, bad_over, why in (
+        (0.0, None, "zero scale"),
+        (-1.0, None, "negative scale"),
+        (1.0, {"value": 0}, "zero size"),
+        (1.0, {"bar_name": 9}, "a role from the benchmark, not this figure"),
+    ):
+        try:
+            resolve_font_sizes(bad_scale, bad_over)
+            check(f"rejects {why}", False)
+        except (ValueError, KeyError):
+            check(f"rejects {why}", True)
+
+    # ── layout: the colour bar must clear the family brackets ────────────────
+    # These hang below the axes, so the pad needed is largest on a SHORT table.
+    # A 3-row figure overlapped at the default font size before the pad was made
+    # size-aware, which is exactly what raising font_scale would have made worse.
+    keys = ["recon_pearson_r", "recon_mae_bins", "contrastive_cross_cosine_mean",
+            "contrastive_energy_distance", "geometry_pr_pooled"]
+    specs = [METRIC_BY_KEY[k] for k in keys]
+    captured: dict = {}
+    original_finish = table_mod._finish
+
+    def _capture(fig, output, show, dpi, tight=True):
+        if tight:
+            fig.tight_layout(rect=[0, 0.01, 1, 0.98])
+        captured["fig"] = fig
+
+    table_mod._finish = _capture
+    try:
+        worst = None
+        for n_rows in (2, 3, 8, 20):
+            for scale in (1.0, 1.5, 2.2):
+                names = [f"run{i}" for i in range(n_rows)]
+                data = {n: {k: 0.5 + 0.01 * i for k in keys}
+                        for i, n in enumerate(names)}
+                cfg = TableConfig(groups=[], font_scale=scale)
+                table_mod.plot_table(
+                    data, specs, [("demo", names)], cfg, None,
+                    show=False, figsize=None,
+                    fonts=resolve_font_sizes(scale),
+                )
+                fig = captured["fig"]
+                fig.canvas.draw()
+                renderer = fig.canvas.get_renderer()
+                main_ax, cbar_ax = fig.axes[0], fig.axes[1]
+                family_bottom = min(
+                    t.get_window_extent(renderer).y0
+                    for t in main_ax.texts if t.get_style() == "italic"
+                )
+                gap = family_bottom - cbar_ax.get_window_extent().y1
+                if worst is None or gap < worst[0]:
+                    worst = (gap, n_rows, scale)
+                plt.close(fig)
+        check("colour bar never overlaps the family brackets",
+              worst is not None and worst[0] > 0,
+              f"tightest gap {worst[0]:.1f}px at {worst[1]} rows, scale {worst[2]}")
+    finally:
+        table_mod._finish = original_finish
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
@@ -593,6 +681,7 @@ def main() -> None:
         check_rendering(tmp, results, groups)
         check_csv_output(tmp, results, groups)
         check_cli(tmp)
+        check_font_sizes(tmp)
         check_example_config()
         check_benchmark_untouched()
 

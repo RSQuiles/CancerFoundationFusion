@@ -49,6 +49,19 @@ show_families: true   # bracket + label under each metric family
 transpose: false      # false -> runs as rows (right choice with this many runs)
 annotate: true        # print the value in every cell
 
+# Text size. `font_scale` multiplies everything; `font_sizes` then pins individual
+# roles in points. Raising a size grows the figure rather than letting labels
+# collide — the column headers are rotated and the row labels sit in a margin, so
+# both need room in proportion to their size.
+# Roles: row_label, col_label, value, group_name, family_name, colorbar_label,
+#        colorbar_tick, suptitle, footnote, and — `style: bars` only — bar_value,
+#        metric_title, legend, no_data. An unknown role is an error at load time.
+font_scale: 1.0
+# font_sizes:
+#   row_label: 11       # run names down the left margin
+#   value: 6            # the number inside each cell
+#   col_label: 9        # rotated metric names across the top
+
 # Omit to get the curated default set (the same 17 metrics unified_metrics.png shows).
 # `--list` prints everything available in the selected runs. The subset below drops the
 # raw-L2 metrics, which are scale-dependent and so not comparable between models whose

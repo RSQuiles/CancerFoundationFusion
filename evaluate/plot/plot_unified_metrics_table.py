@@ -38,6 +38,14 @@ Usage
     python evaluate/plot/plot_unified_metrics_table.py --config cfg.yaml \\
         --style bars --output bars.png --no-show
 
+    # Bigger type for a poster, but keep the in-cell numbers small
+    python evaluate/plot/plot_unified_metrics_table.py --config cfg.yaml \\
+        --font-scale 1.4 --font-size value=6 --no-show
+
+Text size is set by ``--font-scale`` / ``--font-size role=size`` (config keys
+``font_scale`` / ``font_sizes``); see :class:`FontSizes` for the roles.  Raising a
+size grows the figure rather than letting labels collide.
+
 Reading the colours
 -------------------
 Colour is **relative within a column**, never absolute: the best run in a column is
@@ -53,7 +61,7 @@ import csv
 import json
 import math
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -302,6 +310,81 @@ def collect_scib_metrics(
 
 
 # --------------------------------------------------------------------------- #
+# Typography
+# --------------------------------------------------------------------------- #
+
+# Defaults, in points. Deliberately the sizes this figure has always used, so adding
+# the mechanism changes nothing until a config asks it to.
+ROW_LABEL_FONTSIZE = 9      # run names down the left margin
+COL_LABEL_FONTSIZE = 8      # rotated metric names across the top
+VALUE_FONTSIZE     = 7.5    # the number inside each cell
+
+
+@dataclass(frozen=True)
+class FontSizes:
+    """Point size of every piece of text in the figure.
+
+    Configs set these through ``font_scale`` (multiply everything) and/or
+    ``font_sizes`` (pin individual roles) — see :func:`resolve_font_sizes`. Resolved
+    once per figure and passed down rather than read from module constants at each
+    call site, so one figure can be typeset large for a poster and another small for
+    a paper in the same run.
+
+    Mirrors the mechanism in ``plot_ablation_benchmark.py`` — same config keys, same
+    CLI flags — but the roles are this figure's own: a heatmap has row and column
+    labels and family brackets where a bar grid has bar names and axes.
+    """
+
+    row_label:      float = ROW_LABEL_FONTSIZE  # run names (metric names when transposed)
+    col_label:      float = COL_LABEL_FONTSIZE  # rotated column headers
+    value:          float = VALUE_FONTSIZE      # number inside each grid cell
+    group_name:     float = 8.0                 # group bracket in the left margin
+    family_name:    float = 7.5                 # metric-family bracket under the grid
+    colorbar_label: float = 7.5                 # the sentence under the colour bar
+    colorbar_tick:  float = 7.5                 # "worst / mid / best"
+    suptitle:       float = 13.0                # figure title
+    footnote:       float = 7.0                 # the italic notes along the bottom
+    # `bars` style only
+    bar_value:      float = 6.5                 # the number above each bar
+    metric_title:   float = 8.0                 # per-subplot metric name
+    legend:         float = 8.0                 # legend entries and its title
+    no_data:        float = 9.0                 # placeholder in an empty subplot
+
+
+# Role -> what a caller may name in `font_sizes`. Kept explicit so a typo is an error
+# rather than a silently ignored key.
+FONT_ROLES: tuple[str, ...] = tuple(f.name for f in fields(FontSizes))
+
+
+def resolve_font_sizes(
+    scale: float = 1.0,
+    overrides: dict[str, float] | None = None,
+) -> FontSizes:
+    """Build a :class:`FontSizes` from a global scale and per-role overrides.
+
+    ``scale`` multiplies the defaults; ``overrides`` then pins individual roles to an
+    absolute size, so ``font_scale: 1.5`` with ``font_sizes: {value: 6}`` means "half
+    again bigger, except keep the numbers in the cells small".
+    """
+    if scale <= 0:
+        raise ValueError(f"font_scale must be positive, got {scale}")
+
+    unknown = sorted(set(overrides or {}) - set(FONT_ROLES))
+    if unknown:
+        raise KeyError(
+            f"Unknown font_sizes key(s): {unknown}. Valid roles: {list(FONT_ROLES)}"
+        )
+
+    defaults = FontSizes()
+    resolved = {role: float(getattr(defaults, role)) * scale for role in FONT_ROLES}
+    for role, size in (overrides or {}).items():
+        if float(size) <= 0:
+            raise ValueError(f"font_sizes['{role}'] must be positive, got {size}")
+        resolved[role] = float(size)
+    return FontSizes(**resolved)
+
+
+# --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
 
@@ -325,6 +408,9 @@ class TableConfig:
     annotate: bool = True
     dpi: int = 150
     panel_warning: bool = False    # see load_config's schema
+    # Multiplies every label size; font_sizes then pins individual roles.
+    font_scale: float = 1.0
+    font_sizes: dict[str, float] = field(default_factory=dict)
     metrics: list[str] = field(default_factory=list)          # [] -> DEFAULT_METRICS
     scib_tags: list[str] = field(default_factory=list)        # [] -> no scIB columns
     scib_metrics: list[str] = field(default_factory=list)
@@ -358,6 +444,11 @@ def load_config(path: Path) -> TableConfig:
                                # a cross-experiment figure spans panels by
                                # construction, so the warning fires on every run of
                                # it and says nothing the reader does not already know.
+
+        font_scale: 1.4        # multiply every label size (default 1.0)
+        font_sizes:            # …then pin individual roles, in points
+          row_label: 11        # roles: see FontSizes. An unknown one is an error
+          value: 6             # at config-load time, not a silently ignored key.
 
         metrics:               # optional; omitted -> the curated default set
           - recon_pearson_r
@@ -405,6 +496,17 @@ def load_config(path: Path) -> TableConfig:
                 file=sys.stderr,
             )
 
+    font_sizes = {
+        str(role): float(size)
+        for role, size in (raw.get("font_sizes") or {}).items()
+    }
+    # Validate at load time, so a typo names the config rather than surfacing deep
+    # inside the renderer after the runs have been read.
+    try:
+        resolve_font_sizes(float(raw.get("font_scale", 1.0) or 1.0), font_sizes)
+    except (KeyError, ValueError) as exc:
+        sys.exit(f"ERROR in {path}: {exc}")
+
     return TableConfig(
         groups=groups,
         title=str(raw.get("title") or "Unified metrics"),
@@ -418,6 +520,8 @@ def load_config(path: Path) -> TableConfig:
         annotate=bool(raw.get("annotate", True)),
         dpi=int(raw.get("dpi") or 150),
         panel_warning=bool(raw.get("panel_warning", False)),
+        font_scale=float(raw.get("font_scale", 1.0) or 1.0),
+        font_sizes=font_sizes,
         metrics=as_str_list(raw.get("metrics"), "metrics"),
         scib_tags=scib_tags,
         scib_metrics=scib_metrics,
@@ -705,7 +809,6 @@ def _spans(labels: list[str]) -> list[tuple[int, int, str]]:
 
 _NA_COLOR = (0.93, 0.93, 0.93, 1.0)        # missing value
 _NEUTRAL_COLOR = (0.82, 0.82, 0.82, 1.0)   # metric with no better/worse direction
-_ROW_LABEL_FONT = 9
 
 
 def _draw_grid(
@@ -717,6 +820,7 @@ def _draw_grid(
     row_bands: list[tuple[int, int, str, tuple]],
     col_bands: list[tuple[int, int, str]],
     annotate: bool,
+    fonts: FontSizes | None = None,
 ) -> None:
     """Draw one annotated grid.
 
@@ -725,6 +829,7 @@ def _draw_grid(
     grid (used for metric families).  Which of the two carries groups vs families
     depends on ``transpose``; the caller decides.
     """
+    fonts = fonts or FontSizes()
     n_rows, n_cols = len(row_labels), len(col_labels)
 
     ax.imshow(rgba, aspect="auto", interpolation="nearest")
@@ -734,12 +839,12 @@ def _draw_grid(
     # wrapping — so they are always flattened to one line.  Row labels keep theirs.
     ax.set_xticklabels(
         [lab.replace("\n", " ") for lab in col_labels],
-        rotation=45, ha="left", fontsize=8,
+        rotation=45, ha="left", fontsize=fonts.col_label,
     )
     ax.xaxis.set_ticks_position("top")
     ax.xaxis.set_label_position("top")
     ax.set_yticks(range(n_rows))
-    ax.set_yticklabels(row_labels, fontsize=_ROW_LABEL_FONT)
+    ax.set_yticklabels(row_labels, fontsize=fonts.row_label)
     ax.tick_params(axis="both", length=0)
     for spine in ax.spines.values():
         spine.set_visible(False)
@@ -759,14 +864,14 @@ def _draw_grid(
             for j in range(n_cols):
                 ax.text(
                     j, i, texts[i][j],
-                    ha="center", va="center", fontsize=7.5,
+                    ha="center", va="center", fontsize=fonts.value,
                     color=_text_color(tuple(rgba[i, j])),
                 )
 
     # Bracket in the left margin, beyond the row labels.  Its offset has to be in
     # inches rather than data units: one data unit is one column wide, so on a
     # 20-column grid a data-unit offset would put the bracket on top of the labels.
-    label_in = _ROW_LABEL_FONT * 0.60 / 72.0 * max(
+    label_in = fonts.row_label * 0.60 / 72.0 * max(
         (max(len(part) for part in lab.split("\n")) for lab in row_labels), default=4
     )
     band_tr = blended_transform_factory(ax.transAxes, ax.transData) + ScaledTranslation(
@@ -784,7 +889,8 @@ def _draw_grid(
         ax.text(
             0, (lo + hi) / 2, name + "  ",
             rotation=90, ha="right", va="center", transform=band_tr,
-            fontsize=8, color="dimgrey", style="italic", clip_on=False,
+            fontsize=fonts.group_name, color="dimgrey", style="italic",
+            clip_on=False,
         )
 
     # Separator lines between groups.
@@ -803,7 +909,8 @@ def _draw_grid(
         ax.text(
             (lo + hi) / 2, y + 0.12, name,
             ha="center", va="top",
-            fontsize=7.5, color="dimgrey", style="italic", clip_on=False,
+            fontsize=fonts.family_name, color="dimgrey", style="italic",
+            clip_on=False,
         )
 
     # Separator lines between families.
@@ -820,8 +927,10 @@ def plot_table(
     show: bool,
     figsize: tuple[float, float] | None,
     footnote: str | None = None,
+    fonts: FontSizes | None = None,
 ) -> None:
     """The annotated heatmap (``style: heatmap``) and rank table (``rank_table``)."""
+    fonts = fonts or resolve_font_sizes(config.font_scale, config.font_sizes)
     run_names = [name for _, names in groups for name in names]
     n_runs, n_metrics = len(run_names), len(specs)
     rank_style = config.style == "rank_table"
@@ -913,43 +1022,64 @@ def plot_table(
     # The rotated column headers need vertical room in proportion to their longest
     # label, which is why the height is not simply a multiple of the row count:
     # 20 short run names (transposed) need far less headroom than 20 metric names.
+    # Every term scales with the text it has to hold, so raising a font size
+    # grows the figure instead of making the labels collide.
+    col_f = fonts.col_label / COL_LABEL_FONTSIZE
+    row_f = max(fonts.row_label / ROW_LABEL_FONTSIZE, fonts.value / VALUE_FONTSIZE)
     longest = max((len(lab.replace("\n", " ")) for lab in col_labels_final), default=8)
-    header_in = min(0.075 * longest + 0.8, 3.4)
-    row_h = 0.5 if config.transpose else 0.46
-    cell_w = 1.35 if rank_style else 1.05
+    header_in = min(0.075 * longest * col_f + 0.8, 3.4 * max(col_f, 1.0))
+    row_h = (0.5 if config.transpose else 0.46) * row_f
+    cell_w = (1.35 if rank_style else 1.05) * max(fonts.value / VALUE_FONTSIZE, 1.0)
+    margin_in = 3.5 * max(fonts.row_label / ROW_LABEL_FONTSIZE, 1.0)
 
-    fig_w = figsize[0] if figsize else max(n_grid_cols * cell_w + 3.5, 7.0)
+    fig_w = figsize[0] if figsize else max(n_grid_cols * cell_w + margin_in, 7.0)
     fig_h = figsize[1] if figsize else max(n_grid_rows * row_h + header_in + 1.7, 4.0)
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     _draw_grid(
         ax, grid, cell_text, row_labels, col_labels_final,
-        row_bands, col_bands, config.annotate,
+        row_bands, col_bands, config.annotate, fonts,
     )
 
     # Colour legend: the scale is a within-column score, not a metric value, so the
     # bar is labelled by meaning rather than by number.
+    # The colour bar has to clear the family brackets, which hang below the axes:
+    # the rule is at 0.15 data units under the bottom edge, its label another 0.12
+    # under that, and the label is then `family_name` points tall. `pad` is a
+    # fraction of the parent axes, so all three terms are divided by the axes height
+    # — which is why a SHORT table needs the largest pad, and why this used to
+    # overlap on a 3-row figure at the default font size.
+    axes_h_in = max(n_grid_rows * row_h, 0.5)
+    cbar_pad = 0.05
+    if col_bands:
+        cbar_pad = max(
+            cbar_pad,
+            0.27 / max(n_grid_rows, 1)
+            + (1.35 * fonts.family_name / 72.0) / axes_h_in
+            + 0.03,
+        )
+
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(0, 1))
     cbar = fig.colorbar(sm, ax=ax, orientation="horizontal",
-                        fraction=0.03, pad=0.05, aspect=45, shrink=0.55)
+                        fraction=0.03, pad=cbar_pad, aspect=45, shrink=0.55)
     cbar.set_ticks([0.0, 0.5, 1.0])
     cbar.set_ticklabels(["worst", "mid", "best"])
-    cbar.ax.tick_params(labelsize=7.5, length=0)
+    cbar.ax.tick_params(labelsize=fonts.colorbar_tick, length=0)
     cbar.set_label(
         f"numbers = absolute metric values   ·   colour = {mode} within each "
         "metric, direction-aware (ranks the runs shown; not an absolute scale)",
-        fontsize=7.5, color="dimgrey",
+        fontsize=fonts.colorbar_label, color="dimgrey",
     )
     cbar.outline.set_visible(False)
 
-    fig.suptitle(config.title, fontsize=13, fontweight="bold")
+    fig.suptitle(config.title, fontsize=fonts.suptitle, fontweight="bold")
 
     notes = ["grey = no better/worse direction", "n/a = metric not computed"]
     fig.text(0.01, 0.005, "  ·  ".join(notes), ha="left", va="bottom",
-             fontsize=7, color="dimgrey", style="italic")
+             fontsize=fonts.footnote, color="dimgrey", style="italic")
     if footnote:
         fig.text(0.99, 0.005, footnote, ha="right", va="bottom",
-                 fontsize=7.5, color="#C44E52", style="italic")
+                 fontsize=fonts.footnote, color="#C44E52", style="italic")
 
     _finish(fig, output, show, config.dpi)
 
@@ -968,9 +1098,12 @@ def plot_bars(
     figsize: tuple[float, float] | None,
     ncols: int = 5,
     footnote: str | None = None,
+    fonts: FontSizes | None = None,
 ) -> None:
     """One subplot per metric, one bar per run, grouped as the config says."""
     import matplotlib.patches as mpatches
+
+    fonts = fonts or resolve_font_sizes(config.font_scale, config.font_sizes)
 
     run_names = [name for _, names in groups for name in names]
     x_list, colors, spans = grouped_layout(run_names, groups)
@@ -993,7 +1126,7 @@ def plot_bars(
 
         bars = ax.bar(x_positions, ys, color=colors, width=0.75, zorder=3,
                       edgecolor="white", linewidth=0.5)
-        ax.bar_label(bars, fmt="%.3f", padding=3, fontsize=6.5)
+        ax.bar_label(bars, fmt="%.3f", padding=3, fontsize=fonts.bar_value)
 
         for span_idx, (span_lo, span_hi, _) in enumerate(spans):
             ax.axvspan(
@@ -1003,7 +1136,7 @@ def plot_bars(
             )
 
         ax.set_title(spec.label.replace("\n", " ") + arrow(spec),
-                     fontsize=8, fontweight="bold")
+                     fontsize=fonts.metric_title, fontweight="bold")
         ax.set_xticks([])
         ax.set_xlim(x_positions.min() - 0.7, x_positions.max() + 0.7)
         ax.grid(axis="y", linestyle="--", alpha=0.4, zorder=0)
@@ -1020,7 +1153,7 @@ def plot_bars(
             ax.set_ylim(min(0.0, min(finite) * 1.15), max(0.0, max(finite) * 1.15))
         else:
             ax.text(0.5, 0.5, "No data", ha="center", va="center",
-                    transform=ax.transAxes, color="grey", fontsize=9)
+                    transform=ax.transAxes, color="grey", fontsize=fonts.no_data)
 
     for idx in range(n_metrics, nrows * ncols):
         axes[idx // ncols][idx % ncols].set_visible(False)
@@ -1030,13 +1163,13 @@ def plot_bars(
         for i, name in enumerate(run_names)
     ]
     fig.legend(handles=handles, loc="lower center", ncol=min(len(run_names), 6),
-               fontsize=8, frameon=True, title="Experiment", title_fontsize=8,
-               bbox_to_anchor=(0.5, 0.0))
+               fontsize=fonts.legend, frameon=True, title="Experiment",
+               title_fontsize=fonts.legend, bbox_to_anchor=(0.5, 0.0))
 
-    fig.suptitle(config.title, fontsize=13, fontweight="bold")
+    fig.suptitle(config.title, fontsize=fonts.suptitle, fontweight="bold")
     if footnote:
         fig.text(0.99, 0.005, footnote, ha="right", va="bottom",
-                 fontsize=7.5, color="#C44E52", style="italic")
+                 fontsize=fonts.footnote, color="#C44E52", style="italic")
     fig.tight_layout(rect=[0, 0.06, 1, 0.97])
 
     _finish(fig, output, show, config.dpi, tight=False)
@@ -1128,6 +1261,22 @@ def parse_args() -> argparse.Namespace:
         help="Figure width and height in inches (auto if omitted).",
     )
     parser.add_argument(
+        "--font-scale", type=float, default=None, metavar="FACTOR",
+        help=(
+            "Multiply every label's font size (1.0 = the defaults). Raising a size "
+            "also grows the figure so labels stay clear. Overrides the config's "
+            "'font_scale' key."
+        ),
+    )
+    parser.add_argument(
+        "--font-size", nargs="*", default=[], metavar="ROLE=SIZE",
+        help=(
+            "Pin individual label sizes in points, e.g. "
+            "--font-size row_label=11 value=6. Applied on top of --font-scale and "
+            f"merged over the config's 'font_sizes'. Roles: {', '.join(FONT_ROLES)}."
+        ),
+    )
+    parser.add_argument(
         "--no-show", action="store_true",
         help="Do not open an interactive plot window.",
     )
@@ -1145,6 +1294,28 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _parse_pairs(items: list[str], what: str) -> dict[str, float]:
+    """Parse ``NAME=NUMBER`` CLI pairs, reporting anything malformed."""
+    out: dict[str, float] = {}
+    for item in items or []:
+        if "=" not in item:
+            print(
+                f"WARNING: ignoring malformed --{what} entry '{item}' "
+                f"(expected name=number)",
+                file=sys.stderr,
+            )
+            continue
+        name, value = item.split("=", 1)
+        try:
+            out[name.strip()] = float(value)
+        except ValueError:
+            print(
+                f"WARNING: ignoring --{what} entry '{item}' (not a number)",
+                file=sys.stderr,
+            )
+    return out
+
+
 def main() -> None:
     args = parse_args()
 
@@ -1160,6 +1331,18 @@ def main() -> None:
         config.normalize = args.normalize
     if args.transpose:
         config.transpose = True
+    if args.font_scale is not None:
+        config.font_scale = args.font_scale
+    # CLI roles are merged over the config's, so --font-size pins one role without
+    # discarding the rest of the config's font_sizes block.
+    cli_font_sizes = _parse_pairs(args.font_size, "font-size")
+    if cli_font_sizes:
+        config.font_sizes = {**config.font_sizes, **cli_font_sizes}
+    try:
+        fonts = resolve_font_sizes(config.font_scale, config.font_sizes)
+    except (KeyError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     print(f"Loading runs from {config_path} ...")
     results, groups = collect_from_config(config)
@@ -1191,10 +1374,12 @@ def main() -> None:
 
     if config.style == "bars":
         plot_bars(results, specs, groups, config, output,
-                  show=not args.no_show, figsize=figsize, footnote=footnote)
+                  show=not args.no_show, figsize=figsize, footnote=footnote,
+                  fonts=fonts)
     else:
         plot_table(results, specs, groups, config, output,
-                   show=not args.no_show, figsize=figsize, footnote=footnote)
+                   show=not args.no_show, figsize=figsize, footnote=footnote,
+                   fonts=fonts)
 
 
 if __name__ == "__main__":

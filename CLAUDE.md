@@ -170,6 +170,18 @@ warning fires on every run and says nothing the caption does not; turn it on for
 within-group figure, where a disagreement would be a real surprise. The
 `contrastive_*` metrics are labelled **Domain alignment** in the family brackets.
 
+**Font sizes** work exactly as in `plot_ablation_benchmark.py` — `font_scale`
+(multiplies everything) and `font_sizes` (pins individual roles in points), as config
+keys or `--font-scale` / `--font-size role=size`, with CLI roles merged over the
+config's. The roles are this figure's own, being the fields of its `FontSizes`:
+`row_label`, `col_label`, `value`, `group_name`, `family_name`, `colorbar_label`,
+`colorbar_tick`, `suptitle`, `footnote`, plus `bar_value`, `metric_title`, `legend`
+and `no_data` for `style: bars`. An unknown role is an error at config-load time.
+Raising a size grows the figure — the rotated column headers and the left-margin row
+labels each claim room in proportion to their own size — and the colour bar's pad is
+computed from the family-bracket size, which is why a **short** table needs the
+largest pad (a 3-row figure used to overlap even at the default size).
+
 `python evaluate/check/check_unified_table.py` self-checks both scripts offline (no
 cluster, GPU or checkpoints needed).
 
