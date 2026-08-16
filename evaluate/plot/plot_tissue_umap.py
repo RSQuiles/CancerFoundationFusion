@@ -148,7 +148,7 @@ def main(args) -> None:
         adata,
         out_dir / f"{prefix}.tissue_umap.png",
         color=args.color,
-        title=f"{prefix} — tissue inference space (X_pca)",
+        title=f"Pretraining Bulk — Inferred Tissue Labels",
         dpi=args.dpi,
         skip_unknown=args.skip_unknown,
     )

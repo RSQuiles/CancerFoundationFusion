@@ -5,8 +5,11 @@
   "jobs": [
     {
       "job_name": "analysis_all",
-      "job_id": "9440168",
+      "job_id": "9465903",
       "experiments": [
+        "monitor_align",
+        "big_condition",
+        "united_data",
         "paired_mix",
         "paired_corn",
         "paired_dataset",
@@ -14,7 +17,7 @@
         "base_comparison",
         "partition"
       ],
-      "payload": "/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_mix/analysis/payload_all.json"
+      "payload": "/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_monitor_align/analysis/payload_all.json"
     }
   ]
 }

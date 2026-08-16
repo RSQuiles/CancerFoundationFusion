@@ -44,16 +44,14 @@ metrics:
   - recon_pearson_r
   - recon_mae_bins
   - contrastive_energy_distance
+  - contrastive_wasserstein
   - contrastive_within_bulk_over_cross_l2
   - contrastive_within_pb_over_cross_l2
-  - contrastive_cross_cosine_mean
   - contrastive_within_bulk_cosine
   - contrastive_within_pb_cosine
   - geometry_pr_pooled
-  - geometry_pr_frac_pooled
   - geometry_pr_bulk
   - geometry_pr_pb
-  - geometry_modality_var_frac
   - agg_synth_cosine_pb_to_mean_sc
 
 # Display names must be unique across the whole config — 'unified', 'dat' and
@@ -61,39 +59,71 @@ metrics:
 # more than one of these dirs exits with a duplicate-name error. Name them explicitly,
 # as example_unified_metrics_config.yaml does.
 groups:
-
-  - name: "Paired · CPM"
-    dir: ${save}/ablation_paired_dataset
+  - name: "Log1p"
+    dir: ${save}/ablation_paired_mix
     experiments:
-      - {name: "Bulk baseline (cpm)", model: bulk_baseline}
-      - {name: "Unified (cpm)",       model: unified}
-      - {name: "DAT (cpm)",           model: dat}
-      - {name: "Contrastive (cpm)",   model: contrastive}
+      - {name: "Unified - Log1p - Paired",   model: unified}
+      - {name: "DAT + Agg - Log1p - Paired", model: dat_agg}
 
-  - name: "Paired · counts"
+  - name: "Counts"
     dir: ${save}/ablation_paired_counts
     experiments:
-      - {name: "Bulk baseline (counts)", model: bulk_baseline}
-      - {name: "Unified (counts)",       model: unified}
-      - {name: "DAT (counts)",           model: dat}
-      - {name: "Contrastive (counts)",   model: contrastive}
-      - {name: "Aggregation (counts)",   model: aggregation}
+      - {name: "Unified - Counts - Paired",     model: unified}
+      - {name: "DAT - Counts - Paired",         model: dat}
+      - {name: "Contrastive - Counts - Paired", model: contrastive}
+      - {name: "Aggregation - Counts - Paired", model: aggregation}
 
-  - name: "Base comparison"
+  - name: "Counts - CORN"
+    dir: ${save}/ablation_paired_corn
+    experiments:
+      - {name: "Unified - Counts - CORN - Paired",     model: unified}
+      - {name: "DAT - Counts - CORN - Paired",         model: dat}
+      - {name: "Contrastive - Counts - CORN - Paired", model: contrastive}
+      - {name: "Aggregation - Counts - CORN - Paired", model: aggregation}
+
+  - name: "Counts & Precomputed"
+    dir: ${save}/ablation_paired_alignment_objectives
+    experiments:
+      - {name: "MMD - Counts - Precomputed - Paired",       model: paired_mmd}
+      - {name: "CDD - Precomputed - Paired",                model: paired_cdd}
+      - {name: "MDD + Agg - Counts - Precomputed - Paired", model: paired_mmd_agg}
+      - {name: "CDD + Agg - Counts - Precomputed - Paired", model: paired_cdd_agg}
+
+  - name: "Baselines (Paired)"
+    experiments:
+      - {name: "Bulk baseline - Log1p - Paired",                 dir: "${save}/ablation_paired_dataset",              model: bulk_baseline}
+      - {name: "Bulk baseline - Counts - Paired",                dir: "${save}/ablation_paired_counts",               model: bulk_baseline}
+      - {name: "Bulk baseline - Counts - CORN - Paired",         dir: "${save}/ablation_paired_corn",                 model: bulk_baseline}
+      - {name: "Bulk baseline - Counts - Precomputed - Paired",  dir: "${save}/ablation_paired_alignment_objectives", model: bulk_baseline}
+      - {name: "SC baseline - Counts - Precomputed - Paired",    dir: "${save}/ablation_paired_alignment_objectives", model: sc_baseline}
+
+  - name: "Log1p & Non-Paired"
     dir: ${save}/ablation_base_comparison
     experiments:
-      - {name: "Unified baseline (base)", model: unified_baseline}
-      - {name: "Contrastive (base)",      model: contrastive}
-      - {name: "Aggregation (base)",      model: aggregation}
-      - {name: "DAT (base)",              model: dat}
+      - {name: "Unified - Log1p",     model: unified_baseline}
+      - {name: "Contrastive - Log1p", model: contrastive}
+      - {name: "Aggregation - Log1p", model: aggregation}
+      - {name: "DAT - Log1p",         model: dat}
 
-  # The reference group: models trained without any of the alignment objectives.
-  - name: "Partition (no unified FM)"
-    dir: ${save}/ablation_partition
+  - name: "Counts & Precomputed & Non-Paired"
+    dir: ${save}/ablation_big_condition
     experiments:
-      - {name: "Base model (part)",         model: base_model}
-      - {name: "ZINB recon (part)",         model: zinb_reconstruction}
-      - {name: "Denoise ZINB (part)",       model: denoise_zinb}
-      - {name: "Contrastive (part)",        model: contrastive}
-      - {name: "Agg + contrastive (part)",  model: agg_contrastive}
-      - {name: "DAT+agg+contr+ZINB (part)", model: dat_agg_contrastive_denoise_zinb}
+      - {name: "Unified - Counts - Precomputed", model: unified}
+      - {name: "DAT - Counts - Precomputed",     model: dat}
+      - {name: "MMD - Counts - Precomputed",     model: mmd}
+      - {name: "CDD - Counts - Precomputed",     model: cdd}
+
+  # - name: "Test - Two Tissues"
+  #   dir: ${save}/ablation_monitor_align
+  #   experiments:
+  #     - {name: "Unified - Counts - Precomputed - Two Tissues",   model: unified}
+  #     - {name: "Condition - Counts - Precomputed - Two Tissues", model: condition}
+  #     - {name: "MMD - Counts - Precomputed - Two Tissues",       model: mmd}
+  #     - {name: "DAT - Counts - Precomputed - Two Tissues",       model: dat}
+  #     - {name: "CDD - Counts - Precomputed - Two Tissues",       model: cdd}
+
+  - name: "Baselines"
+    experiments:
+      - {name: "Bulk baseline - Log1p",         dir: "${save}/ablation_paired_dataset", model: bulk_baseline}
+      - {name: "Bulk baseline - Counts",        dir: "${save}/ablation_paired_counts",  model: bulk_baseline}
+      - {name: "Bulk baseline - Counts - CORN", dir: "${save}/ablation_paired_corn",    model: bulk_baseline}

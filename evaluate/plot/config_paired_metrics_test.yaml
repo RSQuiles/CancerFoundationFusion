@@ -1,0 +1,162 @@
+# Config for:
+#   python evaluate/plot/plot_unified_metrics_table.py --config <this file> --no-show
+#
+# Every trained run in ablate/configs/, in one table. Metrics are read from each run's
+# metrics/unified_metrics.json and (for the scIB columns) from that ablation's
+# _scib_metrics/scib_<tag>.csv; nothing is recomputed. Runs whose metrics have not been
+# computed yet are skipped with a warning rather than failing the figure, so this
+# config is usable before every experiment has finished.
+#
+# The run-selection grammar ('vars' / 'groups' / 'experiments') is shared with
+# example_comparison_config.yaml.
+#
+# ── Read this before comparing rows across groups ────────────────────────────────
+# Each ablation directory was evaluated on its OWN eval.h5ad, built from its own
+# adata_dir with its own gene panel. Numbers are therefore strictly comparable WITHIN
+# a group and only indicative ACROSS groups — the script detects this (the runs will
+# not share a panel_hash), warns per distinct panel on stderr, and prints a red
+# footnote on the figure. Two consequences worth expecting:
+#   * The paired_* and agg_paired_* families are blank (n/a) for the experiments whose
+#     data has no paired bulk/pseudobulk rows — base comparison, big condition, united
+#     data, monitor align and partition. That is missing input, not a bad model.
+#   * ablation_partition trains none of the unified-FM objectives, so it is the
+#     reference for "what these metrics look like without them".
+# For a publication-grade comparison, restrict the config to one group.
+
+vars:
+  # Expanded into every ${work} below; falls back to the environment if not set here.
+  work: /cluster/work/boeva/rquiles
+  save: /cluster/work/boeva/rquiles/outputs/save_CFF
+
+title: "Internal Reconstruction & Alignment Metrics: Paired Experiments"
+output: ${save}/unified_metrics_paired_test.png
+# figsize: [26, 22]      # inches; omitted -> derived from the grid size
+dpi: 150
+
+style: heatmap        # heatmap | rank_table | bars
+                      #   heatmap    = value in each cell, cell coloured by rank
+                      #                within its column (the default)
+                      #   rank_table = value + rank, plus a mean-rank column
+                      #   bars       = one bar-chart panel per metric
+normalize: minmax     # minmax | zscore | rank - affects the COLOUR only, never the
+                      # printed numbers. minmax stretches each column to the full
+                      # colour range, so the best and worst run are always at the
+                      # extremes however small the gap; zscore is gentler when one
+                      # run is an outlier, which it will be with ~40 runs in view.
+cmap: PuOr
+show_families: true   # bracket + label under each metric family
+transpose: false      # false -> runs as rows (right choice with this many runs)
+annotate: true        # print the value in every cell
+
+# Omit to get the curated default set (the same 17 metrics unified_metrics.png shows).
+# `--list` prints everything available in the selected runs. The subset below drops the
+# raw-L2 metrics, which are scale-dependent and so not comparable between models whose
+# embeddings have different norms.
+metrics:
+  # 4. is the model doing anything at all
+  - recon_pearson_r
+  # Paired ranks
+  - paired_cosine_sim_mean
+  - paired_l2_mean
+  - paired_rank_mean
+  - paired_rank_l2_mean
+  - agg_paired_cosine_pb_to_mean_sc
+  # Aggregation
+  - agg_synth_cosine_pb_to_mean_sc
+  # 3. the columns that misled you, kept as the contrast
+  - contrastive_cross_cosine_mean
+  - contrastive_within_bulk_cosine
+  - contrastive_within_pb_cosine
+  # 2. are the modalities actually mixed?
+  - contrastive_wasserstein
+  - contrastive_energy_distance
+  - contrastive_within_bulk_over_cross_l2
+  - contrastive_within_pb_over_cross_l2
+  # 1. is the space alive, per modality?
+  - geometry_pr_bulk
+  - geometry_pr_pb
+  - geometry_pr_pooled
+  # - geometry_modality_var_frac
+
+# Omit the whole block for no scIB columns. Tags are the four benchmarks
+# unified_metrics.py runs: bulk_vs_pb, paired_vs_nonpaired, paired_bulk_vs_paired_pb,
+# nonpaired_bulk_vs_synth_pb (the last three only exist where the dataset has paired
+# rows, so paired_bulk_vs_paired_pb is blank for the non-paired experiments below).
+scib:
+  tags: []
+  # iLISI only, on purpose: it is the only global, label-free mixing measure here.
+  # BRAS and kBET are computed per label group and skip labels holding a single batch,
+  # which on tissue_general data leaves very few usable labels, and PCR comparison
+  # clips to 0. Add the others knowingly - see the caveat block in
+  # unified_metrics.run_scib_benchmark and evaluate/check/diagnose_scib.py.
+  metrics: [contrastive_cross_l2_mean]
+
+# Display names must be unique across the whole config (they label the rows), which is
+# why each carries its experiment in brackets - 'unified' alone appears in six
+# ablations. The group bracket down the left margin repeats the experiment name, so the
+# short tag in brackets is only there to disambiguate.
+
+# NOTE: paired_counts.json and paired_config_cscs.json both write to
+# '${work}/outputs_rquiles/save_CFF/ablation_paired_counts' - 'outputs_rquiles',
+# not 'outputs' like every other config. evaluate/analysis_all_experiments.yaml
+# uses 'outputs'; if this group comes back empty, that is the first thing to check.
+
+groups:
+
+  # ── Paired datasets ─────────────────────────────────────────────────────────
+  # These carry paired bulk/pseudobulk rows, so the paired_* and agg_paired_*
+  # families actually populate here. Four variants of the same ablation on
+  # differently preprocessed inputs.
+
+  - name: "Log1p"
+    experiments:
+      - {name: "Unified - Log1p",          dir: "${save}/ablation_paired_mix", model: unified}
+      - {name: "DAT + Agg - Log1p",        dir: "${save}/ablation_paired_mix", model: dat_agg}
+
+  - name: "Counts"
+    experiments:
+      - {name: "Unified - Counts",       dir: "${save}/ablation_paired_counts", model: unified}
+      - {name: "DAT - Counts",           dir: "${save}/ablation_paired_counts", model: dat}
+      - {name: "Contrastive - Counts",   dir: "${save}/ablation_paired_counts", model: contrastive}
+      - {name: "Aggregation - Counts",   dir: "${save}/ablation_paired_counts", model: aggregation}
+
+  - name: "Counts - CORN"
+    experiments:
+      - {name: "Unified - Counts - CORN",         dir: "${save}/ablation_paired_corn", model: unified}
+      - {name: "DAT - Counts - CORN",             dir: "${save}/ablation_paired_corn", model: dat}
+      - {name: "Contrastive - Counts - CORN",     dir: "${save}/ablation_paired_corn", model: contrastive}
+      - {name: "Aggregation - Counts - CORN",     dir: "${save}/ablation_paired_corn", model: aggregation}
+
+  - name: "Counts & Precomputed"
+    experiments:
+      - {name: "MMD - Counts - Precomputed",         dir: "${save}/ablation_paired_alignment_objectives", model: paired_mmd}
+      - {name: "CDD - Precomputed",         dir: "${save}/ablation_paired_alignment_objectives", model: paired_cdd}
+      - {name: "MDD + Agg - Counts - Precomputed",   dir: "${save}/ablation_paired_alignment_objectives", model: paired_mmd_agg}
+      - {name: "CDD + Agg - Counts - Precomputed",   dir: "${save}/ablation_paired_alignment_objectives", model: paired_cdd_agg}
+
+  - name: "Baselines"
+    experiments:
+      - {name: "Bulk baseline - Log1p",    dir: "${save}/ablation_paired_dataset", model: bulk_baseline}
+      - {name: "Bulk baseline - Counts", dir: "${save}/ablation_paired_counts", model: bulk_baseline}
+      - {name: "Bulk baseline - Counts - CORN",   dir: "${save}/ablation_paired_corn", model: bulk_baseline}
+      - {name: "Bulk baseline - Counts - Precomputed",   dir: "${save}/ablation_paired_alignment_objectives", model: bulk_baseline}
+      - {name: "SC baseline - Counts - Precomputed",   dir: "${save}/ablation_paired_alignment_objectives", model: sc_baseline}
+
+
+# ── Alternatives ─────────────────────────────────────────────────────────────────
+#
+# Every model in a directory, without naming them (names default to the directory
+# names, so this only works while they stay unique across groups):
+#
+# groups:
+#   - name: "Monitor align"
+#     dir: ${save}/ablation_monitor_align
+#     all_models: true
+#     exclude: [pca_baseline]
+#
+# A flat list, with no group banding:
+#
+# experiments:
+#   - {name: "Unified", dir: "${save}/ablation_monitor_align", model: unified}
+#   - {name: "CDD",     dir: "${save}/ablation_monitor_align", model: cdd}
+#   - path: ${save}/ablation_monitor_align/dat      # name defaults to the dir name

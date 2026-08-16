@@ -43,7 +43,7 @@
       "seed": 0,
       "val_check_interval": 0.5,
       "log_interval": 5,
-      "save_dir": "${work}/outputs/save_CFF/ablation_paired_alignment_objectives",
+      "save_dir": "${work}/outputs/save_CFF/ablation_paired_alignment_objectives_fill",
       "wandb_entity": "rquiles",
       "wandb": "ablation_paired_alignment_objectives",
       "compile": true,
@@ -53,7 +53,7 @@
     },
     "data": {
       "train_path": "/cluster/work/boeva/rquiles/data/eheiss_RAW_paired/pipeline_ready",
-      "conditions": ["modality", "tissue_general"],
+      "conditions": ["modality"],
       "zero_percentages": [0.2, 0.4, 0.6],
       "bulk_ratio": 0.45,
       "pb_ratio": 0.45,
@@ -97,42 +97,18 @@
 
   "ablations": [
     {
-      "name": "paired_cdd",
-      "_note": "Class-conditional alignment: CDD matches per-tissue conditionals, so the sampler draws class-aware batches with shared tissues in both halves.",
+      "name": "unified",
+      "_note": "Unified baseline",
       "overrides": {
         "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_paired_alignment_objectives/paired_cdd",
-          "wandb_name": "paired_cdd"
+          "save_dir": "${work}/outputs/save_CFF/ablation_paired_alignment_objectives_fill/unified",
+          "wandb_name": "unified"
         },
         "data": {},
-        "model": { "monitor_losses": ["mmd", "aggregation"] },
+        "model": { "monitor_losses": ["cdd", "aggregation"] },
         "features": {
           "unified": true,
-          "paired_sampling": true,
-          "cdd": true,
-          "cdd_class_aware": true,
-          "cdd_cluster_warmup_steps": 0
-        }
-      }
-    },
-    {
-      "name": "paired_cdd_agg",
-      "_note": "paired_cdd plus aggregation consistency; the 2x2 completion of arms 3-5.",
-      "overrides": {
-        "trainer": {
-          "save_dir": "${work}/outputs/save_CFF/ablation_paired_alignment_objectives/paired_cdd_agg",
-          "wandb_name": "paired_cdd_agg"
-        },
-        "data": {},
-        "model": { "monitor_losses": ["mmd"] },
-        "features": {
-          "unified": true,
-          "paired_sampling": true,
-          "cdd": true,
-          "cdd_class_aware": true,
-          "cdd_cluster_warmup_steps": 0,
-          "agg_consistency": true,
-          "agg_fn": "mean"
+          "paired_sampling": true
         }
       }
     }
