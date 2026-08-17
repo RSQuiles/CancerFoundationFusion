@@ -173,6 +173,11 @@ TASK_LABELS: dict[str, str] = {
     "survival":         "Survival\nPrediction",
     "proteome_pred":    "Proteome\nPrediction",
     "drug_sensitivity_v2": "Drug Sensitivity\nPrediction",
+    # collect_model_metrics() splits results_drug_sensitivity_v2.json into two
+    # tasks whose keys are these long strings; without an entry each one printed
+    # its own key as the label.
+    "Drug Sensitivity Prediction (IC50 Regression)":    "IC50 Regression",
+    "Drug Sensitivity Prediction (Cmax Classification)": "Cmax classification",
 }
 
 METRIC_LABELS: dict[str, str] = {
