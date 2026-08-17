@@ -400,14 +400,27 @@ def render(
 
         Deliberately does NOT call ``Benchmarker.__init__``: that wants an AnnData
         with embeddings, and there is nothing to compute — the numbers are read from
-        disk. ``plot_results_table`` needs only the results frame and the number of
-        embeddings, both supplied here.
+        disk. What is supplied instead is the state ``plot_results_table`` reads.
+
+        That state is version-dependent. The results frame and
+        ``_embedding_obsm_keys`` are always needed; from scib_metrics 0.5 the metric
+        *collections* are read there too (to group and order the columns), not only
+        inside ``benchmark()``. They are set to the library's own defaults, which
+        affects presentation only — every number still comes from the CSV.
         """
 
         def __init__(self, results: pd.DataFrame, keys: list[str]):
             self._results_table = results
             self._embedding_obsm_keys = list(keys)
             self._benchmarked = True
+
+            try:
+                from scib_metrics.benchmark import BatchCorrection, BioConservation
+
+                self._bio_conservation_metrics = BioConservation()
+                self._batch_correction_metrics = BatchCorrection()
+            except Exception:      # older versions have neither name nor the need
+                pass
 
         def get_results(self, min_max_scale: bool = True, clean_names: bool = True):
             # The frame is already a get_results() output, read back from disk.
@@ -421,8 +434,11 @@ def render(
         sys.exit(
             f"ERROR: this scib_metrics version's plot_results_table needs benchmark "
             f"state this script does not reconstruct ({exc}).\n"
-            "       The merged table itself is fine — re-run with --dry-run to write "
-            "it as CSV, and plot it with Benchmarker directly."
+            "       Add it to _JointTable.__init__ in this file. To see exactly what "
+            "the installed version touches:\n"
+            "         python -c \"import inspect, scib_metrics.benchmark as b; "
+            "print(inspect.getsource(b.Benchmarker.plot_results_table))\"\n"
+            "       The merged table itself is fine — --dry-run writes it as CSV."
         )
     except Exception as exc:
         sys.exit(f"ERROR: scib_metrics failed to draw the table: {exc!r}")

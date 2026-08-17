@@ -100,7 +100,12 @@ def install_stub_scib(record: dict) -> None:
             )
 
         def plot_results_table(self, min_max_scale=True, show=True, save_dir=None):
-            # Exactly the state the real implementation touches.
+            # Exactly the state the real implementation touches. The metric
+            # collections are read from scib_metrics 0.5 onwards — the installed
+            # version on the cluster raised AttributeError for
+            # _batch_correction_metrics, so they are part of the contract now.
+            record["batch_metrics"] = self._batch_correction_metrics
+            record["bio_metrics"] = self._bio_conservation_metrics
             num_embeds = len(self._embedding_obsm_keys)
             df = self.get_results(min_max_scale=min_max_scale)
             plot_df = df.drop(METRIC_TYPE_ROW, axis=0)
@@ -120,9 +125,17 @@ def install_stub_scib(record: dict) -> None:
             table = types.SimpleNamespace(ax=ax)
             return table
 
+    class BioConservation:
+        pass
+
+    class BatchCorrection:
+        pass
+
     module = types.ModuleType("scib_metrics")
     benchmark = types.ModuleType("scib_metrics.benchmark")
     benchmark.Benchmarker = Benchmarker
+    benchmark.BioConservation = BioConservation
+    benchmark.BatchCorrection = BatchCorrection
     module.benchmark = benchmark
     sys.modules["scib_metrics"] = module
     sys.modules["scib_metrics.benchmark"] = benchmark
@@ -281,6 +294,9 @@ groups:
           record.get("groups") and record["groups"][-1] == "Aggregate score")
     check("num_embeds is the number of runs, sizing the figure",
           record.get("num_embeds") == len(names), str(record.get("num_embeds")))
+    check("the metric collections are supplied (needed from scib_metrics 0.5)",
+          record.get("batch_metrics") is not None
+          and record.get("bio_metrics") is not None)
     check("scIB sorts the rows by Total, overriding the config order",
           record.get("rows") == ["Unified B", "Unified A", "DAT A", "PCA"],
           str(record.get("rows")))

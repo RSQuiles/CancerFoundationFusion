@@ -58,7 +58,33 @@ if [[ ${#PASSTHROUGH[@]} -gt 0 ]]; then
     SCRIPT_ARGS+=("${PASSTHROUGH[@]}")
 fi
 
-source ~/.bashrc
-conda activate bulkFM
+CONDA_ENV="${CONDA_ENV:-bulkFM}"
 
+# Environment setup runs WITHOUT -e and -u, and neither can be left on for it:
+#   -u  the system profile scripts /etc/profile.d/*.sh read variables that are not
+#       always set (Z97-byobu.sh reads $LC_BYOBU), which is fatal under -u.
+#   -e  a .bashrc that bails out early for non-interactive shells returns non-zero,
+#       and `set -e` then kills this script silently — no message, no output.
+# Both are restored immediately afterwards, so the real work still runs strict.
+set +eu
+# shellcheck disable=SC1090
+source ~/.bashrc
+conda activate "$CONDA_ENV"
+CONDA_STATUS=$?
+set -eu
+
+if [[ "$CONDA_STATUS" -ne 0 ]]; then
+    echo "ERROR: 'conda activate $CONDA_ENV' failed (exit $CONDA_STATUS)." >&2
+    echo "       This script plots with scib_metrics, which lives only in that env." >&2
+    echo "       Activate it yourself and run the .py directly, or use --dry-run," >&2
+    echo "       which needs neither conda nor scib_metrics." >&2
+    exit 1
+fi
+
+if ! command -v python >/dev/null 2>&1; then
+    echo "ERROR: no python on PATH after activating $CONDA_ENV." >&2
+    exit 1
+fi
+
+echo "python: $(command -v python)"
 python -u "$SCRIPT_DIR/plot_scib_joint.py" "${SCRIPT_ARGS[@]}"
