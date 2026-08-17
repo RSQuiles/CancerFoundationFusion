@@ -217,6 +217,12 @@ BAR_NAME_FONTSIZE   = 9
 GROUP_NAME_FONTSIZE = 11
 LEGEND_FONTSIZE     = 11
 
+# Columns in the shared legend. The figure is saved with bbox_inches="tight", so a
+# legend wider than the axes stretches the saved image beyond them — with long
+# "1.2: base/contrastive" entries, six columns is what makes a figure too wide for a
+# document. Lowering it trades width for legend rows; `legend_ncol` overrides it.
+LEGEND_MAX_COLS = 6
+
 
 @dataclass(frozen=True)
 class FontSizes:
@@ -527,6 +533,9 @@ class BenchmarkConfig:
     # Print the task's name on the y-axis of its first subplot. Redundant with
     # `per_task`, where the task is already in the figure title.
     task_labels: bool = True
+    # Columns in the shared legend; None keeps LEGEND_MAX_COLS. Fewer columns means
+    # more legend rows and a narrower figure.
+    legend_ncol: int | None = None
     # That label is a short {group}.{member} handle; the legend carries alias: model.
     bar_aliases: bool = True
     # Multiplies every label size; font_sizes then pins individual roles.
@@ -653,6 +662,7 @@ def load_config(path: Path) -> BenchmarkConfig:
         per_task_figsize=per_task_figsize,
         bar_names=bool(raw.get("bar_names", True)),
         task_labels=bool(raw.get("task_labels", True)),
+        legend_ncol=_legend_ncol_from_config(raw.get("legend_ncol")),
         bar_aliases=bool(raw.get("bar_aliases", True)),
         font_scale=float(raw.get("font_scale", 1.0) or 1.0),
         font_sizes=font_sizes,
@@ -935,6 +945,28 @@ def _legend_inches(n_models: int, ncol: int, fontsize: float = LEGEND_FONTSIZE) 
     return row_in * rows + 0.45        # rows + frame/title padding
 
 
+def _legend_ncol_from_config(value: object) -> int | None:
+    """Validate a config's ``legend_ncol``; None/0 means "use the default cap"."""
+    if value is None:
+        return None
+    try:
+        ncol = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ValueError(f"legend_ncol must be a positive integer, got {value!r}")
+    if ncol < 0:
+        raise ValueError(f"legend_ncol must be a positive integer, got {value!r}")
+    return ncol or None
+
+
+def _legend_columns(n_models: int, legend_ncol: int | None = None) -> int:
+    """Columns the shared legend is drawn in.
+
+    ``legend_ncol`` caps them explicitly; without it the default cap applies. Never
+    more columns than entries, so a 3-model figure does not reserve 6 columns' width.
+    """
+    return max(1, min(n_models, legend_ncol or LEGEND_MAX_COLS))
+
+
 def _bar_slot_inches(bar_name_fontsize: float) -> float:
     """Width one bar needs so its rotated name clears the neighbouring one.
 
@@ -1159,6 +1191,7 @@ def _render_figure(
     bar_names: bool,
     task_labels: bool,
     output: Path | None,
+    legend_ncol: int | None = None,
     max_cols: int | None = None,
     fonts: FontSizes | None = None,
     y_max: dict[str, float] | None = None,
@@ -1197,13 +1230,15 @@ def _render_figure(
     # (width_scale is exactly 1.0 when there are none).
     width_scale = float(x_positions.max() - x_positions.min() + 1) / n_models
 
-    ncol_legend = min(n_models, 6)
+    ncol_legend = _legend_columns(n_models, legend_ncol)
     legend_in   = _legend_inches(n_models, ncol_legend, fonts.legend)
 
     fig_w = figsize[0] if figsize else _figure_width(
         n_cols, n_models, width_scale, bar_names, fonts
     )
-    fig_h = figsize[1] if figsize else _figure_height(n_grid_rows, n_models, fonts)
+    fig_h = figsize[1] if figsize else _figure_height(
+        n_grid_rows, n_models, fonts, legend_ncol
+    )
 
     fig = plt.figure(figsize=(fig_w, fig_h))
     # Two grid columns per subplot, so a centred row can sit on an odd offset.
@@ -1442,6 +1477,7 @@ def plot_benchmark(
     per_task_figsize: tuple[float, float] | None = None,
     bar_names: bool = True,
     task_labels: bool = True,
+    legend_ncol: int | None = None,
     font_scale: float = 1.0,
     font_sizes: dict[str, float] | None = None,
     y_max: dict[str, float] | None = None,
@@ -1472,6 +1508,11 @@ def plot_benchmark(
     label a short ``{group}.{member}`` handle (1.1, 1.2, 2.3, …) and puts
     ``alias: model`` in the legend — see :func:`build_aliases`. Turn it off to print
     full display names on the bars, as before.
+
+    ``legend_ncol`` caps the shared legend's columns (default
+    :data:`LEGEND_MAX_COLS`). The figure is saved tight, so a legend wider than the
+    axes widens the image: fewer columns stack the entries into more rows and give
+    back that width, and the reserved height grows to match.
 
     ``font_scale`` multiplies every label's size and ``font_sizes`` pins individual
     roles (see :class:`FontSizes`). Raising the bar-name size widens the figure, so
@@ -1537,6 +1578,7 @@ def plot_benchmark(
         grouped=bool(groups),
         bar_names=bar_names,
         task_labels=task_labels,
+        legend_ncol=legend_ncol,
         fonts=fonts,
         y_max=y_max,
         aliases=alias_map,
@@ -1587,11 +1629,20 @@ def plot_benchmark(
 
 
 def _figure_height(
-    n_grid_rows: int, n_models: int, fonts: FontSizes | None = None
+    n_grid_rows: int,
+    n_models: int,
+    fonts: FontSizes | None = None,
+    legend_ncol: int | None = None,
 ) -> float:
-    """Figure height in inches: the subplot rows plus the legend they need."""
+    """Figure height in inches: the subplot rows plus the legend they need.
+
+    ``legend_ncol`` must match what the legend is actually drawn with, or fewer
+    columns would stack rows into height that was never reserved for them.
+    """
     fonts = fonts or FontSizes()
-    legend_in = _legend_inches(n_models, min(n_models, 6), fonts.legend)
+    legend_in = _legend_inches(
+        n_models, _legend_columns(n_models, legend_ncol), fonts.legend
+    )
     return max(n_grid_rows * ROW_INCHES + legend_in + 0.8, 4.0)
 
 
@@ -1702,6 +1753,17 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--legend-ncol",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            f"Columns in the shared legend (default: at most {LEGEND_MAX_COLS}). "
+            "Fewer columns stack the entries into more rows, which narrows the "
+            "figure. Overrides the config's 'legend_ncol' key."
+        ),
+    )
+    parser.add_argument(
         "--task-labels",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -1802,6 +1864,7 @@ def main() -> None:
     per_task_figsize = tuple(args.per_task_figsize) if args.per_task_figsize else None
     bar_names = bool(args.bar_names) if args.bar_names is not None else True
     task_labels = bool(args.task_labels) if args.task_labels is not None else True
+    legend_ncol = _legend_ncol_from_config(args.legend_ncol)
     bar_aliases = bool(args.bar_aliases) if args.bar_aliases is not None else True
     font_scale = args.font_scale if args.font_scale is not None else 1.0
     font_sizes = _parse_pairs(args.font_size, "font-size")
@@ -1823,6 +1886,7 @@ def main() -> None:
         task_labels = (
             args.task_labels if args.task_labels is not None else config.task_labels
         )
+        legend_ncol = legend_ncol or config.legend_ncol
         bar_aliases = (
             args.bar_aliases if args.bar_aliases is not None else config.bar_aliases
         )
@@ -1916,6 +1980,7 @@ def main() -> None:
         per_task_figsize=per_task_figsize,
         bar_names=bar_names,
         task_labels=task_labels,
+        legend_ncol=legend_ncol,
         bar_aliases=bar_aliases,
         font_scale=font_scale,
         font_sizes=font_sizes or None,
