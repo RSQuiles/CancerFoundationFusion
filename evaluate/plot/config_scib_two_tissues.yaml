@@ -26,7 +26,7 @@ vars:
 
 tag: bulk_vs_pb        # bulk_vs_pb | paired_vs_nonpaired |
                        # paired_bulk_vs_paired_pb | nonpaired_bulk_vs_synth_pb
-output: ${save}/scib_joint_bulk_vs_pb.svg
+output: ${save}/scib_two_tissues_bulk_vs_pb.svg
 dpi: 300
 min_max_scale: false
 
@@ -47,21 +47,14 @@ min_max_scale: false
 # flattened before plotting.
 groups:
 
-  - name: "Paired · counts"
-    dir: ${save}/ablation_paired_counts
+  - name: "Two-Tissue Test"
     experiments:
-      - {name: "Unified (counts)",     model: unified}
-      - {name: "DAT (counts)",         model: dat}
-      - {name: "Contrastive (counts)", model: contrastive}
-      - {name: "Aggregation (counts)", model: aggregation}
-      - {name: "Bulk baseline (counts)", model: bulk_baseline}
+      - {name: "CDD", dir: "${save}/ablation_monitor_align", model: cdd}
+      - {name: "MMD",      dir: "${save}/ablation_monitor_align", model: mmd}
+      - {name: "DAT",      dir: "${save}/ablation_monitor_align", model: dat}
+      - {name: "Condition",              dir: "${save}/ablation_monitor_align", model: condition}
+      - {name: "Unified",              dir: "${save}/ablation_monitor_align", model: unified}
 
-  - name: "Paired · CORN"
-    dir: ${save}/ablation_paired_corn
-    experiments:
-      - {name: "Unified (corn)",     model: unified}
-      - {name: "DAT (corn)",         model: dat}
-      - {name: "Contrastive (corn)", model: contrastive}
 
   # Every model in a directory, without naming them (names default to the directory
   # names, so this cannot be combined with another all_models group that shares any):

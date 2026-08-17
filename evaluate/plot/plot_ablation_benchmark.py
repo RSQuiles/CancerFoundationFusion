@@ -187,6 +187,18 @@ METRIC_LABELS: dict[str, str] = {
     "mean_pearson_r":    "Mean Pearson r",
     "median_pearson_r":  "Median Pearson r",
     "mean_auroc":        "Mean AUROC",
+    "mean_pearson_r_present": "Mean Pearson r (Present)",
+    "rmse_present": "RMSE (present)",
+    "mean_sample_pearson_r": "Mean Pearon r (sample)",
+    "antolini_concordance": "Antolini Concordance",
+    "ibs": "IBS",
+    "d_calibration": "D-calibration",
+    "spearman_rho": "Spearman ρ",
+    "r2": "R2",
+    "auroc": "AUROC",
+    "auprc": "APRC",
+    "mcc": "MCC",
+    "balanced_accuracy": "Balanced Accuracy"
 }
 
 # Background colour for the primary-metric subplot.

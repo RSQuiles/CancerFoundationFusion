@@ -48,7 +48,7 @@ for arg in "$@"; do
     esac
 done
 
-CONFIG="${CONFIG:-$SCRIPT_DIR/example_scib_joint_config.yaml}"
+CONFIG="${CONFIG:-$SCRIPT_DIR/config_scib_two_tissues.yaml}"
 
 SCRIPT_ARGS=(--config "$CONFIG")
 if [[ -n "$OUTPUT" ]]; then

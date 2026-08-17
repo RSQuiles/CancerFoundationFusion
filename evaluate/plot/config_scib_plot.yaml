@@ -47,21 +47,28 @@ min_max_scale: false
 # flattened before plotting.
 groups:
 
-  - name: "Paired · counts"
-    dir: ${save}/ablation_paired_counts
+  - name: "Log1p & Non-Paired"
     experiments:
-      - {name: "Unified (counts)",     model: unified}
-      - {name: "DAT (counts)",         model: dat}
-      - {name: "Contrastive (counts)", model: contrastive}
-      - {name: "Aggregation (counts)", model: aggregation}
-      - {name: "Bulk baseline (counts)", model: bulk_baseline}
+      - {name: "(1) Unified", dir: "${save}/ablation_base_comparison", model: unified_baseline}
+      - {name: "(1) Contrastive",      dir: "${save}/ablation_base_comparison", model: contrastive}
+      - {name: "(1) Aggregation",      dir: "${save}/ablation_base_comparison", model: aggregation}
+      - {name: "(1) DAT",              dir: "${save}/ablation_base_comparison", model: dat}
 
-  - name: "Paired · CORN"
-    dir: ${save}/ablation_paired_corn
+  - name: "Precomputed & Non-Paired"
     experiments:
-      - {name: "Unified (corn)",     model: unified}
-      - {name: "DAT (corn)",         model: dat}
-      - {name: "Contrastive (corn)", model: contrastive}
+      - {name: "(2) Unified",      dir: "${save}/ablation_big_condition", model: unified}
+      - {name: "(2) DAT",          dir: "${save}/ablation_big_condition", model: dat}
+      - {name: "(2) MMD",          dir: "${save}/ablation_big_condition", model: mmd}
+      - {name: "(2) CDD",          dir: "${save}/ablation_big_condition", model: cdd}
+
+  - name: "Precomputed & Paired"
+    experiments:
+      - {name: "(3) MMD",         dir: "${save}/ablation_paired_alignment_objectives", model: paired_mmd}
+      - {name: "(3) CDD",         dir: "${save}/ablation_paired_alignment_objectives", model: paired_cdd}
+      - {name: "(3) MDD + Agg",   dir: "${save}/ablation_paired_alignment_objectives", model: paired_mmd_agg}
+      - {name: "(3) CDD + Agg",   dir: "${save}/ablation_paired_alignment_objectives", model: paired_cdd_agg}
+      - {name: "(3) SC Baseline",   dir: "${save}/ablation_paired_alignment_objectives", model: sc_baseline}
+      - {name: "(3) Bulk Baseline",   dir: "${save}/ablation_paired_alignment_objectives", model: bulk_baseline}
 
   # Every model in a directory, without naming them (names default to the directory
   # names, so this cannot be combined with another all_models group that shares any):

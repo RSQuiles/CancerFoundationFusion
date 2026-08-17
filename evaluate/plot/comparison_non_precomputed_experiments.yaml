@@ -37,9 +37,16 @@ per_task_figsize: [30, 20] # each single-task figure
 
 font_scale: 2.0
 font_sizes:
-  bar_name: 15
-  value: 15
-  legend: 15
+  bar_name: 25
+  value: 25
+  legend: 20
+  metric_title: 35
+  task_label: 25
+  tick: 13
+  suptitle: 40
+  footnote: 12
+  no_data: 12
+  group_name: 35
 
 # Print each model's display name above its bar as well as in the legend — with 48
 # bars, tracing a colour back to an 8-row legend is otherwise hopeless. The names

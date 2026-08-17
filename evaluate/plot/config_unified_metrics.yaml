@@ -28,9 +28,9 @@ vars:
   work: /cluster/work/boeva/rquiles
   save: /cluster/work/boeva/rquiles/outputs/save_CFF
 
-title: "Internal Reconstruction & Alignment Metrics: Paired Experiments"
-output: ${save}/unified_metrics_paired_test.png
-# figsize: [26, 22]      # inches; omitted -> derived from the grid size
+title: "Internal Reconstruction & Alignment Metrics"
+output: ${save}/unified_metrics.png
+figsize: [30, 35]      # inches; omitted -> derived from the grid size
 dpi: 150
 
 style: heatmap        # heatmap | rank_table | bars
@@ -48,35 +48,40 @@ show_families: true   # bracket + label under each metric family
 transpose: false      # false -> runs as rows (right choice with this many runs)
 annotate: true        # print the value in every cell
 
+font_scale: 3.5
+font_sizes:
+  group_name: 23
+  family_name: 21
+#  row_label: 30       # run names down the left margin
+#   value: 30           # the number inside each cell
+#   col_label: 30         # rotated metric names across the top
+
+
 # Omit to get the curated default set (the same 17 metrics unified_metrics.png shows).
 # `--list` prints everything available in the selected runs. The subset below drops the
 # raw-L2 metrics, which are scale-dependent and so not comparable between models whose
 # embeddings have different norms.
 metrics:
-  # 4. is the model doing anything at all
-  - recon_pearson_r
-  # Paired ranks
-  - paired_cosine_sim_mean
-  - paired_l2_mean
-  - paired_rank_mean
-  - paired_rank_l2_mean
-  - agg_paired_cosine_pb_to_mean_sc
-  # Aggregation
-  - agg_synth_cosine_pb_to_mean_sc
-  # 3. the columns that misled you, kept as the contrast
-  - contrastive_cross_cosine_mean
-  - contrastive_within_bulk_cosine
-  - contrastive_within_pb_cosine
-  # 2. are the modalities actually mixed?
-  - contrastive_wasserstein
-  - contrastive_energy_distance
-  - contrastive_within_bulk_over_cross_l2
-  - contrastive_within_pb_over_cross_l2
-  # 1. is the space alive, per modality?
-  - geometry_pr_bulk
-  - geometry_pr_pb
-  - geometry_pr_pooled
-  # - geometry_modality_var_frac
+    # 4. is the model doing anything at all
+    - recon_pearson_r
+    - recon_mae_bins
+    # Aggregation
+    - agg_synth_cosine_pb_to_mean_sc
+    # 3. the columns that misled you, kept as the contrast
+    - contrastive_cross_cosine_mean
+    - contrastive_within_bulk_cosine
+    - contrastive_within_pb_cosine
+    # 2. are the modalities actually mixed?
+    - contrastive_wasserstein
+    - contrastive_energy_distance
+    - contrastive_within_bulk_over_cross_l2
+    - contrastive_within_pb_over_cross_l2
+    # 1. is the space alive, per modality?
+    - geometry_pr_bulk
+    - geometry_pr_pb
+    - geometry_pr_pooled
+    # - geometry_pr_frac_pooled
+    # - geometry_modality_var_frac
 
 # Omit the whole block for no scIB columns. Tags are the four benchmarks
 # unified_metrics.py runs: bulk_vs_pb, paired_vs_nonpaired, paired_bulk_vs_paired_pb,
@@ -95,18 +100,19 @@ scib:
 # why each carries its experiment in brackets - 'unified' alone appears in six
 # ablations. The group bracket down the left margin repeats the experiment name, so the
 # short tag in brackets is only there to disambiguate.
-
-# NOTE: paired_counts.json and paired_config_cscs.json both write to
-# '${work}/outputs_rquiles/save_CFF/ablation_paired_counts' - 'outputs_rquiles',
-# not 'outputs' like every other config. evaluate/analysis_all_experiments.yaml
-# uses 'outputs'; if this group comes back empty, that is the first thing to check.
-
 groups:
+  - name: "Log1p & Non-Paired"
+    experiments:
+      - {name: "Unified - Log1p", dir: "${save}/ablation_base_comparison", model: unified_baseline}
+      - {name: "Contrastive - Log1p",      dir: "${save}/ablation_base_comparison", model: contrastive}
+      - {name: "Aggregation - Log1p",      dir: "${save}/ablation_base_comparison", model: aggregation}
+      - {name: "DAT - Log1p",              dir: "${save}/ablation_base_comparison", model: dat}
 
-  # ── Paired datasets ─────────────────────────────────────────────────────────
-  # These carry paired bulk/pseudobulk rows, so the paired_* and agg_paired_*
-  # families actually populate here. Four variants of the same ablation on
-  # differently preprocessed inputs.
+  - name: "Log1p & Paired"
+    experiments:
+      - {name: "Unified - Log1p - Paired",          dir: "${save}/ablation_paired_aggfix", model: unified}
+      - {name: "Contrastive - Log1p - Paired",          dir: "${save}/ablation_paired_aggfix", model: contrastive}
+      - {name: "DAT - Log1p - Paired",          dir: "${save}/ablation_paired_aggfix", model: dat}
 
   - name: "Counts & Paired"
     experiments:
@@ -116,6 +122,7 @@ groups:
       - {name: "Aggregation - Counts - Paired",   dir: "${save}/ablation_paired_counts", model: aggregation}
       - {name: "DAT + Agg - Counts - Paired",        dir: "${save}/ablation_paired_mix", model: dat_agg}
 
+
   - name: "Counts & Paired - CORN"
     experiments:
       - {name: "Unified - Counts - Paired - CORN",         dir: "${save}/ablation_paired_corn", model: unified}
@@ -123,12 +130,27 @@ groups:
       - {name: "Contrastive - Counts - Paired - CORN",     dir: "${save}/ablation_paired_corn", model: contrastive}
       - {name: "Aggregation - Counts - Paired - CORN",     dir: "${save}/ablation_paired_corn", model: aggregation}
 
+  - name: "Precomputed & Non-Paired"
+    experiments:
+      - {name: "Unified - Precomputed",      dir: "${save}/ablation_big_condition", model: unified}
+      - {name: "DAT - Precomputed",          dir: "${save}/ablation_big_condition", model: dat}
+      - {name: "MMD - Precomputed",          dir: "${save}/ablation_big_condition", model: mmd}
+      - {name: "CDD - Precomputed",          dir: "${save}/ablation_big_condition", model: cdd}
+
   - name: "Precomputed & Paired"
     experiments:
       - {name: "MMD - Precomputed - Paired",         dir: "${save}/ablation_paired_alignment_objectives", model: paired_mmd}
       - {name: "CDD - Precomputed - Paired",         dir: "${save}/ablation_paired_alignment_objectives", model: paired_cdd}
       - {name: "MDD + Agg - Precomputed - Paired",   dir: "${save}/ablation_paired_alignment_objectives", model: paired_mmd_agg}
       - {name: "CDD + Agg - Precomputed - Paired",   dir: "${save}/ablation_paired_alignment_objectives", model: paired_cdd_agg}
+
+#   - name: "Test - Two Tissues"
+#     experiments:
+#       - {name: "Unified - Counts - Precomputed - Two Tissues",       dir: "${save}/ablation_monitor_align", model: unified}
+#       - {name: "Condition - Counts - Precomputed - Two Tissues",     dir: "${save}/ablation_monitor_align", model: condition}
+#       - {name: "MMD - Counts - Precomputed - Two Tissues",           dir: "${save}/ablation_monitor_align", model: mmd}
+#       - {name: "DAT - Counts - Precomputed - Two Tissues",           dir: "${save}/ablation_monitor_align", model: dat}
+#       - {name: "CDD - Counts - Precomputed - Two Tissues",          dir: "${save}/ablation_monitor_align", model: cdd}
 
   - name: "Baselines"
     experiments:
@@ -138,6 +160,9 @@ groups:
       - {name: "Bulk baseline - Precomputed",   dir: "${save}/ablation_paired_alignment_objectives", model: bulk_baseline}
       - {name: "SC baseline - Precomputed",   dir: "${save}/ablation_paired_alignment_objectives", model: sc_baseline}
 
+# Excluded: example_ablation_config.json -> ablation_test on data/mixed_test. It is a
+# template (conditions: [tissue], downstream tasks it has never run), so it is left out
+# for the same reason evaluate/analysis_all_experiments.yaml leaves it out.
 
 # ── Alternatives ─────────────────────────────────────────────────────────────────
 #
