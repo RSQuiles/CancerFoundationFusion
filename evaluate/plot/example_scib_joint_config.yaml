@@ -1,0 +1,78 @@
+# One scIB benchmark table over runs from several ablation directories.
+#
+#   ./plot_scib_joint.sh evaluate/plot/example_scib_joint_config.yaml
+#   python evaluate/plot/plot_scib_joint.py --config <this> --dry-run   # no plotting
+#   python evaluate/plot/plot_scib_joint.py --config <this> --list      # what exists
+#
+# Reads {dir}/_scib_metrics/scib_<tag>.csv, which the 'scib' analysis step writes.
+# A model with no row there is skipped with a message; --list shows what each source
+# table actually contains.
+#
+# ── Two things the scIB renderer decides, not this config ───────────────────────
+#  * Row order is scIB's: plot_results_table sorts by the Total column, descending.
+#    The order below only controls which rows are read.
+#  * Values are plotted exactly as saved (min_max_scale: false), because that is how
+#    run_scib_benchmark computed them. See the script docstring before turning
+#    min_max_scale on — the rescaled aggregates are then computed by the script.
+#
+# ── And one about what the table means ──────────────────────────────────────────
+# Each source CSV came from its own eval.h5ad: its own cells, its own gene panel, its
+# own 500-cell subsample. Rows from different directories are therefore several
+# benchmarks shown side by side, not one benchmark, and a gap between two such rows
+# confounds the model with the dataset. Within one directory the comparison is clean.
+
+vars:
+  save: /cluster/work/boeva/rquiles/outputs/save_CFF
+
+tag: bulk_vs_pb        # bulk_vs_pb | paired_vs_nonpaired |
+                       # paired_bulk_vs_paired_pb | nonpaired_bulk_vs_synth_pb
+output: ${save}/scib_joint_bulk_vs_pb.svg
+dpi: 300
+min_max_scale: false
+
+# Omit to plot every column the selected runs share. Restricting is worthwhile here:
+# on tissue_general data BRAS and kBET are computed per label and skip any label
+# holding a single batch, so they often carry almost no signal — see the caveat block
+# in unified_metrics.run_scib_benchmark. iLISI is the global, label-free one.
+# metrics:
+#   - iLISI
+#   - cLISI
+#   - Silhouette label
+#   - Batch correction
+#   - Bio conservation
+#   - Total
+
+# Display names must be unique across the whole config. Groups are only an
+# organisational convenience here — scIB's table is a flat ranking, so they are
+# flattened before plotting.
+groups:
+
+  - name: "Paired · counts"
+    dir: ${save}/ablation_paired_counts
+    experiments:
+      - {name: "Unified (counts)",     model: unified}
+      - {name: "DAT (counts)",         model: dat}
+      - {name: "Contrastive (counts)", model: contrastive}
+      - {name: "Aggregation (counts)", model: aggregation}
+      - {name: "Bulk baseline (counts)", model: bulk_baseline}
+
+  - name: "Paired · CORN"
+    dir: ${save}/ablation_paired_corn
+    experiments:
+      - {name: "Unified (corn)",     model: unified}
+      - {name: "DAT (corn)",         model: dat}
+      - {name: "Contrastive (corn)", model: contrastive}
+
+  # The unintegrated reference every scIB table carries. It is a row of the source
+  # CSV like any other, so it is selected the same way — one is enough, since PCA is
+  # refitted per eval.h5ad and several would just be several different baselines.
+  - name: "Reference"
+    experiments:
+      - {name: "PCA (counts)", dir: "${save}/ablation_paired_counts", model: X_pca}
+
+  # Every model in a directory, without naming them (names default to the directory
+  # names, so this cannot be combined with another all_models group that shares any):
+  #
+  # - name: "Big condition"
+  #   dir: ${save}/ablation_big_condition
+  #   all_models: true

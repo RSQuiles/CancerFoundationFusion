@@ -185,6 +185,40 @@ largest pad (a 3-row figure used to overlap even at the default size).
 `python evaluate/check/check_unified_table.py` self-checks both scripts offline (no
 cluster, GPU or checkpoints needed).
 
+### One scIB table over several ablation directories
+`evaluate/plot/plot_scib_joint.py` (+ `plot_scib_joint.sh`) merges named rows out of
+several `{ablation}/_scib_metrics/scib_<tag>.csv` files and draws them with
+**scib_metrics' own** `Benchmarker.plot_results_table`, so the figure is a real scIB
+benchmark table rather than a lookalike. Nothing is recomputed.
+
+```bash
+./evaluate/plot/plot_scib_joint.sh <cfg> [output]      # needs the bulkFM conda env
+python evaluate/plot/plot_scib_joint.py --config <cfg> --list      # what's on disk
+python evaluate/plot/plot_scib_joint.py --config <cfg> --dry-run   # merge only
+```
+
+Those CSVs are exactly what `Benchmarker.get_results(min_max_scale=False,
+clean_names=True)` returned, `Metric Type` row included — which is why the saved
+table can be fed straight back. `_JointTable` subclasses `Benchmarker`, deliberately
+**skips its `__init__`** (which would demand an AnnData and re-run the benchmark) and
+supplies only the two things the renderer touches: `get_results()` and
+`_embedding_obsm_keys`.
+
+Three things to expect:
+- **Row order is scIB's** — `plot_results_table` sorts by `Total` descending. The
+  config only chooses which rows are read.
+- **Values are plotted as saved.** `min_max_scale` rescales *inside* scIB's
+  `get_results` before the aggregates are formed, so honouring it from a saved table
+  means recomputing `Batch correction` / `Bio conservation` / `Total` — that
+  arithmetic is the script's, not scIB's, and is off by default.
+- **The container cannot run it.** `scib_metrics` lives only in the conda env, the
+  same split that makes `scib` the one analysis step needing it; `--dry-run` works
+  anywhere. Rows from different directories come from different `eval.h5ad` files, so
+  the figure is several benchmarks side by side — it warns per source file.
+
+`python evaluate/check/check_scib_joint.py` self-checks the merge offline and pins the
+renderer contract against a stub; the real renderer still needs one run in `bulkFM`.
+
 ### Do the internal metrics predict downstream performance?
 `evaluate/check/correlate_metrics_downstream.py` Spearman-correlates each
 `unified_metrics.json` metric against one downstream result — by default
@@ -395,6 +429,7 @@ evaluate/
     ├── experiment_selection.py     # Shared YAML run-selection (groups, display names, palette)
     ├── plot_ablation_benchmark.py  # Downstream-task bar grid (results_*.json)
     ├── plot_unified_metrics_table.py # Internal-metrics table (unified_metrics.json + scIB)
+    ├── plot_scib_joint.py           # One scIB table over N ablations, drawn by scIB itself
     ├── example_comparison_config.yaml
     ├── example_unified_metrics_config.yaml
     ├── umaps.py
