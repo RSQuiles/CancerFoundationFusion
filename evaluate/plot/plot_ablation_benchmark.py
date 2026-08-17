@@ -524,6 +524,9 @@ class BenchmarkConfig:
     per_task_figsize: tuple[float, float] | None = None
     # Print a label above each bar, in addition to the legend.
     bar_names: bool = True
+    # Print the task's name on the y-axis of its first subplot. Redundant with
+    # `per_task`, where the task is already in the figure title.
+    task_labels: bool = True
     # That label is a short {group}.{member} handle; the legend carries alias: model.
     bar_aliases: bool = True
     # Multiplies every label size; font_sizes then pins individual roles.
@@ -649,6 +652,7 @@ def load_config(path: Path) -> BenchmarkConfig:
         per_task=bool(raw.get("per_task", False)),
         per_task_figsize=per_task_figsize,
         bar_names=bool(raw.get("bar_names", True)),
+        task_labels=bool(raw.get("task_labels", True)),
         bar_aliases=bool(raw.get("bar_aliases", True)),
         font_scale=float(raw.get("font_scale", 1.0) or 1.0),
         font_sizes=font_sizes,
@@ -1153,6 +1157,7 @@ def _render_figure(
     figsize: tuple[float, float] | None,
     title: str,
     bar_names: bool,
+    task_labels: bool,
     output: Path | None,
     max_cols: int | None = None,
     fonts: FontSizes | None = None,
@@ -1347,7 +1352,7 @@ def _render_figure(
         # Task label as the y-axis label of the task's first subplot. When a task
         # wraps, only the first row is labelled — repeating it down the left edge
         # (or, worse, on a centred lone subplot) reads as a new task.
-        if task not in labelled_tasks:
+        if task_labels and task not in labelled_tasks:
             ax.set_ylabel(
                 TASK_LABELS.get(task, task),
                 fontsize=fonts.task_label,
@@ -1436,6 +1441,7 @@ def plot_benchmark(
     per_task: bool = False,
     per_task_figsize: tuple[float, float] | None = None,
     bar_names: bool = True,
+    task_labels: bool = True,
     font_scale: float = 1.0,
     font_sizes: dict[str, float] | None = None,
     y_max: dict[str, float] | None = None,
@@ -1530,6 +1536,7 @@ def plot_benchmark(
         named_groups=named_groups,
         grouped=bool(groups),
         bar_names=bar_names,
+        task_labels=task_labels,
         fonts=fonts,
         y_max=y_max,
         aliases=alias_map,
@@ -1695,6 +1702,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--task-labels",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Print the task's name on the y-axis of its first subplot "
+            "(default: on). Redundant with --per-task, where the task is already "
+            "in the figure title. Overrides the config's 'task_labels' key."
+        ),
+    )
+    parser.add_argument(
         "--no-csv",
         action="store_true",
         help=(
@@ -1784,6 +1801,7 @@ def main() -> None:
     per_task = bool(args.per_task) if args.per_task is not None else False
     per_task_figsize = tuple(args.per_task_figsize) if args.per_task_figsize else None
     bar_names = bool(args.bar_names) if args.bar_names is not None else True
+    task_labels = bool(args.task_labels) if args.task_labels is not None else True
     bar_aliases = bool(args.bar_aliases) if args.bar_aliases is not None else True
     font_scale = args.font_scale if args.font_scale is not None else 1.0
     font_sizes = _parse_pairs(args.font_size, "font-size")
@@ -1802,6 +1820,9 @@ def main() -> None:
         per_task = args.per_task if args.per_task is not None else config.per_task
         per_task_figsize = per_task_figsize or config.per_task_figsize
         bar_names = args.bar_names if args.bar_names is not None else config.bar_names
+        task_labels = (
+            args.task_labels if args.task_labels is not None else config.task_labels
+        )
         bar_aliases = (
             args.bar_aliases if args.bar_aliases is not None else config.bar_aliases
         )
@@ -1894,6 +1915,7 @@ def main() -> None:
         per_task=per_task,
         per_task_figsize=per_task_figsize,
         bar_names=bar_names,
+        task_labels=task_labels,
         bar_aliases=bar_aliases,
         font_scale=font_scale,
         font_sizes=font_sizes or None,
