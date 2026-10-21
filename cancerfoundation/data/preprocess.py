@@ -4,6 +4,50 @@ import numpy as np
 import torch
 
 
+def looks_like_counts(X, max_rows: int = 512, seed: int = 0) -> bool:
+    """Return True when ``X`` looks like raw counts rather than log1p values.
+
+    Two conditions must hold, because either alone gives false positives:
+      - the maximum exceeds 20 (log1p of a plausible CP10K value stays well below
+        that), and
+      - the values are integral (counts are whole numbers; log1p values are not).
+
+    Accepts dense arrays, scipy sparse matrices, and torch tensors. Only the
+    non-zero entries of at most ``max_rows`` randomly drawn rows are inspected, so
+    this is cheap enough to call on a full expression matrix.
+
+    Note this is a heuristic, not a guarantee: a CPM matrix that happens to be
+    integral would be reported as counts. Prefer an explicit flag (the training
+    ``--input-data`` argument, or ``embed(normalized=...)``) where one exists, and
+    use this to *check* that flag rather than to replace it.
+    """
+    import scipy.sparse as sp
+
+    if isinstance(X, torch.Tensor):
+        X = X.detach().cpu().numpy()
+
+    n_rows = X.shape[0] if X.ndim == 2 else 1
+    if n_rows > max_rows:
+        rng = np.random.default_rng(seed)
+        rows = np.sort(rng.choice(n_rows, size=max_rows, replace=False))
+        X = X[rows]
+
+    if sp.issparse(X):
+        vals = np.asarray(X.tocsr().data)
+    else:
+        vals = np.asarray(X).ravel()
+        vals = vals[vals != 0]
+
+    if vals.size == 0:
+        return False
+
+    vals = vals[np.isfinite(vals)].astype(np.float64)
+    if vals.size == 0:
+        return False
+
+    return bool(vals.max() > 20) and bool(np.allclose(vals, np.round(vals)))
+
+
 def _digitize(x: np.ndarray, bins: np.ndarray, side="both") -> np.ndarray:
     """
     Digitize the data into bins. This method spreads data uniformly when bins

@@ -5,7 +5,7 @@ from typing import Optional
 from pathlib import Path
 
 sys.path.insert(0, "../")
-from utils import get_args, MyProgressBar
+from utils import get_args, MyProgressBar, LossCSVLogger
 from cancerfoundation.model.model import CancerFoundation
 from cancerfoundation.data.data_module import BulkSCDataModule
 import pytorch_lightning as pl
@@ -32,6 +32,7 @@ def train_model(
     log_interval: int,
     save_every: bool,
     ckpt_every_n_steps: Optional[int] = None,
+    metrics_log_interval: Optional[int] = None,
     verbose: bool = False,
 ):
     """
@@ -73,6 +74,16 @@ def train_model(
             save_top_k=-1 if save_every else 1,
         )
         callbacks.append(step_checkpoint_callback)
+
+    # Local CSV log of all train/val metrics (offline complement to W&B).
+    # Train rows are written every `metrics_interval` optimizer steps; default matches
+    # the step-checkpoint cadence, falling back to the progress-bar log interval.
+    metrics_interval = (
+        metrics_log_interval
+        if metrics_log_interval is not None
+        else (ckpt_every_n_steps if ckpt_every_n_steps is not None else log_interval)
+    )
+    callbacks.append(LossCSVLogger(save_dir, interval=metrics_interval))
 
     # Learning rate monitoring
     lr_monitor = LearningRateMonitor(logging_interval="step")
@@ -171,6 +182,34 @@ def main(input_args=None):
         raise ValueError(
             "Aggregation consistency losses are only supported with unified_fm=True."
         )
+    if args.precomputed_pb and not args.unified:
+        raise ValueError("--precomputed-pb is only supported with --unified.")
+    if args.precomputed_pb and not args.pb_label:
+        raise ValueError(
+            "--precomputed-pb requires --pb-label (the modality label identifying the "
+            "precomputed pseudobulk rows in the memory-mapped dataset)."
+        )
+    if args.precomputed_pb and args.agg_consistency and not args.pb_id_column:
+        raise ValueError(
+            "--precomputed-pb with --agg-consistency requires --pb-id-column: the "
+            "constituent single cells of a precomputed pseudobulk are found by matching "
+            "that obs column. Pass --pb-id-column pseudobulk_id (written by "
+            "data_preprocess/reconstruct_pseudobulk_cell_map.py --rebuild and carried "
+            "through bulk_sc_data_preprocessing.py), or drop --agg-consistency."
+        )
+    if args.paired_sampling and not args.unified:
+        raise ValueError(
+            "--paired-sampling is only supported with --unified: the paired alignment "
+            "loss matches rows by their modality, which is injected into the "
+            "conditions only in unified mode."
+        )
+    if args.paired_sampling and not args.pb_label:
+        raise ValueError(
+            "--paired-sampling requires --pb-label: paired batches match a precomputed "
+            "pseudobulk row to a bulk row by shared pair id, so the dataset must contain "
+            "precomputed pseudobulk rows identified by --pb-label. Without them no paired "
+            "batch can be formed."
+        )
     if args.agg_consistency and not args.agg_fn:
         # Fallback to sum
         args.agg_fn = "sum"
@@ -182,12 +221,67 @@ def main(input_args=None):
         raise ValueError(
             "--esm-emb requires --esm-emb-path to point to the pretrained gene embedding parquet file."
         )
+    if args.monitor_losses and not args.unified:
+        raise ValueError(
+            "--monitor-losses is only supported with --unified: the monitored auxiliary "
+            "losses operate on the bulk/pseudobulk embeddings injected only in unified mode."
+        )
+    if "cdd" in args.monitor_losses and args.cdd_class_column not in args.conditions:
+        print(
+            f"[monitor] 'cdd' requested for monitoring but --cdd-class-column "
+            f"'{args.cdd_class_column}' is not in --conditions {args.conditions}; "
+            f"loss_cdd_monitor will not be logged."
+        )
+    if args.cdd and not args.unified:
+        raise ValueError("The CDD loss (--cdd) is only supported with unified_fm=True.")
+    if args.cdd and args.cdd_class_column not in args.conditions:
+        raise ValueError(
+            f"--cdd-class-column '{args.cdd_class_column}' must be one of --conditions {args.conditions}."
+        )
+    if args.condition_encoders is not None:
+        # Effective condition set includes the auto-added "modality" under --unified.
+        effective_conditions = (
+            (args.conditions or []) + ["modality"] if args.unified else (args.conditions or [])
+        )
+        unknown_enc = set(args.condition_encoders) - set(effective_conditions)
+        if unknown_enc:
+            raise ValueError(
+                f"--condition-encoders {sorted(unknown_enc)} must be a subset of the "
+                f"conditions {effective_conditions}."
+            )
+    if args.cdd_infer_labels and not args.cdd:
+        raise ValueError("--cdd-infer-labels requires --cdd.")
+    if args.cdd_class_aware and not args.pb_group_column:
+        raise ValueError("--cdd-class-aware requires --pb-group-column (the tissue column).")
+    if not 0.0 <= args.cdd_bulk_class_frac <= 1.0:
+        raise ValueError(
+            f"--cdd-bulk-class-frac must be in [0, 1], got {args.cdd_bulk_class_frac}."
+        )
+    # --cdd-class-aware composes with --paired-sampling: the sampler still yields a
+    # paired batch every paired_every_n steps and a class-aware batch otherwise.
+    # The CDD loss is computed only on the (class-aware) non-paired batches; paired
+    # batches use the paired alignment loss instead.
+
+    # CDD's warmup exists so the marginal MMD can pull the bulk and pseudobulk clouds
+    # together before the first clustering runs; without an aligner the warmup does
+    # nothing and the source-seeded centroids have no chance of competing. Enable MMD
+    # for that window if the user did not. It decays to --cdd-mmd-final-weight (0 by
+    # default) once the ramp completes, so an auto-enabled MMD turns itself back off.
+    cdd_source_fallback = not args.cdd_no_source_fallback
+    if args.cdd and args.cdd_cluster_warmup_steps > 0 and not args.mmd:
+        args.mmd = True
+        print(
+            f"[CDD] --mmd auto-enabled for the {args.cdd_cluster_warmup_steps}-step warmup "
+            f"(weight {args.loss_weight_mmd}), decaying to {args.cdd_mmd_final_weight} "
+            f"over the following {args.cdd_ramp_steps} steps as CDD ramps in."
+        )
 
     datamodule = BulkSCDataModule(
         data_path=args.train_path,
         zero_percentages=args.zero_percentages,
         batch_size=args.batch_size,
         epoch_size=args.epoch_size,
+        epoch_coverage=args.epoch_coverage,
         conditions=args.conditions + ["modality"] if args.unified else args.conditions,
         balance_primary=args.balance_primary,
         balance_secondary=args.balance_secondary,
@@ -210,10 +304,16 @@ def main(input_args=None):
         pb_group_column=args.pb_group_column,
         agg_consistency=args.agg_consistency,
         pb_label=args.pb_label,
+        precomputed_pb=args.precomputed_pb,
         paired_sampling=args.paired_sampling,
         paired_every_n=args.paired_every_n,
         paired_column=args.paired_column,
+        pb_id_column=args.pb_id_column,
         verbose=args.verbose,
+        class_aware_cdd=args.cdd_class_aware,
+        cdd_exclude_labels=args.cdd_exclude_labels,
+        cdd_min_class_count=args.cdd_min_class_count,
+        cdd_bulk_class_frac=args.cdd_bulk_class_frac,
     )
     datamodule.setup(stage="fit")
 
@@ -259,6 +359,7 @@ def main(input_args=None):
         if args.unified
         else args.conditions,
         conditions_nums=datamodule.conditions_nums if args.conditions else None,
+        encoded_conditions=args.condition_encoders,
         mvc_decoder_style=args.mvc_decoder_style,
         scale_zero_expression=args.scale_zero_expression,
         data_path=args.train_path,
@@ -279,6 +380,8 @@ def main(input_args=None):
         normalise_bins=args.normalise_bins,
         where_condition=args.where_condition,
         gen_method=args.gen_method,
+        grad_checkpoint=args.grad_checkpoint,
+        attn_impl=args.attn_impl,
         their_init_weights=args.their_init_weights,
         # Unified FM parameters
         contrastive=args.contrastive_training,
@@ -298,7 +401,26 @@ def main(input_args=None):
         weight_agg=args.loss_weight_agg,
         weight_dat=args.loss_weight_dat,
         weight_reconstruction=args.loss_weight_reconstruction,
+        monitor_losses=args.monitor_losses,
         n_sc_per_pseudobulk=args.n_sc_per_pseudobulk,
+        # Contrastive Domain Discrepancy (CAN)
+        cdd=args.cdd,
+        weight_cdd=args.loss_weight_cdd,
+        cdd_class_column=args.cdd_class_column,
+        cdd_min_class_count=args.cdd_min_class_count,
+        cdd_exclude_labels=args.cdd_exclude_labels,
+        cdd_class_aware=args.cdd_class_aware,
+        cdd_infer_labels=args.cdd_infer_labels,
+        cdd_cluster_warmup_steps=args.cdd_cluster_warmup_steps,
+        cdd_cluster_interval=args.cdd_cluster_interval,
+        cdd_cluster_iters=args.cdd_cluster_iters,
+        cdd_cluster_ambiguity=args.cdd_cluster_ambiguity,
+        cdd_cluster_min_size=args.cdd_cluster_min_size,
+        cdd_relabel_known=args.cdd_relabel_known,
+        cdd_cluster_source_fallback=cdd_source_fallback,
+        cdd_cluster_source_pb=args.cdd_cluster_source_pb,
+        cdd_ramp_steps=args.cdd_ramp_steps,
+        cdd_mmd_final_weight=args.cdd_mmd_final_weight,
     )
 
     if args.pretrained:
@@ -331,6 +453,7 @@ def main(input_args=None):
         log_interval=args.log_interval,
         save_every=args.save_every,
         ckpt_every_n_steps=args.ckpt_every_n_steps,
+        metrics_log_interval=args.metrics_log_interval,
         verbose=args.verbose,
     )
 

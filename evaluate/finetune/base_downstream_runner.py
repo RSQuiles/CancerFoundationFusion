@@ -25,6 +25,7 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 
 from evaluate.finetune.downstream_task import DownstreamTask
+from evaluate.finetune.normalization import resolve_policy
 from evaluate.finetune.utils import (
     SequentialDistributedSampler,
     distributed_concat,
@@ -181,8 +182,7 @@ class BaseDownstreamRunner:
         sys.path.insert(0, "../")
         from cancerfoundation.model.model import CancerFoundation
 
-        embedder = CancerFoundation.load_from_checkpoint(resolved_path, strict=False)
-        embedder.eval()
+        embedder = CancerFoundation.load_for_inference(resolved_path)
         for param in embedder.parameters():
             param.requires_grad = self.finetune
 
@@ -213,15 +213,23 @@ class BaseDownstreamRunner:
 
         # FINETUNE BRANCH (single-fold only — multi-fold delegates to prepare_datasets)
         if self.finetune and hasattr(self.embedder, "preprocess_for_embedding"):
-            normalized = bool(getattr(self.task_cfg, "normalized", False))
             # Modality drives gene selection (sc → seurat HVG, bulk/pseudobulk → log1p+MAD)
             modality = str(getattr(self.task_cfg, "modality", "sc"))
+
+            # Normalize here, per the policy, then preprocess as a pass-through
+            # (normalized=True). CP10K+log1p is per-row with no fitted state, so
+            # applying it per split is identical to applying it before the split.
+            policy = resolve_policy(self.task_cfg, None)
+            if self.is_master:
+                log.info("Fine-tuning mode: normalization policy — %s", policy.describe())
+            train_adata, _ = policy.apply(train_adata, task=self.task.task_name)
+            test_adata, _ = policy.apply(test_adata, task=self.task.task_name)
 
             # Preprocess train adata — gene selection runs on training cells only
             if self.is_master:
                 log.info("Fine-tuning mode: preprocessing train split for embedding...")
             processed_train = self.embedder.preprocess_for_embedding(
-                train_adata, normalized=normalized, modality=modality
+                train_adata, normalized=True, modality=modality
             )
             kept_genes = processed_train.var.index.tolist()
 
@@ -229,7 +237,7 @@ class BaseDownstreamRunner:
             if self.is_master:
                 log.info("Fine-tuning mode: preprocessing test split with train gene set...")
             processed_test = self.embedder.preprocess_for_embedding(
-                test_adata, normalized=normalized, gene_subset=kept_genes, modality=modality
+                test_adata, normalized=True, gene_subset=kept_genes, modality=modality
             )
 
             gene_ids = torch.LongTensor([self.embedder.vocab[g] for g in kept_genes])
@@ -569,6 +577,19 @@ class BaseDownstreamRunner:
             self.pretrained_model_stem = type(self.embedder).__name__
             if self.is_master:
                 log.info("Using externally provided embedder: %s", self.pretrained_model_stem)
+
+        # Fine-tuning runs the embedder inside the training loop, so it has to live on
+        # the same device as the head. load_for_inference() returns a CPU model
+        # (map_location="cpu") and the frozen path only gets away with it because each
+        # task's own _embed_adata calls embedder.cuda() — this branch never does, and
+        # embed_for_finetune() takes its device from the embedder's own parameters, so
+        # without this it drags the CUDA batch back to CPU and the head then rejects a
+        # CPU tensor. Before _build_optimization so the optimizer's lazily-created
+        # state is allocated on the right device.
+        if self.finetune and hasattr(self.embedder, "to"):
+            self.embedder = self.embedder.to(self.device)
+            if self.is_master:
+                log.info("Moved embedder to %s for fine-tuning", self.device)
 
         # Load data and build components
         self._build_loaders()

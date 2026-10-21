@@ -10,7 +10,15 @@ import scanpy as sc
 from cancerfoundation.model.perturbation_model import PerturbationTransformer
 from cancerfoundation.utils import load_pretrained
 from cancerfoundation.model.module import TransformerModule
-from cancerfoundation.data.preprocess import binning
+from cancerfoundation.data.bulk_sc_collator import BULK_MODALITY, PB_MODALITY
+from cancerfoundation.data.preprocess import binning, looks_like_counts
+# Modality-aware gene-panel selection lives in cancerfoundation/data/gene_panel.py,
+# kept free of torch/lightning imports so it can be exercised without a checkpoint.
+from cancerfoundation.data.gene_panel import (  # noqa: F401  (re-exported)
+    _classify_modality,
+    _top_mad_genes,
+    select_shared_panel,
+)
 from cancerfoundation.loss import get_loss
 from safetensors import safe_open
 from cancerfoundation.loss import LossType
@@ -18,47 +26,6 @@ from pytorch_lightning.utilities.types import OptimizerLRSchedulerConfig
 import torch.nn.functional as F
 from tqdm import tqdm
 import time
-
-# ---------------------------------------------------------------------------
-# Module-level helpers for modality-aware HVG selection
-# ---------------------------------------------------------------------------
-_SC_MODALITY_NORM: frozenset = frozenset({
-    "sc", "singlecell", "scrna", "scrnaseq", "subsampled", "pairedsc",
-})
-_PB_MODALITY_NORM: frozenset = frozenset({
-    "pseudobulk", "synthpb", "pairedpb", "pseudo",
-})
-
-def _classify_modality(val: str) -> str:
-    """Map a raw modality label to 'sc', 'pseudobulk', or 'bulk'."""
-    norm = val.lower().replace(" ", "").replace("-", "").replace("_", "")
-    if norm in _SC_MODALITY_NORM or norm.startswith("sc"):
-        return "sc"
-    if "pseudo" in norm or norm in _PB_MODALITY_NORM:
-        return "pseudobulk"
-    return "bulk"
-
-
-def _top_mad_genes(X, n_top: int) -> np.ndarray:
-    """Return indices of the ``n_top`` genes (columns) with highest MAD.
-
-    MAD (median absolute deviation) is computed on the values as passed — in this
-    pipeline the data is already log1p-transformed by the time gene selection runs,
-    so this is log1p + MAD. Robust to the composition-driven variance that dominates
-    bulk/pseudobulk expression.
-    """
-    X = X if isinstance(X, np.ndarray) else X.toarray()
-
-    # Detect if data is likely not log1p-transformed.
-    # Heuristic: log1p data has a max value typically well below 20;.
-    if X.max() > 20:
-        print("  [INFO] Non-log1p data detected. Normalizing!") 
-        X = np.log1p(X)
-
-    med = np.median(X, axis=0)
-    mad = np.median(np.abs(X - med), axis=0)
-    return np.argsort(mad)[-n_top:]
-
 
 class CancerFoundation(pl.LightningModule):
     """The main PyTorch Lightning module for the Cancer Foundation model.
@@ -68,6 +35,25 @@ class CancerFoundation(pl.LightningModule):
     optimizer and scheduler setup, and the training/validation loops required by PyTorch Lightning.
     """
 
+    @classmethod
+    def load_for_inference(cls, path, map_location: str = "cpu", **overrides):
+        """Load a checkpoint for evaluation or embedding, tolerating code drift.
+
+        Prefer this over ``load_from_checkpoint`` anywhere the model is only used
+        to produce embeddings or reconstructions: it repairs hyperparameters that
+        predate current constructor arguments, strips the ``torch.compile`` key
+        prefix, and drops the training-only DAT discriminators. See
+        ``cancerfoundation/checkpoint.py``. Not suitable for resuming training.
+        """
+        from cancerfoundation.checkpoint import load_for_inference
+
+        return load_for_inference(path, map_location=map_location, **overrides)
+
+    # NOTE: new arguments below must be added *with a default*, chosen to
+    # reproduce the previous behaviour. `save_hyperparameters()` stores this
+    # signature into every checkpoint, and Lightning replays it on load, so a new
+    # required argument breaks every checkpoint saved before it (see
+    # cancerfoundation/checkpoint.py).
     def __init__(
         self,
         n_bins: int,
@@ -112,6 +98,8 @@ class CancerFoundation(pl.LightningModule):
         where_condition: str,
         gen_method: str,
         their_init_weights: bool,
+        grad_checkpoint: bool = False,
+        attn_impl: str = "mha",
         dat_start_step: int = 0,
         dat_interval_steps: int = 1,
         perturbation: bool = False,
@@ -126,6 +114,7 @@ class CancerFoundation(pl.LightningModule):
         esm_emb_path: Optional[Union[str, os.PathLike]] = None,
         esm_emb_finetune: bool = False,
         dat_columns: Optional[List[str]] = [],
+        encoded_conditions: Optional[List[str]] = None,
         paired_alignment: bool = False,
         verbose: bool = False,
         weight_mvc: float = 1.0,
@@ -135,7 +124,26 @@ class CancerFoundation(pl.LightningModule):
         weight_agg: float = 1.0,
         weight_dat: float = 1.0,
         weight_reconstruction: float = 1.0,
+        monitor_losses: Optional[List[str]] = None,
         n_sc_per_pseudobulk: int = 10,
+        # Contrastive Domain Discrepancy (CAN) parameters
+        cdd: bool = False,
+        weight_cdd: float = 0.3,
+        cdd_class_column: str = "tissue_general",
+        cdd_min_class_count: int = 2,
+        cdd_exclude_labels: Optional[List[str]] = None,
+        cdd_class_aware: bool = False,
+        cdd_infer_labels: bool = False,
+        cdd_cluster_warmup_steps: int = 2000,
+        cdd_cluster_interval: int = 0,
+        cdd_cluster_iters: int = 10,
+        cdd_cluster_ambiguity: float = 0.05,
+        cdd_cluster_min_size: int = 3,
+        cdd_relabel_known: bool = False,
+        cdd_cluster_source_fallback: bool = True,
+        cdd_cluster_source_pb: int = 8,
+        cdd_ramp_steps: int = 1000,
+        cdd_mmd_final_weight: float = 0.0,
     ):
         """Initializes the CancerFoundation LightningModule.
 
@@ -236,7 +244,28 @@ class CancerFoundation(pl.LightningModule):
         self.weight_agg = weight_agg
         self.weight_dat = weight_dat
         self.weight_reconstruction = weight_reconstruction
+        self.monitor_losses = list(monitor_losses or [])
         self.n_sc_per_pseudobulk = n_sc_per_pseudobulk
+
+        # Contrastive Domain Discrepancy (CAN) parameters
+        self.cdd = cdd
+        self.weight_cdd = weight_cdd
+        self.cdd_class_column = cdd_class_column
+        self.cdd_min_class_count = cdd_min_class_count
+        self.cdd_exclude_labels = cdd_exclude_labels or ["unknown"]
+        self.cdd_class_aware = cdd_class_aware
+        self.cdd_infer_labels = cdd_infer_labels
+        self.cdd_cluster_warmup_steps = cdd_cluster_warmup_steps
+        self.cdd_cluster_interval = cdd_cluster_interval
+        self.cdd_cluster_iters = cdd_cluster_iters
+        self.cdd_cluster_ambiguity = cdd_cluster_ambiguity
+        self.cdd_cluster_min_size = cdd_cluster_min_size
+        self.cdd_relabel_known = cdd_relabel_known
+        self.cdd_cluster_source_fallback = cdd_cluster_source_fallback
+        self.cdd_cluster_source_pb = cdd_cluster_source_pb
+        self.cdd_ramp_steps = cdd_ramp_steps
+        self.cdd_mmd_final_weight = cdd_mmd_final_weight
+        self._cdd_row_collator = None
 
         # Training configuration
         self.pad_token = "<pad>"
@@ -253,8 +282,11 @@ class CancerFoundation(pl.LightningModule):
         self.no_invert_dat = no_invert_dat
         self.conditions = conditions
         self.conditions_nums = conditions_nums
+        self.encoded_conditions = encoded_conditions
         self.where_condition = where_condition
         self.gen_method = gen_method
+        self.grad_checkpoint = grad_checkpoint
+        self.attn_impl = attn_impl
 
         self.normalise_bins = normalise_bins
         self.dat_scale = dat_scale
@@ -331,6 +363,8 @@ class CancerFoundation(pl.LightningModule):
                 where_condition=self.where_condition,
                 max_seq_len=self.max_seq_len,
                 gen_method=self.gen_method,
+                grad_checkpoint=self.grad_checkpoint,
+                attn_impl=self.attn_impl,
                 pert_pad_id=2,
                 their_init_weights=self.their_init_weights,
                 vocab=self.vocab,
@@ -358,6 +392,7 @@ class CancerFoundation(pl.LightningModule):
                 use_generative_training=self.USE_GENERATIVE_TRAINING,
                 do_dat=self.do_dat,
                 dat_columns=self.dat_columns,
+                encoded_conditions=self.encoded_conditions,
                 no_invert_dat=self.no_invert_dat,
                 explicit_zero_prob=self.explicit_zero_prob,
                 activation=self.activation,
@@ -370,6 +405,8 @@ class CancerFoundation(pl.LightningModule):
                 where_condition=self.where_condition,
                 max_seq_len=self.max_seq_len,
                 gen_method=self.gen_method,
+                grad_checkpoint=self.grad_checkpoint,
+                attn_impl=self.attn_impl,
                 their_init_weights=self.their_init_weights,
                 # Unified FM parameters
                 contrastive=self.contrastive,
@@ -388,6 +425,19 @@ class CancerFoundation(pl.LightningModule):
                 weight_agg=self.weight_agg,
                 weight_dat=self.weight_dat,
                 weight_reconstruction=self.weight_reconstruction,
+                monitor_losses=self.monitor_losses,
+                # Contrastive Domain Discrepancy (CAN). Exclude-label codes are
+                # resolved from the category mapping in setup() (needs the datamodule).
+                cdd=self.cdd,
+                weight_cdd=self.weight_cdd,
+                cdd_class_column=self.cdd_class_column,
+                cdd_min_class_count=self.cdd_min_class_count,
+                cdd_infer_labels=self.cdd_infer_labels,
+                cdd_cluster_iters=self.cdd_cluster_iters,
+                cdd_cluster_ambiguity=self.cdd_cluster_ambiguity,
+                cdd_cluster_min_size=self.cdd_cluster_min_size,
+                cdd_relabel_known=self.cdd_relabel_known,
+                cdd_cluster_source_fallback=self.cdd_cluster_source_fallback,
             )
         if self.compile_model:
             self.model = torch.compile(self.model)
@@ -427,6 +477,323 @@ class CancerFoundation(pl.LightningModule):
 
         return loss_dict
 
+    # ------------------------------------------------------------------
+    # Contrastive Domain Discrepancy (CAN) — target-label bank setup + clustering
+    # ------------------------------------------------------------------
+    def setup(self, stage=None):
+        """Resolve CDD exclude-label codes and (if inferring labels) build the
+        bulk target-label bank from the datamodule's dataset."""
+        if not self.cdd or stage not in (None, "fit"):
+            return
+        core = getattr(self.model, "_orig_mod", self.model)  # unwrap torch.compile
+        dm = getattr(self.trainer, "datamodule", None)
+        dataset = getattr(dm, "dataset", None) if dm is not None else None
+        if dataset is None:
+            return
+
+        class_map = (getattr(dataset, "mapping", {}) or {}).get(self.cdd_class_column, {})
+        exclude_codes = [int(code) for name, code in class_map.items() if name in self.cdd_exclude_labels]
+        core.cdd_exclude_class_codes = tuple(exclude_codes)
+
+        if not self.cdd_infer_labels:
+            return
+
+        # Build the target-label bank over the FULL dataset index space (Subset
+        # __getitem__ forwards original indices, so _row_index is original-space).
+        bulk_idx = np.asarray(dataset.bulk_indices)
+        n_bulk = int(len(bulk_idx))
+        n_total = len(dataset)
+        tissue_arr = np.asarray(dataset._obs_arrays[self.cdd_class_column]).astype(np.int64)
+        bulk_tissue = tissue_arr[bulk_idx]
+        exclude_set = set(exclude_codes)
+        row_to_bulk_local = np.full(n_total, -1, dtype=np.int64)
+        row_to_bulk_local[bulk_idx] = np.arange(n_bulk, dtype=np.int64)
+
+        # The CDD class space is what the SOURCE can supply: a class the source cannot
+        # produce can never form a D(c,c') pair, whatever the bulk says. The source is the
+        # single cells normally, or the precomputed pseudobulk rows in --precomputed-pb
+        # mode — so the class space must be derived from whichever pool actually feeds the
+        # modality-2 (pseudobulk) half of the batch.
+        precomputed_pb = bool(getattr(dm, "precomputed_pb", False))
+        if precomputed_pb:
+            src_idx = np.asarray(getattr(dataset, "pb_indices", np.array([], dtype=np.int64)))
+        else:
+            src_idx = np.asarray(getattr(dataset, "sc_indices", np.array([], dtype=np.int64)))
+        src_tissue = {int(c) for c in tissue_arr[src_idx]} if src_idx.size else set()
+        class_ids = sorted(src_tissue - exclude_set)
+        class_set = set(class_ids)
+
+        # A bulk label is trusted only if it names a class in that space. Everything
+        # else is handed to the clustering rather than dropped: both the literal
+        # "unknown" bulk and the bulk-only tissues that have no single-cell
+        # counterpart (e.g. "esophagus"), which would otherwise carry a real label
+        # that matches no class and so never train.
+        is_unknown = np.array([int(c) not in class_set for c in bulk_tissue], dtype=bool)
+        known_label = np.where(is_unknown, -1, bulk_tissue).astype(np.int64)
+
+        core.init_target_bank(n_bulk, known_label, is_unknown, row_to_bulk_local, class_ids)
+        if self.verbose:
+            n_excluded = int(sum(int(c) in exclude_set for c in bulk_tissue))
+            n_infer = int(is_unknown.sum())
+            print(
+                f"[CDD] target-label bank: {n_bulk} bulk rows, {n_infer} to infer "
+                f"({n_excluded} explicitly unknown, {n_infer - n_excluded} unmatched "
+                f"tissue), {len(class_ids)} candidate classes."
+            )
+
+    def _cdd_refresh_collator(self):
+        """Lazily build (and cache) the per-row collator used by the refresh passes."""
+        if getattr(self, "_cdd_row_collator", None) is None:
+            dm = getattr(self.trainer, "datamodule", None)
+            if dm is None or not hasattr(dm, "make_cdd_refresh_collator"):
+                return None
+            self._cdd_row_collator = dm.make_cdd_refresh_collator()
+        return self._cdd_row_collator
+
+    @torch.no_grad()
+    def _encode_rows(self, samples, collator, chunk_size: int = 64):
+        """Encode a list of per-row sample dicts into normalized CLS embeddings."""
+        device = self.device
+        out = []
+        for start in range(0, len(samples), chunk_size):
+            batch = collator(samples[start : start + chunk_size])
+            conditions = batch.get("conditions")
+            if conditions is not None:
+                conditions = {k: v.to(device) for k, v in conditions.items()}
+            emb = self.model.encode_cls(
+                batch["gene"].to(device),
+                batch["masked_expr"].to(device),  # do_mlm=False, so unmasked
+                batch["gene_key_padding_mask"].to(device),
+                conditions=conditions,
+            )
+            out.append(F.normalize(emb.float(), dim=1))
+        return torch.cat(out, 0) if out else None
+
+    @torch.no_grad()
+    def _refresh_bulk_bank(self, core, dataset):
+        """Re-encode every bulk row under the CURRENT weights.
+
+        The streamed per-step bank mixes embeddings written by different model states,
+        which the clustering then compares as if they were commensurable. Re-encoding
+        in one pass removes that, and fills the bank for every bulk row regardless of
+        what the sampler happened to draw.
+        """
+        collator = self._cdd_refresh_collator()
+        if collator is None:
+            return False
+        bulk_idx = np.asarray(dataset.bulk_indices)
+        # row_to_bulk_local maps dataset.bulk_indices[k] -> k, so iterating in this
+        # order yields bank-local ids 0..n_bulk-1 and needs no index plumbing.
+        # Stamp the canonical bulk modality (not the raw mapping code): this plain
+        # collator does not apply BulkSCCollator's modality override, so without this
+        # the condition token — and thus the bank embeddings — would disagree with the
+        # training path whenever preprocessing did not encode bulk as code 0.
+        modality_col = dataset.modality_column
+        samples = []
+        for i in bulk_idx:
+            s = dataset[int(i)]
+            s[modality_col] = BULK_MODALITY
+            samples.append(s)
+        feats = self._encode_rows(samples, collator)
+        if feats is None:
+            return False
+        core.bank_emb.copy_(feats.to(core.bank_emb.dtype))
+        core.bank_filled.fill_(True)
+        return True
+
+    @torch.no_grad()
+    def _refresh_source_means(self, core, dataset):
+        """Estimate the source (pseudobulk) class means under the CURRENT weights.
+
+        The source means seed the clustering's fallback centroids for tissues with no bulk
+        anchors, and recluster()'s offset correction is only valid if src_mean and bank_emb
+        come from one model state AND one source construction. So the means must be built
+        from whatever actually feeds the batch's pseudobulk half:
+
+        - default: pseudobulks aggregated on the fly from randomly drawn cells (re-drawn
+          here rather than EMA-tracked, which would smear over a changing composition);
+        - --precomputed-pb: the precomputed pseudobulk rows themselves, encoded directly.
+        """
+        collator = self._cdd_refresh_collator()
+        if collator is None:
+            return
+
+        # --precomputed-pb: encode precomputed PB rows directly (no SC aggregation).
+        # They carry the raw mapping pb_code in obs; stamp the canonical PB modality
+        # below so the condition token matches the training path regardless of how
+        # preprocessing encoded modality.
+        precomputed_pb = bool(
+            getattr(getattr(self.trainer, "datamodule", None), "precomputed_pb", False)
+        )
+        if precomputed_pb:
+            pb_group_to_idx = getattr(dataset, "pb_group_to_indices", None)
+            if pb_group_to_idx is None:
+                return
+            # Seeded on the step alone: every rank shares global_step, so all ranks draw
+            # the same PB rows and derive identical centroids without communicating.
+            rng = np.random.default_rng(1234 + int(self.global_step))
+            cap = max(1, int(self.cdd_cluster_source_pb))
+            class_ids = core.cdd_class_ids.tolist()
+            means = torch.zeros_like(core.src_mean)
+            counts = torch.zeros_like(core.src_count)
+            for k, c in enumerate(class_ids):
+                pool = pb_group_to_idx.get(c)
+                if pool is None or len(pool) == 0:
+                    continue
+                n_take = min(len(pool), cap)
+                pick = rng.choice(len(pool), size=n_take, replace=False)
+                samples = [dataset[int(pool[j])] for j in pick]
+                for s in samples:
+                    s[dataset.modality_column] = PB_MODALITY
+                feats = self._encode_rows(samples, collator)
+                if feats is None:
+                    continue
+                means[k] = F.normalize(feats.mean(0), dim=0).to(means.dtype)
+                counts[k] = len(samples)
+            core.set_source_means(means, counts)
+            return
+
+        group_to_idx = getattr(dataset, "sc_group_to_indices", None)
+        if group_to_idx is None:
+            return
+        train_collator = getattr(self.trainer.train_dataloader, "collate_fn", None)
+        if train_collator is None or not hasattr(train_collator, "_aggregate_sc"):
+            return
+
+        modality_col = getattr(dataset, "modality_column", None)
+        if modality_col is None:
+            return
+        # On-the-fly aggregation needs no precomputed PB rows (no pb_label lookup): the
+        # rows are synthesized here and stamped with the canonical PB modality below.
+
+        n_per_pb = train_collator.n_sc_per_pseudobulk
+        # Seeded on the step alone: every rank shares global_step, so all ranks draw
+        # the same pseudobulks and derive identical centroids without communicating.
+        rng = np.random.default_rng(1234 + int(self.global_step))
+
+        class_ids = core.cdd_class_ids.tolist()
+        means = torch.zeros_like(core.src_mean)
+        counts = torch.zeros_like(core.src_count)
+        for k, c in enumerate(class_ids):
+            pool = group_to_idx.get(c)
+            if pool is None or len(pool) < n_per_pb:
+                continue
+            pb_samples = []
+            for _ in range(self.cdd_cluster_source_pb):
+                pick = rng.choice(len(pool), size=n_per_pb, replace=len(pool) < n_per_pb)
+                chunk = [dataset[int(pool[j])] for j in pick]
+                genes, expr = train_collator._aggregate_sc(
+                    chunk, input_data=train_collator.input_data
+                )
+                pb = {"genes": genes, "expressions": expr}
+                train_collator._fill_missing_conditions(pb, chunk)
+                # _fill_missing_conditions copies conditions from the constituent SC
+                # cells, so modality would come out as "sc". In the training path the
+                # collator assigns modality separately; here it must be set explicitly
+                # to the canonical PB code (matching training), or the condition token
+                # would encode these as single cells.
+                pb[modality_col] = PB_MODALITY
+                pb_samples.append(pb)
+            feats = self._encode_rows(pb_samples, collator)
+            if feats is None:
+                continue
+            means[k] = F.normalize(feats.mean(0), dim=0).to(means.dtype)
+            counts[k] = len(pb_samples)
+        core.set_source_means(means, counts)
+
+    def _run_target_clustering(self):
+        """Re-encode the bulk/source features, then refresh bulk pseudo-labels.
+
+        Everything the clustering compares is produced inside one no_grad/eval block,
+        so bank_emb, src_mean and the domain-mean offset all come from a single model
+        state. Warmup-gated; DDP-safe because every rank encodes the same full bulk set
+        and so clusters identically, with no communication.
+        """
+        if not (self.cdd and self.cdd_infer_labels):
+            return
+        if self.global_step < self.cdd_cluster_warmup_steps:
+            return
+        if getattr(self, "_last_cluster_step", -1) == self.global_step:
+            return
+        self._last_cluster_step = self.global_step
+        core = getattr(self.model, "_orig_mod", self.model)
+        if not getattr(core, "_target_bank_ready", False):
+            return
+        dm = getattr(self.trainer, "datamodule", None)
+        dataset = getattr(dm, "dataset", None) if dm is not None else None
+        if dataset is None:
+            return
+
+        was_training = self.model.training
+        self.model.eval()
+        try:
+            if not self._refresh_bulk_bank(core, dataset):
+                return
+            if self.cdd_cluster_source_fallback:
+                self._refresh_source_means(core, dataset)
+        finally:
+            self.model.train(was_training)
+
+        self._cdd_cluster_stats = core.recluster()
+        self._refresh_sampler_labels(core)
+        if self.verbose and self._cdd_cluster_stats:
+            print(f"[CDD] cluster event @ step {self.global_step}: {self._cdd_cluster_stats}")
+
+    def _refresh_sampler_labels(self, core):
+        """Re-key the sampler's bulk tissue pools on the fresh pseudo-labels.
+
+        Without this, rows recovered by the clustering stay undrawable in the
+        class-aware batch's matched half, because those pools are built from the raw
+        labels that marked them unknown in the first place.
+        """
+        if not (self.cdd_infer_labels and self.cdd_class_aware):
+            return
+        try:
+            dl = self.trainer.train_dataloader
+            bs = getattr(dl, "batch_sampler", None)
+            inner = getattr(bs, "batch_sampler", bs)  # unwrap DistributedBatchSamplerWrapper
+            if inner is None or not hasattr(inner, "refresh_cdd_labels"):
+                return
+            inner.refresh_cdd_labels(
+                core.pseudo_label.detach().cpu().numpy(),
+                core.row_to_bulk_local.detach().cpu().numpy(),
+            )
+        except Exception as e:  # never let a diagnostic path kill training
+            if self.verbose:
+                print(f"[CDD] sampler label refresh skipped: {e}")
+
+    def _update_cdd_schedule(self):
+        """Linear MMD->CDD handover.
+
+        During warmup the marginal MMD pulls the bulk/pseudobulk clouds together so the
+        first clustering (and its source-seeded centroids) is meaningful; CDD then ramps
+        in as MMD decays out. Stacking both at full weight works against CDD: marginal
+        alignment matches P(f(bulk)) to P(f(pseudobulk)) ignoring class, which distorts
+        class structure whenever the two domains' tissue proportions differ.
+        """
+        core = getattr(self.model, "_orig_mod", self.model)
+        if not self.cdd:
+            return
+        R = max(1, self.cdd_ramp_steps)
+        t = min(max((self.global_step - self.cdd_cluster_warmup_steps) / R, 0.0), 1.0)
+        core._cdd_w = self.weight_cdd * t
+        core._mmd_w = self.weight_mmd + (self.cdd_mmd_final_weight - self.weight_mmd) * t
+
+    def on_train_epoch_start(self):
+        if self.cdd and self.cdd_infer_labels and self.cdd_cluster_interval == 0:
+            self._run_target_clustering()
+
+    def on_train_batch_start(self, batch, batch_idx):
+        self._update_cdd_schedule()
+        if (
+            self.cdd
+            and self.cdd_infer_labels
+            and self.cdd_cluster_interval > 0
+            and self.global_step > 0
+            and self.global_step % self.cdd_cluster_interval == 0
+        ):
+            self._run_target_clustering()
+
     def training_step(self, batch, batch_idx):  # batch = data_dict from collator
         """Performs a single training step.
 
@@ -445,9 +812,9 @@ class CancerFoundation(pl.LightningModule):
         # Assess time speedup
         if not hasattr(self, "_step_timer_start"):
             self._step_timer_start = None
-        if self.global_step == 5:
+        if self.global_step == 10:
             self._step_timer_start = time.perf_counter()
-        if self.global_step == 15 and self._step_timer_start is not None and self.verbose:
+        if self.global_step == 20 and self._step_timer_start is not None and self.verbose:
             elapsed = time.perf_counter() - self._step_timer_start
             print(f"\n\n[timing] 10 steps took {elapsed:.2f}s \n\n"
                   f"({elapsed / 10:.3f}s/step, {10 / elapsed:.2f} it/s)")
@@ -463,8 +830,13 @@ class CancerFoundation(pl.LightningModule):
         for key, value in loss_dict.items():
             self.log(f"train/{key}", value, on_step=True, on_epoch=False, prog_bar=True)
 
-        # Print loss dict
-        # print(loss_dict)
+        # Log CDD clustering stats produced by the last reclustering event (logged
+        # here so they land in a valid on_step logging context).
+        cluster_stats = getattr(self, "_cdd_cluster_stats", None)
+        if cluster_stats:
+            for key, value in cluster_stats.items():
+                self.log(f"train/{key}", float(value), on_step=True, on_epoch=False, prog_bar=False)
+            self._cdd_cluster_stats = None
 
         return loss_dict["total_loss"]
 
@@ -646,13 +1018,22 @@ class CancerFoundation(pl.LightningModule):
         """
         if data.n_vars <= self.n_top_genes:
             return data
+        if looks_like_counts(data.X):
+            print("  [INFO] Raw counts detected. Normalizing for gene selection only "
+                  "(the values fed to the model are left as-is, matching training).")
+            work = data.copy()
+            sc.pp.log1p(work)
+        else:
+            work = data
+
         if kind == "sc":
             print(f"  Selecting {self.n_top_genes} HVGs (flavor='{seurat_flavor}') for modality 'sc'")
-            sc.pp.highly_variable_genes(data, n_top_genes=self.n_top_genes, flavor=seurat_flavor)
-            return data[:, data.var["highly_variable"]].copy()
-        # bulk / pseudobulk → log1p + MAD
+            sc.pp.highly_variable_genes(work, n_top_genes=self.n_top_genes, flavor=seurat_flavor)
+            mask = work.var["highly_variable"].values
+            return data[:, mask].copy()
+        # bulk and pseudobulk HVG selection
         print(f"  Selecting {self.n_top_genes} top-MAD genes for modality '{kind}'")
-        top_idx = _top_mad_genes(data.X, self.n_top_genes)
+        top_idx = _top_mad_genes(work.X, self.n_top_genes)
         return data[:, top_idx].copy()
 
     def _embed_by_modality(
@@ -723,6 +1104,9 @@ class CancerFoundation(pl.LightningModule):
         flavor="seurat",
         modality: str = "sc",
         modality_col: Optional[str] = None,
+        shared_panel: bool = True,
+        panel_strategy: str = "consensus",
+        panel_reference: Optional[str] = None,
         return_preprocessed: bool = False):
         """Embeds an AnnData object into cell embeddings.
 
@@ -742,12 +1126,22 @@ class CancerFoundation(pl.LightningModule):
             modality: Modality of the whole AnnData when ``modality_col`` is not set —
                 one of "sc", "bulk", "pseudobulk". Drives single-modality gene selection.
             modality_col: If provided, name of an obs column holding per-cell modality
-                labels (e.g. "modality" or "_eval_modality"). When set, gene selection
-                and dense embedding are performed independently per modality group so
-                each modality's variance structure drives its own gene set.
-                ``gene_set_used`` is then returned as a ``dict[str, list[str]]`` instead
-                of a flat list. ``gene_subset`` can also be passed as such a dict to skip
-                re-fitting selection.
+                labels (e.g. "modality" or "_eval_modality"). With
+                ``shared_panel=False`` gene selection and dense embedding are performed
+                independently per modality group, and ``gene_set_used`` comes back as a
+                ``dict[str, list[str]]``. ``gene_subset`` can also be passed as such a
+                dict to skip re-fitting selection.
+            shared_panel: When True (default) and ``modality_col`` resolves to two or
+                more groups, fit ONE gene panel across all of them (see
+                ``select_shared_panel``) and embed every cell through it, returning a
+                flat ``gene_set_used``. Cross-modality metrics are only interpretable
+                this way: a per-modality panel makes the input distribution differ
+                *with* modality, which no batch-integration metric can tell apart from
+                a real batch effect. No-op for single-group data, so single-modality
+                callers are unaffected. Ignored when ``gene_subset`` is given.
+            panel_strategy: How to fit the shared panel — "consensus" (default),
+                "reference", or "pooled". See ``select_shared_panel``.
+            panel_reference: Group name to fit on when ``panel_strategy="reference"``.
             return_preprocessed: If True, return the normalised, vocab-intersected,
                 gene-selected AnnData (un-binned) instead of running the forward pass.
                 Used by ``preprocess_for_embedding`` so both paths share identical
@@ -775,13 +1169,62 @@ class CancerFoundation(pl.LightningModule):
                 # Raw counts
                 sc.pp.normalize_total(data, target_sum=1e4)
             sc.pp.log1p(data)
+        elif looks_like_counts(data.X):
+            # Not necessarily wrong: training bins the on-disk values directly and
+            # per-row quantile binning is scale-invariant, so for input_style="binned"
+            # this matches training. Said out loud because gene selection and any
+            # downstream PCA/aggregation DO care about the scale.
+            print(
+                "[INFO] normalized=True but the matrix looks like raw counts. Values "
+                "will be embedded as-is (consistent with binned training); gene "
+                "selection log1p-normalises internally."
+            )
 
-        # Intersect genes with vocab
-        common_genes = list(set(self.vocab.keys()).intersection(set(data.var.index)))
+        # Intersect genes with vocab. Sorted so the column order is reproducible
+        # across processes (set iteration order is not); the encoder is permutation
+        # invariant over gene tokens, so this only affects reproducibility.
+        common_genes = sorted(set(self.vocab.keys()).intersection(set(data.var.index)))
         if len(common_genes) == 0:
-            raise ValueError(f"No common genes between vocab and data. Check gene name format.")
+            raise ValueError("No common genes between vocab and data. Check gene name format.")
         print(f"Common genes: {len(common_genes)} / {data.n_vars}")
         data = data[:, common_genes].copy()
+
+        # ── Shared panel: fit one gene set across modality groups ──────────────
+        # Resolved into a flat `gene_subset` so the single-panel branch below does the
+        # rest (subset once, one dense forward pass for every cell).
+        if (
+            gene_subset is None
+            and shared_panel
+            and hvg_select
+            and modality_col is not None
+            and modality_col in data.obs.columns
+            and not return_preprocessed
+        ):
+            group_vals = data.obs[modality_col].astype(str).to_numpy()
+            n_groups = len(set(group_vals.tolist()))
+            if n_groups > 1 and data.n_vars > self.n_top_genes:
+                print(
+                    f"[INFO] Shared gene panel across {n_groups} modality groups "
+                    f"(strategy='{panel_strategy}'): one panel for all cells."
+                )
+                gene_subset = select_shared_panel(
+                    data,
+                    groups=group_vals,
+                    n_top=self.n_top_genes,
+                    flavor=flavor,
+                    strategy=panel_strategy,
+                    reference=panel_reference,
+                )
+            elif n_groups > 1:
+                print(
+                    f"[INFO] Shared panel requested but data has {data.n_vars} genes "
+                    f"<= n_top_genes={self.n_top_genes}; keeping all genes."
+                )
+            else:
+                print(
+                    f"[INFO] Shared panel is a no-op: '{modality_col}' has a single "
+                    f"group ('{group_vals[0] if len(group_vals) else 'n/a'}')."
+                )
 
         if gene_subset is not None:
             if isinstance(gene_subset, dict):

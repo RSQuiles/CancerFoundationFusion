@@ -8,4 +8,4 @@
 source $surv
 
 python plot_ablation_benchmark.py \
-    --ablation-dir /cluster/work/boeva/rquiles/outputs_rquiles/save_CFF/ablation_paired_counts
+    --config comparison_final_all_experiments.yaml

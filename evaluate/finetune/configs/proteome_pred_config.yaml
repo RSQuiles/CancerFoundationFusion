@@ -31,6 +31,15 @@ finetune:
     hidden_dim: 256
     dropout: 0.1
 
+    # Whether this task's input MUST be normalized (CP10K + log1p) before embedding.
+    # "do it?" space: true = apply it, false = apply nothing. Overridden by
+    # run_ablation_downstream.py --normalize / --no-normalize.
+    #
+    # This task previously had no such key and relied on the model's default, which
+    # applied log1p. Note the CPTAC RNA parquet may already be log-scaled, in which
+    # case `normalize: true` will report that and skip rather than log1p twice.
+    normalize: false
+
     # ===== TRAINING HYPERPARAMETERS =====
     epochs: 30
     batch_size: 64

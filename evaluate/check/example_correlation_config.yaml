@@ -1,0 +1,129 @@
+# Which internal metrics predict cancer-type classification accuracy?
+#
+#   python evaluate/check/correlate_metrics_downstream.py --config <this> --no-show
+#   python evaluate/check/correlate_metrics_downstream.py --config <this> --list
+#   python evaluate/check/correlate_metrics_downstream.py --config <this> \
+#       --scope within_group
+#
+# A run is only usable here if it has BOTH metrics/unified_metrics.json (the x side)
+# and metrics/results_canc_type_class.json (the y side). Runs missing either are
+# skipped with a message — so this needs the 'downstream' step to have been run for
+# the task below, not just the metrics step. `--list` shows what survived.
+#
+# ── Read this before drawing conclusions ────────────────────────────────────────
+# Pooling runs from several ablation directories correlates over runs that differ in
+# training data and gene panel as well as in the metric, so a strong pooled rho can
+# be carried entirely by between-experiment offsets rather than by anything the
+# metric measures within an experiment. Run it both ways:
+#     scope: pooled        — the headline number, easy to over-read
+#     scope: within_group  — rho computed inside each group, then averaged
+# A metric that only correlates pooled is describing the datasets, not the models.
+
+vars:
+  work: /cluster/work/boeva/rquiles
+  save: /cluster/work/boeva/rquiles/outputs/save_CFF
+
+title: "Internal metrics vs cancer-type accuracy"
+output: ${save}/metric_vs_accuracy.png
+dpi: 150
+
+target:
+  task: canc_type_class
+  # metric: accuracy      # omitted -> the task's primary metric (accuracy)
+
+scope: pooled             # pooled | within_group
+min_runs: 5               # rows correlated over fewer runs are left unscored
+sort: abs_rho             # abs_rho | rho | config
+
+# Omit 'metrics' entirely to correlate every internal metric the runs have — that is
+# the right first pass, since the point is to find out which ones matter. The subset
+# below is the focused version: the scale-free alignment metrics, the geometry family
+# and reconstruction, leaving out the raw-L2 columns whose value depends on the
+# embedding's arbitrary overall scale.
+metrics:
+  - recon_pearson_r
+  - recon_mae_bins
+  - contrastive_energy_distance
+  - contrastive_wasserstein
+  - contrastive_within_bulk_over_cross_l2
+  - contrastive_within_pb_over_cross_l2
+  - contrastive_within_bulk_cosine
+  - contrastive_within_pb_cosine
+  - geometry_pr_pooled
+  - geometry_pr_bulk
+  - geometry_pr_pb
+  - agg_synth_cosine_pb_to_mean_sc
+
+# Display names must be unique across the whole config — 'unified', 'dat' and
+# 'contrastive' each appear in several ablation directories, so `all_models: true` on
+# more than one of these dirs exits with a duplicate-name error. Name them explicitly,
+# as example_unified_metrics_config.yaml does.
+groups:
+  - name: "Log1p"
+    dir: ${save}/ablation_paired_mix
+    experiments:
+      - {name: "Unified - Log1p - Paired",   model: unified}
+      - {name: "DAT + Agg - Log1p - Paired", model: dat_agg}
+
+  - name: "Counts"
+    dir: ${save}/ablation_paired_counts
+    experiments:
+      - {name: "Unified - Counts - Paired",     model: unified}
+      - {name: "DAT - Counts - Paired",         model: dat}
+      - {name: "Contrastive - Counts - Paired", model: contrastive}
+      - {name: "Aggregation - Counts - Paired", model: aggregation}
+
+  - name: "Counts - CORN"
+    dir: ${save}/ablation_paired_corn
+    experiments:
+      - {name: "Unified - Counts - CORN - Paired",     model: unified}
+      - {name: "DAT - Counts - CORN - Paired",         model: dat}
+      - {name: "Contrastive - Counts - CORN - Paired", model: contrastive}
+      - {name: "Aggregation - Counts - CORN - Paired", model: aggregation}
+
+  - name: "Counts & Precomputed"
+    dir: ${save}/ablation_paired_alignment_objectives
+    experiments:
+      - {name: "MMD - Counts - Precomputed - Paired",       model: paired_mmd}
+      - {name: "CDD - Precomputed - Paired",                model: paired_cdd}
+      - {name: "MDD + Agg - Counts - Precomputed - Paired", model: paired_mmd_agg}
+      - {name: "CDD + Agg - Counts - Precomputed - Paired", model: paired_cdd_agg}
+
+  - name: "Baselines (Paired)"
+    experiments:
+      - {name: "Bulk baseline - Log1p - Paired",                 dir: "${save}/ablation_paired_dataset",              model: bulk_baseline}
+      - {name: "Bulk baseline - Counts - Paired",                dir: "${save}/ablation_paired_counts",               model: bulk_baseline}
+      - {name: "Bulk baseline - Counts - CORN - Paired",         dir: "${save}/ablation_paired_corn",                 model: bulk_baseline}
+      - {name: "Bulk baseline - Counts - Precomputed - Paired",  dir: "${save}/ablation_paired_alignment_objectives", model: bulk_baseline}
+      - {name: "SC baseline - Counts - Precomputed - Paired",    dir: "${save}/ablation_paired_alignment_objectives", model: sc_baseline}
+
+  - name: "Log1p & Non-Paired"
+    dir: ${save}/ablation_base_comparison
+    experiments:
+      - {name: "Unified - Log1p",     model: unified_baseline}
+      - {name: "Contrastive - Log1p", model: contrastive}
+      - {name: "Aggregation - Log1p", model: aggregation}
+      - {name: "DAT - Log1p",         model: dat}
+
+  - name: "Counts & Precomputed & Non-Paired"
+    dir: ${save}/ablation_big_condition
+    experiments:
+      - {name: "Unified - Counts - Precomputed", model: unified}
+      - {name: "DAT - Counts - Precomputed",     model: dat}
+      - {name: "MMD - Counts - Precomputed",     model: mmd}
+      - {name: "CDD - Counts - Precomputed",     model: cdd}
+
+  # - name: "Test - Two Tissues"
+  #   dir: ${save}/ablation_monitor_align
+  #   experiments:
+  #     - {name: "Unified - Counts - Precomputed - Two Tissues",   model: unified}
+  #     - {name: "Condition - Counts - Precomputed - Two Tissues", model: condition}
+  #     - {name: "MMD - Counts - Precomputed - Two Tissues",       model: mmd}
+  #     - {name: "DAT - Counts - Precomputed - Two Tissues",       model: dat}
+  #     - {name: "CDD - Counts - Precomputed - Two Tissues",       model: cdd}
+
+  - name: "Baselines"
+    experiments:
+      - {name: "Bulk baseline - Log1p",         dir: "${save}/ablation_paired_dataset", model: bulk_baseline}
+      - {name: "Bulk baseline - Counts",        dir: "${save}/ablation_paired_counts",  model: bulk_baseline}
+      - {name: "Bulk baseline - Counts - CORN", dir: "${save}/ablation_paired_corn",    model: bulk_baseline}

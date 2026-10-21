@@ -24,6 +24,7 @@ from torch.utils.data import Dataset
 
 from evaluate.finetune.tasks.components import EmbeddingPredHead
 from evaluate.finetune.downstream_task import DownstreamTask, TaskRegistry
+from evaluate.finetune.normalization import resolve_policy
 from evaluate.finetune.utils import parquet_to_adata, translate_gene_symbols, strip_ensembl_versions, deduplicate_var_names
 
 log = logging.getLogger(__name__)
@@ -214,10 +215,10 @@ class CancTypeClassTask(DownstreamTask):
         embedder.eval()
         embedder.cuda()
 
-        kwargs = dict(
-            batch_size=batch_size,
-            normalized=bool(getattr(task_cfg, "normalized", True)),
-        )
+        policy = resolve_policy(task_cfg, None)
+        adata, _ = policy.apply(adata, task="canc_type_class")
+
+        kwargs = dict(batch_size=batch_size, **policy.embed_kwargs())
         # modality (log1p+MAD gene selection) and gene_subset are CancerFoundation-only;
         # fittable embedders (e.g. PCA) don't accept them.
         if not getattr(embedder, "fittable", False):

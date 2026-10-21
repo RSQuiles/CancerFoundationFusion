@@ -5,7 +5,9 @@
       "Bash(ls:*)",
       "Bash(git log:*)",
       "Bash(git status:*)",
-      "Bash(git diff:*)"
+      "Bash(git diff:*)",
+      "Bash(python -c \"import numpy; print\\('numpy', numpy.__version__\\)\")",
+      "Read(//c/Users/rqr20/Desktop/ETH/Thesis/Report/**)"
     ],
     "deny": [
       "Bash(git push:*)",

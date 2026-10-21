@@ -23,17 +23,26 @@ for arg in "$@"; do
     fi
 done
 
+ABLATION_DIR="/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition"
+
+# --eval-adata makes the figures use the SAME embeddings the metrics are computed
+# from (evaluate/check/build_and_check.sh writes it). Without it, umaps.py re-embeds
+# a fresh subsample live, so the UMAP and the scIB table describe different vectors
+# and can disagree for reasons that have nothing to do with the models.
 SCRIPT_ARGS=(
-    --run-name paired_counts_dat
-    --ckpt "/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts/contrastive/step_step=340000_epoch_epoch=00.ckpt"
-    --adata-dir /cluster/work/boeva/rquiles/data/paired_dataset_counts/pipeline_ready/h5ads
-    --color tissue_general assay
-    --sample-size 10_000
-    --plot-pb-only
+    --ablation-dir $ABLATION_DIR
+    --color tissue_general
+    --tissues blood lung
+    --eval-adata $ABLATION_DIR/eval.h5ad
+    --sample-size 50_000
     --skip-unknown
 )
+    
+    # --adata-dir /cluster/work/boeva/rquiles/data/eheiss_RAW_tissue
 
-# --ablation-dir /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts
+# --run-name paired_counts_dat
+# --ckpt "/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts/contrastive/step_step=340000_epoch_epoch=00.ckpt"
+# --plot-pb-only
 
 if [[ "$USE_LOCAL" -eq 1 ]]; then
     echo "Running locally (no singularity)"

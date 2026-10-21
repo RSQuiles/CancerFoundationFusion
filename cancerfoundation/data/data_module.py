@@ -151,13 +151,21 @@ class BulkSCDataModule(pl.LightningDataModule):
         balance: bool = False,
         balance_labels: Optional[List[str] | str] = None,
         epoch_size: Optional[int] = None,
+        epoch_coverage: float = 1.0,
         pb_group_column: Optional[str] = None,
         agg_consistency: Optional[bool] = False,
         pb_label: Optional[str] = None,
+        precomputed_pb: bool = False,
         paired_sampling: bool = False,
         paired_every_n: int = 10,
         paired_column: Optional[str] = "paired",
+        pb_id_column: Optional[str] = None,
         verbose: bool = False,
+        class_aware_cdd: bool = False,
+        cdd_exclude_labels: Optional[List[str]] = None,
+        cdd_min_class_count: int = 2,
+        n_cdd_classes: int = 8,
+        cdd_bulk_class_frac: float = 0.6,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -181,13 +189,21 @@ class BulkSCDataModule(pl.LightningDataModule):
         self.balance_labels = balance_labels
         self.conditions = conditions
         self.epoch_size = epoch_size
+        self.epoch_coverage = epoch_coverage
         self.pb_group_column = pb_group_column
         self.agg_consistency = agg_consistency
         self.pb_label = pb_label
+        self.precomputed_pb = precomputed_pb
         self.paired_sampling = paired_sampling
         self.paired_every_n = paired_every_n
         self.paired_column = paired_column
+        self.pb_id_column = pb_id_column
         self.verbose = verbose
+        self.class_aware_cdd = class_aware_cdd
+        self.cdd_exclude_labels = cdd_exclude_labels or ["unknown"]
+        self.cdd_min_class_count = cdd_min_class_count
+        self.n_cdd_classes = n_cdd_classes
+        self.cdd_bulk_class_frac = cdd_bulk_class_frac
 
         # Setup token values based on embedding style
         if self.input_style == "category":
@@ -219,6 +235,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                 pb_group_column=self.pb_group_column,
                 pb_label=self.pb_label,
                 paired_column=self.paired_column,
+                pb_id_column=self.pb_id_column,
                 verbose=self.verbose,
             )
 
@@ -261,6 +278,14 @@ class BulkSCDataModule(pl.LightningDataModule):
             from .bulk_sc_data import BulkSCSampler
 
             if train:
+                # Resolve CDD exclude labels (e.g. "unknown") to group codes in the
+                # pb_group_column (tissue) space, for class-aware sampling.
+                cdd_exclude_group_codes = []
+                if self.class_aware_cdd and self.pb_group_column:
+                    gmap = self.dataset.mapping.get(self.pb_group_column, {})
+                    cdd_exclude_group_codes = [
+                        gmap[lbl] for lbl in self.cdd_exclude_labels if lbl in gmap
+                    ]
                 sampler = BulkSCSampler(
                     dataset=dataset,
                     batch_size=self.batch_size,
@@ -269,11 +294,19 @@ class BulkSCDataModule(pl.LightningDataModule):
                     n_sc_per_pb=self.hparams.n_sc_per_pseudobulk,
                     balance=self.balance,
                     epoch_size=self.epoch_size,
+                    epoch_coverage=self.epoch_coverage,
+                    precomputed_pb=self.precomputed_pb,
+                    agg_consistency=self.agg_consistency,
                     paired_sampling=self.paired_sampling,
                     paired_every_n=self.paired_every_n,
                     verbose=self.verbose,
                     seed=0,
-                    world_size=self.trainer.world_size
+                    world_size=self.trainer.world_size,
+                    class_aware_cdd=self.class_aware_cdd,
+                    cdd_exclude_group_codes=cdd_exclude_group_codes,
+                    cdd_min_class_count=self.cdd_min_class_count,
+                    n_cdd_classes=self.n_cdd_classes,
+                    cdd_bulk_class_frac=self.cdd_bulk_class_frac,
                 )
             else:
                 # Val: deterministic sequential batches so all ranks see
@@ -346,7 +379,11 @@ class BulkSCDataModule(pl.LightningDataModule):
                 pb_ratio=self.hparams.pb_ratio,
                 n_sc_per_pseudobulk=self.hparams.n_sc_per_pseudobulk,
                 agg_consistency=self.agg_consistency,
+                precomputed_pb=self.precomputed_pb,
                 paired_column="paired" if self.paired_sampling else None,
+                # Resolved by the dataset (None when obs has no such column), so the
+                # collator only verifies membership when the ids are actually there.
+                pb_id_column=getattr(self.dataset, "pb_id_column", None),
                 verbose=self.verbose,
             )
 
@@ -373,6 +410,33 @@ class BulkSCDataModule(pl.LightningDataModule):
                 pin_memory=True,
                 persistent_workers=self.num_workers > 0,
             )
+
+    def make_cdd_refresh_collator(self):
+        """Plain per-row collator for the CDD clustering refresh passes.
+
+        Matches the training collator's vocab/binning/condition configuration, but
+        collates one row at a time (no bulk/SC assembly — ``BulkSCCollator.__call__``
+        dispatches on exact batch length and cannot take a bulk-only batch), with
+        masking off and the ``pcpt`` layout, so the embeddings are deterministic.
+        Mirrors the unmasked inference path used by ``CancerFoundation.embed``.
+        """
+        return AnnDataCollator(
+            do_padding=self.max_seq_len is not None,
+            pad_token_id=self.pad_token_id,
+            pad_value=self.pad_value,
+            do_mlm=False,  # clustering wants deterministic, unmasked embeddings
+            do_binning=self.input_style == "binned",
+            normalise_bins=self.normalise_bins,
+            mask_ratio=self.mask_ratio,
+            mask_value=self.mask_value,
+            max_length=self.max_seq_len,
+            sampling=self.TRUNC_BY_SAMPLE,
+            data_style="pcpt",  # plain encode, no generative split
+            n_bins=self.n_bins if self.input_style == "binned" else None,
+            conditions=self.conditions,
+            zero_percentages=self.zero_percentages,
+            condition_token=self.condition_token,
+        )
 
     def train_dataloader(self):
         """Create training dataloader"""

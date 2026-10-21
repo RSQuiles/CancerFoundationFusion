@@ -243,6 +243,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="The conditions (obs keys) the model should be invariant to.",
     )
     parser.add_argument(
+        "--condition-encoders",
+        type=str,
+        nargs="+",
+        default=None,
+        help=(
+            "Subset of --conditions that actually get a ConditionEncoder and are injected "
+            "via --where-condition. Conditions in --conditions but not here are label-only "
+            "(available to DAT/CDD, but never encoded or made invariant through conditioning). "
+            "Default (unset): all conditions are encoded, matching prior behaviour."
+        ),
+    )
+    parser.add_argument(
         "--scale-zero-expression",
         type=float,
         default=None,
@@ -305,6 +317,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--compile",
         action="store_true",
         help="Whether to compile the model with torch.compile. Default is False.",
+    )
+
+    parser.add_argument(
+        "--grad-checkpoint",
+        action="store_true",
+        help=(
+            "Recompute transformer encoder layers during backward instead of keeping "
+            "their activations alive. Removes the 'x nlayers' factor from activation "
+            "memory (~5x headroom at 6 layers) for roughly +30%% step time. "
+            "Numerically identical: RNG state is preserved across the recompute."
+        ),
+    )
+
+    parser.add_argument(
+        "--attn-impl",
+        type=str,
+        choices=["mha", "flex"],
+        default="mha",
+        help=(
+            "Attention implementation for the generative encoder. 'mha' uses "
+            "nn.MultiheadAttention, which merges the pcpt/gen attention mask with the "
+            "key padding mask into a dense [B*H, L, L] tensor and so costs O(B*H*L^2) "
+            "memory. 'flex' runs the same weights through torch FlexAttention with a "
+            "block mask, costing O(B*H*L*d). Parameters are identical between the two, "
+            "so checkpoints are interchangeable. Caveat: 'flex' has no attention-weight "
+            "dropout (FFN and residual dropout still apply), and it requires "
+            "--gen-method theirs or orig. Default is 'mha'."
+        ),
     )
 
     parser.add_argument(
@@ -422,6 +462,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--metrics-log-interval",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Write train loss rows to metrics.csv every N optimizer steps. "
+            "Default: --ckpt-every-n-steps if set, else --log-interval."
+        ),
+    )
+
+    parser.add_argument(
         "--num-workers",
         type=int,
         default=4,
@@ -459,7 +510,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--epoch-size",
         type=int,
-        help="Number of batches to evaluate in each epoch"
+        help=(
+            "Absolute number of batches per epoch. Overrides --epoch-coverage. "
+            "Leave unset to derive the epoch length from bulk coverage."
+        ),
+    )
+
+    parser.add_argument(
+        "--epoch-coverage",
+        type=float,
+        default=1.0,
+        help=(
+            "How many passes over the bulk pool make up one epoch. The batch count is "
+            "ceil(coverage * n_bulk_rows / bulk_rows_per_batch), so it scales with "
+            "--batch-size: doubling the batch size halves the number of steps and keeps "
+            "samples-per-epoch constant. Note that bulk rows are drawn independently per "
+            "batch, so coverage 1.0 means 'as many draws as there are rows' (~63%% of "
+            "distinct rows in expectation), not 'every row exactly once'. Default is 1.0."
+        ),
     )
 
     parser.add_argument(
@@ -474,6 +542,28 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="pseudobulk",
         help="Modality label in the modality column that identifies precomputed pseudobulk rows. Required for paired sampling. Default is None (no precomputed PB rows).",
+    )
+
+    parser.add_argument(
+        "--precomputed-pb",
+        action="store_true",
+        help="Draw precomputed pseudobulk rows (modality --pb-label) directly for standard and class-aware CDD batches instead of aggregating single cells on the fly. Requires --unified and --pb-label. Combining with --agg-consistency additionally requires --pb-id-column, which is how the constituent single cells of each precomputed pseudobulk are found. Default is False.",
+    )
+
+    parser.add_argument(
+        "--pb-id-column",
+        type=str,
+        default=None,
+        help=(
+            "obs column linking a precomputed pseudobulk row to the single cells it was "
+            "aggregated from (e.g. pseudobulk_id, written by "
+            "data_preprocess/reconstruct_pseudobulk_cell_map.py --rebuild). Only needed "
+            "for --precomputed-pb together with --agg-consistency, where n-sc-per-"
+            "pseudobulk constituent cells are drawn per pseudobulk so the aggregation "
+            "loss has a target. Store it as a STRING id: obs.parquet re-encodes every "
+            "column as a category code and fills missing rows with 0, so a numeric id 0 "
+            "would be indistinguishable from 'no pseudobulk'. Default is None (off)."
+        ),
     )
 
     parser.add_argument(
@@ -507,6 +597,117 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Whether to include an MMD loss that aligns the real-bulk and pseudobulk embedding distributions (mixture-of-RBF-kernels Maximum Mean Discrepancy). A non-adversarial alternative/complement to DAT. Default is False.",
     )
+
+    # ------------------------------------------------------------------
+    # Contrastive Adaptation Network (CAN, Kang et al. 2019) — Contrastive
+    # Domain Discrepancy (CDD): a class-conditional MMD that pulls same-tissue
+    # pseudobulk (source) / bulk (target) embeddings together and pushes
+    # different-tissue apart. Optional, composable with the other losses.
+    # ------------------------------------------------------------------
+    parser.add_argument(
+        "--cdd",
+        action="store_true",
+        help="Enable the Contrastive Domain Discrepancy (CDD) loss: class-conditional MMD across pseudobulk (source) and real bulk (target), keyed on the tissue label. Requires --unified. Default is False.",
+    )
+    parser.add_argument(
+        "--cdd-class-column",
+        type=str,
+        default="tissue_general",
+        help="Condition column used as the CDD class label (tissue). Must be one of --conditions. Default 'tissue_general'.",
+    )
+    parser.add_argument(
+        "--cdd-min-class-count",
+        type=int,
+        default=2,
+        help="Minimum samples a class needs in BOTH domains within a batch to contribute to CDD. Default 2.",
+    )
+    parser.add_argument(
+        "--cdd-exclude-labels",
+        type=str,
+        nargs="+",
+        default=["unknown"],
+        help="Tissue label names to exclude from CDD (not real classes, e.g. inferred 'unknown' bulk). Default ['unknown'].",
+    )
+    parser.add_argument(
+        "--cdd-class-aware",
+        action="store_true",
+        help="Use class-aware sampling so each batch contains the same tissues in both bulk and pseudobulk (needed for CDD to be non-trivial). Composable with --paired-sampling (CDD is skipped on paired batches). Default is False.",
+    )
+    parser.add_argument(
+        "--cdd-bulk-class-frac",
+        type=float,
+        default=0.6,
+        help="Fraction of the bulk slots in a class-aware batch drawn from the batch's chosen tissues (the rest are drawn freely from ALL bulk, so every bulk row still trains and gets clustered). Only used with --cdd-class-aware. Default 0.6.",
+    )
+    # --- Layer B: clustering-based target-label inference (semi-supervised) ---
+    parser.add_argument(
+        "--cdd-infer-labels",
+        action="store_true",
+        help="Enable spherical-K-means inference of the bulk (target) tissue labels. Recovers both 'unknown' bulk and bulk-only tissues that have no single-cell counterpart. Centroids are anchored by the known-labeled bulk structure. Requires --cdd. Default is False.",
+    )
+    parser.add_argument(
+        "--cdd-cluster-warmup-steps",
+        type=int,
+        default=2000,
+        help="Global step before which no clustering runs (embeddings must be meaningful first). Default 2000.",
+    )
+    parser.add_argument(
+        "--cdd-cluster-interval",
+        type=int,
+        default=0,
+        help="Re-cluster every N global steps. 0 = re-cluster once per epoch (on_train_epoch_start). Default 0.",
+    )
+    parser.add_argument(
+        "--cdd-cluster-iters",
+        type=int,
+        default=10,
+        help="Max spherical-K-means Lloyd iterations per clustering event. Default 10.",
+    )
+    parser.add_argument(
+        "--cdd-cluster-ambiguity",
+        type=float,
+        default=0.05,
+        help="Ambiguity filter D0: target samples with cosine distance to their centroid > D0 are left unassigned (-1). Default 0.05.",
+    )
+    parser.add_argument(
+        "--cdd-cluster-min-size",
+        type=int,
+        default=3,
+        help="Minimum cluster/anchor size N0: classes with fewer members are invalidated. Default 3.",
+    )
+    parser.add_argument(
+        "--cdd-relabel-known",
+        action="store_true",
+        help="Also re-infer labels for known-labeled bulk (fully unsupervised CAN). Default False (known labels kept fixed).",
+    )
+    parser.add_argument(
+        "--cdd-no-source-fallback",
+        action="store_true",
+        help="Disable source-seeded centroids. By default, classes that have no known bulk anchors (i.e. tissues only the single-cell data knows about) get a centroid from the pseudobulk class mean, translated into the bulk frame; it is the only way such classes can ever be reached. Pass this to restrict CDD classes to tissues the bulk already knows. Default False (fallback enabled).",
+    )
+    parser.add_argument(
+        "--cdd-cluster-source-pb",
+        type=int,
+        default=8,
+        help="Pseudobulks encoded per class at each clustering event to estimate the source class mean used for source-seeded centroids. Default 8.",
+    )
+    parser.add_argument(
+        "--cdd-ramp-steps",
+        type=int,
+        default=1000,
+        help="Steps over which the CDD weight ramps 0 -> --loss-weight-cdd (and MMD decays to --cdd-mmd-final-weight) once --cdd-cluster-warmup-steps is passed. Default 1000.",
+    )
+    parser.add_argument(
+        "--cdd-mmd-final-weight",
+        type=float,
+        default=0.0,
+        help="MMD weight after the CDD ramp completes. During warmup MMD runs at --loss-weight-mmd to pull the bulk/pseudobulk clouds together, then hands over to CDD. NOTE: this applies whenever --cdd is set, INCLUDING an explicitly passed --mmd, so --mmd --cdd decays MMD to 0 unless you set this. Ignored without --cdd. Default 0.0.",
+    )
+
+    # ------------------------------------------------------------------
+    # Additional losses for the unified model: aggregation consistency, 
+    # balanced sampling, and domain adversarial training (DAT)
+    # ------------------------------------------------------------------
 
     parser.add_argument(
         "--agg-consistency",
@@ -609,10 +810,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--loss-weight-mvc",            type=float, default=1.0, help="Weight for MVC loss.")
     parser.add_argument("--loss-weight-contrastive",    type=float, default=1.0, help="Weight for contrastive loss.")
     parser.add_argument("--loss-weight-mmd",            type=float, default=1.0, help="Weight for MMD alignment loss.")
+    parser.add_argument("--loss-weight-cdd",            type=float, default=0.3, help="Weight (beta) for the Contrastive Domain Discrepancy loss. Paper default 0.3.")
     parser.add_argument("--loss-weight-paired",         type=float, default=1.0, help="Weight for paired alignment loss.")
     parser.add_argument("--loss-weight-agg",            type=float, default=1.0, help="Weight for aggregation consistency loss.")
     parser.add_argument("--loss-weight-dat",            type=float, default=1.0, help="Weight for DAT condition loss.")
     parser.add_argument("--loss-weight-reconstruction", type=float, default=1.0, help="Weight applied to all reconstruction losses (loss_expr, loss_mvc, loss_gen).")
+
+    parser.add_argument(
+        "--monitor-losses", type=str, nargs="+", default=[],
+        choices=["contrastive", "mmd", "cdd", "aggregation", "paired"],
+        help="Compute and log these auxiliary losses for monitoring WITHOUT adding them to "
+             "the training gradient (logged as train/loss_<name>_monitor). Lets you gauge "
+             "whether a disabled loss carries a meaningful signal. Requires --unified (and, "
+             "for 'cdd', --cdd-class-column present in --conditions).",
+    )
 
     return parser
 

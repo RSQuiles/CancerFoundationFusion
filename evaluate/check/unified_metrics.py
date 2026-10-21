@@ -70,9 +70,33 @@ try:
 except ImportError:
     log.warning("Could not load CancerFoundation")
 
-from evaluate.utils import generate_pseudobulk_adata
+from evaluate.utils import (  # re-exports looks_like_counts without the training stack
+    MODALITY_COL as _MODALITY_COL,
+    MOD_BULK,
+    MOD_PAIRED_BULK,
+    MOD_PAIRED_PB,
+    MOD_PAIRED_SC,
+    MOD_PB,
+    MOD_SC,
+    MOD_SYNTH_PB,
+    canonicalize_modality_column,
+    generate_pseudobulk_adata,
+    looks_like_counts,
+)
 
-_MODALITY_COL = "_eval_modality"
+# Metric-family prefixes, in report order. Used both to say which families ran for a
+# model and to explain an empty panel in the ablation-level figure.
+_FAMILIES: tuple[str, ...] = (
+    "recon_", "paired_", "agg_paired_", "agg_synth_", "contrastive_", "geometry_",
+)
+
+# Bumped whenever this module starts emitting metrics an older run did not, so
+# --skip-existing refreshes those caches once instead of serving a JSON that is
+# silently missing whole columns. panel_hash and modalities cannot see this: the
+# embeddings and the rows are unchanged, only the set of numbers derived from them.
+#   1 -> pre-versioning
+#   2 -> scale-free L2 ratios, normalised energy distance, geometry_* (Aug 2026)
+METRICS_VERSION = 2
 
 # ---------------------------------------------------------------------------
 # Checkpoint helpers
@@ -86,8 +110,7 @@ def _find_best_ckpt(model_dir: Path) -> Path | None:
 
 
 def _load_model(ckpt_path: Path, device: str) -> CancerFoundation:
-    model = CancerFoundation.load_from_checkpoint(str(ckpt_path))
-    model.eval()
+    model = CancerFoundation.load_for_inference(ckpt_path)
     return model.to(device)
 
 
@@ -210,7 +233,7 @@ def compute_reconstruction_metrics(
     device = next(model.model.parameters()).device
     rng = np.random.default_rng(seed)
 
-    data = model.preprocess_for_embedding(adata, normalized=normalized)
+    data = model.preprocess_for_embedding(adata, normalized=normalized, modality="bulk")
     if data.n_obs == 0:
         return {}
 
@@ -433,6 +456,13 @@ def compute_aggregation_metrics(
         log.warning("No group with >= %d SC cells — skipping synthetic aggregation.", n_sc_per_pb)
         return {}
 
+    # Whether the SC rows need expm1 before aggregation (see the loop below).
+    is_log1p = not looks_like_counts(sc_adata.X)
+    log.info(
+        "  Synthetic aggregation: SC input detected as %s.",
+        "log1p" if is_log1p else "raw counts",
+    )
+
     n_pb = min(n_pb, max(1, len(valid) * 5))
     sims: list[float] = []
     l2s:  list[float] = []
@@ -452,11 +482,17 @@ def compute_aggregation_metrics(
         mean_sc = sc_embs.mean(axis=0)
 
         sc_exprs = sc_sub.X if isinstance(sc_sub.X, np.ndarray) else sc_sub.X.toarray()
-        pb_expr  = np.expm1(sc_exprs.astype(np.float64)).sum(axis=0)
+        # Aggregate in count space. expm1 is only correct when the rows are log1p;
+        # on raw counts it saturates float32 and the summed profile is distorted.
+        if is_log1p:
+            sc_exprs = np.expm1(sc_exprs.astype(np.float64))
+        pb_expr = sc_exprs.astype(np.float64).sum(axis=0)
         total = pb_expr.sum()
         if total > 0:
             pb_expr = pb_expr / total * 1e6
-        pb_expr = np.log1p(pb_expr).astype(np.float32)
+        if is_log1p:
+            pb_expr = np.log1p(pb_expr)
+        pb_expr = pb_expr.astype(np.float32)
 
         pb_adata = ad.AnnData(X=pb_expr[np.newaxis, :], var=sc_sub.var.copy())
         pb_adata.obs_names = ["pb_synth_0"]
@@ -498,6 +534,20 @@ def _agg_metrics_from_precomputed(
     the same group, takes their mean, and measures cosine similarity and L2
     distance to the pseudobulk embedding.  Returns the same keys as
     ``compute_aggregation_metrics``.
+
+    **Read this before interpreting agg_synth_\\*.** The SC cells are drawn *at
+    random from the same* ``group_column`` *group* — they are not the cells the
+    pseudobulk was actually built from. Under ``build_eval_adata --precomputed-pb``
+    the ``synth_pb`` rows are pipeline-precomputed pseudobulks with no recorded
+    constituents, so this measures whether a pseudobulk embedding lands near the
+    centroid of arbitrary same-tissue single cells: a tissue-level consistency
+    check, not aggregation consistency in the strict sense. The strict version is
+    ``agg_paired_*`` (:func:`_agg_from_paired_sc`), which uses ``obs["paired"]`` to
+    find each pseudobulk's real constituents.
+
+    Note also that ``agg_synth_l2`` compares a single embedding against a mean of
+    ``n_sc_per_pb`` embeddings, and averaging shrinks the norm toward the centroid,
+    so the L2 carries that bias; the cosine variant is the more comparable of the two.
     """
     rng = np.random.default_rng(seed)
 
@@ -597,7 +647,50 @@ def compute_contrastive_metrics(
     n_max: int = 500,
     seed: int = 0,
 ) -> dict:
-    """Cosine similarity, L2 distances, MMD, and Sliced Wasserstein between bulk and pseudobulk distributions."""
+    """Cosine similarity, L2 distances, MMD, and Sliced Wasserstein between bulk and pseudobulk distributions.
+
+    Scale-free companions to the raw L2 numbers
+    -------------------------------------------
+    ``contrastive_cross_l2_mean`` is in raw embedding units, and the embedding's
+    overall scale is an arbitrary gauge — multiply every vector by 10 and the kNN
+    graph, the cosines and the UMAP are unchanged while ``cross_l2`` grows tenfold.
+    A small ``cross_l2`` is therefore NOT evidence that the modalities mix; it is
+    equally consistent with a shrunken embedding in which the two clouds remain
+    cleanly separated. Three ratios fix that, all invariant to a global rescaling:
+
+    ``contrastive_within_{bulk,pb}_over_cross_l2``
+        within-cloud mean distance / cross-modality mean distance. Both -> 1 when a
+        cross pair is statistically indistinguishable from a within pair, i.e. the
+        two clouds are interleaved. Well below 1 means crossing modalities costs
+        extra distance. Values above 1 are possible and mean one cloud is nested
+        inside the other (its own spread exceeds the gap between them).
+
+    ``contrastive_energy_distance``
+        The normalised energy distance
+        ``(2C - W_bulk - W_pb) / 2C`` for C = cross, W = within. The numerator is
+        Szekely's energy statistic: it is >= 0 always and 0 **iff the two samples
+        come from the same distribution** — not merely the same mean, but the same
+        distribution in every moment. So unlike ``cross_l2`` it has a fixed, meaningful
+        zero. Dividing by ``2C`` bounds it to [0, 1] and removes the scale.
+
+        Note it is exactly ``1 - (within_bulk_over_cross + within_pb_over_cross) / 2``,
+        so it is the symmetric summary of the two ratios above rather than independent
+        evidence; the ratios are kept because an asymmetry between them localises the
+        difference to one modality.
+
+        Calibration, for two clouds of equal spread whose centroids sit ``r`` typical
+        within-cloud distances apart: ``e = 1 - 1/sqrt(1 + r^2)``. So 0.11 means the
+        gap is half the within-cloud distance, 0.29 means they are equal (two
+        recognisable blobs) and 0.55 means the gap is twice the spread. Sampling noise
+        puts the floor around 1e-3 at ``n_max = 500``, and the estimator may come out
+        very slightly negative there; that is "indistinguishable", not an error.
+
+        Energy distance is an MMD with kernel ``-||x-y||``, so unlike ``contrastive_mmd``
+        it has no bandwidth to saturate when the clouds are far apart.
+
+    None of these detect collapse: if the whole embedding degenerates, every distance
+    goes to zero and ``e`` -> 0/0. That is what the ``geometry_*`` family is for.
+    """
     rng = np.random.default_rng(seed)
     if len(bulk_emb) > n_max:
         bulk_emb = bulk_emb[rng.choice(len(bulk_emb), n_max, replace=False)]
@@ -613,15 +706,39 @@ def compute_contrastive_metrics(
         s = e @ e.T
         return float(s[~np.eye(len(e), dtype=bool)].mean())
 
+    # Computed once: the ratios and the energy distance are all built from these.
+    # _pairwise_l2_mean excludes self-pairs, which is the estimator the energy
+    # statistic needs — leaving the diagonal zeros in would deflate the within terms
+    # and inflate the energy distance.
+    cross_l2       = _cross_l2_mean(bulk_emb, pb_emb)
+    within_bulk_l2 = _pairwise_l2_mean(bulk_emb)
+    within_pb_l2   = _pairwise_l2_mean(pb_emb)
+
+    if cross_l2 > 0:
+        ratio_bulk = within_bulk_l2 / cross_l2
+        ratio_pb   = within_pb_l2   / cross_l2
+        energy_raw = 2.0 * cross_l2 - within_bulk_l2 - within_pb_l2
+        energy_norm = energy_raw / (2.0 * cross_l2)
+    else:
+        # Every cross distance is 0: the two clouds sit on top of each other at a
+        # single point. Nothing here is defined, and reporting 0 ("perfectly aligned")
+        # would be the exact misreading these metrics exist to prevent.
+        ratio_bulk = ratio_pb = energy_raw = energy_norm = float("nan")
+
     return {
         # cosine-based (unit-sphere projected)
         "contrastive_cross_cosine_mean":   float((bn @ pn.T).mean()),
         "contrastive_within_bulk_cosine":  _within_cos(bn),
         "contrastive_within_pb_cosine":    _within_cos(pn),
-        # L2-based (raw embedding space)
-        "contrastive_cross_l2_mean":       _cross_l2_mean(bulk_emb, pb_emb),
-        "contrastive_within_bulk_l2":      _pairwise_l2_mean(bulk_emb),
-        "contrastive_within_pb_l2":        _pairwise_l2_mean(pb_emb),
+        # L2-based (raw embedding space — scale-dependent, read the ratios below)
+        "contrastive_cross_l2_mean":       cross_l2,
+        "contrastive_within_bulk_l2":      within_bulk_l2,
+        "contrastive_within_pb_l2":        within_pb_l2,
+        # L2-based, scale-free
+        "contrastive_within_bulk_over_cross_l2": float(ratio_bulk),
+        "contrastive_within_pb_over_cross_l2":   float(ratio_pb),
+        "contrastive_energy_distance":           float(energy_norm),
+        "contrastive_energy_raw":                float(energy_raw),
         # distributional
         "contrastive_mmd":                 _mmd(bulk_emb, pb_emb),
         "contrastive_wasserstein":         _sliced_wasserstein(bulk_emb, pb_emb, seed=seed),
@@ -631,7 +748,169 @@ def compute_contrastive_metrics(
 
 
 # ---------------------------------------------------------------------------
-# Metric 5: scIB batch integration benchmark (ablation-level, all models at once)
+# Metric 5: embedding geometry — participation ratio (collapse)
+# ---------------------------------------------------------------------------
+
+def _participation_ratio(emb: np.ndarray) -> float:
+    """Effective number of dimensions the embedding actually uses.
+
+    ``PR = (sum lambda)^2 / sum lambda^2`` over the eigenvalues of the (centred)
+    covariance. If ``k`` eigenvalues are equal and the rest are zero the expression
+    evaluates to exactly ``k``, so PR reads as a soft count of live directions:
+    1 = every point on one line (total collapse), d = isotropic.
+
+    This is the quantity ``contrastive_within_*_l2`` cannot supply. For iid x, y
+    ``E||x-y||^2 = 2 tr(Sigma) = 2 sum lambda`` exactly, so a mean pairwise distance
+    sees only the TOTAL variance and cannot tell a long thin line from a ball of the
+    same total. Collapse is concentration of the spectrum, which needs the second
+    term ``sum lambda^2``. PR is invariant to a global rescaling and to rotation, so
+    it is comparable across models whose embeddings differ in overall norm.
+    """
+    X = np.asarray(emb, dtype=np.float64)
+    if X.ndim != 2 or X.shape[0] < 2 or X.shape[1] < 1:
+        return float("nan")
+    # Centring is not optional. Uncentred, the mean vector becomes the dominant
+    # singular direction, so any cloud sitting far from the origin — which CLS-token
+    # embeddings routinely do — scores ~1 and the metric measures distance from the
+    # origin instead of degeneracy.
+    X = X - X.mean(axis=0, keepdims=True)
+    # Eigenvalues of the covariance via whichever Gram matrix is smaller; the
+    # 1/(n-1) factor cancels in the ratio.
+    G = X.T @ X if X.shape[0] >= X.shape[1] else X @ X.T
+    lam = np.clip(np.linalg.eigvalsh(G), 0.0, None)
+    denom = float((lam ** 2).sum())
+    if denom <= 0.0:
+        return float("nan")
+    return float(lam.sum() ** 2 / denom)
+
+
+def _pr_isotropic_ref(n: int, d: int) -> float:
+    """PR that perfectly isotropic data would score at this (n, d) — the ceiling.
+
+    The sample covariance of isotropic data has a spread spectrum (Marchenko-Pastur)
+    even though the population one does not, which inflates ``sum lambda^2`` and
+    biases PR down. With ``gamma = d/(n-1)`` the expectation is ``d/(1+gamma)``:
+    at d=512, n=500 an isotropic embedding scores ~253, not 512.
+
+    So a raw PR of "half the dimensions" can be perfectly healthy, and raw PR is only
+    comparable at equal n — which holds across models within one eval.h5ad, since
+    they share its rows, but not across datasets. ``geometry_pr_frac_*`` divides by
+    this reference and is the number to compare anywhere else.
+    """
+    if n < 2 or d < 1:
+        return float("nan")
+    return float(d / (1.0 + d / max(n - 1, 1)))
+
+
+def _modality_variance_fraction(A: np.ndarray, B: np.ndarray) -> float:
+    """Share of the pooled variance that lies along the bulk <-> pb axis.
+
+    Projects the pooled, centred cloud onto the unit vector joining the two modality
+    centroids and returns ``var_along / total_var``: 0 = modality contributes no more
+    than an arbitrary direction, 1 = the modality offset IS the embedding. It is the
+    linear, single-direction version of what scIB's ``pcr_comparison`` measures, and
+    it stays readable where that one clips to 0.
+
+    The raw fraction floors at ``1/d`` rather than 0, since an arbitrary direction in
+    isotropic data already carries that much, so the value is rescaled by
+    ``(f - 1/d) / (1 - 1/d)``.
+
+    Note this is NOT a ratio of participation ratios. Pooling two separated clouds
+    *lowers* PR — the offset contributes one dominant eigenvalue, which concentrates
+    the spectrum — so a PR ratio moves the wrong way and is non-monotone besides.
+    """
+    A = np.asarray(A, dtype=np.float64)
+    B = np.asarray(B, dtype=np.float64)
+    if A.ndim != 2 or B.ndim != 2 or A.shape[1] != B.shape[1]:
+        return float("nan")
+    if len(A) < 2 or len(B) < 2 or A.shape[1] < 2:
+        return float("nan")
+
+    w = A.mean(axis=0) - B.mean(axis=0)
+    norm_w = float(np.linalg.norm(w))
+    if norm_w <= 0.0:
+        return 0.0            # centroids coincide: there is no modality direction
+    w = w / norm_w
+
+    X = np.vstack([A, B])
+    X = X - X.mean(axis=0, keepdims=True)
+    total = float((X ** 2).sum() / len(X))          # = tr(Sigma)
+    if total <= 0.0:
+        return float("nan")
+    along = float(((X @ w) ** 2).sum() / len(X))
+
+    d = X.shape[1]
+    floor = 1.0 / d
+    return float(np.clip((along / total - floor) / (1.0 - floor), 0.0, 1.0))
+
+
+def compute_geometry_metrics(
+    clouds: dict[str, np.ndarray],
+    max_rows: int = 20000,
+    seed: int = 0,
+) -> dict:
+    """Participation ratio per modality and pooled, plus the modality variance share.
+
+    ``clouds`` maps a short name ("bulk", "pb", "sc") to that modality's embeddings.
+
+    Answers the question none of the ``contrastive_*`` metrics can: did the embedding
+    collapse? Read alongside ``contrastive_energy_distance``, because the two fail in
+    opposite directions — an energy distance of ~0 means "the modalities are
+    indistinguishable", which is the goal in a healthy space and vacuous in a
+    degenerate one where nothing is distinguishable from anything:
+
+        PR healthy + energy ~0  ->  genuinely mixed
+        PR collapsed + energy ~0 ->  degenerate; the alignment claim is empty
+    """
+    rng = np.random.default_rng(seed)
+    out: dict = {}
+    dims: set[int] = set()
+
+    def _cap(emb: np.ndarray) -> np.ndarray:
+        # PR is bounded by the sample size, so a model measured on more rows would
+        # score higher for that reason alone. The cap is applied identically to every
+        # model reading the same eval.h5ad, which is what keeps them comparable.
+        X = np.asarray(emb)
+        if len(X) > max_rows:
+            X = X[np.sort(rng.choice(len(X), max_rows, replace=False))]
+        return X
+
+    capped = {
+        name: _cap(emb)
+        for name, emb in clouds.items()
+        if emb is not None and len(emb) >= 2
+    }
+
+    def _pr_for(name: str, X: np.ndarray) -> None:
+        pr = _participation_ratio(X)
+        n, d = X.shape
+        dims.add(int(d))
+        ref = _pr_isotropic_ref(n, d)
+        out[f"geometry_pr_{name}"] = pr
+        out[f"geometry_pr_frac_{name}"] = (
+            float(pr / ref) if np.isfinite(pr) and np.isfinite(ref) and ref > 0
+            else float("nan")
+        )
+        out[f"geometry_pr_n_{name}"] = int(n)
+
+    for name in ("bulk", "pb", "sc"):
+        if name in capped:
+            _pr_for(name, capped[name])
+
+    # Pooled over the two modalities the contrastive family compares.
+    if "bulk" in capped and "pb" in capped and capped["bulk"].shape[1] == capped["pb"].shape[1]:
+        _pr_for("pooled", np.vstack([capped["bulk"], capped["pb"]]))
+        out["geometry_modality_var_frac"] = _modality_variance_fraction(
+            capped["bulk"], capped["pb"]
+        )
+
+    if len(dims) == 1:
+        out["geometry_dim"] = int(next(iter(dims)))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Metric 6: scIB batch integration benchmark (ablation-level, all models at once)
 # ---------------------------------------------------------------------------
 
 def run_scib_benchmark(
@@ -651,16 +930,36 @@ def run_scib_benchmark(
     Benchmarks
     ----------
     1. **bulk_vs_pb** — all bulk (bulk + paired_bulk) vs all pseudobulk
-       (paired_pb + synth_pb).  batch_key = "modality_type".
+       (pseudobulk + paired_pb + synth_pb).  batch_key = "modality_type".
     2. **paired_vs_nonpaired** — paired samples (paired_bulk + paired_pb) vs
        non-paired samples (bulk + synth_pb).  batch_key = "pairing".
     3. **paired_bulk_vs_paired_pb** — paired_bulk vs paired_pb only.
        batch_key = "modality_type".
     4. **nonpaired_bulk_vs_synth_pb** — non-paired bulk vs synth_pb only.
        batch_key = "modality_type".
+
+    Interpreting the output — the four batch metrics are not equally usable here:
+
+    * ``iLISI`` is global and label-free; it is the one that answers "are the two
+      modalities interleaved in the embedding".
+    * ``BRAS`` and ``kBET`` are computed *inside each* ``label_key`` group and skip
+      any group holding only one batch (kBET also skips groups under 10 cells), so
+      they only see labels present in BOTH modalities. This function logs the
+      label x batch contingency and warns when few labels qualify — if that warning
+      fires, treat those two columns as uninformative rather than as evidence.
+      BRAS additionally uses *cosine* distance, while a scanpy UMAP of the same
+      embedding uses Euclidean neighbours; the two can legitimately disagree.
+    * ``PCR comparison`` is ``max(0, (pcr_pre - pcr_post)/pcr_pre)`` against
+      ``X_pca``, so it clips to 0 whenever an embedding is no less batch-driven
+      than the baseline. The unscaled pcr_pre/pcr_post values are logged so a 0 can
+      be told apart from a missing baseline.
+
+    Note the aggregate ``Batch correction`` column is an unweighted mean over
+    whichever metrics ran, so a constant-0 PCR column drags every model down by the
+    same amount and the ranking ends up driven by BRAS.
     """
     try:
-        from scib_metrics.benchmark import Benchmarker, BatchCorrection
+        from scib_metrics.benchmark import BatchCorrection, Benchmarker, BioConservation
     except ImportError:
         log.warning("scib_metrics not installed — skipping batch integration benchmark.")
         return
@@ -671,12 +970,15 @@ def run_scib_benchmark(
     mod_col = eval_adata.obs.get(
         _MODALITY_COL, pd.Series("", index=eval_adata.obs_names, dtype=str)
     )
-    bulk_mask        = (mod_col == "bulk").values
-    paired_bulk_mask = (mod_col == "paired_bulk").values
-    paired_pb_mask   = (mod_col == "paired_pb").values
-    synth_pb_mask    = (mod_col == "synth_pb").values
+    bulk_mask        = (mod_col == MOD_BULK).values
+    paired_bulk_mask = (mod_col == MOD_PAIRED_BULK).values
+    pb_mask          = (mod_col == MOD_PB).values
+    paired_pb_mask   = (mod_col == MOD_PAIRED_PB).values
+    synth_pb_mask    = (mod_col == MOD_SYNTH_PB).values
     all_bulk_mask    = bulk_mask | paired_bulk_mask
-    all_pb_mask      = paired_pb_mask | synth_pb_mask
+    # Include plain "pseudobulk" rows: they used to be excluded, so benchmark 1 only
+    # ever saw the synth_pb subset and ignored the bulk of the pseudobulk data.
+    all_pb_mask      = pb_mask | paired_pb_mask | synth_pb_mask
 
     # ── Helper: subsample a boolean mask to at most n indices ───────────────
     def _sample_idx(mask: np.ndarray, n: int) -> np.ndarray:
@@ -722,8 +1024,92 @@ def run_scib_benchmark(
         for key, arrs in emb_accum.items():
             if emb_counts[key] == n_total:
                 sub.obsm[key] = np.vstack(arrs).astype(np.float32)
+            else:
+                # Silently dropping this used to make a whole model disappear from
+                # the results table with no indication why.
+                log.warning(
+                    "  '%s' covers %d of %d rows — excluded from this benchmark. "
+                    "Its embedding is missing for some cells; re-run build_eval_adata.",
+                    key, emb_counts[key], n_total,
+                )
 
         return sub if sub.obsm else None
+
+    # ── Helper: are the label-conditioned metrics (BRAS, kBET) usable here? ──
+    def _label_batch_report(
+        sub: ad.AnnData, batch_col: str, tag: str
+    ) -> tuple[pd.DataFrame, int]:
+        """Log the label x batch contingency and return (table, n_usable_labels).
+
+        BRAS and kBET skip any label group holding a single batch, so the number of
+        labels present in *both* batches is exactly how much signal those two
+        metrics have to work with.
+        """
+        tab = pd.crosstab(
+            sub.obs[group_column].astype(str), sub.obs[batch_col].astype(str)
+        )
+        n_batches = tab.shape[1]
+        both = (tab > 0).sum(axis=1) == n_batches
+        # kBET additionally needs >= 10 cells in the label group
+        usable = int((both & (tab.sum(axis=1) >= 10)).sum())
+
+        log.info("[scIB %s] label x batch contingency:\n%s", tag, tab.to_string())
+        if usable < 2:
+            log.warning(
+                "[scIB %s] only %d of %d '%s' label(s) contain both batches with >=10 "
+                "cells. BRAS and kBET are computed per label and skip the rest, so "
+                "those two columns carry almost no batch-mixing signal for this "
+                "comparison — read iLISI instead.",
+                tag, usable, tab.shape[0], group_column,
+            )
+        else:
+            log.info(
+                "[scIB %s] %d of %d '%s' labels usable for per-label metrics "
+                "(BRAS, kBET).",
+                tag, usable, tab.shape[0], group_column,
+            )
+        return tab, usable
+
+    # ── Helper: unscaled PCR, so a clipped 0 can be told from a missing baseline ──
+    def _log_pcr(sub: ad.AnnData, batch_col: str, tag: str) -> dict:
+        if "X_pca" not in sub.obsm:
+            return {}
+        try:
+            from scib_metrics.utils import principal_component_regression
+        except ImportError:
+            return {}
+        batch = sub.obs[batch_col].astype(str).to_numpy()
+        out: dict = {}
+        try:
+            pre = float(
+                principal_component_regression(
+                    np.asarray(sub.obsm["X_pca"], dtype=np.float32),
+                    batch, categorical=True,
+                )
+            )
+        except Exception:
+            log.warning("[scIB %s] pcr(X_pca) failed:\n%s", tag, traceback.format_exc())
+            return {}
+        out["X_pca"] = pre
+        log.info("[scIB %s] pcr(X_pca) = %.4f  (unintegrated baseline)", tag, pre)
+        for key in (k for k in sub.obsm if k.startswith("X_cf_")):
+            try:
+                post = float(
+                    principal_component_regression(
+                        np.asarray(sub.obsm[key], dtype=np.float32),
+                        batch, categorical=True,
+                    )
+                )
+            except Exception:
+                continue
+            out[key] = post
+            scaled = max(0.0, (pre - post) / pre) if pre > 0 else 0.0
+            log.info(
+                "[scIB %s]   %-24s pcr=%.4f -> pcr_comparison=%.4f%s",
+                tag, key, post, scaled,
+                "  [clipped: more batch-driven than the baseline]" if post >= pre else "",
+            )
+        return out
 
     # ── Helper: run one Benchmarker and save results ────────────────────────
     def _run_one(sub: ad.AnnData, batch_col: str, tag: str) -> None:
@@ -742,9 +1128,8 @@ def run_scib_benchmark(
             dict(sub.obs[batch_col].value_counts().items()),
         )
 
-        print(f"sub.n_vars: {sub.n_vars}")
-        print(f"sub.n_obs: {sub.n_obs}")
-        # print(f"sub.X: {sub.X.shape}")
+        contingency, n_usable_labels = _label_batch_report(sub, batch_col, tag)
+        pcr_raw = _log_pcr(sub, batch_col, tag)
 
         pre_integrated_key = "X_pca" if "X_pca" in sub.obsm else None
 
@@ -753,12 +1138,22 @@ def run_scib_benchmark(
             batch_key=batch_col,
             label_key=group_column,
             embedding_obsm_keys=embedding_keys,
-            bio_conservation_metrics=None,
+            # Bio conservation is on so that "the modalities mix" can be told apart
+            # from "the embedding collapsed": a degenerate space mixes batches
+            # perfectly while destroying label structure.
+            bio_conservation_metrics=BioConservation(
+                isolated_labels=True,
+                silhouette_label=True,
+                clisi_knn=True,
+                nmi_ari_cluster_labels_kmeans=False,
+                nmi_ari_cluster_labels_leiden=False,
+            ),
             batch_correction_metrics=BatchCorrection(
                 bras=True,
                 ilisi_knn=True,
                 pcr_comparison=pre_integrated_key is not None,
                 graph_connectivity=False,
+                kbet_per_label=False
             ),
             pre_integrated_embedding_obsm_key=pre_integrated_key,
             n_jobs=1,
@@ -766,15 +1161,40 @@ def run_scib_benchmark(
         bm.benchmark()
         results = bm.get_results(min_max_scale=False, clean_names=True)
         log.info("[scIB %s] complete.\n%s", tag, results.to_string())
+        if n_usable_labels < 2:
+            log.warning(
+                "[scIB %s] reminder: BRAS/KBET above are based on %d usable label(s) "
+                "— do not rank models on them for this comparison.",
+                tag, n_usable_labels,
+            )
 
         if out_dir is not None:
             scib_out_dir = out_dir / "_scib_metrics"
             scib_out_dir.mkdir(parents=True, exist_ok=True)
             results.to_csv(scib_out_dir / f"scib_{tag}.csv")
+            contingency.to_csv(scib_out_dir / f"scib_{tag}_label_batch.csv")
+            # Provenance for the numbers above, so a reader of the CSV can tell
+            # whether the per-label metrics were usable and what PCR was measuring.
+            meta = {
+                "tag": tag,
+                "batch_key": batch_col,
+                "label_key": group_column,
+                "n_cells": int(sub.n_obs),
+                "n_max_per_batch": int(n_max),
+                "n_labels": int(contingency.shape[0]),
+                "n_labels_usable_per_label_metrics": int(n_usable_labels),
+                "batch_counts": {
+                    str(k): int(v) for k, v in sub.obs[batch_col].value_counts().items()
+                },
+                "pcr_unscaled": pcr_raw,
+                "seed": int(seed),
+            }
+            with (scib_out_dir / f"scib_{tag}_meta.json").open("w") as f:
+                json.dump(meta, f, indent=2)
             png_dir = scib_out_dir / f"scib_{tag}"
             png_dir.mkdir(parents=True, exist_ok=True)
             bm.plot_results_table(min_max_scale=False, show=False, save_dir=png_dir)
-            log.info("[scIB %s] → %s/", tag, png_dir)
+            log.info("[scIB %s] -> %s/", tag, png_dir)
 
     # ── Benchmark 1: all bulk vs all pseudobulk ─────────────────────────────
     sub1 = _build_sub([
@@ -785,6 +1205,18 @@ def run_scib_benchmark(
         _run_one(sub1, "modality_type", "bulk_vs_pb")
     else:
         log.warning("[scIB] bulk_vs_pb: could not build sub-adata — skipping.")
+
+    # Benchmarks 2 and 3 need paired_* rows; without them benchmark 4 degenerates
+    # into a subset of benchmark 1, so it is skipped rather than emitting a
+    # near-duplicate table under a different name.
+    has_paired = bool(paired_bulk_mask.any() and paired_pb_mask.any())
+    if not has_paired:
+        log.info(
+            "[scIB] no paired_bulk/paired_pb rows in this dataset — skipping "
+            "paired_vs_nonpaired and paired_bulk_vs_paired_pb, and skipping "
+            "nonpaired_bulk_vs_synth_pb (it would duplicate bulk_vs_pb)."
+        )
+        return
 
     # ── Benchmark 2: paired vs non-paired ──────────────────────────────────
     paired_mask    = paired_bulk_mask | paired_pb_mask
@@ -842,10 +1274,60 @@ def run_single_model(
     out_dir.mkdir(parents=True, exist_ok=True)
     metrics_file = out_dir / "unified_metrics.json"
 
+    # Gene panel used to build the embeddings in this eval AnnData. Metrics computed
+    # under a different panel are not comparable, so it keys the cache: without this,
+    # --skip-existing happily serves metrics from a previous panel and the numbers
+    # silently describe embeddings that no longer exist.
+    provenance = dict(eval_adata.uns.get("eval_provenance", {}) or {})
+    current_hash = str(provenance.get("panel_hash", "unknown"))
+
+    # Which modalities these numbers describe. Also keys the cache: a metrics file
+    # written when the SC rows were labelled "subsampled" is missing whole families
+    # that this eval AnnData can now produce, and panel_hash alone cannot see that.
+    present = {
+        lbl: int((eval_adata.obs[_MODALITY_COL].astype(str) == lbl).sum())
+        for lbl in eval_adata.obs[_MODALITY_COL].astype(str).unique()
+    } if _MODALITY_COL in eval_adata.obs.columns else {}
+
     if skip_existing and metrics_file.exists():
-        log.info("  Cached — loading %s", metrics_file)
         with metrics_file.open() as f:
-            return json.load(f)
+            cached = json.load(f)
+        cached_hash = str(cached.get("panel_hash", "unknown"))
+        cached_mods = cached.get("modalities")
+        cached_version = int(cached.get("metrics_version", 1))
+        if cached_hash != current_hash:
+            log.warning(
+                "  Ignoring cache %s: it was computed under gene panel %s but this "
+                "eval AnnData uses %s. Recomputing.",
+                metrics_file, cached_hash, current_hash,
+            )
+        elif cached_version != METRICS_VERSION:
+            # The embeddings and rows are unchanged, so neither of the other two keys
+            # would fire — but the cache predates whole metric families and would
+            # otherwise be served back with those columns silently absent.
+            log.warning(
+                "  Ignoring cache %s: written by metrics version %d, this is version "
+                "%d. Recomputing once to pick up the newer metrics.",
+                metrics_file, cached_version, METRICS_VERSION,
+            )
+        elif cached_mods is None:
+            # Pre-stamp cache: it may have been written under the legacy label
+            # vocabulary, in which case it is silently missing agg_synth_*.
+            log.warning(
+                "  Ignoring cache %s: it predates modality stamping, so whether it "
+                "saw the same modalities as this eval AnnData (%s) is unknown. "
+                "Recomputing once.",
+                metrics_file, sorted(present),
+            )
+        elif sorted(cached_mods) != sorted(present):
+            log.warning(
+                "  Ignoring cache %s: it was computed over modalities %s but this "
+                "eval AnnData has %s. Recomputing.",
+                metrics_file, sorted(cached_mods), sorted(present),
+            )
+        else:
+            log.info("  Cached — loading %s", metrics_file)
+            return cached
 
     metrics: dict = {}
 
@@ -865,12 +1347,26 @@ def run_single_model(
         sub = eval_adata[mask]
         return sub, sub.obsm[obsm_key].astype(np.float32)
 
-    sc_adata,          sc_emb          = _get("subsampled")
-    bulk_adata,        bulk_emb        = _get("bulk")
-    paired_sc_adata,   paired_sc_emb   = _get("paired_sc")
-    paired_pb_adata,   paired_pb_emb   = _get("paired_pb")
-    paired_bulk_adata, paired_bulk_emb = _get("paired_bulk")
-    synth_pb_adata,    synth_pb_emb    = _get("synth_pb")
+    # NB: these are ``_eval_modality`` *labels*, not the filename prefixes
+    # build_eval_adata globs on. This used to read _get("subsampled") — a prefix
+    # that is never a label — so sc_adata was always None and every agg_synth_*
+    # metric was silently skipped. eval.h5ad files written back when the prefix WAS
+    # the label hit the same wall from the other side; main() runs them through
+    # canonicalize_modality_column first, so only labels reach here.
+    sc_adata,          sc_emb          = _get(MOD_SC)
+    bulk_adata,        bulk_emb        = _get(MOD_BULK)
+    pb_adata,          pb_emb          = _get(MOD_PB)
+    paired_sc_adata,   paired_sc_emb   = _get(MOD_PAIRED_SC)
+    paired_pb_adata,   paired_pb_emb   = _get(MOD_PAIRED_PB)
+    paired_bulk_adata, paired_bulk_emb = _get(MOD_PAIRED_BULK)
+    synth_pb_adata,    synth_pb_emb    = _get(MOD_SYNTH_PB)
+
+    log.info("  Modality rows available: %s", present or "<none>")
+
+    # Why each metric family did not run. Reported at the end: a short metrics dict
+    # is otherwise indistinguishable from a broken run, because the plots and the
+    # CSV just omit the missing columns.
+    skipped: dict[str, str] = {}
 
     # ── Metric 1: reconstruction ──────────────────────────────────────────
     recon_cache_key = f"recon_{model_name}"
@@ -921,6 +1417,27 @@ def run_single_model(
                 normalized=normalized,
             )
         )
+    elif not recon_done:
+        # The live fallback needs both a loadable model and bulk rows. In the scIB
+        # conda environment CancerFoundation cannot be imported at all (see the
+        # guarded import at the top of this module), so only the cached path works
+        # there — run the non-scIB pass in the container first.
+        if bulk_adata is None:
+            skipped["recon_*"] = (
+                f"no rows labelled '{MOD_BULK}' in the eval AnnData"
+            )
+        elif ckpt_path is None:
+            skipped["recon_*"] = (
+                f"uns['{recon_cache_key}'] absent and no checkpoint found to "
+                "recompute it live"
+            )
+        else:
+            skipped["recon_*"] = (
+                f"uns['{recon_cache_key}'] absent and the model could not be loaded "
+                "(is CancerFoundation importable in this environment?). Re-run "
+                "build_eval_adata to refresh the cache, or run this pass inside the "
+                "container."
+            )
 
     # ── Metric 2: paired alignment ────────────────────────────────────────
     if paired_pb_emb is not None and paired_bulk_emb is not None:
@@ -936,7 +1453,14 @@ def run_single_model(
                 )
             )
         else:
-            log.warning("  'paired' column missing — skipping paired alignment.")
+            skipped["paired_*"] = (
+                "obs['paired'] missing on the paired_pb/paired_bulk rows"
+            )
+    else:
+        skipped["paired_*"] = (
+            f"needs both '{MOD_PAIRED_PB}' and '{MOD_PAIRED_BULK}' rows; this "
+            "dataset has no paired_*.h5ad inputs"
+        )
 
     # ── Metric 3a: aggregation consistency from paired data ───────────────
     if (
@@ -951,6 +1475,12 @@ def run_single_model(
                 paired_sc_adata, paired_sc_emb,
                 paired_pb_adata, paired_pb_emb,
             )
+        )
+    else:
+        skipped["agg_paired_*"] = (
+            f"needs '{MOD_PAIRED_SC}' and '{MOD_PAIRED_PB}' rows carrying "
+            "obs['paired']; this is the only true aggregation-consistency metric "
+            "(it knows which SC cells composed each pseudobulk)"
         )
 
     # ── Metric 3b: aggregation consistency from synthetic pseudobulks ─────
@@ -979,20 +1509,121 @@ def run_single_model(
                 normalized=normalized,
             )
         )
+    else:
+        missing = []
+        if sc_emb is None:
+            missing.append(f"'{MOD_SC}' rows")
+        if synth_pb_emb is None:
+            missing.append(f"'{MOD_SYNTH_PB}' rows")
+        if sc_adata is not None and group_column not in sc_adata.obs.columns:
+            missing.append(f"obs['{group_column}'] on the SC rows")
+        skipped["agg_synth_*"] = (
+            "missing " + ", ".join(missing) if missing else "no model to embed live"
+        )
+        if missing and present:
+            # Naming what *is* there turns "missing 'sc' rows" from a contradiction
+            # (the rows are listed right above) into a readable label mismatch.
+            skipped["agg_synth_*"] += f"; labels present: {sorted(present)}"
 
     # ── Metric 4: contrastive / distributional alignment ──────────────────
-    pb_for_contrast   = paired_pb_emb
-    bulk_for_contrast = bulk_emb if bulk_emb is not None else paired_bulk_emb
+    # This compares the bulk and pseudobulk *distributions*, so any pseudobulk rows
+    # will do. It used to read paired_pb only, which silently dropped all seven
+    # contrastive metrics on datasets without paired data even though plain
+    # pseudobulk rows were present.
+    if paired_pb_emb is not None:
+        pb_for_contrast, pb_src = paired_pb_emb, MOD_PAIRED_PB
+    else:
+        pb_parts = [
+            (emb, lbl) for emb, lbl in
+            ((pb_emb, MOD_PB), (synth_pb_emb, MOD_SYNTH_PB))
+            if emb is not None
+        ]
+        if pb_parts:
+            pb_for_contrast = np.vstack([emb for emb, _ in pb_parts])
+            pb_src = "+".join(lbl for _, lbl in pb_parts)
+        else:
+            pb_for_contrast, pb_src = None, None
+
+    if bulk_emb is not None:
+        bulk_for_contrast, bulk_src = bulk_emb, MOD_BULK
+    elif paired_bulk_emb is not None:
+        bulk_for_contrast, bulk_src = paired_bulk_emb, MOD_PAIRED_BULK
+    else:
+        bulk_for_contrast, bulk_src = None, None
 
     if pb_for_contrast is not None and bulk_for_contrast is not None:
-        log.info("  Computing contrastive alignment metrics ...")
+        log.info(
+            "  Computing contrastive alignment metrics (%s vs %s) ...",
+            bulk_src, pb_src,
+        )
         metrics.update(compute_contrastive_metrics(bulk_for_contrast, pb_for_contrast, seed=seed))
+        # Which rows these numbers describe, so a value is never ambiguous between
+        # "real bulk vs precomputed PB" and "paired bulk vs paired PB".
+        metrics["contrastive_bulk_source"] = bulk_src
+        metrics["contrastive_pb_source"] = pb_src
+    else:
+        missing = "bulk-like" if bulk_for_contrast is None else "pseudobulk-like"
+        skipped["contrastive_*"] = f"no {missing} rows in the eval AnnData"
+
+    # ── Metric 5: embedding geometry (collapse) ───────────────────────────
+    # Deliberately fed the FULL arrays, not the 500-row subsample the contrastive
+    # metrics use: PR is capped by the sample size, so more rows give a sharper
+    # estimate (compute_geometry_metrics applies its own, larger cap).
+    geometry_clouds = {
+        name: emb
+        for name, emb in (
+            ("bulk", bulk_for_contrast),
+            ("pb", pb_for_contrast),
+            ("sc", sc_emb),
+        )
+        if emb is not None and len(emb) >= 2
+    }
+    if geometry_clouds:
+        log.info(
+            "  Computing embedding geometry (participation ratio: %s) ...",
+            ", ".join(sorted(geometry_clouds)),
+        )
+        metrics.update(compute_geometry_metrics(geometry_clouds, seed=seed))
+    else:
+        skipped["geometry_*"] = (
+            "no modality has >= 2 embedded rows to measure the spectrum on"
+        )
+
+    # ── Report which families ran and which did not ───────────────────────
+    computed = [
+        fam for fam in _FAMILIES
+        if any(k.startswith(fam) for k in metrics)
+        # agg_paired_* also starts with "agg_", and paired_* is a prefix of nothing
+        # else, so a plain startswith is unambiguous here.
+    ]
+    log.info(
+        "  Metric families computed: %s",
+        ", ".join(f"{f}*" for f in computed) or "<none>",
+    )
+    if skipped:
+        log.warning(
+            "  Metric families SKIPPED (%d):\n%s",
+            len(skipped),
+            "\n".join(f"    {fam:<16} {why}" for fam, why in skipped.items()),
+        )
 
     # ── Save ──────────────────────────────────────────────────────────────
     if ckpt_path is not None:
         metrics["checkpoint"] = str(ckpt_path)
 
-    # print(metrics)
+    # Persisted so the CSV/plots can be read alongside the reason a column is absent.
+    if skipped:
+        metrics["skipped_families"] = skipped
+
+    # Stamp the panel and the modalities these numbers describe, so a later
+    # --skip-existing run can tell whether the cache is still valid (see the top of
+    # this function).
+    metrics["panel_hash"] = current_hash
+    metrics["modalities"] = present
+    metrics["metrics_version"] = METRICS_VERSION
+    if provenance:
+        metrics["shared_panel"] = provenance.get("shared_panel")
+        metrics["panel_strategy"] = provenance.get("panel_strategy")
 
     with metrics_file.open("w") as f:
         json.dump(metrics, f, indent=2)
@@ -1024,6 +1655,7 @@ def run_ablation(
     skip_existing: bool,
     normalized: bool,
     do_scib: bool = False,
+    scib_n_max: int = 500,
 ) -> None:
     model_dirs = sorted(
         d for d in ablation_dir.iterdir()
@@ -1075,10 +1707,28 @@ def run_ablation(
             per_model_per_bin[name] = row[per_bin_col]
     if per_bin_col in df.columns:
         df = df.drop(columns=[per_bin_col])
+    # skipped_families and modalities are nested dicts too; they live in the
+    # per-model JSON, not the flat CSV that compare_experiments.py and _plot_metrics
+    # read.
+    df = df.drop(columns=[c for c in ("skipped_families", "modalities")
+                          if c in df.columns])
 
     csv_path = ablation_dir / "unified_metrics.csv"
     df.to_csv(csv_path)
     log.info("Summary CSV → %s", csv_path)
+
+    # Which columns are missing across the board, so an empty panel in the figure is
+    # explained in the same place the figure is produced.
+    absent = {
+        fam for fam in _FAMILIES
+        if not any(str(c).startswith(fam) for c in df.columns)
+    }
+    if absent:
+        log.warning(
+            "No column for these metric families in %s: %s — see the per-model "
+            "'skipped_families' in each metrics/unified_metrics.json for why.",
+            csv_path.name, ", ".join(sorted(f"{f}*" for f in absent)),
+        )
     _plot_metrics(df, ablation_dir / "unified_metrics.png")
 
     if per_model_per_bin:
@@ -1089,6 +1739,7 @@ def run_ablation(
             eval_adata,
             model_names=[d.name for d in model_dirs],
             group_column=group_column,
+            n_max=scib_n_max,
             out_dir=ablation_dir,
             seed=seed,
         )
@@ -1162,8 +1813,16 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path, ncols: int = 5) -> None:
         ("contrastive_cross_l2_mean",          "Cross L2 Dist ↓"),
         ("contrastive_within_bulk_l2",         "Within-Bulk\nL2 Spread ↑"),
         ("contrastive_within_pb_l2",           "Within-PB\nL2 Spread ↑"),
+        # ── Contrastive — L2, scale-free (read these, not the raw L2 above) ─
+        ("contrastive_within_bulk_over_cross_l2", "Within-Bulk / Cross\nL2 ratio (→1) ↑"),
+        ("contrastive_within_pb_over_cross_l2",   "Within-PB / Cross\nL2 ratio (→1) ↑"),
+        ("contrastive_energy_distance",           "Energy Distance\n(normalised, 0=same) ↓"),
         # ── Distributional ─────────────────────────────────────────────────
         ("contrastive_wasserstein",            "Wasserstein ↓"),
+        # ── Embedding geometry — is the space degenerate? ──────────────────
+        ("geometry_pr_frac_pooled",            "Participation Ratio\n(frac. of isotropic) ↑"),
+        ("geometry_pr_pooled",                 "Participation Ratio\n(effective dims) ↑"),
+        ("geometry_modality_var_frac",         "Variance along the\nmodality axis ↓"),
     ]
 
     # Groups of columns that must share the same Y-axis for direct comparison.
@@ -1176,6 +1835,12 @@ def _plot_metrics(df: pd.DataFrame, out_png: Path, ncols: int = 5) -> None:
             "paired_rank_median",
             "paired_rank_l2_mean",
             "paired_rank_l2_median",
+        }),
+        # Both ratios target the same 1.0, so an asymmetry between the modalities is
+        # only readable if the two panels share an axis.
+        frozenset({
+            "contrastive_within_bulk_over_cross_l2",
+            "contrastive_within_pb_over_cross_l2",
         }),
     ]
 
@@ -1298,6 +1963,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Skip models that already have unified_metrics.json.")
     p.add_argument("--not-normalized", action="store_true",
                    help="h5ad files contain raw counts (not log1p-normalised).")
+    p.add_argument("--scib-n-max", type=int, default=500,
+                   help="Cells per batch in each scIB benchmark (default: 500). "
+                        "All scIB numbers depend on this and on --seed.")
     p.add_argument("--scib", action="store_true",
                    help="Compute scIB batch integration metrics (requires scib + scanpy). "
                         "Intended for a second pass after the main metrics have been cached "
@@ -1335,6 +2003,10 @@ def main(argv=None) -> int:
     log.info("Loading eval AnnData from %s ...", eval_path)
     eval_adata = ad.read_h5ad(eval_path)
     log.info("  %d cells, obsm keys: %s", eval_adata.n_obs, list(eval_adata.obsm.keys()))
+    # An eval.h5ad built before the label vocabulary was fixed carries filename
+    # prefixes ("subsampled") instead of labels ("sc"), which matches no metric
+    # family and skips agg_synth_* while still listing the rows as present.
+    canonicalize_modality_column(eval_adata, log=log)
 
     normalized = not args.not_normalized
     # Common kwargs for run_single_model (do_scib is ablation-level only)
@@ -1355,7 +2027,10 @@ def main(argv=None) -> int:
         if not ablation_dir.is_dir():
             log.error("--ablation-dir not found: %s", ablation_dir)
             return 1
-        run_ablation(ablation_dir=ablation_dir, eval_adata=eval_adata, do_scib=args.scib, **kwargs)
+        run_ablation(
+            ablation_dir=ablation_dir, eval_adata=eval_adata,
+            do_scib=args.scib, scib_n_max=args.scib_n_max, **kwargs,
+        )
 
     else:
         ckpt = args.ckpt.expanduser().resolve()

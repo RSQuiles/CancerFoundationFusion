@@ -142,8 +142,8 @@ def compute_embedding(
         adata.X.indptr = adata.X.indptr.astype(np.int64, copy=False)
     try:
         print(f"    [embed] copying matrix ({adata.n_obs} x {adata.n_vars})...", flush=True)
-        # work = adata.copy()
-        work = adata
+        work = adata.copy()
+        # work = adata
         # Select HVGs and subset in the same pass, so nothing downstream ever
         # operates at full gene width.
         n_top = min(n_top_genes, work.n_vars)

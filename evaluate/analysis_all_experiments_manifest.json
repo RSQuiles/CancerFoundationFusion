@@ -1,0 +1,23 @@
+{
+  "config": "/cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/analysis_all_experiments.yaml",
+  "mode": "single-job",
+  "only_steps": null,
+  "jobs": [
+    {
+      "job_name": "analysis_all",
+      "job_id": "9465903",
+      "experiments": [
+        "monitor_align",
+        "big_condition",
+        "united_data",
+        "paired_mix",
+        "paired_corn",
+        "paired_dataset",
+        "paired_counts",
+        "base_comparison",
+        "partition"
+      ],
+      "payload": "/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_monitor_align/analysis/payload_all.json"
+    }
+  ]
+}

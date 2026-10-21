@@ -1,0 +1,15 @@
+{
+  "config": "/cluster/work/boeva/rquiles/CancerFoundationFusion/evaluate/analysis_downstream_small.yaml",
+  "mode": "per-experiment",
+  "only_steps": null,
+  "jobs": [
+    {
+      "job_name": "down_paired_alignment_objectives",
+      "job_id": "9464855",
+      "experiments": [
+        "paired_alignment_objectives"
+      ],
+      "payload": "/cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_alignment_objectives/analysis/payload.json"
+    }
+  ]
+}

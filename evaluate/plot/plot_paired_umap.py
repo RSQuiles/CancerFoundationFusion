@@ -59,8 +59,7 @@ def _to_dense(X) -> np.ndarray:
 
 def _load_model(ckpt_path: str | Path, device: str | None = None) -> CancerFoundation:
     ckpt_path = Path(ckpt_path)
-    model = CancerFoundation.load_from_checkpoint(str(ckpt_path), strict=False)
-    model.eval()
+    model = CancerFoundation.load_for_inference(ckpt_path)
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     return model.to(device)

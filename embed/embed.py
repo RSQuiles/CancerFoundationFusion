@@ -136,8 +136,7 @@ def main() -> None:
             sys.exit(1)
 
         print(f"Loading checkpoint: {checkpoint_path}")
-        model = CancerFoundation.load_from_checkpoint(str(checkpoint_path), strict=False)
-        model.eval()
+        model = CancerFoundation.load_for_inference(checkpoint_path)
         for param in model.parameters():
             param.requires_grad = False
 

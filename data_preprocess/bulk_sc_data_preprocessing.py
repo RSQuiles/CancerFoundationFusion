@@ -284,14 +284,20 @@ def _set_h5ad_index(h5ads: Path, var_field: str = "feature_id") -> None:
             print(f"Skipped {path.name}")
 
 def _generate_vocab_from_h5ads(
-    h5ads: Path, cls_token: str, pad_token: str
+    h5ads: Path, cls_token: str, pad_token: str, intersect: bool=True
 ) -> dict[str, int]:
-    genes = set()
+    if intersect:
+        genes = None
+    else:
+        genes = set()
     for path in h5ads.iterdir():
         if not path.name.endswith(".h5ad"):
             continue
         var_names = read_anndata(path).var_names
-        genes.update(var_names)
+        if intersect:
+            genes = set(var_names) if genes is None else genes & set(var_names)
+        else:
+            genes.update(var_names)
     vocab = {gene: i for i, gene in enumerate([cls_token, pad_token] + list(genes))}
     return vocab
 
@@ -438,13 +444,37 @@ def main(args):
     # so that BulkSCDataset can use it for paired sampling.
     if args.paired_h5ad is not None and "paired" not in obs_columns:
         obs_columns = obs_columns + ["paired"]
+    # "pseudobulk_id" links a precomputed pseudobulk to the exact single cells it was
+    # aggregated from; needed for --precomputed-pb with --agg-consistency.
+    pb_id_column = args.pb_id_column
+    if pb_id_column and pb_id_column not in obs_columns:
+        obs_columns = obs_columns + [pb_id_column]
 
+    warned_pb_id = False
     for i, fname in enumerate(memmaps.fname_to_mmap.keys()):
         print(f"Processing {i + 1}/{len(memmaps.fname_to_mmap)}: {fname.name}")
         adata = read_anndata(h5ad_path / (fname.name + ".h5ad"))
         # Add modality column if not present
         if "modality" not in adata.obs.columns:
             adata.obs["modality"] = "sc"
+
+        if not pb_id_column and "pseudobulk_id" in adata.obs.columns and not warned_pb_id:
+            warned_pb_id = True
+            print(
+                f"[WARNING] {fname.name} carries a 'pseudobulk_id' column but "
+                "--pb-id-column was not passed, so it will be dropped. Pass "
+                "--pb-id-column pseudobulk_id to keep the pseudobulk -> constituent "
+                "cell link needed by --precomputed-pb --agg-consistency."
+            )
+
+        if pb_id_column and pb_id_column in adata.obs.columns:
+            # Store as a prefixed string. Every obs column is re-encoded as a category
+            # code below, and rows from files without the column are filled with 0 —
+            # so a bare integer id 0 would be indistinguishable from "no pseudobulk"
+            # and would bind every unrelated cell to that one pseudobulk.
+            adata.obs[pb_id_column] = (
+                "pb:" + adata.obs[pb_id_column].astype(str)
+            )
 
         # Use reindex so that columns absent in this h5ad (e.g. "paired" for
         # CellxGene files, or "tissue_general" for paired-dataset files) are
@@ -535,6 +565,19 @@ def get_args():
     )
 
     # --- Paired SC+bulk dataset ---
+    parser.add_argument(
+        "--pb-id-column",
+        type=str,
+        default=None,
+        help=(
+            "obs column linking a precomputed pseudobulk to the single cells it was "
+            "aggregated from (use 'pseudobulk_id', as written by "
+            "reconstruct_pseudobulk_cell_map.py --rebuild onto both output h5ads). "
+            "Kept in obs.parquet and stored as a 'pb:'-prefixed string so it cannot "
+            "collide with the fill value used for rows that have no pseudobulk. "
+            "Required for training with --precomputed-pb --agg-consistency."
+        ),
+    )
     parser.add_argument(
         "--paired-h5ad",
         type=Path,
