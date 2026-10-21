@@ -17,7 +17,7 @@
 # 'unified', 'dat', 'contrastive' and 'bulk_baseline' each recur in several
 # directories. That is also why no group uses 'all_models: true'.
 
-title: "Non-Precompted Experiments — Downstream Benchmark"
+title: "Non-Precomputed Experiments — Downstream Benchmark"
 output: /cluster/work/boeva/rquiles/outputs/save_CFF/comparison_non_precomputed.png
 
 # One figure per task rather than a single grid. Files are named after `output`
@@ -32,17 +32,17 @@ per_task: true
 
 # 48 bars per subplot; the auto-derived size is far too small either way.
 # Both tuned by rendering.
-figsize: [30, 20]          # the combined grid, when per_task is false
-per_task_figsize: [30, 20] # each single-task figure
+figsize: [30, 23]          # the combined grid, when per_task is false
+per_task_figsize: [30, 22] # each single-task figure
 
 font_scale: 2.0
 font_sizes:
   bar_name: 25
   value: 25
-  legend: 20
+  legend: 25
   metric_title: 35
   task_label: 25
-  tick: 13
+  tick: 20
   suptitle: 40
   footnote: 12
   no_data: 12
@@ -52,6 +52,8 @@ font_sizes:
 # bars, tracing a colour back to an 8-row legend is otherwise hopeless. The names
 # are rotated and the y-range is widened to fit them.
 bar_names: true
+task_labels: false
+legend_ncol: 4
 
 # Metric subsets, in plot order. Keys verified against what each task actually
 # returns today — see canc_type_pred.py:251-262, deconv.py:502-506, and the

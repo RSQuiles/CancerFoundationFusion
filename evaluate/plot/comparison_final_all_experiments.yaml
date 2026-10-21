@@ -1,0 +1,203 @@
+# Every experiment in ablate/configs/, in one benchmark comparison.
+#
+#   python evaluate/plot/plot_ablation_benchmark.py --config evaluate/plot/comparison_all_experiments.yaml --no-show
+#
+# Reads {model}/metrics/results_*.json only — nothing is recomputed. Produce those
+# first with evaluate/analysis_downstream_benchmark.yaml (steps: downstream).
+# Groups whose directory holds no results are dropped with a warning, so this is
+# safe to run before every experiment has finished.
+#
+# One group per ablation directory, derived from base_config.trainer.save_dir in
+# ablate/configs/*.json. 13 configs collapse to 10 directories:
+#   fill.json + paired_alignment_objectives.json -> ablation_paired_alignment_objectives
+#   paired_counts.json + paired_config_cscs.json -> ablation_paired_counts
+#
+# Display names are prefixed ("bigcond/unified") because they must be unique across
+# the WHOLE config — experiment_selection.py:250-256 exits on a collision, and
+# 'unified', 'dat', 'contrastive' and 'bulk_baseline' each recur in several
+# directories. That is also why no group uses 'all_models: true'.
+
+title: "All Experiments — Downstream Benchmark"
+output: /cluster/work/boeva/rquiles/outputs/save_CFF/comparison_non_precomputed.png
+
+# One figure per task rather than a single grid. Files are named after `output`
+# with the task appended:
+#   comparison_all_experiments_canc_type_class.png
+#   comparison_all_experiments_deconv.png
+#   comparison_all_experiments_survival.png
+# Colours, bar order and group bands are computed once across all tasks, so the
+# three figures stay comparable. Set false (or pass --no-per-task) for the
+# combined grid, which then uses `figsize` instead.
+per_task: true
+
+# 48 bars per subplot; the auto-derived size is far too small either way.
+# Both tuned by rendering.
+figsize: [30, 23]          # the combined grid, when per_task is false
+per_task_figsize: [40, 22] # each single-task figure
+
+font_scale: 2.0
+font_sizes:
+  bar_name: 25
+  value: 25
+  legend: 25
+  metric_title: 35
+  task_label: 25
+  tick: 20
+  suptitle: 40
+  footnote: 12
+  no_data: 12
+  group_name: 35
+
+# Print each model's display name above its bar as well as in the legend — with 48
+# bars, tracing a colour back to an 8-row legend is otherwise hopeless. The names
+# are rotated and the y-range is widened to fit them.
+bar_names: true
+task_labels: false
+legend_ncol: 4
+
+# Metric subsets, in plot order. Keys verified against what each task actually
+# returns today — see canc_type_pred.py:251-262, deconv.py:502-506, and the
+# aggregate written by tasks/evaluate_survboard_metrics.py.
+metrics:
+  canc_type_class: [accuracy, f1_weighted, precision_macro, recall_macro]
+  deconv: [mean_pearson_r_present, rmse_present, mean_sample_pearson_r]
+  # c_index is written by the task itself; the other three come from the separate
+  # SurvBoard evaluation pass and are absent until it has run.
+  survival: [c_index, antolini_concordance, ibs, d_calibration]
+  ic50: [spearman_rho, r2, mae, rmse]
+  cmax: [auroc, auprc, mcc, balanced_accuracy]
+
+primary:
+  # Set explicitly: the built-in default for deconv is 'mae', which this task no
+  # longer emits (it now conditions every metric on cell-type presence), so without
+  # this the star would land on whichever metric happens to sort first.
+  deconv: mean_pearson_r_present
+  canc_type_class: accuracy
+  survival: c_index
+
+groups:
+
+  # ── Log1p-normalized data, NonPaired ─────────────────────────────────────────────
+  - name: "Log1p & Non-Paired"
+    experiments:
+      - name: "Unified - Log1p"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/unified_baseline
+
+      - name: "Contrastive - Log1p"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/contrastive
+
+      - name: "Aggregation - Log1p"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/aggregation
+
+      - name: "DAT - Log1p"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/dat
+
+      # - name: "part/base"
+      #   path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition/base_model
+
+      # - name: "part/zinb"
+      #   path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition/zinb_reconstruction
+
+      # - name: "part/denoise_zinb"
+      #   path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition/denoise_zinb
+
+      # - name: "part/contrastive"
+      #   path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition/contrastive
+
+      # - name: "part/agg_contrast"
+      #   path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition/agg_contrastive
+
+      # - name: "part/all_features"
+      #   path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_partition/dat_agg_contrastive_denoise_zinb
+
+  # ── Log1p-normalized data, Paired ─────────────────────────────────────────────
+  - name: "Log1p & Paired"
+    experiments:
+      - name: "Unified - Log1p - Paired"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_aggfix/unified
+
+      - name: "Contrastive - Log1p - Paired"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_aggfix/contrastive
+
+      - name: "DAT - Log1p - Paired"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_aggfix/dat
+
+  # ── Count data, Paired ─────────────────────────────────────────────
+  - name: "Counts & Paired"
+    experiments:
+      - name: "Unified - Counts - Paired"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts/unified
+
+      - name: "DAT - Counts - Paired"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts/dat
+
+      - name: "Contrastive - Counts - Paired"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts/contrastive
+
+      - name: "Aggregation - Counts - Paired"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts/aggregation
+
+      - name: "DAT + Agg - Counts - Paired"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_mix/dat_agg
+
+  - name: "Counts & Paired - CORN"
+    experiments:
+      - name: "Unified - Counts - Paired - CORN"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn/unified
+
+      - name: "DAT - Counts - Paired - CORN"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn/dat
+
+      - name: "Contrastive - Counts - Paired - CORN"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn/contrastive
+
+      - name: "Aggregation - Counts - Paired - CORN"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn/aggregation
+
+  # ── Precomputed Non-Paired Data────────────────────────────────────────────
+  - name: "Precomputed & Non-Paired"
+    experiments:
+    - name: "Unified - Precomputed"
+      path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition/unified
+
+    - name: "DAT - Precomputed"
+      path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition/dat
+
+    - name: "MMD - Precomputed"
+      path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition/mmd
+
+    - name: "CDD - Precomputed"
+      path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition/cdd
+
+  # ── Precomputed Paired Data ──────────────────────────────────────────────────────────
+  - name: "Precomputed & Paired"
+    experiments:
+      - name: "MMD - Precomputed - Paired"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_alignment_objectives/paired_mmd
+
+      - name: "CDD - Precomputed - Paired"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_alignment_objectives/paired_cdd
+
+      - name: "MDD + Agg - Precomputed - Paired"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_alignment_objectives/paired_mmd_agg
+
+      - name: "CDD + Agg - Precomputed - Paired"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_alignment_objectives/paired_cdd_agg
+
+  # ── baselines ─────────────────────────────────────────────────────────────────
+  - name: "Baselines"
+    experiments:
+      - name: "SC Baseline - Log1p"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/sc_baseline
+
+      - name: "Bulk Baseline - Log1p"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_base_comparison/bulk_baseline
+      
+      - name: "Bulk Baseline - Counts"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_counts/bulk_baseline
+
+      - name: "Bulk Baseline Counts - CORN"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_paired_corn/bulk_baseline
+
+      - name: "PCA"
+        path: /cluster/work/boeva/rquiles/outputs/save_CFF/ablation_big_condition/pca_baseline
