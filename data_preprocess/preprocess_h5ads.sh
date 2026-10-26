@@ -19,6 +19,8 @@ for arg in "$@"; do
     fi
 done
 
+# Every row of every file, values as stored (nothing is normalized). To build a store
+# from one part of a split instead, use split_train_test.py --build-store or build_mix.py.
 SCRIPT_ARGS=(
     --h5ad-path /cluster/work/boeva/rquiles/data/eheiss_RAW_paired
     --data-path /cluster/work/boeva/rquiles/data/eheiss_RAW_paired/pipeline_ready
@@ -26,7 +28,9 @@ SCRIPT_ARGS=(
     --pb-id-column pseudobulk_id
 )
 
-# --obs-columns tissue_general assay
+# --rows train.txt           keep only these obs names
+# --vocab-path vocab.json    reuse an existing vocabulary (else: intersection of the files)
+# --gene-column feature_name var column holding gene names (instead of rewriting the index)
 
 if [[ "$USE_LOCAL" -eq 1 ]]; then
     echo "Running locally (no singularity)"

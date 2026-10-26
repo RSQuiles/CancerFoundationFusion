@@ -52,7 +52,7 @@ import torch
 from utils import sample_h5ad_subset_from_prefix, subsample_adata
 
 # Model-free UMAP computation/rendering, re-exported so this module's API is unchanged.
-from umap_render import (  # noqa: F401
+from evaluate.plot.umap_render import (  # noqa: F401
     _as_path,
     _assign_colors,
     _canonical_modality,

@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import argparse
 import json
 import traceback
-from pathlib import Path
 from typing import Any
 
-from runtime import run_downstream_tasks, run_training_from_config
+from experiments.runtime import run_downstream_tasks, run_training_from_config
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Execute one ablation run from a JSON payload (intended for SLURM jobs)."
+        description="Train one model from a JSON payload (intended for SLURM jobs)."
     )
     parser.add_argument("--payload", type=Path, required=True, help="Path to job payload")
     return parser.parse_args()
@@ -26,16 +31,15 @@ def _load_payload(payload_path: Path) -> dict[str, Any]:
 def _write_result(result_path: Path, payload: dict[str, Any], result: dict[str, Any]) -> None:
     result_path.parent.mkdir(parents=True, exist_ok=True)
     run_record = {
-        "experiment_name": payload.get("experiment_name"),
-        "run_name": payload.get("run_name"),
-        "run_id": payload.get("run_id"),
+        "launch_name": payload.get("launch_name"),
+        "model_name": payload.get("model_name"),
         **result,
     }
     result_path.write_text(json.dumps(run_record, indent=2), encoding="utf-8")
 
 
 def _execute(payload: dict[str, Any]) -> dict[str, Any]:
-    run_name = str(payload["run_name"])
+    model_name = str(payload["model_name"])
     model_config = dict(payload["model_config"])
     model_config_path = Path(payload["model_config_path"])
     train_entrypoint = str(payload["train_entrypoint"])
@@ -43,7 +47,7 @@ def _execute(payload: dict[str, Any]) -> dict[str, Any]:
     dry_run = bool(payload.get("dry_run", False))
 
     train_result = run_training_from_config(
-        run_name=run_name,
+        model_name=model_name,
         model_config=model_config,
         model_config_path=model_config_path,
         train_entrypoint=train_entrypoint,

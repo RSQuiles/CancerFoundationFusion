@@ -122,16 +122,24 @@ python evaluate/finetune/run_downstream_task.py \
 
 Subclass `DownstreamTask` (see `evaluate/finetune/task_template.py` for the full interface). The `BaseDownstreamRunner` handles the training loop, DDP, checkpointing, and evaluation automatically.
 
-## Ablation Studies
+## Experiments
 
-The `ablate/` directory provides a config-driven framework for running systematic feature ablations.
+Everything a run produces lives under one experiments root (default
+`/cluster/work/boeva/rquiles/unifiedFM_experiments`, or `$UNIFIEDFM_ROOT`), laid out by
+`experiments/layout.py`: `data/` (raw h5ads, splits, training stores), `checkpoints/<model>/`,
+`embeddings/<model>/` and `results/`. Each model is identified by its name alone.
 
 ```bash
-python ablate/ablate.py --config ablate/example_ablation_config.json
-python ablate/ablate.py --config ablate/example_ablation_config.json --dry-run  # validate only
+# Train the models of a launch config (one SLURM job per model, or locally)
+python -m experiments.launch --config experiments/configs/example_unifiedfm.json --dry-run
+
+# Give a model a better name everywhere (dry run first, then --apply)
+python -m experiments.rename_model old_name new_name
 ```
 
-An ablation config specifies a base pretraining config and a list of ablations (each as a dict of parameter overrides). Each ablation is run as an independent training job, with optional SLURM submission via `slurm_worker.py`.
+A launch config holds a base pretraining config plus a list of named models, each a dict
+of overrides. `trainer.save_dir` is derived from the name, and `data.train_path` may name a
+training store by reference (`{"pipeline_ready": "single_cell:tissue_s0"}` or `{"mix": "..."}`).
 
 ## Data Processing
 

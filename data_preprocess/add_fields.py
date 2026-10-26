@@ -38,7 +38,7 @@ import scanpy as sc
 from scipy.spatial.distance import cdist
 import scipy.sparse as sp
 
-from utils import walk_tissue_names
+from tissue_names import walk_tissue_names
 
 # Field names that trigger tissue inference instead of constant broadcast.
 TISSUE_FIELDS = {"tissue", "tissue_general"}

@@ -35,7 +35,7 @@ import pandas as pd
 import scanpy as sc
 import scipy.sparse as sp
 from anndata import AnnData
-from umap_render import UNKNOWN_LABELS, compute_umap, save_umap_plot
+from evaluate.plot.umap_render import UNKNOWN_LABELS, compute_umap, save_umap_plot
 
 from utils import subsample_adata
 

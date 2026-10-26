@@ -1,0 +1,1 @@
+Archived: the evaluation code for the old per-ablation directory layout, frozen as it was. Its imports still say `evaluate.`, so it does not run as is; the new `evaluate/` package works on the experiments root (`experiments/layout.py`).

@@ -1,51 +1,187 @@
-"""Generate cell embeddings from a CancerFoundation checkpoint and attach them to an h5ad file.
+"""Embed an h5ad with a CancerFoundation checkpoint and save the embeddings to a directory.
 
-Usage
------
-    # Data is raw counts (CP10K + log1p normalization applied automatically):
-    python embed.py --checkpoint path/to/model.ckpt --input data.h5ad
+General-purpose: any h5ad in, ``<out-dir>/<name>.h5ad`` out, holding the input's obs
+plus ``obsm["X_emb"]`` and no X. ``<out-dir>/embed.json`` records, per file, the
+checkpoint, normalization and gene panel, and the panel itself is saved as
+``<out-dir>/panel_<hash>.txt``. Several files written to the same directory share one
+``embed.json``.
 
-    # Data is already CP10K + log1p normalized:
-    python embed.py --checkpoint path/to/model.ckpt --input data.h5ad --normalized
+    python embed.py --checkpoint path/to/model.ckpt --input data.h5ad --out-dir out/
 
-    # Data is CP10K-normalized but not log1p-transformed:
-    python embed.py --checkpoint path/to/model.ckpt --input data.h5ad --log1p-only
+    # Rows of several modalities in one file: one shared gene panel across them
+    python embed.py --checkpoint model.ckpt --input mixed.h5ad --out-dir out/ --modality-col modality
 
-    # Custom output path and obsm key:
-    python embed.py --checkpoint path/to/model.ckpt --input data.h5ad \\
-        --output data_embedded.h5ad --obsm-key X_cf
+    # Data already CP10K + log1p (or CP10K only):
+    python embed.py --checkpoint model.ckpt --input data.h5ad --out-dir out/ --normalized
+    python embed.py --checkpoint model.ckpt --input data.h5ad --out-dir out/ --log1p-only
 
-    # PCA embeddings only (no model required):
-    python embed.py --input data.h5ad --pca --n-pcs 50
+The functions here are the machinery ``embed_splits.py`` and ``embed_any.py`` build on:
+``load_model``, ``embed_adata`` and ``write_embeddings``. Raw counts get CP10K + log1p
+unless ``--normalized`` / ``--log1p-only`` say otherwise.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-import scanpy as sc
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+EMB_KEY = "X_emb"
+EMBED_CARD = "embed.json"
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Embed cells in an h5ad file using a CancerFoundation checkpoint.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument("--checkpoint", default=None, help="Path to .ckpt model checkpoint.")
-    parser.add_argument("--input", required=True, help="Path to input .h5ad file.")
-    parser.add_argument(
-        "--output",
-        default=None,
-        help="Output .h5ad path. Defaults to <input_stem>_embedded.h5ad next to the input.",
-    )
-    parser.add_argument(
-        "--obsm-key",
-        default="X_cf",
-        help="adata.obsm key under which embeddings are stored.",
-    )
+# --------------------------------------------------------------------------- #
+# Machinery
+# --------------------------------------------------------------------------- #
+
+
+def load_model(checkpoint_path: Path, cpu: bool = False):
+    """``CancerFoundation.load_for_inference`` on GPU when available, gradients off."""
+    import torch
+    from cancerfoundation.model.model import CancerFoundation
+
+    print(f"Loading checkpoint: {checkpoint_path}")
+    model = CancerFoundation.load_for_inference(checkpoint_path)
+    for param in model.parameters():
+        param.requires_grad = False
+    if not cpu and torch.cuda.is_available():
+        model = model.cuda()
+        print("Inference device: GPU")
+    else:
+        print("Inference device: CPU")
+    return model
+
+
+def panel_hash(genes: list[str]) -> str:
+    return hashlib.sha1("\n".join(sorted(genes)).encode("utf-8")).hexdigest()[:12]
+
+
+def flat_genes(genes) -> list[str]:
+    """``model.embed`` returns a list, or a dict per modality for per-modality panels."""
+    if isinstance(genes, dict):
+        return sorted({g for v in genes.values() for g in v})
+    return list(genes)
+
+
+def embed_adata(
+    model,
+    adata,
+    modality_col: str | None = None,
+    modality: str = "sc",
+    batch_size: int = 64,
+    normalized: bool = False,
+    log1p_only: bool = False,
+    shared_panel: bool = True,
+    chunk_rows: int = 100_000,
+    panel_sample: int = 50_000,
+    seed: int = 0,
+) -> tuple[np.ndarray, list[str] | dict[str, list[str]]]:
+    """Embed every row of ``adata`` through one gene panel, in chunks if it is large.
+
+    With ``modality_col`` naming a column with several values, the panel is fitted
+    across them (``shared_panel``); otherwise ``modality`` drives gene selection. When
+    ``adata`` has more than ``chunk_rows`` rows, the panel is fitted once on a
+    ``panel_sample``-row sample (stratified on ``modality_col``) and reused for every
+    chunk, so all rows still see the same input genes.
+    """
+    from utils.sampling import stratified_subsample
+
+    multi = modality_col is not None and modality_col in adata.obs.columns and adata.obs[modality_col].nunique() > 1
+    common = dict(batch_size=batch_size, normalized=normalized, log1p_only=log1p_only)
+
+    def run(sub, gene_subset=None):
+        kwargs = dict(common)
+        if gene_subset is not None:
+            kwargs["gene_subset"] = gene_subset
+        elif multi:
+            kwargs.update(modality_col=modality_col, shared_panel=shared_panel)
+        else:
+            kwargs["modality"] = modality
+        df, genes = model.embed(sub, **kwargs)
+        return df.to_numpy().astype(np.float32), genes
+
+    if adata.n_obs <= chunk_rows:
+        return run(adata)
+
+    if multi and not shared_panel:
+        raise ValueError("Chunked embedding needs a shared panel; drop shared_panel=False or raise chunk_rows")
+    strata = [modality_col] if multi else None
+    fit_names = stratified_subsample(adata.obs, panel_sample, strata, seed=seed)
+    print(f"Fitting the gene panel on {len(fit_names)} of {adata.n_obs} rows")
+    _, genes = run(adata[adata.obs_names.isin(fit_names)].copy())
+    blocks = []
+    for start in range(0, adata.n_obs, chunk_rows):
+        stop = min(start + chunk_rows, adata.n_obs)
+        print(f"Embedding rows {start}-{stop} of {adata.n_obs}")
+        emb, _ = run(adata[start:stop].copy(), gene_subset=genes)
+        blocks.append(emb)
+    return np.concatenate(blocks, axis=0), genes
+
+
+def write_embeddings(
+    out_dir: Path,
+    name: str,
+    obs,
+    emb: np.ndarray,
+    genes=None,
+    provenance: dict | None = None,
+    obsm_key: str = EMB_KEY,
+) -> Path:
+    """Write ``<out_dir>/<name>.h5ad`` (obs + obsm, no X) and record it in ``embed.json``.
+
+    ``genes`` (the input panel, if the embedder has one) is saved once per distinct
+    panel as ``panel_<hash>.txt``; the hash goes into the file's ``embed.json`` entry,
+    which is what tells a reader whether two files saw the same inputs.
+    """
+    import anndata as ad
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{name}.h5ad"
+    ad.AnnData(obs=obs.copy(), obsm={obsm_key: np.asarray(emb, dtype=np.float32)}).write_h5ad(path)
+
+    entry = {
+        "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        **(provenance or {}),
+        "n_rows": int(len(obs)),
+        "dim": int(np.asarray(emb).shape[1]),
+        "obsm_key": obsm_key,
+        "panel_hash": None,
+        "n_panel_genes": None,
+    }
+    if genes is not None:
+        genes = flat_genes(genes)
+        entry["panel_hash"] = panel_hash(genes)
+        entry["n_panel_genes"] = len(genes)
+        (out_dir / f"panel_{entry['panel_hash']}.txt").write_text("\n".join(genes) + "\n", encoding="utf-8")
+
+    card_path = out_dir / EMBED_CARD
+    card = json.loads(card_path.read_text(encoding="utf-8")) if card_path.exists() else {}
+    card.setdefault("files", {})[path.name] = entry
+    card["updated"] = entry["created"]
+    card_path.write_text(json.dumps(card, indent=2), encoding="utf-8")
+    print(f"  wrote {path} ({len(obs)} rows, dim {entry['dim']})")
+    return path
+
+
+def set_card_fields(out_dir: Path, **fields) -> None:
+    """Top-level fields of ``<out_dir>/embed.json`` (e.g. the model name)."""
+    card_path = Path(out_dir) / EMBED_CARD
+    card = json.loads(card_path.read_text(encoding="utf-8")) if card_path.exists() else {}
+    card.update(fields)
+    card_path.write_text(json.dumps(card, indent=2), encoding="utf-8")
+
+
+def add_normalization_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--normalized",
         action="store_true",
@@ -65,125 +201,84 @@ def parse_args() -> argparse.Namespace:
             "Mutually exclusive with --normalized."
         ),
     )
+
+
+def add_model_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--batch-size", type=int, default=64, help="Inference batch size.")
-    parser.add_argument(
-        "--cpu",
-        action="store_true",
-        default=False,
-        help="Force CPU inference even when a GPU is available.",
+    parser.add_argument("--cpu", action="store_true", default=False,
+                        help="Force CPU inference even when a GPU is available.")
+    parser.add_argument("--chunk-rows", type=int, default=100_000,
+                        help="Embed at most this many rows per call; the panel is fitted once.")
+    parser.add_argument("--panel-sample", type=int, default=50_000,
+                        help="Rows the gene panel is fitted on when the data needs chunking.")
+    parser.add_argument("--no-shared-panel", dest="shared_panel", action="store_false",
+                        help="Fit a separate panel per modality (not comparable across modalities).")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.set_defaults(shared_panel=True)
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Embed an h5ad with a CancerFoundation checkpoint into a directory.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    # PCA options
-    parser.add_argument(
-        "--pca",
-        action="store_true",
-        default=False,
-        help=(
-            "Compute PCA embeddings and store in adata.obsm['X_pca']. "
-            "Mutually exclusive with model embedding. No checkpoint required."
-        ),
-    )
-    parser.add_argument(
-        "--n-pcs",
-        type=int,
-        default=50,
-        help="Number of principal components to compute (default: 50). Only used with --pca.",
-    )
-    return parser.parse_args()
+    parser.add_argument("--checkpoint", required=True, help="Path to the .ckpt model checkpoint.")
+    parser.add_argument("--input", required=True, help="Path to the input .h5ad file.")
+    parser.add_argument("--out-dir", required=True, help="Directory the embeddings are written to.")
+    parser.add_argument("--name", default=None, help="Output file stem (default: the input's stem).")
+    parser.add_argument("--obsm-key", default=EMB_KEY, help="obsm key of the saved embedding.")
+    parser.add_argument("--modality-col", default=None,
+                        help="obs column with per-row modality; several values share one gene panel.")
+    parser.add_argument("--modality", default="sc", choices=["sc", "bulk", "pseudobulk"],
+                        help="Modality of the whole file when --modality-col is not given.")
+    add_normalization_args(parser)
+    add_model_run_args(parser)
+    args = parser.parse_args()
+    if args.normalized and args.log1p_only:
+        parser.error("--normalized and --log1p-only are mutually exclusive")
+    return args
 
 
 def main() -> None:
     args = parse_args()
-
-    if args.normalized and args.log1p_only:
-        print("Error: --normalized and --log1p-only are mutually exclusive.", file=sys.stderr)
-        sys.exit(1)
-
-    if not args.pca and args.checkpoint is None:
-        print("Error: --checkpoint is required unless --pca is set.", file=sys.stderr)
-        sys.exit(1)
-
-    input_path = Path(args.input)
-    if not input_path.exists():
-        print(f"Error: input file not found: {input_path}", file=sys.stderr)
-        sys.exit(1)
-
-    output_path = (
-        Path(args.output)
-        if args.output
-        else input_path.with_name(input_path.stem + "_embedded.h5ad")
-    )
-
     import scanpy as sc
 
-    # -------------------------------------------------------------------------
-    # Load data
-    # -------------------------------------------------------------------------
+    input_path = Path(args.input)
+    checkpoint = Path(args.checkpoint)
+    for path in (input_path, checkpoint):
+        if not path.exists():
+            sys.exit(f"Error: not found: {path}")
+
     print(f"Loading data: {input_path}")
     adata = sc.read_h5ad(str(input_path))
-    print(f"  {adata.n_obs} cells × {adata.n_vars} genes")
+    print(f"  {adata.n_obs} cells x {adata.n_vars} genes")
 
-    # -------------------------------------------------------------------------
-    # Model embedding branch
-    # -------------------------------------------------------------------------
-    if args.checkpoint is not None:
-        import torch
-        sys.path.insert(0, "../")
-        from cancerfoundation.model.model import CancerFoundation
-
-        checkpoint_path = Path(args.checkpoint)
-        if not checkpoint_path.exists():
-            print(f"Error: checkpoint not found: {checkpoint_path}", file=sys.stderr)
-            sys.exit(1)
-
-        print(f"Loading checkpoint: {checkpoint_path}")
-        model = CancerFoundation.load_for_inference(checkpoint_path)
-        for param in model.parameters():
-            param.requires_grad = False
-
-        use_gpu = not args.cpu and torch.cuda.is_available()
-        if use_gpu:
-            model = model.cuda()
-            print("Inference device: GPU")
-        else:
-            print("Inference device: CPU")
-
-        print("Generating embeddings...")
-        result = model.embed(
-            adata,
-            batch_size=args.batch_size,
-            normalized=args.normalized,
-            log1p_only=args.log1p_only,
-        )
-        emb_df = result[0] if isinstance(result, tuple) else result
-
-        adata.obsm[args.obsm_key] = emb_df.to_numpy().astype(np.float32)
-        print(
-            f"Stored embeddings in adata.obsm['{args.obsm_key}'] "
-            f"(shape: {adata.obsm[args.obsm_key].shape})"
-        )
-
-    # -------------------------------------------------------------------------
-    # PCA branch
-    # -------------------------------------------------------------------------
-    if args.pca:
-        print(f"Computing PCA with {args.n_pcs} components...")
-        
-        # Normalize to CP10K + log1p if not already normalized
-        print("Normalizing input data!")
-        sc.pp.normalize_total(adata, target_sum=1e4)
-        sc.pp.log1p(adata)
-
-        sc.pp.pca(adata, n_comps=args.n_pcs)
-        print(
-            f"Stored PCA embeddings in adata.obsm['X_pca'] "
-            f"(shape: {adata.obsm['X_pca'].shape})"
-        )
-
-    # -------------------------------------------------------------------------
-    # Save
-    # -------------------------------------------------------------------------
-    print(f"Saving to: {output_path}")
-    adata.write_h5ad(str(output_path))
+    model = load_model(checkpoint, args.cpu)
+    emb, genes = embed_adata(
+        model, adata,
+        modality_col=args.modality_col, modality=args.modality,
+        batch_size=args.batch_size, normalized=args.normalized, log1p_only=args.log1p_only,
+        shared_panel=args.shared_panel, chunk_rows=args.chunk_rows,
+        panel_sample=args.panel_sample, seed=args.seed,
+    )
+    write_embeddings(
+        Path(args.out_dir), args.name or input_path.stem, adata.obs, emb, genes,
+        provenance={
+            "method": "cancerfoundation",
+            "checkpoint": str(checkpoint),
+            "input": str(input_path),
+            "modality_col": args.modality_col,
+            "shared_panel": args.shared_panel,
+            "normalized": args.normalized,
+            "log1p_only": args.log1p_only,
+        },
+        obsm_key=args.obsm_key,
+    )
     print("Done.")
 
 

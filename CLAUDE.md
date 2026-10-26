@@ -28,6 +28,149 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
 - `--compile`: Enable `torch.compile` for the model
 - `--unified`: Enable Unified FM mode (adds bulk data, contrastive, and aggregation losses)
 
+### Experiments root and layout
+Everything a run produces lives under ONE root: `--root`, else `$UNIFIEDFM_ROOT`, else
+`/cluster/work/boeva/rquiles/unifiedFM_experiments`. `experiments/layout.py`
+(`ExperimentLayout`) is the ONE place paths under it are composed, and it is
+torch-free so data_preprocess, embed and evaluate all import it. Never build these
+paths by hand.
+
+```
+data/{single_cell,bulk,pseudobulk}/{name}.h5ad          raw counts in X, metadata in obs
+data/<modality>/splits/<split>/{train,test}.txt + split.json [+ train/test.h5ad]
+data/<modality>/pipeline_ready/<split>/                 training store from the train rows
+data/pipeline_ready/<mix>/ (+ mix.json)                 multi-modality store for --unified
+checkpoints/<model>/                                    *.ckpt, run.json, model_config.json, wandb/
+checkpoints/_launches/*.json, checkpoints/_renames.jsonl
+embeddings/<model>/{sc,bulk,pseudobulk}_{test,train_subset}.h5ad + embed.json
+results/representation/<model>/, results/representation/_alignment/<model>/
+results/tasks/<task>/<model>/, results/assessment/<analysis>/ (+ manifest.json)
+```
+
+A model is identified by its **name alone**; there are no ablation directories. Two rules
+keep `rename_model.py` exact, so every new writer must follow them: per-model output goes
+under a directory named after the model (never into a filename), and an analysis that
+spans models lists them in its `manifest.json` under `"models"`. Pairing is not a
+modality: paired rows keep `sc`/`bulk`/`pseudobulk` and carry a pair id in obs `paired`
+(0 = unpaired). The PCA baseline is the reserved pseudo-model `pca`.
+
+### Splits and training stores (`data_preprocess/`)
+```bash
+cd data_preprocess
+# any h5ad, any parts
+python split_train_test.py --input data.h5ad --out-dir splits/s0 --stratify-by tissue_general \
+    --group-by donor_id paired:0 --fractions train=0.7 val=0.1 test=0.2
+# experiments-layout shorthand: data/<modality>/<modality>.h5ad -> data/<modality>/splits/<split>/
+python split_train_test.py --modality single_cell --split-name tissue_s0 --stratify-by tissue_general --group-by donor_id paired:0
+python split_train_test.py --modality single_cell --split-name leiden_s0 --cluster leiden [--cluster-rep X_pca]
+python split_train_test.py --modality pseudobulk --split-name tissue_s0 \
+    --inherit-from single_cell:tissue_s0 --link-col pseudobulk_id --build-store --obs-columns tissue_general paired
+# one store from parts of several splits (e.g. for --unified)
+python build_mix.py --name sc_bulk_pb_tissue_s0 --source single_cell:tissue_s0 bulk:tissue_s0 pseudobulk:tissue_s0 \
+    --obs-columns tissue_general assay paired --pb-id-column pseudobulk_id
+# any h5ads straight to a store
+python bulk_sc_data_preprocessing.py --h5ad-path a.h5ad b.h5ad --data-path out/ --obs-columns tissue_general [--rows rows.txt]
+```
+- **Sources are only ever read** (`h5ad_io.SourceReader`, h5py read-only, `uns` never
+  parsed). Nothing is normalized at any point: the store holds the source `X` values.
+  `--cluster-transform` only shapes the features Leiden clusters on.
+- **One transient h5ad per source is unavoidable.** SCDL converts only h5ad *files*, and
+  the loaders read each gene's token id from a `_cf_gene_id` var column and expect every
+  stored column to be in the vocabulary. So `build_pipeline_ready` writes the selected rows
+  and in-vocabulary genes, plus that column, to `<store>/_transient/`, converts it, and
+  deletes it before reading the next source.
+- **Store contract**: `modality` is always stored (the file's own column, else the
+  source's label, else `--default-modality`). An absent obs column is filled with `0`, and
+  category `"0"` means "none" to the loaders (unpaired, no pseudobulk). The
+  `--pb-id-column` is stored as `pb:<id>` so a real id 0 cannot collide with that fill.
+  `paired` is kept only if listed in `--obs-columns`.
+- **Splits**: `--fractions` names any parts; `--test-size` is the train/test shorthand.
+  `--group-by COL[:NOGROUP,...]` takes several columns, and units linked through any of
+  them are merged, so a pair spanning two donors keeps both donors together. `paired:0`
+  says 0 means "unpaired"; without it, every 0 row would be one group. `--inherit-from`
+  takes `MODALITY:SPLIT` or a split directory plus `--parent-input`. `--filter` restricts
+  which rows are split at all. An empty part is refused.
+- `utils/sampling.py` holds the filtering, stratified subsampling and group split used here,
+  by embed and by the figures.
+- `python data_preprocess/check_preprocessing.py` self-checks all of this, with SCDL and
+  `DatasetDir` faked, so no torch is needed. SCDL's own conversion still needs one real run
+  in the container.
+
+### Launching models (`experiments/`)
+```bash
+python -m experiments.launch --config experiments/configs/example_unifiedfm.json [--dry-run] [--only NAME ...]
+```
+A launch config is `base_config` + `base_overrides` + `models: [{name, overrides}]`.
+`trainer.save_dir` is **derived** (`checkpoints/<name>`) and a hand-written one is
+refused, as is `output_dir`; that is why every config in `experiments/configs/legacy/`
+fails fast. `wandb_name` defaults to the name. `data.train_path` may be a literal path or a
+reference, `{"pipeline_ready": "<modality>:<split>"}` or `{"mix": "<name>"}`. Duplicate
+names are an error, and an existing model directory is refused unless
+`resume_from_checkpoint` is set. A dry run never submits: it prints the `sbatch` line and
+writes a placeholder `dry_run.ckpt` plus a card flagged `dry_run`, which does not block a
+later real launch. The SLURM image, binds and project path are config keys under `slurm`.
+
+### Renaming a model
+```bash
+python -m experiments.rename_model OLD NEW [--config <launch cfg> ...]      # dry run
+python -m experiments.rename_model OLD NEW --apply
+```
+The script moves every `model_owned_dirs` entry and rewrites JSON key by key (name fields,
+`models` lists and dicts, paths under a moved directory). It never does text replacement.
+It refuses when NEW exists, OLD owns nothing, or `squeue` shows a job named `*_OLD`. Any
+failure rolls everything back. `run.json` keeps `previous_names`. `.ckpt` files and the W&B
+run are not touched; the script prints the W&B rename command.
+
+### Embeddings (`embed/`)
+Three scripts, one output format: `<dir>/<name>.h5ad` holding obs + `obsm["X_emb"]` (no X),
+plus `<dir>/embed.json` (one entry per file: method, checkpoint or options, `panel_hash`)
+and `<dir>/panel_<hash>.txt`. Evaluation treats every model the same way because of this.
+```bash
+# embed.py: one h5ad + a CancerFoundation checkpoint -> a directory
+python embed/embed.py --checkpoint model.ckpt --input data.h5ad --out-dir out/ [--modality-col modality]
+# embed_splits.py: test split + stratified train subset of each modality -> embeddings/<model>/
+python embed/embed_splits.py --model NAME --split tissue_s0 --modalities sc bulk pseudobulk --train-subset 5000
+python embed/embed_splits.py --embedder pca --split tissue_s0          # any embed_any embedder
+# embed_any.py: one h5ad + any registered embedder -> a directory
+python embed/embed_any.py --list
+python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --option n_pcs=50
+```
+- `embed.py` holds the machinery the other two use: `load_model`, `embed_adata` and
+  `write_embeddings`. `embed_adata` chunks large inputs. It fits the panel once on
+  `--panel-sample` rows and passes it as `gene_subset` to every chunk.
+- `embed_splits.py` embeds every requested modality and part **in one call, through one
+  shared gene panel**, so alignment plots compare like with like. With `--embedder`, the
+  model is fitted on the train-subset rows only.
+- `embed_any.py` is the plug-in point for baselines and other foundation models:
+  subclass `Embedder`, decorate it with `@register("<name>")`, and implement `embed`
+  (plus `fit` if the model learns from data). `--option key=value` becomes a constructor
+  kwarg, parsed as YAML. `pca` is implemented; `bulkformer` is a stub that raises
+  `NotImplementedError` until it is written.
+- Set `self.genes` to the genes a model actually reads, so its files get a `panel_hash`.
+- `python -m embed.check_embed` self-checks all three with a fake model (no torch).
+
+### Representation figures (new `evaluate/`)
+```bash
+python -m evaluate.representation.plot_umap --models m1 pca --modality sc \
+    --filter tissue_general=lung --subsample 20000 --stratify-by tissue_general --color tissue_general
+python -m evaluate.representation.plot_alignment --models m1 --per-modality sc=5000 --connect-pairs
+python -m evaluate.representation.plot_umap --config evaluate/representation/example_umap_config.yaml
+```
+Filtering happens before subsampling. Each figure is saved with a `.parquet` of coordinates
+plus obs. `plot_alignment` fits ONE UMAP over all modalities and refuses files whose
+`panel_hash` differ (`--allow-mixed-panels` overrides). In a `--config` YAML, top-level keys
+are shared and `umap:` / `alignment:` blocks apply to one script; unknown keys are errors.
+
+Offline self-checks: `python -m experiments.check.check_layout`, `check_sampling` and
+`check_rename` (no torch or anndata), plus `python -m evaluate.check.check_representation`
+(needs scanpy).
+
+### `evaluate_old/` (archived)
+**Everything from here to "Survival" below describes `evaluate_old/`**, the evaluation code
+for the old per-ablation directory layout. It is frozen as it was, and its imports still say
+`evaluate.`, so it does not run as is. Read `evaluate/...` in those sections as
+`evaluate_old/...`.
+
 ### Post-training Analysis (UMAPs + unified metrics + benchmark plot)
 ```bash
 # Inspect the exact commands without running anything
@@ -76,49 +219,6 @@ without `agg_synth_*`, and a cache written before a metric family existed is ref
 rather than served back missing whole columns. **Bump `METRICS_VERSION` whenever
 `unified_metrics.py` starts emitting a metric it did not before**: the embeddings and
 rows are unchanged in that case, so neither of the other two keys can see it.
-
-### Reading the contrastive metrics: scale, collapse, and what they cannot say
-`contrastive_cross_l2_mean` and `contrastive_within_*_l2` are in **raw embedding
-units**, and the embedding's overall scale is an arbitrary gauge — rescale every
-vector and the kNN graph, the cosines and the UMAP are unchanged while those columns
-move. A small `cross_l2` is therefore **not** evidence that the modalities mix; it is
-equally consistent with a shrunken embedding whose two clouds stay cleanly separated,
-which is what makes them disagree with scIB's iLISI. `contrastive_cross_cosine_mean`
-is worse: the mean over all pairs factorises to `mean(bn)·mean(pn)`, so it can only
-approach 1 when *every* vector in both clouds points the same way — a value near 1 is
-arithmetically a collapse signature, not an alignment result. Read these instead:
-
-- **`contrastive_within_{bulk,pb}_over_cross_l2`** — within/cross mean distance. Both
-  → 1 when a cross pair is indistinguishable from a within pair. Above 1 means one
-  cloud is nested inside the other, so it is not "better than 1".
-- **`contrastive_energy_distance`** — normalised energy distance
-  `(2C − W_bulk − W_pb) / 2C` ∈ [0,1]. It is ≥ 0 and **0 iff the two modalities have
-  the same distribution** (every moment, not just the mean), so unlike `cross_l2` it
-  has a fixed zero. Calibration for equal-spread clouds whose centroids sit `r`
-  within-cloud distances apart: `e = 1 − 1/√(1+r²)` — 0.11 at r=0.5, 0.29 at r=1,
-  0.55 at r=2. It is exactly `1 − (ratio_bulk + ratio_pb)/2`, so it is the symmetric
-  summary of the two ratios, not independent evidence. Being an MMD with kernel
-  `−‖x−y‖`, it has no bandwidth to saturate the way `contrastive_mmd` does.
-- **`geometry_pr_*`** — participation ratio `(Σλ)²/Σλ²` over the centred covariance
-  spectrum: a soft count of the dimensions actually in use (1 = a line, d = isotropic).
-  **No normalisation of mean distances can replace it**: `E‖x−y‖² = 2·tr Σ` exactly,
-  so a mean pairwise distance carries only total variance and cannot tell a long thin
-  line from a ball. Two traps — PR must be computed on **centred** data (uncentred,
-  a cloud far from the origin scores ~1 for that reason alone), and it is biased down
-  when n ≈ d, so an isotropic embedding at d=512, n=500 scores ~253, not 512. Compare
-  raw PR only at equal n (true across models sharing one eval.h5ad) and use
-  `geometry_pr_frac_*`, which divides by that Marchenko–Pastur reference, anywhere else.
-- **`geometry_modality_var_frac`** — share of pooled variance along the bulk↔pb axis,
-  0 to 1. Note a PR *ratio* would move the wrong way here: pooling two separated
-  clouds **lowers** PR, because the offset adds one dominant eigenvalue.
-
-The two families answer different questions and must be read together — an energy
-distance near 0 means "the modalities are indistinguishable", which is the goal in a
-healthy space and vacuous in a degenerate one where nothing is distinguishable from
-anything. All of these are global; iLISI is local, so concentric clouds can still
-give `e ≈ 0` with healthy PR and iLISI ≈ 0. `evaluate/check/diagnose_scib.py` is the
-local check. `python evaluate/check/check_geometry_metrics.py` self-checks every claim
-above offline against closed-form synthetic geometry (no eval.h5ad, GPU or cluster).
 
 ### Downstream normalization (`--normalize`)
 `run_ablation_downstream.py --normalize / --no-normalize` forces one normalization
@@ -354,11 +454,8 @@ python evaluate/finetune/scripts/run_ablation_survboard_metrics.py \
 self-check both offline.
 
 ### Ablation Studies
-```bash
-python ablate/ablate.py --config ablate/example_ablation_config.json [--dry-run]
-```
-
-Generates training runs from a base config plus per-ablation overrides, optionally submitting to SLURM.
+Replaced by `experiments/` (see "Launching models" above). The old ablation configs are
+kept, unchanged, in `experiments/configs/legacy/`.
 
 ### Linting
 ```bash
@@ -399,7 +496,32 @@ cancerfoundation/
 ├── gene_tokenizer.py         # GeneVocab tokenizer for gene names
 └── utils.py                  # Pretrained weight loading, gene mapping
 
-evaluate/
+utils/                        # project-wide helpers (was the top-level utils.py)
+├── __init__.py               # lazily re-exports get_args, save_resolved_config, LossCSVLogger, MyProgressBar
+├── training.py               # the old utils.py: get_args, resolved-config dump, Lightning callbacks
+└── sampling.py               # filter_mask / stratified_subsample / stratified_group_split (numpy + pandas)
+
+experiments/                  # was ablate/; torch-free at import time
+├── layout.py                 # ExperimentLayout: the ONE place experiment paths are composed
+├── config.py                 # LaunchConfig, ModelRunSpec, load_launch_config
+├── launch.py                 # launch_models: one checkpoints/<name>/ per model, local or SLURM
+├── runtime.py                # config resolution, run card, training call
+├── slurm_worker.py           # runs one model inside a SLURM job
+├── rename_model.py           # rename a model across every directory and JSON file
+├── configs/                  # example_unifiedfm.json; legacy/ = old ablation configs
+└── check/                    # check_layout, check_sampling, check_rename (offline)
+
+evaluate/                     # NEW, works on the experiments root
+├── io.py                     # load_embedding, load_external, panel_hashes
+├── modalities.py             # sc / pseudobulk / bulk labels and display names
+├── representation/
+│   ├── render.py             # compute_umap, palettes, modality markers, panel drawing
+│   ├── plot_umap.py          # per-model UMAP of one modality
+│   ├── plot_alignment.py     # joint UMAP of the three modalities
+│   └── example_umap_config.yaml, plot_umap.sh, plot_alignment.sh
+└── check/check_representation.py
+
+evaluate_old/                 # ARCHIVED: the previous evaluate/ (does not run as is)
 ├── run_analysis.py           # Config-driven orchestrator: UMAPs + metrics + benchmark over N experiments
 ├── analysis_config.py        # Config schema/loader for run_analysis.py
 ├── example_analysis_config.yaml
@@ -435,22 +557,20 @@ evaluate/
     ├── umaps.py
     └── utils.py
 
-ablate/
-├── ablate.py          # Main ablation runner
-├── config.py          # Ablation config dataclasses
-├── runtime.py         # Runtime execution
-└── slurm_worker.py    # SLURM job submission
-
 data_preprocess/
+├── split_train_test.py           # Split any h5ad into named parts (strata, groups, leiden, inheritance)
+├── h5ad_io.py                    # Read-only h5ad access (obs, var, obsm, rows of X)
+├── build_mix.py                  # One training store from parts of several splits
 ├── data_processing.ipynb         # Interactive h5ad → memory-mapped conversion
 ├── bulk_preprocessing.ipynb      # Bulk RNA-seq preprocessing
-├── bulk_sc_data_preprocessing.py # Paired bulk/SC preprocessing script
+├── bulk_sc_data_preprocessing.py # h5ads (or parts of them) -> training store; build_pipeline_ready
+├── tissue_names.py               # Tissue-name tables + walk_tissue_names (was data_preprocess/utils.py)
 └── protein_embeddings.py         # ESM3/RNABert embedding generation
 ```
 
 Top-level scripts and config:
 - `pretrain.py` — main training entry point
-- `utils.py` — `get_args()` thin wrapper that reads from `utils_config.py`
+- `utils/training.py` — `get_args()` thin wrapper that reads from `utils_config.py` (still importable as `from utils import get_args`)
 - `utils_config.py` — full argument parser with ~80 hyperparameters (canonical config definition)
 - `scripts/h5ads_to_sc.py` — CLI batch conversion of h5ad files to memory-mapped format
 - `bionemo_clariden.toml` / `bionemo_bristen.toml` — Enroot/Pyxis container configs for CSCS clusters
@@ -478,8 +598,8 @@ Top-level scripts and config:
 ### Downstream Task Framework (`evaluate/finetune/`)
 Plugin-based architecture: `DownstreamTask` defines what (data, head, loss, metrics); `BaseDownstreamRunner` implements how (training loop, DDP, checkpointing). Add a new task by subclassing `DownstreamTask` — see `task_template.py` for the required interface.
 
-### Ablation Framework (`ablate/`)
-Config-driven: a JSON file specifies a base pretraining config plus a list of ablations (each as a dict of overrides). `ablate.py` generates one run per ablation and optionally submits to SLURM via `slurm_worker.py`. Use `--dry-run` to validate configs without launching jobs.
+### Launch Framework (`experiments/`)
+Config-driven: a JSON file specifies a base pretraining config plus a list of named models (each a dict of overrides). `launch.py` trains one model per entry into `checkpoints/<name>/` and optionally submits to SLURM via `slurm_worker.py`. Use `--dry-run` to validate configs without launching jobs.
 
 ### Data Format
 Processed data structure:
@@ -495,9 +615,11 @@ DATA/{tissue}/processed_data/train/
 
 - **Training**: `pretrain.py` — main training script
 - **Data Processing**: `data_preprocess/data_processing.ipynb` (interactive) or `scripts/h5ads_to_sc.py` (CLI batch)
-- **Embedding**: `embed.ipynb` — generate cell embeddings from a trained model (or use `CancerFoundation.embed(adata)` directly)
-- **Downstream Evaluation**: `evaluate/finetune/run_downstream_task.py` — cancer annotation, deconvolution
-- **Ablation Studies**: `ablate/ablate.py` — run systematic feature ablations locally or on SLURM
+- **Embedding**: `embed/embed_splits.py` (splits into `embeddings/<model>/`), `embed/embed.py` (one h5ad, CancerFoundation), `embed/embed_any.py` (one h5ad, any registered model)
+- **Representation figures**: `evaluate/representation/plot_umap.py`, `plot_alignment.py`
+- **Downstream Evaluation** (archived, not yet ported): `evaluate_old/finetune/run_downstream_task.py`
+- **Training named models**: `python -m experiments.launch` — locally or on SLURM; `experiments/rename_model.py` to rename one
+- **Splits**: `data_preprocess/split_train_test.py`, `data_preprocess/build_mix.py`
 - **HPC submission**:
   - `submits_biomed/` — SLURM job scripts for LeoMed (Singularity + multi-GPU)
   - `submits_cscs/` — SLURM job scripts for CSCS Alps (Enroot/Pyxis + multi-GPU)
@@ -505,7 +627,7 @@ DATA/{tissue}/processed_data/train/
 
 ## Configuration
 
-All hyperparameters defined in `utils_config.py:get_args()`. `utils.py` at the top level is a thin wrapper. W&B integration configured via `.devcontainer/devcontainer.env` with `WANDB_API_KEY`.
+All hyperparameters defined in `utils_config.py:get_args()`. `utils/training.py` is a thin wrapper, re-exported lazily by `utils/__init__.py` so that `utils.sampling` stays torch-free. W&B integration configured via `.devcontainer/devcontainer.env` with `WANDB_API_KEY`.
 
 **New `CancerFoundation.__init__` arguments must have a default**, chosen to reproduce the previous behaviour. `save_hyperparameters()` writes the signature into every checkpoint and Lightning replays it on load, so a new *required* argument breaks every checkpoint saved before it.
 
