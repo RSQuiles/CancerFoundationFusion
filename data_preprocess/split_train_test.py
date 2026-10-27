@@ -110,10 +110,10 @@ def _transform(X, how: str):
     X = X.astype(np.float32)
     if how == "none":
         return X
-    if how == "cp10k_log1p":
+    if how == "cpm_log1p":
         totals = np.asarray(X.sum(axis=1)).ravel()
         totals[totals == 0] = 1.0
-        X = sp.diags(1e4 / totals) @ X if sp.issparse(X) else X * (1e4 / totals)[:, None]
+        X = sp.diags(1e6 / totals) @ X if sp.issparse(X) else X * (1e6 / totals)[:, None]
     if sp.issparse(X):
         X = X.tocsr(copy=True)
         X.data = np.log1p(X.data)
@@ -177,21 +177,23 @@ def cluster_rows(reader: SourceReader, positions: np.ndarray, args) -> tuple[np.
 
         fit = reader.subset(positions[fit_local])
         n_top = min(args.n_hvg, fit.n_vars)
-        try:
-            sc.pp.highly_variable_genes(fit, n_top_genes=n_top, flavor="seurat_v3")
-            hvg_flavor = "seurat_v3"
-        except ImportError:  # seurat_v3 needs scikit-misc
-            tmp = fit.copy()
-            tmp.X = _transform(tmp.X, "cp10k_log1p" if args.cluster_transform == "none" else args.cluster_transform)
-            sc.pp.highly_variable_genes(tmp, n_top_genes=n_top, flavor="seurat")
-            fit.var["highly_variable"] = tmp.var["highly_variable"].to_numpy()
-            hvg_flavor = "seurat"
+
+        # Use CPM_log1p normalization with Seurat flavor by default to account for depth variance
+        tmp = fit.copy()
+        tmp.X = _transform(tmp.X, args.cluster_transform)
+        sc.pp.highly_variable_genes(tmp, n_top_genes=n_top, flavor="seurat")
+        fit.var["highly_variable"] = tmp.var["highly_variable"].to_numpy()
+        hvg_flavor = "seurat"
         hvg = fit.var["highly_variable"].to_numpy()
         fit.X = _transform(fit.X, args.cluster_transform)  # library size over all genes, then subset
         fit = fit[:, hvg].copy()
+
+        # Compute PCs
         n_comps = min(args.n_pcs, fit.n_vars - 1, fit.n_obs - 1)
         sc.tl.pca(fit, n_comps=n_comps, zero_center=False)
         fit_rep = fit.obsm["X_pca"]
+
+        # Leiden clustering and report
         fit_labels = _leiden(fit_rep, args.n_neighbors, args.leiden_resolution, args.seed)
         labels = np.empty(n, dtype=object)
         labels[fit_local] = fit_labels
@@ -443,7 +445,7 @@ def get_args():
                         help="Also stratify on Leiden clusters")
     strata.add_argument("--cluster-rep", default=None,
                         help="obsm key to cluster on (e.g. X_pca) instead of computing one from X")
-    strata.add_argument("--cluster-transform", choices=["cp10k_log1p", "log1p", "none"], default="cp10k_log1p",
+    strata.add_argument("--cluster-transform", choices=["cpm_log1p", "log1p", "none"], default="cpm_log1p",
                         help="Transform of X for the clustering features only")
     strata.add_argument("--leiden-resolution", type=float, default=1.0)
     strata.add_argument("--n-hvg", type=int, default=2000)

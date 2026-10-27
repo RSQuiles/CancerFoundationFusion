@@ -7,8 +7,8 @@
     "epochs": 5,
     "seed": 0,
     "val_check_interval": 0.5,
-    "log_interval": 10,
-    "save_dir": "${work}/outputs/save_CFF/tests/flex_attention",
+    "log_interval": 3,
+    "save_dir": "${work}/outputs/save_CFF/tests/bulk_only",
     "wandb_entity": "rquiles",
     "wandb": "tests",
     "compile": false,
@@ -16,28 +16,16 @@
     "save_every": true
   },
   "data": {
-    "train_path": "/cluster/work/boeva/rquiles/data/eheiss_RAW_paired/pipeline_ready",
-    "conditions": ["tissue_general"],
-    "zero_percentages": [0.2, 0.4, 0.6],
-    "bulk_ratio": 0.45,
-    "pb_ratio": 0.45,
-    "n_sc_per_pseudobulk": 5,
-    "precomputed_pb": true,
-    "pb_id_column": "pseudobulk_id",
-    "pb_group_column": "tissue_general",
-    "trunc_by_sample": true,
-    "balanced_sampler": true,
-    "balanced_labels": ["tissue_general"]
+    "train_path": "/cluster/work/boeva/rquiles/unifiedFM_experiments/data/bulk/pipeline_ready/leiden_s0",
+    "zero_percentages": [0.2, 0.4, 0.6]
   },
   "model": {
     "nlayers": 8,
     "nheads": 8,
     "embsize": 256,
     "d_hid": 1024,
-    "attn_impl": "flex",
-    "grad_checkpoint": "true",
-    "lr": 0.0001,
-    "warmup_ratio_or_step": 10000,
+    "lr": 0.0002,
+    "warmup_ratio_or_step": 1000,
     "max_seq_len": 1200,
     "batch_size": 128,
     "input_style": "binned",
@@ -48,15 +36,5 @@
     "where_condition": "none",
     "gen_method": "theirs"
   },
-  "features": {
-    "verbose": true,
-    "unified": true,
-    "mmd": true,
-    "cdd": false,
-    "agg_consistency": true,
-    "cdd_class_aware": false,
-    "cdd_cluster_warmup_steps": 0,
-    "loss_weight_mmd": 1000,
-    "loss_weight_cdd": 1000
-  }
+  "features": {}
 }

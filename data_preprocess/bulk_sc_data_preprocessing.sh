@@ -19,13 +19,16 @@ for arg in "$@"; do
     fi
 done
 
+DATA_DIR=/cluster/work/boeva/rquiles/unifiedFM_experiments/data
+SPLIT_NAME=leiden_s0
+
 # Every row of every file, values as stored (nothing is normalized). To build a store
 # from one part of a split instead, use split_train_test.py --build-store or build_mix.py.
 SCRIPT_ARGS=(
-    --h5ad-path /cluster/work/boeva/rquiles/data/eheiss_RAW_paired
-    --data-path /cluster/work/boeva/rquiles/data/eheiss_RAW_paired/pipeline_ready
-    --obs-columns tissue_general paired
-    --pb-id-column pseudobulk_id
+    --h5ad-path $DATA_DIR/bulk/BULK_pretraining.h5ad
+    --data-path $DATA_DIR/bulk/pipeline_ready
+    --obs-columns tissue_general
+    --rows $DATA_DIR/bulk/splits/$SPLIT_NAME/train.txt
 )
 
 # --rows train.txt           keep only these obs names

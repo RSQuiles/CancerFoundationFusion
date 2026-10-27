@@ -274,7 +274,7 @@ def get_args():
     parser.add_argument("--obs-columns", type=str, nargs="+", default=None,
                         help="obs columns kept in obs.parquet (modality is always kept)")
     parser.add_argument("--rows", type=Path, default=None,
-                        help="Text file of obs names to keep (one per line); default: every row")
+                        help="Text file of obs names to keep (one per line); default: every row; can be any <part>.txt written by split_train_test.py")
     parser.add_argument("--vocab-path", type=Path, default=None, help="Path to an existing vocab.json")
     parser.add_argument("--vocab-mode", choices=["intersection", "union"], default="intersection",
                         help="Genes in the new vocabulary when --vocab-path is not given")

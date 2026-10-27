@@ -31,7 +31,8 @@ MAX_LEGEND_ENTRIES = 60  # beyond this colours repeat anyway
 MODALITY_STYLE: dict[str, dict] = {
     "sc":         dict(color="#4393c3", s=4,  marker="o", linewidths=0),
     "pseudobulk": dict(color="#4dac26", s=30, marker="^", linewidths=0.5, edgecolors="black"),
-    "bulk":       dict(color="#d6604d", s=30, marker="D", linewidths=0.5, edgecolors="black"),
+    # "bulk":       dict(color="#d6604d", s=30, marker="D", linewidths=0.5, edgecolors="black"),
+    "bulk":       dict(color="#4393c3", s=4,  marker="o", linewidths=0),
 }
 _PLAIN_STYLE = dict(s=6, marker="o", linewidths=0)
 
