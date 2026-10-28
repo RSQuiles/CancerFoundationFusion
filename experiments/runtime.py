@@ -8,19 +8,25 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import importlib
 import json
-import subprocess
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Union, Dict, Any
 
 from experiments.layout import ExperimentLayout
+from utils.resume import (
+    DRY_RUN_CHECKPOINT,
+    RESUME_MODES,
+    git_commit,
+    load_wandb_run,
+    read_segments,
+    resolve_checkpoint,
+)
 
 TrainFn = Callable[[Path], Union[str, Path]]
 EvalFn = Callable[[Union[str, Path], Dict[str, Any]], Dict[str, float]]
 
 MODEL_CONFIG_FILE = "model_config.json"
-DRY_RUN_CHECKPOINT = "dry_run.ckpt"
 
 
 @dataclass
@@ -107,6 +113,9 @@ def resolve_model_config(
         )
     trainer["save_dir"] = str(layout.checkpoint_dir(model_name))
     trainer.setdefault("wandb_name", model_name)
+    mode = trainer.get("resume_mode", "continue")
+    if mode not in RESUME_MODES:
+        raise ValueError(f"Model '{model_name}': trainer.resume_mode must be one of {RESUME_MODES}, got {mode!r}")
 
     data = cfg.setdefault("data", {})
     train_ref = None
@@ -140,15 +149,26 @@ def check_checkpoint_dir_free(layout: ExperimentLayout, model_name: str, model_c
         )
 
 
-def _git_commit() -> str | None:
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(PROJECT_ROOT), "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=True,
-        )
-        return out.stdout.strip() or None
-    except Exception:  # noqa: BLE001 - provenance is best-effort
+def describe_resume(layout: ExperimentLayout, model_name: str, model_config: dict[str, Any]) -> str | None:
+    """One line saying what a resumed launch will continue from, or None if it does not resume."""
+    trainer = model_config.get("trainer") or {}
+    spec = trainer.get("resume_from_checkpoint")
+    if not spec:
         return None
+    ckpt_dir = layout.checkpoint_dir(model_name)
+    try:
+        ckpt = resolve_checkpoint(str(spec), ckpt_dir)
+    except (FileNotFoundError, ValueError) as exc:
+        return f"resume: {exc}"
+    if ckpt is None:
+        return f"resume: no checkpoint in {ckpt_dir} yet, so training starts from scratch"
+    wandb = (load_wandb_run(ckpt_dir) or {}).get("id")
+    n_segments = len(read_segments(ckpt_dir))
+    return (
+        f"resume ({trainer.get('resume_mode', 'continue')}) from {ckpt.name} to epoch "
+        f"{trainer.get('epochs')}; {n_segments} earlier segment(s); "
+        f"W&B run {wandb if wandb and not trainer.get('wandb_new_run') else 'new'}"
+    )
 
 
 def write_run_card(
@@ -180,7 +200,7 @@ def write_run_card(
         "updated": now,
         "launch_name": launch_name,
         "launch_config": str(launch_config_path) if launch_config_path else None,
-        "git_commit": _git_commit(),
+        "git_commit": git_commit(),
         "train_path": (model_config.get("data") or {}).get("train_path"),
         "train_data": train_ref,
         "previous_names": previous.get("previous_names", []),

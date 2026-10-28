@@ -6,7 +6,7 @@ import os
 import sys
 sys.path.insert(0, "./")
 from pathlib import Path
-from pytorch_lightning.callbacks import TQDMProgressBar, Callback
+from pytorch_lightning.callbacks import TQDMProgressBar, Callback, ModelCheckpoint
 from enum import Enum
 
 from utils_config import build_parser, _load_json_config, _flatten_sectioned_config, _parser_dest_names, _filter_known_config_keys, expand_env_vars, pretty_print_args
@@ -36,6 +36,11 @@ def get_args():
 def save_resolved_config(args, output_path: str | Path) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if getattr(args, "resume_from_checkpoint", None):
+        # A resumed segment keeps the previous segment's config beside its own.
+        from utils.resume import archive_resolved_config
+
+        archive_resolved_config(output_path)
 
     serializable = {}
     for key, value in vars(args).items():
@@ -97,6 +102,35 @@ class LossCSVLogger(Callback):
 
     def on_validation_epoch_end(self, trainer, pl_module):
         self._append(trainer, trainer.callback_metrics, "val", "val/")
+
+
+class KeepExistingCheckpoint(ModelCheckpoint):
+    """A ModelCheckpoint that never deletes a checkpoint it did not write itself.
+
+    With ``save_top_k=1`` and no monitor, ModelCheckpoint removes the previous file on
+    every save, and on resume it restores that "previous" from the checkpoint, so the
+    first save of a continued run would delete the last checkpoint of the run before.
+    Files present in ``dirpath`` when training starts are left alone; pruning still
+    applies to the files this process writes.
+    """
+
+    @property
+    def state_key(self) -> str:
+        # Lightning keys callback state by class name; keep ModelCheckpoint's, so
+        # checkpoints written before this class existed still restore its state.
+        return super().state_key.replace(type(self).__qualname__, ModelCheckpoint.__qualname__, 1)
+
+    def setup(self, trainer, pl_module, stage: str) -> None:
+        super().setup(trainer, pl_module, stage)
+        dirpath = Path(self.dirpath) if self.dirpath else None
+        self._preexisting = (
+            {p.resolve() for p in dirpath.glob("*.ckpt")} if dirpath and dirpath.is_dir() else set()
+        )
+
+    def _remove_checkpoint(self, trainer, filepath: str) -> None:
+        if Path(filepath).resolve() in getattr(self, "_preexisting", set()):
+            return
+        super()._remove_checkpoint(trainer, filepath)
 
 
 class MyProgressBar(TQDMProgressBar):

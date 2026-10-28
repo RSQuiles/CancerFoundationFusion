@@ -121,6 +121,40 @@ It refuses when NEW exists, OLD owns nothing, or `squeue` shows a job named `*_O
 failure rolls everything back. `run.json` keeps `previous_names`. `.ckpt` files and the W&B
 run are not touched; the script prints the W&B rename command.
 
+### Continuing a model
+Relaunch the same name with `trainer.resume_from_checkpoint` (`"last"` or a path) and a
+higher `epochs`. **`epochs` is the total**, so 5 -> 100 trains 95 more, and a target that
+is already reached is refused. The epoch and step counters continue, new checkpoints go
+into the same `checkpoints/<name>/`, and the W&B run recorded in `wandb_run.json` is
+reused (`wandb_new_run: true` opts out). `trainer.resume_mode` decides the LR schedule:
+- `continue` (default) starts a fresh warmup + cosine at the restored step, spanning the
+  remaining epochs. `warmup_ratio_or_step` applies to that segment.
+- `exact` restores the checkpoint's own schedule. Use it to recover an interrupted run,
+  with the same `epochs`, warmup and `lr`; a mismatch is warned about at train start.
+
+Mechanics (`utils/resume.py`, `pretrain.py`, `CancerFoundation.on_load_checkpoint`):
+- **LR segments.** `configure_optimizers` spans `estimated_stepping_batches -
+  lr_segment_start`. `continue` empties `checkpoint["lr_schedulers"]`, which must stay a
+  present (empty) key or Lightning raises. Every checkpoint stores `lr_segment`, so
+  `exact` rebuilds the right one; checkpoints from before this have a segment from 0.
+- **Nothing is deleted.** `KeepExistingCheckpoint` never removes a `.ckpt` that existed
+  when the process started (plain `save_top_k=1` would delete the previous segment's last
+  file). Its `state_key` matches `ModelCheckpoint`'s so old checkpoints restore its state.
+- **No replay.** The training order comes from `EpochRandomSampler`, seeded by
+  `(seed, epoch)`, so a resumed epoch k is the one an uninterrupted run would have seen.
+  The global seed is offset by the restored step, so masking differs too. `metrics.csv`
+  rows after the restored step move to `metrics.discarded_<time>.csv`.
+- **Refused before any data loads:** an architecture hparam that differs from the
+  checkpoint. Changes to `lr`, `data_path`, `batch_size` and similar are printed.
+- **Records.** `segments.jsonl` gets one line per process start (mode, checkpoint file
+  name, start epoch and step, seed, commit, SLURM job, W&B id), and the previous
+  `config.resolved.json` is kept as `config.resolved.seg<k>.json`. `find_last_checkpoint`
+  ignores `dry_run.ckpt`, and a launcher dry run prints what it would continue from.
+- Continuing from a mid-epoch (step) checkpoint is allowed but warned about: the
+  dataloader is not resumable, so the rest of that epoch is drawn afresh.
+
+`python -m experiments.check.check_resume` self-checks the helpers offline.
+
 ### Embeddings (`embed/`)
 Three scripts, one output format: `<dir>/<name>.h5ad` holding obs + `obsm["X_emb"]` (no X),
 plus `<dir>/embed.json` (one entry per file: method, checkpoint or options, `panel_hash`)
@@ -162,7 +196,7 @@ plus obs. `plot_alignment` fits ONE UMAP over all modalities and refuses files w
 are shared and `umap:` / `alignment:` blocks apply to one script; unknown keys are errors.
 
 Offline self-checks: `python -m experiments.check.check_layout`, `check_sampling` and
-`check_rename` (no torch or anndata), plus `python -m evaluate.check.check_representation`
+`check_rename`, `check_resume` (no torch or anndata), plus `python -m evaluate.check.check_representation`
 (needs scanpy).
 
 ### `evaluate_old/` (archived)
@@ -499,7 +533,8 @@ cancerfoundation/
 utils/                        # project-wide helpers (was the top-level utils.py)
 ├── __init__.py               # lazily re-exports get_args, save_resolved_config, LossCSVLogger, MyProgressBar
 ├── training.py               # the old utils.py: get_args, resolved-config dump, Lightning callbacks
-└── sampling.py               # filter_mask / stratified_subsample / stratified_group_split (numpy + pandas)
+├── sampling.py               # filter_mask / stratified_subsample / stratified_group_split (numpy + pandas)
+└── resume.py                 # continuing a model: checkpoint lookup, LR segments, W&B id, segments.jsonl
 
 experiments/                  # was ablate/; torch-free at import time
 ├── layout.py                 # ExperimentLayout: the ONE place experiment paths are composed
@@ -509,7 +544,7 @@ experiments/                  # was ablate/; torch-free at import time
 ├── slurm_worker.py           # runs one model inside a SLURM job
 ├── rename_model.py           # rename a model across every directory and JSON file
 ├── configs/                  # example_unifiedfm.json; legacy/ = old ablation configs
-└── check/                    # check_layout, check_sampling, check_rename (offline)
+└── check/                    # check_layout, check_sampling, check_rename, check_resume (offline)
 
 evaluate/                     # NEW, works on the experiments root
 ├── io.py                     # load_embedding, load_external, panel_hashes

@@ -5,7 +5,19 @@ from typing import Optional
 from pathlib import Path
 
 sys.path.insert(0, "../")
-from utils import get_args, MyProgressBar, LossCSVLogger
+from utils import get_args, MyProgressBar, LossCSVLogger, KeepExistingCheckpoint
+from utils.resume import (
+    append_segment,
+    check_resume_epochs,
+    compare_hparams,
+    find_last_checkpoint,
+    find_wandb_run_id,
+    read_checkpoint_meta,
+    resolve_checkpoint,
+    save_wandb_run,
+    segment_record,
+    trim_metrics_csv,
+)
 from cancerfoundation.model.model import CancerFoundation
 from cancerfoundation.data.data_module import BulkSCDataModule
 import pytorch_lightning as pl
@@ -34,6 +46,8 @@ def train_model(
     ckpt_every_n_steps: Optional[int] = None,
     metrics_log_interval: Optional[int] = None,
     verbose: bool = False,
+    wandb_run_id: Optional[str] = None,
+    segment: Optional[dict] = None,
 ):
     """
     Train the model using PyTorch Lightning Trainer
@@ -52,12 +66,15 @@ def train_model(
         gradient_clip_val: Gradient clipping value
         val_check_interval: Validation frequency
         pretrained_model_path: Path to pretrained model weights
+        wandb_run_id: Existing W&B run to log into (resuming); None starts a new run
+        segment: This process's line for segments.jsonl (see utils/resume.py)
     """
     # Setup callbacks
     callbacks = []
     callbacks.append(MyProgressBar(refresh_rate=log_interval))
-    # Epoch-level checkpoint (always active)
-    checkpoint_callback = ModelCheckpoint(
+    # Epoch-level checkpoint (always active). KeepExistingCheckpoint never removes a
+    # file that was already in save_dir, so resuming adds to earlier segments' files.
+    checkpoint_callback = KeepExistingCheckpoint(
         dirpath=save_dir,
         filename="epoch_{epoch:02d}",
         every_n_epochs=1,
@@ -67,7 +84,7 @@ def train_model(
 
     # Step-level checkpoint (optional)
     if ckpt_every_n_steps is not None:
-        step_checkpoint_callback = ModelCheckpoint(
+        step_checkpoint_callback = KeepExistingCheckpoint(
             dirpath=save_dir,
             filename="step_{step:06d}_epoch_{epoch:02d}",
             every_n_train_steps=ckpt_every_n_steps,
@@ -96,12 +113,33 @@ def train_model(
     if wandb_project and global_rank == 0:
         if verbose:
             print("\n\nSetting up WANDB logger...\n\n")
+        resume_kwargs = {"id": wandb_run_id, "resume": "allow"} if wandb_run_id else {}
+        if wandb_run_id:
+            print(f"Resuming W&B run {wandb_run_id}")
         logger = WandbLogger(
             entity=wandb_entity,
             project=wandb_project,
             name=wandb_name,
             save_dir=save_dir,
+            **resume_kwargs,
         )
+        run = logger.experiment
+        save_wandb_run(save_dir, run.id, getattr(run, "entity", wandb_entity),
+                       getattr(run, "project", wandb_project), getattr(run, "url", None))
+
+    if segment is not None and global_rank == 0:
+        if logger is not None:
+            segment["wandb_id"] = logger.experiment.id
+        segment = append_segment(save_dir, segment)
+        print(f"Segment {segment['index']}: {segment['mode']} from step {segment['start_step']}")
+        if logger is not None:
+            # Marks the boundary on the charts and keeps every segment in the run config.
+            logger.experiment.config.update(
+                {f"segment_{segment['index']}": segment}, allow_val_change=True
+            )
+            logger.experiment.log(
+                {"trainer/segment": segment["index"], "trainer/global_step": segment["start_step"]}
+            )
 
     # Create trainer
     if gpus == 0:
@@ -146,23 +184,8 @@ def _get_last_checkpoint_path_from_trainer(trainer: pl.Trainer, save_dir: str) -
             if callback.best_model_path:
                 return callback.best_model_path
 
-    checkpoint_dir = Path(save_dir)
-    candidates = list(checkpoint_dir.glob("*.ckpt"))
-    if not candidates:
-        return None
-    latest = max(candidates, key=lambda p: p.stat().st_mtime)
-    return str(latest)
-
-def _get_last_checkpoint_path(save_dir: str) -> Optional[str]:
-    """Return the most recently saved checkpoint path in save_dir, if any."""
-    checkpoint_dir = Path(save_dir)
-    if not checkpoint_dir.exists():
-        return None
-    candidates = list(checkpoint_dir.glob("*.ckpt"))
-    if not candidates:
-        return None
-    latest = max(candidates, key=lambda p: p.stat().st_mtime)
-    return str(latest)
+    latest = find_last_checkpoint(save_dir)
+    return str(latest) if latest is not None else None
 
 
 def main(input_args=None):
@@ -171,8 +194,34 @@ def main(input_args=None):
     else:
         args = input_args
 
-    if args.seed is not None:
-        pl.seed_everything(args.seed, workers=True)
+    # Resuming: read where the checkpoint stopped before anything is built, so a run that
+    # has nothing left to train fails here rather than after loading the data.
+    resume_path = resolve_checkpoint(args.resume_from_checkpoint, args.save_dir)
+    if args.resume_from_checkpoint == "last" and resume_path is None:
+        print(f"No checkpoint in {args.save_dir}; starting from scratch.")
+    resume = read_checkpoint_meta(resume_path, args.resume_mode) if resume_path else None
+    if resume is not None:
+        check_resume_epochs(resume, args.epochs)
+        print(
+            f"Resuming ({resume.mode}) from {resume.checkpoint.name}: "
+            f"{resume.epochs_completed} epochs and {resume.global_step} steps done, "
+            f"training to epoch {args.epochs}."
+        )
+        if resume.mode == "continue" and resume.mid_epoch:
+            print(
+                "[WARNING] continuing from a mid-epoch checkpoint: the dataloader is not "
+                "resumable, so the rest of that epoch is drawn afresh. Prefer an "
+                "end-of-epoch (epoch_XX.ckpt) checkpoint for a new segment."
+            )
+
+    # The global seed is offset by the restored step so masking and worker RNG do not
+    # replay the segment already trained; the training order is seeded separately by
+    # (seed, epoch) in EpochRandomSampler and needs no offset.
+    run_seed = args.seed
+    if run_seed is not None and resume is not None:
+        run_seed = args.seed + resume.global_step
+    if run_seed is not None:
+        pl.seed_everything(run_seed, workers=True)
 
     if args.contrastive_training and not args.unified:
         raise ValueError("Contrastive training is only supported with unified_fm=True.")
@@ -314,24 +363,13 @@ def main(input_args=None):
         cdd_exclude_labels=args.cdd_exclude_labels,
         cdd_min_class_count=args.cdd_min_class_count,
         cdd_bulk_class_frac=args.cdd_bulk_class_frac,
+        sampler_seed=args.seed,
     )
     datamodule.setup(stage="fit")
 
-    # Define training start point
-    if args.resume_from_checkpoint == "last":
-        resume_from_checkpoint = _get_last_checkpoint_path(args.save_dir)
-    else:
-        resume_from_checkpoint = args.resume_from_checkpoint
-
-    if resume_from_checkpoint is not None:
-        print(f"Resuming training from {resume_from_checkpoint}")
-        # Disabled considering a config file will be used to reinitiate training
-        """
-        model = CancerFoundation.load_from_checkpoint(
-            resume_from_checkpoint, vocab=datamodule.vocab
-        )
-    else:
-        """
+    # The model is always built from the config; trainer.fit(ckpt_path=...) then loads
+    # the checkpoint's weights, optimizer and loop state into it.
+    resume_from_checkpoint = str(resume.checkpoint) if resume is not None else None
     model = CancerFoundation(
         n_bins=args.n_bins,
         vocab=datamodule.vocab,
@@ -434,8 +472,29 @@ def main(input_args=None):
             args.pretrained / "best_model.pt", gene_mapping=gene_mapping
         )
 
+    wandb_run_id = None
+    if resume is not None:
+        for change in compare_hparams(resume, model.hparams, datamodule.hparams):
+            print(f"[resume] changed since the checkpoint: {change}")
+        model.lr_segment_start = resume.segment_start
+        model.reset_lr_schedule = resume.mode == "continue"
+        if resume.mode == "exact":
+            model.expected_lr_segment = resume.lr_segment
+        if int(os.environ.get("GLOBAL_RANK", "0")) == 0:
+            moved = trim_metrics_csv(Path(args.save_dir) / "metrics.csv", resume.global_step)
+            if moved:
+                print(f"[resume] moved {moved} metrics.csv rows logged after step "
+                      f"{resume.global_step} to a metrics.discarded_*.csv file")
+        if not args.wandb_new_run:
+            wandb_run_id = find_wandb_run_id(args.save_dir)
+    segment = segment_record(
+        resume, epochs=args.epochs, lr=args.lr, warmup=args.warmup_ratio_or_step, seed=run_seed
+    )
+
     trainer = train_model(
         model=model,
+        wandb_run_id=wandb_run_id,
+        segment=segment,
         datamodule=datamodule,
         max_epochs=args.epochs,
         num_nodes=args.num_nodes,

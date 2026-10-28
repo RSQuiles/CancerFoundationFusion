@@ -108,7 +108,7 @@ def check_launcher_dry_run() -> None:
         check("one checkpoint dir per model",
               all(layout.checkpoint_dir(m).is_dir() for m in ("a", "b")))
         check("run card written", json.loads(layout.run_card("a").read_text())["name"] == "a")
-        check("placeholder checkpoint resolvable", layout.latest_checkpoint("a") is not None)
+        check("dry-run placeholder is never a resume candidate", layout.latest_checkpoint("a") is None)
         check("launch summary lists the models",
               summary["models"] == ["a", "b"] and len(list(layout.launches_dir.glob("t_*.json"))) == 1)
         check("dry-run leftovers do not block a second launch",

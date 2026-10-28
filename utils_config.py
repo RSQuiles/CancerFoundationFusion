@@ -45,7 +45,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--resume-from-checkpoint",
         type=str,
-        help="The directory to load the checkpoint. If 'last' is used, the last checkpoint in save-dir is used",
+        help=(
+            "Checkpoint to resume from: a .ckpt path, or 'last' for the newest checkpoint "
+            "in save-dir. Epoch and step counters continue, new checkpoints are added to "
+            "save-dir without removing earlier ones, and the W&B run in "
+            "save-dir/wandb_run.json is reused. See --resume-mode for the LR schedule."
+        ),
+    )
+    parser.add_argument(
+        "--resume-mode",
+        type=str,
+        choices=["continue", "exact"],
+        default="continue",
+        help=(
+            "Only with --resume-from-checkpoint. 'continue' (default) starts a fresh "
+            "warmup + cosine at the restored step, spanning the remaining epochs; "
+            "--epochs stays the total. 'exact' restores the checkpoint's own schedule, "
+            "for recovering a run that was interrupted."
+        ),
+    )
+    parser.add_argument(
+        "--wandb-new-run",
+        action="store_true",
+        help="When resuming, start a new W&B run instead of reusing save-dir/wandb_run.json.",
     )
     parser.add_argument(
         "--pretrained",

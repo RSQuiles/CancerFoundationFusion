@@ -161,14 +161,10 @@ class ExperimentLayout:
         return self.checkpoints_dir / RENAME_LOG
 
     def latest_checkpoint(self, model: str) -> Path | None:
-        """Newest ``*.ckpt`` by mtime, the same rule as ``pretrain._get_last_checkpoint_path``."""
-        ckpt_dir = self.checkpoint_dir(model)
-        if not ckpt_dir.is_dir():
-            return None
-        candidates = list(ckpt_dir.glob("*.ckpt"))
-        if not candidates:
-            return None
-        return max(candidates, key=lambda p: p.stat().st_mtime)
+        """Newest ``*.ckpt`` by mtime, skipping the dry-run placeholder (the rule pretrain uses)."""
+        from utils.resume import find_last_checkpoint
+
+        return find_last_checkpoint(self.checkpoint_dir(model))
 
     def list_models(self) -> list[str]:
         if not self.checkpoints_dir.is_dir():

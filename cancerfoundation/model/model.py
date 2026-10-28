@@ -215,6 +215,14 @@ class CancerFoundation(pl.LightningModule):
         self.loss_type = loss_type
         self.data_path = data_path
         self.epochs = epochs
+        # LR segment: the schedule built by configure_optimizers spans the steps from
+        # lr_segment_start to the end of training.
+        # reset_lr_schedule discards the checkpoint's scheduler state so a fresh
+        # warmup + cosine starts at the restored step.
+        self.lr_segment_start = 0
+        self.reset_lr_schedule = False
+        self.expected_lr_segment: dict = {}  # exact resume: the checkpoint's segment
+        self._lr_segment_info: dict = {}
         self.compile_model = compile_model
         self.activation = F.relu if activation == "relu" else F.gelu
         self.norm_scheme = norm_scheme
@@ -882,13 +890,23 @@ class CancerFoundation(pl.LightningModule):
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
         if self.warmup_ratio_or_step > 0:
-            # Calculate total training steps
-            total_num_batches = self.trainer.estimated_stepping_batches
+            # Steps of this LR segment: from lr_segment_start (0 unless resuming) to the
+            # end of training. LambdaLR counts its own steps, so a fresh scheduler starts
+            # at warmup step 0 even when global_step does not.
+            total_num_batches = max(
+                1, int(self.trainer.estimated_stepping_batches) - int(self.lr_segment_start)
+            )
             warmup_steps = (
                 int(total_num_batches * self.warmup_ratio_or_step)
                 if self.warmup_ratio_or_step < 1
                 else int(self.warmup_ratio_or_step)
             )
+            self._lr_segment_info = {
+                "start_step": int(self.lr_segment_start),
+                "total_steps": total_num_batches,
+                "warmup_steps": warmup_steps,
+                "lr": float(self.lr),
+            }
 
             scheduler = transformers.get_cosine_schedule_with_warmup(
                 optimizer,
@@ -908,6 +926,11 @@ class CancerFoundation(pl.LightningModule):
             scheduler = torch.optim.lr_scheduler.StepLR(
                 optimizer, self.scheduler_interval, gamma=self.scheduler_factor
             )
+            self._lr_segment_info = {
+                "start_step": int(self.lr_segment_start),
+                "step_lr_interval": self.scheduler_interval,
+                "lr": float(self.lr),
+            }
 
             return {
                 "optimizer": optimizer,
@@ -916,6 +939,40 @@ class CancerFoundation(pl.LightningModule):
                     "interval": "epoch",
                 },
             }
+
+    def on_save_checkpoint(self, checkpoint: dict) -> None:
+        # Lets an exact resume rebuild the same schedule (see pretrain.py).
+        checkpoint["lr_segment"] = dict(self._lr_segment_info)
+
+    def on_load_checkpoint(self, checkpoint: dict) -> None:
+        # Called before Lightning restores optimizer and scheduler states. An empty list
+        # (not a missing key, which Lightning rejects) restores no scheduler, so the
+        # fresh one from configure_optimizers is kept.
+        if self.reset_lr_schedule:
+            checkpoint["lr_schedulers"] = []
+
+    def on_train_start(self) -> None:
+        if self.expected_lr_segment:
+            # An exact resume restores the scheduler's step count, but the schedule's
+            # shape comes from the current config: say so if the two disagree.
+            differs = {
+                k: (self.expected_lr_segment[k], v)
+                for k, v in self._lr_segment_info.items()
+                if k in self.expected_lr_segment and self.expected_lr_segment[k] != v
+            }
+            if differs:
+                print(
+                    "[WARNING] exact resume, but the LR schedule differs from the "
+                    f"checkpoint's (checkpoint, now): {differs}. Use the original "
+                    "epochs/warmup/lr, or resume_mode 'continue' for a new schedule."
+                )
+        # The optimizer restore brings back the old run's last lr (about 0 at the end of
+        # a cosine); start the new segment at the fresh scheduler's value instead.
+        if not self.reset_lr_schedule:
+            return
+        for config in self.trainer.lr_scheduler_configs:
+            for group, lr in zip(config.scheduler.optimizer.param_groups, config.scheduler.get_last_lr()):
+                group["lr"] = lr
 
     def load_pretrained_weights(
         self,

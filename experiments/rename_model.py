@@ -253,17 +253,24 @@ def apply_plan(layout: ExperimentLayout, plan: RenamePlan, _fail_after_moves: bo
 
 def _wandb_hint(layout: ExperimentLayout, model: str) -> str | None:
     """A ready-to-run command that renames the W&B run, if the run id can be found."""
-    wandb_dir = layout.checkpoint_dir(model) / "wandb"
-    runs = sorted(wandb_dir.glob("run-*")) if wandb_dir.is_dir() else []
-    if not runs:
-        return None
-    run_id = runs[-1].name.rsplit("-", 1)[-1]
+    from utils.resume import load_wandb_run
+
+    # wandb_run.json (written by pretrain.py, reused across resumed segments) is exact;
+    # the newest wandb/run-* directory is the fallback for runs that predate it.
+    recorded = load_wandb_run(layout.checkpoint_dir(model)) or {}
+    run_id = recorded.get("id")
+    if not run_id:
+        wandb_dir = layout.checkpoint_dir(model) / "wandb"
+        runs = sorted(wandb_dir.glob("run-*")) if wandb_dir.is_dir() else []
+        if not runs:
+            return None
+        run_id = runs[-1].name.rsplit("-", 1)[-1]
     card = layout.run_card(model)
     trainer = {}
     if card.exists():
         trainer = (json.loads(card.read_text(encoding="utf-8")).get("model_config") or {}).get("trainer") or {}
-    entity = trainer.get("wandb_entity", "<entity>")
-    project = trainer.get("wandb", "<project>")
+    entity = recorded.get("entity") or trainer.get("wandb_entity", "<entity>")
+    project = recorded.get("project") or trainer.get("wandb", "<project>")
     return (
         "python -c \"import wandb; r = wandb.Api().run('"
         f"{entity}/{project}/{run_id}'); r.name = '{model}'; r.update()\""

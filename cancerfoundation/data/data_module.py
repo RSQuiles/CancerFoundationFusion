@@ -8,7 +8,6 @@ import itertools
 from .data_sampler import get_balanced_sampler
 from torch.utils.data import (
     DataLoader,
-    RandomSampler,
     SequentialSampler,
     BatchSampler,
     random_split,
@@ -51,11 +50,41 @@ class DistributedSamplerWrapper(DistributedSampler):
         )
         self.sampler = sampler
 
+    def set_epoch(self, epoch: int) -> None:
+        super().set_epoch(epoch)
+        if hasattr(self.sampler, "set_epoch"):
+            self.sampler.set_epoch(epoch)
+
     def __iter__(self) -> Iterator[int]:
         self.dataset = DatasetFromSampler(self.sampler)
         indexes_of_indexes = super().__iter__()
         subsampler_indexes = self.dataset
         return iter(itemgetter(*indexes_of_indexes)(subsampler_indexes))
+
+
+class EpochRandomSampler(Sampler[int]):
+    """A random permutation that depends only on ``(seed, epoch)``.
+
+    Lightning calls ``set_epoch`` before every epoch, so a run resumed at epoch k
+    draws the same order an uninterrupted run would have, instead of replaying the
+    order of epoch 0 (which a plain RandomSampler does after a reseed).
+    """
+
+    def __init__(self, data_source, seed: int = 0):
+        self.data_source = data_source
+        self.seed = int(seed)
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __iter__(self) -> Iterator[int]:
+        generator = torch.Generator()
+        generator.manual_seed(self.seed + self.epoch)
+        return iter(torch.randperm(len(self.data_source), generator=generator).tolist())
+
+    def __len__(self) -> int:
+        return len(self.data_source)
 
 
 class DistributedBatchSamplerWrapper(Sampler[list[int]]):
@@ -166,9 +195,16 @@ class BulkSCDataModule(pl.LightningDataModule):
         cdd_min_class_count: int = 2,
         n_cdd_classes: int = 8,
         cdd_bulk_class_frac: float = 0.6,
+        sampler_seed: Optional[int] = None,
     ):
         super().__init__()
         self.save_hyperparameters()
+        # Base seed of the non-unified training order (EpochRandomSampler); drawn once
+        # from torch when no seed is given, so unseeded runs still vary per launch.
+        self.sampler_seed = (
+            int(sampler_seed) if sampler_seed is not None
+            else int(torch.randint(0, 2**31 - 1, (1,)).item())
+        )
         self.data_path = data_path
         self.batch_size = batch_size
         self.balance_primary = balance_primary
@@ -272,7 +308,9 @@ class BulkSCDataModule(pl.LightningDataModule):
                 )
             else:
                 sampler = (
-                    RandomSampler(dataset) if train else SequentialSampler(dataset)
+                    EpochRandomSampler(dataset, seed=self.sampler_seed)
+                    if train
+                    else SequentialSampler(dataset)
                 )
         else:
             from .bulk_sc_data import BulkSCSampler
