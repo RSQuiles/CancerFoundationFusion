@@ -163,6 +163,7 @@ def draw_umap_panels(
     title: str | None = None,
     segments: list[np.ndarray] | None = None,
     highlight: dict[str, np.ndarray] | None = None,
+    labels: dict[str, str] | None = None,
 ) -> plt.Figure:
     """One panel per colour key; marker shape encodes modality when ``modality_col`` is set.
 
@@ -170,7 +171,11 @@ def draw_umap_panels(
     modality palette. ``segments`` (each a (2, 2) array) are drawn faintly under the
     points of every panel. ``highlight`` maps a colour key to a boolean mask; rows
     outside it are drawn grey in that panel (e.g. unpaired rows on the pair panel).
+    ``labels`` maps an obs column to the name shown in panel and legend titles
+    (``{"tissue_general": "Tissue"}``); category values are drawn as they are.
     """
+    labels = labels or {}
+    modality_label = labels.get(modality_col or "modality", "Modality")
     modality = (
         obs[modality_col].astype(str).to_numpy()
         if modality_col is not None and modality_col in obs.columns else None
@@ -191,8 +196,8 @@ def draw_umap_panels(
             _style_axes(ax, "embedding")
         elif modality is not None and key == modality_col:
             _scatter(ax, coords, modality)
-            _style_axes(ax, "modality")
-            ax.legend(handles=_modality_handles(modality, colored=True), title="Modality",
+            _style_axes(ax, modality_label)
+            ax.legend(handles=_modality_handles(modality, colored=True), title=modality_label,
                       fontsize=8, title_fontsize=8, loc="center left", bbox_to_anchor=(1.01, 0.5),
                       frameon=False)
         else:
@@ -204,11 +209,11 @@ def draw_umap_panels(
                 values, skip_unknown=skip_unknown or mask is not None
             )
             _scatter(ax, coords, modality, colors=colors)
-            _style_axes(ax, key)
+            _style_axes(ax, labels.get(key, key))
             if palette is not None:
-                _category_legend(ax, palette, categories, key)
+                _category_legend(ax, palette, categories, labels.get(key, key))
             if modality is not None and len(np.unique(modality)) > 1:
-                ax.legend(handles=_modality_handles(modality, colored=False), title="Modality",
+                ax.legend(handles=_modality_handles(modality, colored=False), title=modality_label,
                           fontsize=7, title_fontsize=7, loc="lower left", frameon=True, framealpha=0.85)
     if title:
         fig.suptitle(title, fontsize=12, fontweight="bold")

@@ -8,16 +8,17 @@ checkpoint, normalization and gene panel, and the panel itself is saved as
 
     python embed.py --checkpoint path/to/model.ckpt --input data.h5ad --out-dir out/
 
-    # Rows of several modalities in one file: one shared gene panel across them
-    python embed.py --checkpoint model.ckpt --input mixed.h5ad --out-dir out/ --modality-col modality
+    # Normalize the model input first (default: values as stored, as in training)
+    python embed.py --checkpoint model.ckpt --input data.h5ad --out-dir out/ --normalize cpm_log1p
 
-    # Data already CP10K + log1p (or CP10K only):
-    python embed.py --checkpoint model.ckpt --input data.h5ad --out-dir out/ --normalized
-    python embed.py --checkpoint model.ckpt --input data.h5ad --out-dir out/ --log1p-only
+The obs column ``modality`` (``--modality-col``) decides the gene-selection scheme: a
+single value names the file's modality, several values share one gene panel. Without
+the column, ``--modality`` (default ``sc``) applies to the whole file. Gene selection
+scores genes on its own normalized view of the data whatever ``--normalize`` is (see
+``cancerfoundation/data/gene_panel.py``).
 
 The functions here are the machinery ``embed_splits.py`` and ``embed_any.py`` build on:
-``load_model``, ``embed_adata`` and ``write_embeddings``. Raw counts get CP10K + log1p
-unless ``--normalized`` / ``--log1p-only`` say otherwise.
+``load_model``, ``embed_adata`` and ``write_embeddings``.
 """
 
 from __future__ import annotations
@@ -37,6 +38,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 EMB_KEY = "X_emb"
 EMBED_CARD = "embed.json"
+MODALITY_COL = "modality"
+NORMALIZE_CHOICES = ("log1p", "cpm_log1p", "cp10k_log1p")
 
 
 # --------------------------------------------------------------------------- #
@@ -75,11 +78,10 @@ def flat_genes(genes) -> list[str]:
 def embed_adata(
     model,
     adata,
-    modality_col: str | None = None,
-    modality: str = "sc",
+    modality_col: str | None = MODALITY_COL,
+    modality: str | None = None,
     batch_size: int = 64,
-    normalized: bool = False,
-    log1p_only: bool = False,
+    normalize: str | None = None,
     shared_panel: bool = True,
     chunk_rows: int = 100_000,
     panel_sample: int = 50_000,
@@ -88,24 +90,26 @@ def embed_adata(
     """Embed every row of ``adata`` through one gene panel, in chunks if it is large.
 
     With ``modality_col`` naming a column with several values, the panel is fitted
-    across them (``shared_panel``); otherwise ``modality`` drives gene selection. When
+    across them (``shared_panel``); a single value names the modality; without the
+    column, ``modality`` (default ``"sc"``) drives gene selection. ``normalize`` is
+    the model-input normalization (None, "log1p", "cpm_log1p", "cp10k_log1p"). When
     ``adata`` has more than ``chunk_rows`` rows, the panel is fitted once on a
     ``panel_sample``-row sample (stratified on ``modality_col``) and reused for every
     chunk, so all rows still see the same input genes.
     """
     from utils.sampling import stratified_subsample
 
-    multi = modality_col is not None and modality_col in adata.obs.columns and adata.obs[modality_col].nunique() > 1
-    common = dict(batch_size=batch_size, normalized=normalized, log1p_only=log1p_only)
+    has_col = modality_col is not None and modality_col in adata.obs.columns
+    multi = has_col and adata.obs[modality_col].nunique() > 1
+    if not has_col and modality_col is not None:
+        print(f"No obs column '{modality_col}': treating every row as '{modality or 'sc'}'")
+    common = dict(batch_size=batch_size, normalize=normalize, modality=modality or "sc",
+                  modality_col=modality_col if has_col else None, shared_panel=shared_panel)
 
     def run(sub, gene_subset=None):
         kwargs = dict(common)
         if gene_subset is not None:
             kwargs["gene_subset"] = gene_subset
-        elif multi:
-            kwargs.update(modality_col=modality_col, shared_panel=shared_panel)
-        else:
-            kwargs["modality"] = modality
         df, genes = model.embed(sub, **kwargs)
         return df.to_numpy().astype(np.float32), genes
 
@@ -183,22 +187,14 @@ def set_card_fields(out_dir: Path, **fields) -> None:
 
 def add_normalization_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--normalized",
-        action="store_true",
-        default=False,
+        "--normalize",
+        default=None,
+        choices=NORMALIZE_CHOICES,
         help=(
-            "Pass if the data is already CP10K + log1p normalized. "
-            "No normalization is applied before embedding."
-        ),
-    )
-    parser.add_argument(
-        "--log1p-only",
-        action="store_true",
-        default=False,
-        help=(
-            "Pass if the data is already CP10K-normalized but not log1p-transformed. "
-            "Only log1p is applied before embedding. "
-            "Mutually exclusive with --normalized."
+            "Normalize the model input before embedding: log1p, or CPM / CP10K by each "
+            "row's total over all input genes, then log1p. Default: none, the values are "
+            "embedded as stored, as in training. Gene-panel selection does its own "
+            "normalization either way."
         ),
     )
 
@@ -232,16 +228,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", required=True, help="Directory the embeddings are written to.")
     parser.add_argument("--name", default=None, help="Output file stem (default: the input's stem).")
     parser.add_argument("--obsm-key", default=EMB_KEY, help="obsm key of the saved embedding.")
-    parser.add_argument("--modality-col", default=None,
+    parser.add_argument("--modality-col", default=MODALITY_COL,
                         help="obs column with per-row modality; several values share one gene panel.")
-    parser.add_argument("--modality", default="sc", choices=["sc", "bulk", "pseudobulk"],
-                        help="Modality of the whole file when --modality-col is not given.")
+    parser.add_argument("--modality", default=None, choices=["sc", "bulk", "pseudobulk"],
+                        help="Modality of the whole file when it has no --modality-col column (default: sc).")
     add_normalization_args(parser)
     add_model_run_args(parser)
-    args = parser.parse_args()
-    if args.normalized and args.log1p_only:
-        parser.error("--normalized and --log1p-only are mutually exclusive")
-    return args
+    return parser.parse_args()
 
 
 def main() -> None:
@@ -262,7 +255,7 @@ def main() -> None:
     emb, genes = embed_adata(
         model, adata,
         modality_col=args.modality_col, modality=args.modality,
-        batch_size=args.batch_size, normalized=args.normalized, log1p_only=args.log1p_only,
+        batch_size=args.batch_size, normalize=args.normalize,
         shared_panel=args.shared_panel, chunk_rows=args.chunk_rows,
         panel_sample=args.panel_sample, seed=args.seed,
     )
@@ -274,8 +267,7 @@ def main() -> None:
             "input": str(input_path),
             "modality_col": args.modality_col,
             "shared_panel": args.shared_panel,
-            "normalized": args.normalized,
-            "log1p_only": args.log1p_only,
+            "normalize": args.normalize,
         },
         obsm_key=args.obsm_key,
     )

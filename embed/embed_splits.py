@@ -22,7 +22,7 @@ written as ``embeddings/<name>/``, ``--name`` defaulting to the embedder's name)
 
     python embed_splits.py --embedder pca --split tissue_s0 --option n_pcs=50
     python embed_splits.py --embedder bulkformer --name bulkformer_v1 --split tissue_s0 \\
-        --modalities bulk --option checkpoint=/path/to/weights.pt
+        --modalities bulk --option repo=/path/to/bulkformer-latest --option gene_column=gene_id
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from embed.embed import (  # noqa: E402
+    MODALITY_COL,
     add_model_run_args,
     add_normalization_args,
     embed_adata,
@@ -46,7 +47,6 @@ from embed.embed import (  # noqa: E402
 from experiments.layout import EMBEDDING_PARTS, ExperimentLayout, canonical_modality  # noqa: E402
 from utils.sampling import stratified_subsample  # noqa: E402
 
-MODALITY_COL = "modality"
 PART_COL = "_embed_part"
 
 
@@ -78,8 +78,6 @@ def parse_args() -> argparse.Namespace:
     add_normalization_args(parser)
     add_model_run_args(parser)
     args = parser.parse_args()
-    if args.normalized and args.log1p_only:
-        parser.error("--normalized and --log1p-only are mutually exclusive")
     if args.embedder is None and (args.name or args.option):
         parser.error("--name and --option only apply with --embedder")
     return args
@@ -163,13 +161,13 @@ def embed_with_model(args, layout: ExperimentLayout, adata):
     model = load_model(checkpoint, args.cpu)
     emb, genes = embed_adata(
         model, adata,
-        modality_col=MODALITY_COL, modality=str(adata.obs[MODALITY_COL].iloc[0]),
-        batch_size=args.batch_size, normalized=args.normalized, log1p_only=args.log1p_only,
+        modality_col=MODALITY_COL,
+        batch_size=args.batch_size, normalize=args.normalize,
         shared_panel=args.shared_panel, chunk_rows=args.chunk_rows,
         panel_sample=args.panel_sample, seed=args.seed,
     )
     provenance = {"method": "cancerfoundation", "checkpoint": str(checkpoint),
-                  "normalized": args.normalized, "log1p_only": args.log1p_only}
+                  "normalize": args.normalize}
     return emb, genes, provenance
 
 

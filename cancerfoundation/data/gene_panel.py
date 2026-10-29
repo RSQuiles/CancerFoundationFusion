@@ -1,25 +1,48 @@
 """Deterministic gene-panel selection for embedding.
 
-Two schemes, both assuming log1p input (raw counts are log1p'd internally for
-scoring only):
+Two schemes:
 
-  * per-modality  -- scanpy HVG for single-cell, log1p + MAD for bulk/pseudobulk.
-    Appropriate when a single modality is being embedded on its own.
-  * shared panel  -- ONE panel for every modality group present, via
+  * single modality -- scanpy HVG for single-cell, MAD for bulk/pseudobulk
+    (:func:`select_panel`). Appropriate when one modality is embedded on its own.
+  * shared panel    -- ONE panel for every modality group present, via
     :func:`select_shared_panel`. Required for any cross-modality comparison: a
     per-modality panel makes the model's input distribution differ *with* modality,
     which no batch-integration metric can distinguish from a real batch effect.
 
-Kept free of torch/lightning/bionemo imports so it can be exercised without a
-checkpoint or the training stack.
+Panel selection is independent of how the model's input is normalized. Each scorer
+gets its own *scoring view* of the data (:func:`scoring_view`), transformed to meet
+that scorer's assumption from whatever the values are:
+
+  ==================  ============================  ===========================
+  scorer              assumes                       raw counts become
+  ==================  ============================  ===========================
+  sc, seurat /        depth-normalized log values   CP10K + log1p
+  cell_ranger HVG
+  sc, seurat_v3 HVG   raw counts                    used as they are
+  bulk / pseudobulk   log-scale, depth-normalized   CPM + log1p
+  MAD
+  ==================  ============================  ===========================
+
+Linear-scale values that are not counts (TPM, CPM, CP10K) get log1p only; values
+already on a log scale are used as they are. Library sizes come from
+``obs[LIBRARY_SIZE_COL]`` when present, so a caller that has already dropped genes
+(vocabulary intersection) still normalizes by the row's full total.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 import scanpy as sc
 
-from cancerfoundation.data.preprocess import looks_like_counts
+from cancerfoundation.data.preprocess import (
+    library_size,
+    looks_like_counts,
+    normalize_expression,
+    value_scale,
+)
+
+# obs column holding each row's total over ALL input genes (set by CancerFoundation.embed).
+LIBRARY_SIZE_COL = "_cf_library_size"
 
 _SC_MODALITY_NORM: frozenset = frozenset({
     "sc", "singlecell", "scrna", "scrnaseq", "subsampled", "pairedsc",
@@ -38,16 +61,56 @@ def _classify_modality(val: str) -> str:
     return "bulk"
 
 
+def _dense(X) -> np.ndarray:
+    return X if isinstance(X, np.ndarray) else X.toarray()
+
+
+def _row_library_size(data) -> np.ndarray:
+    if LIBRARY_SIZE_COL in data.obs.columns:
+        return data.obs[LIBRARY_SIZE_COL].to_numpy(dtype=np.float64)
+    return library_size(data.X)
+
+
+def scoring_view(data, kind: str, flavor: str = "seurat", verbose: bool = True) -> Tuple[object, str]:
+    """``(AnnData, flavor)`` whose X meets the assumption of the scorer for ``kind``.
+
+    ``flavor`` may change: ``seurat_v3`` needs raw counts, so on anything else it
+    falls back to ``seurat`` with a warning. See the module docstring for the rules.
+    """
+    import anndata as ad
+
+    scale = value_scale(data.X)
+    X = _dense(data.X)
+    if kind == "sc" and flavor == "seurat_v3":
+        if scale == "counts":
+            how = "raw counts (seurat_v3)"
+        else:
+            print(f"  [panel] [WARNING] seurat_v3 needs raw counts but the values look {scale}; "
+                  "using flavor 'seurat' instead")
+            flavor = "seurat"
+    if not (kind == "sc" and flavor == "seurat_v3"):
+        if scale == "counts":
+            method = "cp10k_log1p" if kind == "sc" else "cpm_log1p"
+            X = normalize_expression(X, method, _row_library_size(data))
+            how = ("CP10K" if kind == "sc" else "CPM") + " + log1p of the raw counts"
+        elif scale == "linear":
+            X = np.log1p(np.asarray(X, dtype=np.float32))
+            how = "log1p of the (already depth-normalized) linear values"
+        else:
+            how = "values as they are (already log-scale)"
+    if verbose:
+        print(f"  [panel] scoring {kind} on {how}")
+    return ad.AnnData(X=X, obs=data.obs[[]].copy(), var=data.var[[]].copy()), flavor
+
+
 def _mad_scores(X) -> np.ndarray:
     """Per-gene MAD (median absolute deviation), higher = more variable.
 
-    MAD is computed on the values as passed — in this pipeline the data is already
-    log1p-transformed by the time gene selection runs, so this is log1p + MAD.
     Robust to the composition-driven variance that dominates bulk/pseudobulk
-    expression. Raw counts are log1p'd first so the score is on a comparable scale.
+    expression. Expects log-scale values (see :func:`scoring_view`); raw counts are
+    still log1p'd here as a guard for direct callers.
     """
-    X = X if isinstance(X, np.ndarray) else X.toarray()
-
+    X = _dense(X)
     if looks_like_counts(X):
         print("  [INFO] Non-log1p data detected. Normalizing for gene scoring!")
         X = np.log1p(X)
@@ -61,17 +124,15 @@ def _top_mad_genes(X, n_top: int) -> np.ndarray:
     return np.argsort(_mad_scores(X))[-n_top:]
 
 
-def _dispersion_scores(data, flavor: str = "seurat") -> np.ndarray:
+def _dispersion_scores(view, flavor: str = "seurat") -> np.ndarray:
     """Per-gene variability score from scanpy's HVG routine, higher = more variable.
 
     For the ``seurat``/``cell_ranger`` flavors this is ``dispersions_norm``, the
     quantity ``sc.pp.highly_variable_genes`` ranks on, so taking its top ``n``
     reproduces that call's selection. For ``seurat_v3`` it is ``variances_norm``.
-    Returned as a plain array so it can be rank-aggregated against ``_mad_scores``.
+    ``view`` must already meet the flavor's assumption (:func:`scoring_view`).
     """
-    work = data.copy()
-    if looks_like_counts(work.X) and flavor != "seurat_v3":
-        sc.pp.log1p(work)
+    work = view.copy()
     sc.pp.highly_variable_genes(work, flavor=flavor)
     for col in ("dispersions_norm", "variances_norm", "dispersions"):
         if col in work.var:
@@ -84,16 +145,23 @@ def _dispersion_scores(data, flavor: str = "seurat") -> np.ndarray:
     )
 
 
-def _gene_scores(data, kind: str, flavor: str = "seurat") -> np.ndarray:
+def _gene_scores(data, kind: str, flavor: str = "seurat", verbose: bool = True) -> np.ndarray:
     """Per-gene variability score for one modality group, higher = more variable.
 
-    Dispatches on modality the same way ``_select_genes`` does: scanpy dispersion for
-    single-cell, MAD for bulk/pseudobulk. Assumes ``data`` is already log1p (or will
-    be log1p'd internally by ``_mad_scores``).
+    Scanpy dispersion for single-cell, MAD for bulk/pseudobulk, each on its own
+    scoring view of ``data`` (any scale; see :func:`scoring_view`).
     """
+    view, flavor = scoring_view(data, kind, flavor=flavor, verbose=verbose)
     if kind == "sc":
-        return _dispersion_scores(data, flavor=flavor)
-    return _mad_scores(data.X)
+        return _dispersion_scores(view, flavor=flavor)
+    return _mad_scores(view.X)
+
+
+def select_panel(data, kind: str, n_top: int, flavor: str = "seurat", verbose: bool = True) -> List[str]:
+    """The ``n_top`` most variable genes of one modality, in ``data.var.index`` order."""
+    scores = _gene_scores(data, kind, flavor=flavor, verbose=verbose)
+    keep = np.sort(np.argsort(-scores, kind="stable")[:n_top])
+    return data.var.index[keep].tolist()
 
 
 def _rank_desc(scores: np.ndarray) -> np.ndarray:
@@ -144,7 +212,7 @@ def select_shared_panel(
 
     if strategy == "pooled":
         kind = _classify_modality(unique[0]) if len(unique) == 1 else "bulk"
-        scores = _gene_scores(data, kind, flavor=flavor)
+        scores = _gene_scores(data, kind, flavor=flavor, verbose=verbose)
         keep = np.argsort(-scores, kind="stable")[:n_top]
         if verbose:
             print(f"  [panel] pooled fit over {data.n_obs} cells -> {len(keep)} genes")
@@ -157,7 +225,7 @@ def select_shared_panel(
                 f"panel_reference={ref!r} not among modality groups {unique}"
             )
         sub = data[groups == ref]
-        scores = _gene_scores(sub, _classify_modality(ref), flavor=flavor)
+        scores = _gene_scores(sub, _classify_modality(ref), flavor=flavor, verbose=verbose)
         keep = np.argsort(-scores, kind="stable")[:n_top]
         if verbose:
             print(
@@ -186,7 +254,7 @@ def select_shared_panel(
             continue
         sub = data[mask]
         kind = _classify_modality(g)
-        scores = _gene_scores(sub, kind, flavor=flavor)
+        scores = _gene_scores(sub, kind, flavor=flavor, verbose=verbose)
         rank_sum += _rank_desc(scores)
         n_used += 1
         own_panels[g] = set(

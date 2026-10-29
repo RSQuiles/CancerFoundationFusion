@@ -32,7 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from evaluate.representation._cli import parse_quotas, parse_with_config  # noqa: E402
+from evaluate._cli import format_title, parse_mapping, parse_quotas, parse_with_config  # noqa: E402
 from experiments.layout import ExperimentLayout, canonical_modality  # noqa: E402
 from utils.sampling import filter_mask, filter_tag, parse_filter_specs, stratified_subsample  # noqa: E402
 from evaluate.io import EMB_KEY, load_embedding, panel_hashes  # noqa: E402
@@ -61,6 +61,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Segments from each bulk point to its pair's pseudobulk / SC centroids")
     parser.add_argument("--color", nargs="+", default=["modality", "tissue_general", PAIRED_COL])
     parser.add_argument("--skip-unknown", action="store_true")
+    parser.add_argument("--title", default=None,
+                        help="Figure title; may use {model}, {part}, {modalities}, {counts}, {filter} "
+                             "(default: '<model>: alignment (<part>) <counts> [<filter>]')")
+    parser.add_argument("--labels", nargs="*", default=None, metavar="COL=LABEL",
+                        help="Readable names for obs columns in panel and legend titles "
+                             "(e.g. tissue_general=Tissue); a mapping in --config")
     parser.add_argument("--allow-mixed-panels", action="store_true",
                         help="Plot even when the files were embedded with different gene panels")
     parser.add_argument("--out-dir", type=Path, default=None)
@@ -142,6 +148,7 @@ def main(argv: list[str] | None = None) -> None:
     tag = filter_tag(filters)
     suffix = ("_paired" if args.paired_only else "") + (f"_{tag}" if tag else "")
     layout = ExperimentLayout.from_root(args.root)
+    labels = parse_mapping(args.labels)
 
     for model in args.models:
         print(f"[{model}] alignment of {args.part}")
@@ -158,12 +165,13 @@ def main(argv: list[str] | None = None) -> None:
         segments = pair_segments(coords, obs, pairs) if args.connect_pairs else None
 
         counts = obs[MODALITY_COL].value_counts().to_dict()
-        title = f"{model}: alignment ({args.part}) " + ", ".join(f"{k}={v}" for k, v in counts.items())
-        if tag:
-            title += f" [{tag}]"
+        count_text = ", ".join(f"{k}={v}" for k, v in counts.items())
+        default = f"{model}: alignment ({args.part}) {count_text}" + (f" [{tag}]" if tag else "")
+        title = format_title(args.title, default, model=model, part=args.part, counts=count_text,
+                             modalities=", ".join(str(k) for k in counts), filter=tag)
         fig = draw_umap_panels(coords, obs, args.color, modality_col=MODALITY_COL,
                                skip_unknown=args.skip_unknown, title=title,
-                               segments=segments, highlight=highlight)
+                               segments=segments, highlight=highlight, labels=labels)
         out_dir = args.out_dir or layout.alignment_dir(model)
         stem = out_dir / f"alignment_{args.part}{suffix}"
         save_figure(fig, stem.with_suffix(".png"), dpi=args.dpi)

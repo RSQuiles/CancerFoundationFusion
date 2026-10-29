@@ -161,7 +161,7 @@ plus `<dir>/embed.json` (one entry per file: method, checkpoint or options, `pan
 and `<dir>/panel_<hash>.txt`. Evaluation treats every model the same way because of this.
 ```bash
 # embed.py: one h5ad + a CancerFoundation checkpoint -> a directory
-python embed/embed.py --checkpoint model.ckpt --input data.h5ad --out-dir out/ [--modality-col modality]
+python embed/embed.py --checkpoint model.ckpt --input data.h5ad --out-dir out/ [--normalize cpm_log1p]
 # embed_splits.py: test split + stratified train subset of each modality -> embeddings/<model>/
 python embed/embed_splits.py --model NAME --split tissue_s0 --modalities sc bulk pseudobulk --train-subset 5000
 python embed/embed_splits.py --embedder pca --split tissue_s0          # any embed_any embedder
@@ -178,9 +178,44 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
 - `embed_any.py` is the plug-in point for baselines and other foundation models:
   subclass `Embedder`, decorate it with `@register("<name>")`, and implement `embed`
   (plus `fit` if the model learns from data). `--option key=value` becomes a constructor
-  kwarg, parsed as YAML. `pca` is implemented; `bulkformer` is a stub that raises
-  `NotImplementedError` until it is written.
+  kwarg, parsed as YAML. `pca` and `bulkformer` are implemented.
+- `bulkformer` wraps **bulkformer-latest** (github.com/KangBoming/bulkformer-latest),
+  following its `feature_extraction` notebook with an h5ad instead of a CSV. It imports
+  that checkout's `utils/latest` as `bulkformer_latest` (a plain `utils.latest` import
+  would collide with this repo's `utils`) and calls its own `normalize_data`,
+  `main_gene_selection` and `extract_feature`, so its preprocessing is theirs. Genes match
+  the 19,973 Ensembl IDs of the release vocabulary (version suffixes stripped; symbols
+  only via `match_on=symbol`, with ambiguous ones dropped). Vocabulary genes the input
+  lacks are fed as `-10` (missing), never as 0. Raw counts become ln(TPM+1) with the
+  release gene lengths, summing over vocabulary-matched genes only. The embedding is the
+  mean of the observed genes' contextual vectors (768-d). `input=auto` accepts only
+  counts; otherwise set `input=tpm|log_tpm|log2_tpm`. Options: `repo` (or
+  `$BULKFORMER_REPO`), `model_dir`, `gene_column`, `batch_size` (8), `chunk_rows`,
+  `device`, `amp_dtype`. It runs in **BulkFormer's own conda env** (torch_geometric,
+  performer_pytorch) plus `anndata` and `pyyaml`. It never imports `cancerfoundation`,
+  which is also why `embed_any.py` reads with `anndata`, not scanpy.
+- `pca` takes the same `normalize` choices as the model (`--option normalize=...`) but
+  defaults to **`cpm_log1p`**, since PCA on unnormalized values is not a fair baseline;
+  `normalize=none` keeps the values as stored. Its HVGs come from
+  `gene_panel.select_panel` (scanpy `seurat` on the scoring view), so the panel does
+  not depend on `normalize`. The old `normalized`/`log1p_only` options are refused.
+  It imports `cancerfoundation`, whose package init loads torch, so `check_embed` skips
+  the PCA runs where torch does not load.
 - Set `self.genes` to the genes a model actually reads, so its files get a `panel_hash`.
+- **Modality.** The obs column `modality` (`--modality-col`) picks the gene-selection
+  scheme: one value names the file's modality, several share one panel. Without the
+  column, `--modality` (default `sc`) applies to every row.
+- **Model input is not normalized by default**, matching training (the store holds the
+  source `X`). `--normalize log1p|cpm_log1p|cp10k_log1p` (`embed(normalize=...)`)
+  transforms it first, scaling by each row's total over ALL input genes, taken before
+  the vocabulary intersection and the panel subset. `embed(normalized=, log1p_only=)`
+  still works but is deprecated and mapped onto `normalize`.
+- **Panel selection normalizes for itself**, independently of `--normalize`:
+  `gene_panel.scoring_view` checks the values (`preprocess.value_scale`: counts, linear
+  or log) and gives each scorer what it assumes: CP10K + log1p for single-cell `seurat`
+  HVG, raw counts for `seurat_v3` (else it falls back to `seurat`), CPM + log1p for the
+  bulk/pseudobulk MAD. Linear values (TPM, CPM) get log1p only; log values are used as
+  they are.
 - `python -m embed.check_embed` self-checks all three with a fake model (no torch).
 
 ### Representation figures (new `evaluate/`)
@@ -188,16 +223,103 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
 python -m evaluate.representation.plot_umap --models m1 pca --modality sc \
     --filter tissue_general=lung --subsample 20000 --stratify-by tissue_general --color tissue_general
 python -m evaluate.representation.plot_alignment --models m1 --per-modality sc=5000 --connect-pairs
-python -m evaluate.representation.plot_umap --config evaluate/representation/example_umap_config.yaml
+python -m evaluate.representation.plot_umap --config evaluate/representation/configs/example_umap_config.yaml
 ```
 Filtering happens before subsampling. Each figure is saved with a `.parquet` of coordinates
 plus obs. `plot_alignment` fits ONE UMAP over all modalities and refuses files whose
-`panel_hash` differ (`--allow-mixed-panels` overrides). In a `--config` YAML, top-level keys
-are shared and `umap:` / `alignment:` blocks apply to one script; unknown keys are errors.
+`panel_hash` differ (`--allow-mixed-panels` overrides).
+- **Titles**: `--title` is a format string. `plot_umap` fields: `{model}`, `{modality}`,
+  `{modality_name}`, `{part}`, `{filter}`. `plot_alignment` fields: `{model}`, `{part}`,
+  `{modalities}`, `{counts}`, `{filter}`. An unknown field is an error, and without
+  `--title` the automatic title is used.
+- **Labels**: `--labels tissue_general=Tissue ...` (a mapping in YAML, usually top-level so
+  both scripts share it) renames obs columns in panel and legend titles, including the
+  modality legend. Category values and the saved parquet keep the raw names.
+
+**Config files** (`evaluate/_cli.py`, shared by every evaluate script): top-level keys are
+shared, and a block named after the script's section applies to that script only
+(`umap`, `alignment`, `mask_plan`, `reconstruction`, `compare`, `scib`). Unknown keys are
+errors, so keep only options every reader has at the top level (usually `root`). Mappings
+(`labels`, `condition`) may be YAML dicts or `KEY=VALUE` lists.
+
+### Reconstruction (`evaluate/reconstruction/`)
+```bash
+# 1. a model-independent mask plan -> data/<mod>/splits/<split>/masks/<part>_<name>.npz
+python -m evaluate.reconstruction.mask_plan --modality bulk --split leiden_s0 --part test --name r25 \
+    --mask-ratio 0.25 --seq-len 1200 --n-samples 2000 [--gene-universe genes.txt] [--zero-fraction 0.4]
+# 2. score models on it -> results/tasks/reconstruction/<name>/<plan>/
+python -m evaluate.reconstruction.run_reconstruction --model unified_v1 --plan bulk:leiden_s0:test:r25 [--head mvc]
+python -m evaluate.reconstruction.run_reconstruction --reconstructor bulkformer --name bulkformer \
+    --plan bulk:leiden_s0:test:r25 --option repo=/path gene_column=gene_id [--context plan]
+# 3. compare on the entries all of them scored -> results/assessment/reconstruction_<plan>/
+python -m evaluate.reconstruction.compare --models unified_v1 bulkformer --plan bulk:leiden_s0:test:r25
+```
+- **The plan fixes the masked entries for every model.** Per sample it draws `seq_len - 1`
+  genes, uniformly or with `--zero-fraction` zeros, and masks `int((seq_len-1)*mask_ratio)`
+  of them, as in "both" training. The rest are CancerFoundation's context. Restrict the
+  genes with `--gene-universe` (e.g. the CF ∩ BulkFormer vocabularies) so no model drops
+  entries. Dropped entries are counted in `metrics.json`.
+- **CancerFoundation (space `bins`).**
+  - **Targets:** bins of the full sample. Each row is binned over all its vocabulary genes
+    before any gene is chosen, as in training; ties are seeded.
+  - **Generative models:** context in the perception stream and masked genes as gen tokens,
+    the training layout. Gen tokens see only the context and themselves, so many masked
+    genes in one pass is exact.
+  - **Perception-only models:** `mask_value` in one sequence.
+  - **Conditions:** passed whenever the model has them. Modality uses the fixed
+    model-facing codes (bulk 0, sc 1, pseudobulk 2); the rest go through the training
+    store's `mapping.json` (`--mapping`, `--condition COL=VALUE`).
+  - **Decoding:** mse as is (×`n_bins` if normalised); ordinal CE
+    `sum(sigmoid(logits[1:]))`, which fixes the legacy off-by-one; CORN
+    `sum(cumprod(sigmoid))`. zinb is refused.
+- **BulkFormer (space `ln_tpm1`):** its imputation mode. It reuses `BulkFormerEmbedder`'s
+  loading and preprocessing, computes ln(TPM+1) targets from the full sample, and sets the
+  masked genes to -10. `--context full` (default) leaves every other gene visible;
+  `--context plan` hides all but the plan's context genes, for an equal-context comparison.
+- **New models**: subclass `Reconstructor`, `@register("<name>")`, implement `predict`
+  returning the full target matrix (NaN = unknown) plus `row`/`gene`/`pred` of the masked
+  entries, and name the target `space`.
+- **Metrics** (`metrics.py`), each also for two baselines on the same entries (`gene_mean`
+  over the plan's unmasked samples, `sample_mean` over the sample's context):
+  - **native:** mse and mae (also split by zero / non-zero target); for bins, exact and
+    ±1-bin accuracy; MAE by true bin or by decile;
+  - **space-free:** per-sample Pearson / Spearman (also non-zero only), zero-vs-non-zero
+    AUROC and the global Spearman. Only these are compared across spaces in `compare.py`.
+
+  `entries.parquet` keeps every scored entry, so new metrics need no rerun.
+- **Environments:** CF runs in the container (`run_reconstruction.sh`, GPU); BulkFormer in
+  its own env; `mask_plan.py` and `compare.py` anywhere.
+
+### Alignment: scIB (`evaluate/alignment/`)
+```bash
+python -m evaluate.alignment.scib_benchmark --name tissue_s0_test --models m1 m2 bulkformer \
+    --pre-integrated pca --modalities bulk pseudobulk --per-modality bulk=all pseudobulk=all \
+    --label-key tissue_general [--kbet] [--leiden] [--dry-run]
+./evaluate/alignment/scib_benchmark.sh          # bulkFM conda env (scib_metrics is not in the container)
+```
+- **Rows:** only the rows every model embedded are kept (row names `<modality>:<obs name>`).
+  `--filter` runs first, then a label-stratified per-modality subsample, once for all
+  models.
+- **Batch and label:** batch is `--batch-key` (default `modality`), label is
+  `--label-key`; NaN labels become `unknown`.
+- **Benchmarker metrics:**
+  - **bio:** isolated labels, silhouette, cLISI, k-means NMI/ARI, plus Leiden with
+    `--leiden`;
+  - **batch:** BRAS, iLISI, graph connectivity, plus kBET with `--kbet`;
+  - **PCR comparison:** only with `--pre-integrated <model>` (normally `pca`), which is then
+    the reference and not a row. The embedding files hold no X, so without a reference
+    the first model stands in for Benchmarker's PCA and PCR is off.
+- **Pre-flight:** the label x batch crosstab and how many labels BRAS/kBET can use (both
+  batches, ≥ `--min-label-cells`). Fewer than 2 is warned about: rank on iLISI then.
+- **Outputs** in `results/assessment/scib_<name>/`: `scib.csv`
+  (`get_results(min_max_scale=False, clean_names=True)`, with the Metric Type row),
+  `scib_minmax.csv`, the results table figure, `label_batch.csv`, `meta.json` (keys,
+  counts, panel hashes) and `manifest.json` with `"models"`.
 
 Offline self-checks: `python -m experiments.check.check_layout`, `check_sampling` and
-`check_rename`, `check_resume` (no torch or anndata), plus `python -m evaluate.check.check_representation`
-(needs scanpy).
+`check_rename`, `check_resume` (no torch or anndata), plus `python -m evaluate.check.check_representation`,
+`check_reconstruction` and `check_alignment` (need anndata/scanpy; the Benchmarker itself
+is skipped without scib_metrics).
 
 ### `evaluate_old/` (archived)
 **Everything from here to "Survival" below describes `evaluate_old/`**, the evaluation code
@@ -547,14 +669,25 @@ experiments/                  # was ablate/; torch-free at import time
 └── check/                    # check_layout, check_sampling, check_rename, check_resume (offline)
 
 evaluate/                     # NEW, works on the experiments root
+├── _cli.py                   # --config YAML sections, KEY=VALUE mappings, title templates
 ├── io.py                     # load_embedding, load_external, panel_hashes
 ├── modalities.py             # sc / pseudobulk / bulk labels and display names
 ├── representation/
 │   ├── render.py             # compute_umap, palettes, modality markers, panel drawing
 │   ├── plot_umap.py          # per-model UMAP of one modality
 │   ├── plot_alignment.py     # joint UMAP of the three modalities
-│   └── example_umap_config.yaml, plot_umap.sh, plot_alignment.sh
-└── check/check_representation.py
+│   └── configs/example_umap_config.yaml, plot_umap.sh, plot_alignment.sh
+├── reconstruction/
+│   ├── mask_plan.py          # model-independent masked/context genes per sample
+│   ├── reconstructors.py     # Reconstructor registry: cancerfoundation (bins), bulkformer (ln TPM+1)
+│   ├── run_reconstruction.py # one model x one plan -> metrics.json, entries.parquet
+│   ├── metrics.py            # native-space + space-free metrics, baselines
+│   ├── compare.py            # several models on their shared entries -> assessment/
+│   └── example_reconstruction_config.yaml, run_reconstruction.sh
+├── alignment/
+│   ├── scib_benchmark.py     # scib_metrics Benchmarker over several models' embeddings
+│   └── example_scib_config.yaml, scib_benchmark.sh (bulkFM conda env)
+└── check/                    # check_representation, check_reconstruction, check_alignment
 
 evaluate_old/                 # ARCHIVED: the previous evaluate/ (does not run as is)
 ├── run_analysis.py           # Config-driven orchestrator: UMAPs + metrics + benchmark over N experiments

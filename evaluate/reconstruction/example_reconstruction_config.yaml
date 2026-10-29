@@ -1,0 +1,28 @@
+# Defaults for the reconstruction scripts (--config). Keys are option names; the CLI
+# overrides them. Top-level keys are shared, so keep only options every script has
+# there (root); each block applies to one script.
+# root: /cluster/work/boeva/rquiles/unifiedFM_experiments
+
+mask_plan:            # python -m evaluate.reconstruction.mask_plan
+  modality: bulk
+  split: leiden_s0
+  part: test
+  name: r25
+  mask_ratio: 0.25     # training draws 0.25 / 0.50 / 0.75
+  seq_len: 1200        # the model's max_seq_len (CLS included)
+  n_samples: 2000
+  stratify_by: [tissue_general]
+  # gene_universe: genes_cf_and_bulkformer.txt   # genes every compared model knows
+
+reconstruction:       # python -m evaluate.reconstruction.run_reconstruction
+  plan: bulk:leiden_s0:test:r25
+  group_by: [tissue_general]
+  batch_size: 16
+  # model: unified_v1                  # a CancerFoundation model, or:
+  # reconstructor: bulkformer
+  # option: [repo=/path/to/bulkformer-latest, gene_column=gene_id]
+  # context: full
+
+compare:              # python -m evaluate.reconstruction.compare
+  plan: bulk:leiden_s0:test:r25
+  models: [unified_v1, bulkformer]

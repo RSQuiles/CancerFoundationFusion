@@ -55,6 +55,15 @@ def _adata(n: int, mods=("sc",), seed: int = 0):
     return ad.AnnData(X=X, obs=obs, var=pd.DataFrame(index=[f"G{i}" for i in range(50)]))
 
 
+def _cancerfoundation_importable() -> bool:
+    """The PCA embedder normalizes through cancerfoundation, whose package init loads torch."""
+    try:
+        import cancerfoundation.data.preprocess  # noqa: F401
+    except Exception:  # noqa: BLE001 - torch may not load here
+        return False
+    return True
+
+
 def check_machinery() -> None:
     print("\n-- embed.py machinery --")
     model = FakeModel()
@@ -93,11 +102,26 @@ def check_any() -> None:
           parse_options(["n_pcs=5", "normalized=true", "checkpoint=/a/b"]) == {"n_pcs": 5, "normalized": True,
                                                                              "checkpoint": "/a/b"})
     train, test = _adata(200, seed=1), _adata(60, seed=2)
-    pca = build_embedder("pca", {"n_pcs": 5, "n_hvg": 20})
-    emb = run_embedder(pca, test, fit_adata=train)
-    check("pca fits on one set, embeds another", emb.shape == (60, 5) and len(pca.genes) == 20)
-    check("bulkformer stub says it is not implemented",
-          raises(lambda: run_embedder(build_embedder("bulkformer"), test), NotImplementedError))
+    check("pca normalizes with cpm_log1p by default", build_embedder("pca").normalize == "cpm_log1p")
+    check("pca normalize=none means values as stored",
+          build_embedder("pca", parse_options(["normalize=none"])).normalize is None)
+    check("pca refuses an unknown normalize", raises(lambda: build_embedder("pca", {"normalize": "tpm"}), ValueError))
+    check("pca refuses the retired normalized/log1p_only options",
+          raises(lambda: build_embedder("pca", {"normalized": True}), ValueError))
+    if not _cancerfoundation_importable():
+        print("  SKIP  pca fit/embed: cancerfoundation (torch) not importable here")
+    else:
+        pca = build_embedder("pca", {"n_pcs": 5, "n_hvg": 20})
+        emb = run_embedder(pca, test, fit_adata=train)
+        check("pca fits on one set, embeds another", emb.shape == (60, 5) and len(pca.genes) == 20)
+        raw = build_embedder("pca", {"n_pcs": 5, "n_hvg": 20, "normalize": None})
+        emb_raw = run_embedder(raw, test, fit_adata=train)
+        check("pca panel does not depend on normalize", raw.genes == pca.genes)
+        check("normalize changes the embedding", not np.allclose(emb, emb_raw))
+    check("bulkformer refuses a missing checkout",
+          raises(lambda: build_embedder("bulkformer", {"repo": "/nonexistent"}).embed(test), FileNotFoundError))
+    check("bulkformer refuses an unknown input scale",
+          raises(lambda: build_embedder("bulkformer", {"repo": "/x", "input": "fpkm"}), ValueError))
     check("unknown embedder refused", raises(lambda: build_embedder("nope"), KeyError))
 
     @register("_bad_shape")
@@ -111,6 +135,9 @@ def check_any() -> None:
 
 def check_splits() -> None:
     print("\n-- embed_splits.py --")
+    if not _cancerfoundation_importable():
+        print("  SKIP  embed_splits --embedder pca: cancerfoundation (torch) not importable here")
+        return
     import anndata as ad
 
     with tempfile.TemporaryDirectory() as tmp:

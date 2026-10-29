@@ -1,0 +1,15 @@
+# Defaults for evaluate/alignment/scib_benchmark.py (--config). Keys are option names;
+# the CLI overrides them. The scib: block applies to the script; top-level keys too.
+# root: /cluster/work/boeva/rquiles/unifiedFM_experiments
+
+scib:
+  name: tissue_s0_test
+  models: [unified_paired_tissue_s0, unified_paired_dat_tissue_s0, bulkformer]
+  pre_integrated: pca          # reference embedding for PCR; not a row of the table
+  part: test
+  modalities: [bulk, pseudobulk]
+  per_modality: ["bulk=all", "pseudobulk=all"]
+  batch_key: modality
+  label_key: tissue_general
+  # filter: ["tissue_general=lung,breast"]
+  n_jobs: 4

@@ -1,4 +1,4 @@
-"""CLI plumbing shared by the representation scripts: YAML defaults and key=value lists."""
+"""CLI plumbing shared by the evaluate scripts: YAML defaults and key=value lists."""
 
 from __future__ import annotations
 
@@ -6,7 +6,8 @@ import argparse
 from pathlib import Path
 
 
-SECTIONS = ("umap", "alignment")
+# Script-specific blocks of a --config YAML; every other top-level key is shared.
+SECTIONS = ("umap", "alignment", "mask_plan", "reconstruction", "compare", "scib")
 
 
 def parse_with_config(
@@ -16,8 +17,9 @@ def parse_with_config(
 ) -> argparse.Namespace:
     """Parse ``argv``; a ``--config`` YAML supplies defaults, the command line wins.
 
-    Top-level keys apply to every representation script; a ``umap:`` or
-    ``alignment:`` block applies only to that script and overrides the top level.
+    Top-level keys apply to every script reading the file; a block named after a
+    section (``umap:``, ``alignment:``, ``mask_plan:``, ``reconstruction:``, ``compare:``,
+    ``scib:``) applies only to that script and overrides the top level.
     Keys are the long option names with ``-`` or ``_`` (``stratify_by`` or
     ``stratify-by``). An unknown key is an error rather than silently ignored.
     """
@@ -51,3 +53,39 @@ def parse_quotas(specs: list[str] | None, modalities: list[str]) -> dict[str, in
         label = canonical_modality(mod)
         quotas[label] = None if value.strip().lower() in {"all", "none", ""} else int(value.replace("_", ""))
     return quotas
+
+
+def parse_mapping(value, option: str = "--labels") -> dict[str, str]:
+    """A ``KEY=VALUE`` mapping from a YAML dict or a CLI list (``["a=A", "b=B"]``).
+
+    ``None`` gives ``{}``. On the CLI the value may itself contain ``=``; only the
+    first one splits.
+    """
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return {str(k): str(v) for k, v in value.items()}
+    out: dict[str, str] = {}
+    for spec in value:
+        if not isinstance(spec, str) or "=" not in spec:
+            raise ValueError(f"{option} {spec!r} must look like KEY=VALUE")
+        key, val = spec.split("=", 1)
+        out[key.strip()] = val.strip()
+    return out
+
+
+def format_title(template: str | None, default: str, **fields) -> str:
+    """``template`` filled from ``fields``, or ``default`` when no template is given.
+
+    A plain string without ``{...}`` is used as it is. A field that is not in
+    ``fields`` is an error naming the ones that are.
+    """
+    if not template:
+        return default
+    from string import Formatter
+
+    used = {name for _, name, _, _ in Formatter().parse(template) if name}
+    unknown = sorted(used - set(fields))
+    if unknown:
+        raise ValueError(f"--title uses unknown field(s) {unknown}; available: {sorted(fields)}")
+    return template.format(**fields)

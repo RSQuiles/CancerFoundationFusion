@@ -10,7 +10,8 @@ spent inside the selection. Writes, per model::
 
     python -m evaluate.representation.plot_umap --models m1 m2 pca --modality sc --part test \\
         --filter tissue_general=lung,breast --subsample 20000 --stratify-by tissue_general \\
-        --color tissue_general cancer_type assay --skip-unknown
+        --color tissue_general cancer_type assay --skip-unknown \
+        --title "{model}: {modality_name} ({part})" --labels tissue_general=Tissue assay=Assay
 
 Any h5ad outside the layout works too (``--input file.h5ad --obsm-key X_pca``);
 the figure then goes next to it unless ``--out-dir`` says otherwise.
@@ -26,10 +27,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from evaluate.representation._cli import parse_with_config  # noqa: E402
+from evaluate._cli import format_title, parse_mapping, parse_with_config  # noqa: E402
 from experiments.layout import ExperimentLayout, canonical_modality  # noqa: E402
 from utils.sampling import filter_mask, filter_tag, parse_filter_specs, stratified_subsample  # noqa: E402
 from evaluate.io import EMB_KEY, load_embedding, load_external  # noqa: E402
+from evaluate.modalities import DISPLAY_NAMES  # noqa: E402
 from evaluate.representation.render import compute_umap, draw_umap_panels, save_coords, save_figure  # noqa: E402
 
 
@@ -51,6 +53,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-per-stratum", type=int, default=1)
     parser.add_argument("--color", nargs="+", default=["tissue_general"], help="obs columns to colour by")
     parser.add_argument("--skip-unknown", action="store_true", help="Grey out unknown/NaN labels")
+    parser.add_argument("--title", default=None,
+                        help="Figure title; may use {model}, {modality}, {modality_name}, {part}, {filter} "
+                             "(default: '<model>: <modality> <part> [<filter>]')")
+    parser.add_argument("--labels", nargs="*", default=None, metavar="COL=LABEL",
+                        help="Readable names for obs columns in panel and legend titles "
+                             "(e.g. tissue_general=Tissue); a mapping in --config")
     parser.add_argument("--n-neighbors", type=int, default=15)
     parser.add_argument("--min-dist", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
@@ -70,14 +78,14 @@ def prepare(adata, filters, args, label: str):
     return sub
 
 
-def plot_one(adata, out_stem: Path, title: str, args) -> None:
+def plot_one(adata, out_stem: Path, title: str, args, labels: dict[str, str]) -> None:
     if adata.n_obs < 3:
         print(f"  [skip] {title}: only {adata.n_obs} rows")
         return
     coords = compute_umap(adata.obsm[EMB_KEY], args.n_neighbors, args.min_dist, args.seed)
     modality_col = "modality" if "modality" in adata.obs.columns else None
     fig = draw_umap_panels(coords, adata.obs, args.color, modality_col=modality_col,
-                           skip_unknown=args.skip_unknown, title=title)
+                           skip_unknown=args.skip_unknown, title=title, labels=labels)
     save_figure(fig, out_stem.with_suffix(".png"), dpi=args.dpi)
     save_coords(adata.obs, coords, out_stem.with_suffix(".parquet"))
 
@@ -87,12 +95,15 @@ def main(argv: list[str] | None = None) -> None:
     filters = parse_filter_specs(args.filter)
     tag = filter_tag(filters)
     suffix = f"_{tag}" if tag else ""
+    labels = parse_mapping(args.labels)
 
     if args.input is not None:
         adata = load_external(args.input, args.obsm_key)
         out_dir = args.out_dir or args.input.parent
         stem = out_dir / f"umap_{args.input.stem}{suffix}"
-        plot_one(prepare(adata, filters, args, args.input.name), stem, args.input.stem + (f" [{tag}]" if tag else ""), args)
+        title = format_title(args.title, args.input.stem + (f" [{tag}]" if tag else ""),
+                             model=args.input.stem, modality="", modality_name="", part="", filter=tag)
+        plot_one(prepare(adata, filters, args, args.input.name), stem, title, args, labels)
         return
 
     if not args.models:
@@ -104,8 +115,10 @@ def main(argv: list[str] | None = None) -> None:
         adata = load_embedding(layout, model, label, args.part)
         out_dir = args.out_dir or layout.representation_dir(model)
         stem = out_dir / f"umap_{label}_{args.part}{suffix}"
-        title = f"{model}: {label} {args.part}" + (f" [{tag}]" if tag else "")
-        plot_one(prepare(adata, filters, args, f"{model}/{label}_{args.part}"), stem, title, args)
+        title = format_title(args.title, f"{model}: {label} {args.part}" + (f" [{tag}]" if tag else ""),
+                             model=model, modality=label, modality_name=DISPLAY_NAMES.get(label, label),
+                             part=args.part, filter=tag)
+        plot_one(prepare(adata, filters, args, f"{model}/{label}_{args.part}"), stem, title, args, labels)
 
 
 if __name__ == "__main__":

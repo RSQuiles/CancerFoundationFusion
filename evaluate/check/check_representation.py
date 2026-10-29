@@ -25,7 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from experiments.check._harness import check, finish, raises
 from experiments.layout import ExperimentLayout
 from evaluate.representation import plot_alignment, plot_umap
-from evaluate.representation._cli import parse_quotas
+from evaluate._cli import format_title, parse_mapping, parse_quotas
 
 MODEL = "toy_model"
 SIZES = {"sc": 800, "pseudobulk": 60, "bulk": 40}
@@ -124,9 +124,55 @@ def check_alignment() -> None:
               ExperimentLayout(Path(tmp)).alignment_dir(MODEL).joinpath("alignment_test.png").exists())
 
 
+def check_titles_labels() -> None:
+    print("\n-- titles and labels --")
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from evaluate.representation.render import draw_umap_panels
+
+    check("title template filled", format_title("{model} ({part})", "dflt", model="m", part="test") == "m (test)")
+    check("no template -> default title", format_title(None, "dflt", model="m") == "dflt")
+    check("plain string kept", format_title("My plot", "dflt", model="m") == "My plot")
+    check("unknown title field refused", raises(lambda: format_title("{nope}", "d", model="m"), ValueError))
+    check("labels from a YAML dict", parse_mapping({"tissue_general": "Tissue"}) == {"tissue_general": "Tissue"})
+    check("labels from the CLI", parse_mapping(["tissue_general=Tissue", "a=b=c"]) == {"tissue_general": "Tissue", "a": "b=c"})
+    check("malformed label refused", raises(lambda: parse_mapping(["tissue_general"]), ValueError))
+
+    rng = np.random.default_rng(0)
+    obs = pd.DataFrame({"modality": rng.choice(["sc", "bulk"], 50), "tissue_general": rng.choice(["lung", "colon"], 50)})
+    fig = draw_umap_panels(rng.normal(size=(50, 2)), obs, ["modality", "tissue_general"], modality_col="modality",
+                           title="T", labels={"tissue_general": "Tissue", "modality": "Data type"})
+    titles = [ax.get_title() for ax in fig.axes]
+    from matplotlib.legend import Legend
+
+    legends = [c.get_title().get_text() for ax in fig.axes for c in ax.get_children() if isinstance(c, Legend)]
+    check("panel titles use the labels", titles == ["Data type", "Tissue"])
+    check("legend titles use the labels", "Tissue" in legends and "Data type" in legends)
+    check("suptitle drawn", fig._suptitle is not None and fig._suptitle.get_text() == "T")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        layout = _write_root(Path(tmp))
+        cfg = Path(tmp) / "cfg.yaml"
+        import yaml
+
+        cfg.write_text(yaml.safe_dump({
+            "root": tmp, "models": [MODEL], "labels": {"tissue_general": "Tissue"},
+            "umap": {"modality": "bulk", "subsample": 0, "title": "{model} / {modality_name}"},
+            "alignment": {"per_modality": ["sc=100"], "title": "{model}: {counts}"},
+        }), encoding="utf-8")
+        plot_umap.main(["--config", str(cfg)])
+        plot_alignment.main(["--config", str(cfg)])
+        coords = pd.read_parquet(layout.representation_dir(MODEL) / "umap_bulk_test.parquet")
+        check("parquet keeps the raw column names", "tissue_general" in coords.columns)
+        check("labels + title from config accepted by both scripts",
+              (layout.alignment_dir(MODEL) / "alignment_test.png").exists())
+
+
 def main() -> None:
     check_umap()
     check_alignment()
+    check_titles_labels()
     finish()
 
 

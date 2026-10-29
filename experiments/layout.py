@@ -134,6 +134,16 @@ class ExperimentLayout:
     def split_card(self, modality: str, split: str) -> Path:
         return self.split_dir(modality, split) / "split.json"
 
+    def mask_plan(self, modality: str, split: str, part: str, name: str) -> Path:
+        """Reconstruction mask plan for one split part (``evaluate/reconstruction/mask_plan.py``).
+
+        Model-independent data, so it lives beside the split rather than under a model.
+        Any part name is allowed (a split may define ``val`` and others).
+        """
+        if not _MODEL_NAME_RE.match(name) or not _MODEL_NAME_RE.match(part):
+            raise ValueError(f"Invalid mask plan name {part!r}/{name!r}: use letters, digits, '_', '.', '-'")
+        return self.split_dir(modality, split) / "masks" / f"{part}_{name}.npz"
+
     def pipeline_ready(self, modality: str, split: str) -> Path:
         return self.modality_dir(modality) / "pipeline_ready" / split
 

@@ -22,7 +22,7 @@ for arg in "$@"; do
 done
 
 PROJECT_ROOT="/cluster/work/boeva/rquiles/CancerFoundationFusion"
-CONFIG="$PROJECT_ROOT/evaluate/representation/example_umap_config.yaml"
+CONFIG="$PROJECT_ROOT/evaluate/representation/configs/example_umap_config.yaml"
 
 SCRIPT_ARGS=(
     --config "$CONFIG"

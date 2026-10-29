@@ -6,18 +6,25 @@ import transformers
 import torch
 import numpy as np
 import pandas as pd
-import scanpy as sc
 from cancerfoundation.model.perturbation_model import PerturbationTransformer
 from cancerfoundation.utils import load_pretrained
 from cancerfoundation.model.module import TransformerModule
 from cancerfoundation.data.bulk_sc_collator import BULK_MODALITY, PB_MODALITY
-from cancerfoundation.data.preprocess import binning, looks_like_counts
+from cancerfoundation.data.preprocess import binning
 # Modality-aware gene-panel selection lives in cancerfoundation/data/gene_panel.py,
 # kept free of torch/lightning imports so it can be exercised without a checkpoint.
 from cancerfoundation.data.gene_panel import (  # noqa: F401  (re-exported)
+    LIBRARY_SIZE_COL,
     _classify_modality,
     _top_mad_genes,
+    select_panel,
     select_shared_panel,
+)
+from cancerfoundation.data.preprocess import (
+    NORMALIZE_METHODS,
+    library_size,
+    normalize_expression,
+    value_scale,
 )
 from cancerfoundation.loss import get_loss
 from safetensors import safe_open
@@ -1064,34 +1071,55 @@ class CancerFoundation(pl.LightningModule):
     def _select_genes(self, data, kind: str, seurat_flavor: str = "seurat"):
         """Reduce an AnnData to ``n_top_genes`` using a modality-appropriate scheme.
 
-        Deterministic. Assumes ``data`` is already log1p-normalised.
-          - ``kind == "sc"``: scanpy HVG (``seurat_flavor``, bin-normalised dispersion),
-            appropriate for sparse log1p single-cell data.
-          - bulk / pseudobulk: genes with highest MAD on the log1p values, robust to
-            the cell-type-composition variance that dominates (pseudo)bulk expression.
+        Deterministic, and independent of how the model's input is normalized:
+        scoring runs on a view of ``data`` that meets the scorer's assumption (see
+        ``gene_panel.scoring_view``).
+          - ``kind == "sc"``: scanpy HVG (``seurat_flavor``), on CP10K + log1p
+            (``seurat_v3``: on raw counts).
+          - bulk / pseudobulk: highest MAD on CPM + log1p, robust to the
+            cell-type-composition variance that dominates (pseudo)bulk expression.
 
-        Returns the gene-subset AnnData (a copy), or ``data`` unchanged when it already
-        has at most ``n_top_genes`` genes.
+        Returns the gene-subset AnnData (a copy, values untouched), or ``data``
+        unchanged when it already has at most ``n_top_genes`` genes.
         """
         if data.n_vars <= self.n_top_genes:
             return data
-        if looks_like_counts(data.X):
-            print("  [INFO] Raw counts detected. Normalizing for gene selection only "
-                  "(the values fed to the model are left as-is, matching training).")
-            work = data.copy()
-            sc.pp.log1p(work)
-        else:
-            work = data
+        label = f"HVGs (flavor='{seurat_flavor}')" if kind == "sc" else "top-MAD genes"
+        print(f"  Selecting {self.n_top_genes} {label} for modality '{kind}'")
+        genes = select_panel(data, kind, self.n_top_genes, flavor=seurat_flavor)
+        return data[:, genes].copy()
 
-        if kind == "sc":
-            print(f"  Selecting {self.n_top_genes} HVGs (flavor='{seurat_flavor}') for modality 'sc'")
-            sc.pp.highly_variable_genes(work, n_top_genes=self.n_top_genes, flavor=seurat_flavor)
-            mask = work.var["highly_variable"].values
-            return data[:, mask].copy()
-        # bulk and pseudobulk HVG selection
-        print(f"  Selecting {self.n_top_genes} top-MAD genes for modality '{kind}'")
-        top_idx = _top_mad_genes(work.X, self.n_top_genes)
-        return data[:, top_idx].copy()
+    @staticmethod
+    def _resolve_normalize(normalize, normalized, log1p_only) -> Optional[str]:
+        """``normalize`` from the new argument or the deprecated ``normalized``/``log1p_only``.
+
+        The old pair meant: ``normalized=True`` -> nothing; otherwise log1p, preceded
+        by CP10K unless ``log1p_only`` (whose old default was True).
+        """
+        if normalized is None and log1p_only is None:
+            if normalize is not None and normalize not in NORMALIZE_METHODS:
+                raise ValueError(f"normalize must be None or one of {NORMALIZE_METHODS}, got {normalize!r}")
+            return normalize
+        if normalize is not None:
+            raise ValueError("Pass either normalize=... or the deprecated normalized/log1p_only, not both")
+        if normalized:
+            resolved = None
+        elif log1p_only is False:
+            resolved = "cp10k_log1p"
+        else:
+            resolved = "log1p"
+        print(f"[DEPRECATED] embed(normalized={normalized}, log1p_only={log1p_only}) is "
+              f"normalize={resolved!r}; pass normalize= instead.")
+        return resolved
+
+    @staticmethod
+    def _apply_normalize(data, normalize: Optional[str]):
+        """Normalize the model input in place, by each row's total over all input genes."""
+        if normalize is None:
+            return data
+        lib = data.obs[LIBRARY_SIZE_COL].to_numpy(dtype=np.float64)
+        data.X = normalize_expression(data.X, normalize, lib)
+        return data
 
     def _embed_by_modality(
         self,
@@ -1101,14 +1129,17 @@ class CancerFoundation(pl.LightningModule):
         batch_size: int,
         device,
         gene_subsets: Optional[dict] = None,
+        normalize: Optional[str] = None,
     ) -> tuple:
         """Embed each modality group independently with its own gene set.
 
         Gene selection per group follows _select_genes: scanpy 'seurat' HVG for SC,
-        log1p + MAD for bulk/pseudobulk. Data is assumed already log1p-normalised.
+        MAD on CPM + log1p for bulk/pseudobulk, each on its own scoring view. The
+        model input is then normalized per ``normalize``.
 
         Args:
-            data: AnnData already vocab-intersected and normalised.
+            data: AnnData already vocab-intersected, NOT normalized, with
+                ``obs[LIBRARY_SIZE_COL]``.
             modality_col: obs column holding modality labels.
             hvg_select: whether to run gene selection per modality (ignored when
                 gene_subsets given).
@@ -1116,6 +1147,7 @@ class CancerFoundation(pl.LightningModule):
             device: torch device.
             gene_subsets: if provided, a dict mapping modality label → gene list; skips
                 gene selection.
+            normalize: model-input normalization (see ``embed``).
 
         Returns:
             (emb_array: np.ndarray of shape (n_obs, d_model),
@@ -1142,6 +1174,7 @@ class CancerFoundation(pl.LightningModule):
                 mod_data = self._select_genes(mod_data, kind)
 
             gene_set_used[mod_val] = mod_data.var_names.tolist()
+            mod_data = self._apply_normalize(mod_data, normalize)
             mod_emb = self._run_dense_embed(mod_data, batch_size, device)
 
             positions = [obs_pos[name] for name in mod_data.obs_names]
@@ -1154,8 +1187,7 @@ class CancerFoundation(pl.LightningModule):
         self,
         adata,
         batch_size: int = 64,
-        normalized=False,
-        log1p_only=True,
+        normalize: Optional[str] = None,
         hvg_select=True,
         gene_subset=None,
         flavor="seurat",
@@ -1164,30 +1196,42 @@ class CancerFoundation(pl.LightningModule):
         shared_panel: bool = True,
         panel_strategy: str = "consensus",
         panel_reference: Optional[str] = None,
-        return_preprocessed: bool = False):
+        return_preprocessed: bool = False,
+        normalized: Optional[bool] = None,
+        log1p_only: Optional[bool] = None):
         """Embeds an AnnData object into cell embeddings.
 
         Handles all preprocessing: gene intersection with vocab, deterministic
-        modality-aware gene selection, binning, and batched forward passes through the
-        transformer.
+        modality-aware gene selection, optional normalization, binning, and batched
+        forward passes through the transformer.
 
-        Gene selection (see ``_select_genes``) depends on modality: scanpy ``seurat``
-        HVG for single-cell (``modality="sc"``), log1p + MAD for bulk/pseudobulk
-        (``modality="bulk"`` / ``"pseudobulk"``). Data is log1p by the time selection
-        runs (either already ``normalized`` or normalised here).
+        **Model input.** By default (``normalize=None``) the values are embedded as
+        they are, which matches training: the training store holds the source ``X``
+        unnormalized, and per-row quantile binning is scale-invariant. ``normalize``
+        transforms them first: ``"log1p"``, ``"cpm_log1p"`` or ``"cp10k_log1p"``. The
+        library size is each row's total over ALL input genes, taken before the
+        vocabulary intersection and the panel subset.
+
+        **Gene panel.** Selection never sees the model input. It scores genes on a view
+        of the input values transformed to meet each scorer's assumption (see
+        ``gene_panel.scoring_view``): scanpy ``seurat`` HVG on CP10K + log1p for
+        single-cell (``modality="sc"``), MAD on CPM + log1p for bulk/pseudobulk. Values
+        that are already normalized or log-scale are detected and not transformed twice.
 
         Args:
             adata: AnnData object (h5ad). X should contain expression values
                 (dense or sparse).
             batch_size: Batch size for inference.
+            normalize: None (default), "log1p", "cpm_log1p" or "cp10k_log1p".
             modality: Modality of the whole AnnData when ``modality_col`` is not set —
                 one of "sc", "bulk", "pseudobulk". Drives single-modality gene selection.
             modality_col: If provided, name of an obs column holding per-cell modality
-                labels (e.g. "modality" or "_eval_modality"). With
-                ``shared_panel=False`` gene selection and dense embedding are performed
-                independently per modality group, and ``gene_set_used`` comes back as a
-                ``dict[str, list[str]]``. ``gene_subset`` can also be passed as such a
-                dict to skip re-fitting selection.
+                labels (e.g. "modality"). A column with a single value sets
+                ``modality``. With several values and ``shared_panel=False``, gene
+                selection and dense embedding are performed independently per modality
+                group, and ``gene_set_used`` comes back as a ``dict[str, list[str]]``.
+                ``gene_subset`` can also be passed as such a dict to skip re-fitting
+                selection.
             shared_panel: When True (default) and ``modality_col`` resolves to two or
                 more groups, fit ONE gene panel across all of them (see
                 ``select_shared_panel``) and embed every cell through it, returning a
@@ -1199,16 +1243,20 @@ class CancerFoundation(pl.LightningModule):
             panel_strategy: How to fit the shared panel — "consensus" (default),
                 "reference", or "pooled". See ``select_shared_panel``.
             panel_reference: Group name to fit on when ``panel_strategy="reference"``.
-            return_preprocessed: If True, return the normalised, vocab-intersected,
+            return_preprocessed: If True, return the normalized, vocab-intersected,
                 gene-selected AnnData (un-binned) instead of running the forward pass.
                 Used by ``preprocess_for_embedding`` so both paths share identical
                 preprocessing. Not compatible with the per-modality ``modality_col`` path.
+            normalized, log1p_only: Deprecated; mapped onto ``normalize``
+                (``normalized=True`` -> None, ``log1p_only=False`` -> "cp10k_log1p",
+                otherwise "log1p").
 
         Returns:
             Tuple of (pd.DataFrame with cell IDs as index and columns dim_0, dim_1, ...,
             gene_set_used as list[str] or dict[str, list[str]] when modality_col is set),
             or the preprocessed AnnData when ``return_preprocessed`` is True.
         """
+        normalize = self._resolve_normalize(normalize, normalized, log1p_only)
         self.model.eval()
         device = next(self.model.parameters()).device
 
@@ -1216,26 +1264,25 @@ class CancerFoundation(pl.LightningModule):
         data = adata.copy()
         if hasattr(data.X, "toarray"):
             data.X = data.X.toarray()
+        # Float even without normalization: binning writes bin indices back into X and
+        # normalise_bins divides them, which an integer counts matrix would truncate.
+        data.X = np.asarray(data.X, dtype=np.float32)
 
         data = self._maybe_fix_negative(data)
 
-        # Normalize to CP10K + log1p if not already normalized
-        if not normalized:
-            print("Normalizing before embedding!")
-            if not log1p_only:
-                # Raw counts
-                sc.pp.normalize_total(data, target_sum=1e4)
-            sc.pp.log1p(data)
-        elif looks_like_counts(data.X):
-            # Not necessarily wrong: training bins the on-disk values directly and
-            # per-row quantile binning is scale-invariant, so for input_style="binned"
-            # this matches training. Said out loud because gene selection and any
-            # downstream PCA/aggregation DO care about the scale.
-            print(
-                "[INFO] normalized=True but the matrix looks like raw counts. Values "
-                "will be embedded as-is (consistent with binned training); gene "
-                "selection log1p-normalises internally."
-            )
+        # Library size over every input gene, before any gene is dropped, so CPM/CP10K
+        # (for the model input and for panel scoring) means the row's real total.
+        data.obs[LIBRARY_SIZE_COL] = library_size(data.X)
+        scale = value_scale(data.X)
+        if normalize is None:
+            print(f"Model input: values as stored ({scale}), as in training.")
+        else:
+            print(f"Model input: {normalize} of the input values ({scale}).")
+            if scale == "log":
+                print(
+                    f"[WARNING] normalize={normalize!r} but the values already look "
+                    "log-scale; they will be transformed again."
+                )
 
         # Intersect genes with vocab. Sorted so the column order is reproducible
         # across processes (set iteration order is not); the encoder is permutation
@@ -1246,6 +1293,14 @@ class CancerFoundation(pl.LightningModule):
         print(f"Common genes: {len(common_genes)} / {data.n_vars}")
         data = data[:, common_genes].copy()
 
+        # A modality column with a single value names the modality of the whole file.
+        n_groups = 0
+        if modality_col is not None and modality_col in data.obs.columns:
+            group_vals = data.obs[modality_col].astype(str).to_numpy()
+            n_groups = len(set(group_vals.tolist()))
+            if n_groups == 1:
+                modality = group_vals[0]
+
         # ── Shared panel: fit one gene set across modality groups ──────────────
         # Resolved into a flat `gene_subset` so the single-panel branch below does the
         # rest (subset once, one dense forward pass for every cell).
@@ -1253,13 +1308,10 @@ class CancerFoundation(pl.LightningModule):
             gene_subset is None
             and shared_panel
             and hvg_select
-            and modality_col is not None
-            and modality_col in data.obs.columns
+            and n_groups > 1
             and not return_preprocessed
         ):
-            group_vals = data.obs[modality_col].astype(str).to_numpy()
-            n_groups = len(set(group_vals.tolist()))
-            if n_groups > 1 and data.n_vars > self.n_top_genes:
+            if data.n_vars > self.n_top_genes:
                 print(
                     f"[INFO] Shared gene panel across {n_groups} modality groups "
                     f"(strategy='{panel_strategy}'): one panel for all cells."
@@ -1272,16 +1324,12 @@ class CancerFoundation(pl.LightningModule):
                     strategy=panel_strategy,
                     reference=panel_reference,
                 )
-            elif n_groups > 1:
+            else:
                 print(
                     f"[INFO] Shared panel requested but data has {data.n_vars} genes "
                     f"<= n_top_genes={self.n_top_genes}; keeping all genes."
                 )
-            else:
-                print(
-                    f"[INFO] Shared panel is a no-op: '{modality_col}' has a single "
-                    f"group ('{group_vals[0] if len(group_vals) else 'n/a'}')."
-                )
+                gene_subset = data.var_names.tolist()
 
         if gene_subset is not None:
             if isinstance(gene_subset, dict):
@@ -1293,6 +1341,7 @@ class CancerFoundation(pl.LightningModule):
                 emb_array, gs_used = self._embed_by_modality(
                     data, modality_col, hvg_select=False,
                     batch_size=batch_size, device=device, gene_subsets=gene_subset,
+                    normalize=normalize,
                 )
                 return pd.DataFrame(
                     emb_array,
@@ -1305,12 +1354,12 @@ class CancerFoundation(pl.LightningModule):
                 available = [g for g in gene_subset if g in available_set]
                 data = data[:, available].copy()
 
-        elif modality_col is not None and modality_col in data.obs.columns and hvg_select:
+        elif n_groups > 1 and hvg_select:
             # Per-modality selection: fit and embed each modality group independently
             print("Performing gene selection per data modality!")
             emb_array, gs_used = self._embed_by_modality(
                 data, modality_col, hvg_select=True,
-                batch_size=batch_size, device=device,
+                batch_size=batch_size, device=device, normalize=normalize,
             )
             return pd.DataFrame(
                 emb_array,
@@ -1319,7 +1368,9 @@ class CancerFoundation(pl.LightningModule):
             ), gs_used
 
         elif hvg_select:
-            data = self._select_genes(data, kind=modality, seurat_flavor=flavor)
+            data = self._select_genes(data, kind=_classify_modality(str(modality)), seurat_flavor=flavor)
+
+        data = self._apply_normalize(data, normalize)
 
         # Early return for preprocess_for_embedding: selected, un-binned data.
         if return_preprocessed:
@@ -1339,17 +1390,18 @@ class CancerFoundation(pl.LightningModule):
     def preprocess_for_embedding(
         self,
         adata,
-        normalized: bool = False,
+        normalize: Optional[str] = None,
         gene_subset: list | None = None,
         return_edges: bool = False,
         modality: str = "sc",
+        normalized: Optional[bool] = None,
     ):
         """Normalize, intersect vocab, select genes, and optionally bin — without running the forward pass.
 
         Delegates normalization, vocab intersection, and gene selection to
         ``embed(..., return_preprocessed=True)`` so the frozen and fine-tuned paths
-        select genes identically (scanpy ``seurat`` for SC, log1p + MAD for
-        bulk/pseudobulk), then applies binning here.
+        select genes identically (scanpy ``seurat`` for SC, MAD for bulk/pseudobulk),
+        then applies binning here.
 
         Calling this on the full dataset before a train/test split ensures every cell
         uses the same gene set.  Pass the returned ``var.index`` as ``gene_subset`` to
@@ -1357,19 +1409,22 @@ class CancerFoundation(pl.LightningModule):
 
         Args:
             adata: Input AnnData object.
-            normalized: If True, skip CP10K + log1p normalization (data already normalized).
+            normalize: Model-input normalization, as in ``embed`` (default None).
             gene_subset: If provided, skip gene selection and subset directly to these gene
                 names (must be a subset of the vocab-intersected genes).
             modality: Modality of the data ("sc", "bulk", "pseudobulk") — drives gene
                 selection, matching the ``modality`` argument of ``embed``.
+            normalized: Deprecated. ``True`` -> no normalization, ``False`` -> log1p
+                (what it meant before ``normalize`` existed).
 
         Returns:
             Preprocessed AnnData ready for ``embed_for_finetune()`` or ``embed(hvg_select=False)``.
         """
-        # Reuse embed()'s preprocessing (normalize → intersect → select) so the two
+        # Reuse embed()'s preprocessing (intersect → select → normalize) so the two
         # paths never diverge; return_preprocessed short-circuits before the forward pass.
         data = self.embed(
             adata,
+            normalize=normalize,
             normalized=normalized,
             hvg_select=(gene_subset is None),
             gene_subset=gene_subset,
