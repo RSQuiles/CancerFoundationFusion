@@ -133,6 +133,71 @@ def check_any() -> None:
     EMBEDDERS.pop("_bad_shape")
 
 
+def _write_split_root(tmp: str) -> ExperimentLayout:
+    """Raw sc and bulk h5ads with a split s0 (30 test rows, 90 train rows each)."""
+    layout = ExperimentLayout(Path(tmp))
+    for i, mod in enumerate(("sc", "bulk")):
+        a = _adata(120, seed=10 + i)
+        a.obs_names = [f"{mod}_{j}" for j in range(a.n_obs)]
+        a.obs = a.obs.drop(columns=["modality"])
+        raw = layout.raw_h5ad(mod)
+        raw.parent.mkdir(parents=True)
+        a.write_h5ad(raw)
+        split = layout.split_dir(mod, "s0")
+        split.mkdir(parents=True)
+        names = list(a.obs_names)
+        (split / "test.txt").write_text("\n".join(names[:30]))
+        (split / "train.txt").write_text("\n".join(names[30:]))
+    return layout
+
+
+def _splits_args(*argv: str):
+    from embed import embed_splits
+
+    old = sys.argv
+    sys.argv = ["embed_splits.py", "--model", "x", "--split", "s0", *argv]
+    try:
+        return embed_splits.parse_args()
+    finally:
+        sys.argv = old
+
+
+def check_selection() -> None:
+    """Which rows embed_splits and embed.py read; needs no model, so it always runs."""
+    print("\n-- row selection --")
+    from embed import embed_splits
+    from embed.embed import read_input
+
+    with tempfile.TemporaryDirectory() as tmp:
+        layout = _write_split_root(tmp)
+        args = _splits_args()
+        check("default parts: test only", args.parts == ["test"])
+        pieces = embed_splits.collect_rows(layout, args, "bulk")
+        check("test only -> one piece with every test row",
+              len(pieces) == 1 and pieces[0].n_obs == 30 and set(pieces[0].obs["_embed_part"]) == {"test"})
+        pieces = embed_splits.collect_rows(layout, _splits_args("--test-subset", "10"), "bulk")
+        all_test = set(_adata(120, seed=11).obs["tissue_general"].iloc[:30])
+        check("--test-subset: stratified subsample of the test rows",
+              pieces[0].n_obs == 10 and set(pieces[0].obs["tissue_general"]) == all_test
+              and set(pieces[0].obs_names) <= {f"bulk_{j}" for j in range(30)})
+        check("--max-test still works as an alias", _splits_args("--max-test", "7").test_subset == 7)
+        pieces = embed_splits.collect_rows(layout, _splits_args("--parts", "train_subset", "--train-subset", "0"), "sc")
+        check("train only, all rows with --train-subset 0",
+              len(pieces) == 1 and pieces[0].n_obs == 90 and set(pieces[0].obs["_embed_part"]) == {"train_subset"})
+        pieces = embed_splits.collect_rows(
+            layout, _splits_args("--parts", "test", "train_subset", "--train-subset", "20", "--test-subset", "5"), "sc")
+        check("both parts on request", sorted(p.n_obs for p in pieces) == [5, 20])
+        check("--train-stratify-by still accepted", _splits_args("--train-stratify-by", "a").stratify_by == ["a"])
+
+        raw = layout.raw_h5ad("sc")
+        check("embed.py reads every row by default", read_input(raw).n_obs == 120)
+        sub = read_input(raw, 12, ["tissue_general", "not_a_column"], seed=1)
+        check("embed.py --subsample: stratified, only those rows read",
+              sub.n_obs == 12 and sub.obs["tissue_general"].nunique() == 2)
+        check("embed.py --subsample is deterministic under a seed",
+              list(read_input(raw, 12, ["tissue_general"], seed=1).obs_names) == list(sub.obs_names))
+
+
 def check_splits() -> None:
     print("\n-- embed_splits.py --")
     if not _cancerfoundation_importable():
@@ -141,21 +206,10 @@ def check_splits() -> None:
     import anndata as ad
 
     with tempfile.TemporaryDirectory() as tmp:
-        layout = ExperimentLayout(Path(tmp))
-        for i, mod in enumerate(("sc", "bulk")):
-            a = _adata(120, seed=10 + i)
-            a.obs_names = [f"{mod}_{j}" for j in range(a.n_obs)]
-            a.obs = a.obs.drop(columns=["modality"])
-            raw = layout.raw_h5ad(mod)
-            raw.parent.mkdir(parents=True)
-            a.write_h5ad(raw)
-            split = layout.split_dir(mod, "s0")
-            split.mkdir(parents=True)
-            names = list(a.obs_names)
-            (split / "test.txt").write_text("\n".join(names[:30]))
-            (split / "train.txt").write_text("\n".join(names[30:]))
+        layout = _write_split_root(tmp)
         cmd = [sys.executable, str(PROJECT_ROOT / "embed/embed_splits.py"), "--root", tmp, "--embedder", "pca",
-               "--split", "s0", "--modalities", "sc", "bulk", "--train-subset", "50",
+               "--split", "s0", "--modalities", "sc", "bulk", "--parts", "test", "train_subset",
+               "--train-subset", "50",
                "--option", "n_pcs=4", "--option", "n_hvg=20"]
         out = subprocess.run(cmd, capture_output=True, text=True)
         if out.returncode:
@@ -176,6 +230,7 @@ def check_splits() -> None:
 def main() -> None:
     check_machinery()
     check_any()
+    check_selection()
     check_splits()
     finish()
 

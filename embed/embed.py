@@ -232,15 +232,44 @@ def parse_args() -> argparse.Namespace:
                         help="obs column with per-row modality; several values share one gene panel.")
     parser.add_argument("--modality", default=None, choices=["sc", "bulk", "pseudobulk"],
                         help="Modality of the whole file when it has no --modality-col column (default: sc).")
+    parser.add_argument("--subsample", type=int, default=None,
+                        help="Embed only this many rows, stratified by --stratify-by (default: all rows).")
+    parser.add_argument("--stratify-by", nargs="*", default=["tissue_general"],
+                        help="obs columns the --subsample is stratified on (missing ones are skipped).")
     add_normalization_args(parser)
     add_model_run_args(parser)
     return parser.parse_args()
 
 
+def read_input(path: Path, subsample: int | None = None, stratify_by: list[str] | None = None, seed: int = 0):
+    """An h5ad in memory, or a stratified subsample of its rows.
+
+    With ``subsample``, the file is opened backed and only the chosen rows are read, so a
+    large file never has to fit in memory. Strata not in obs are skipped with a note.
+    """
+    import anndata as ad
+
+    if subsample is None or subsample <= 0:
+        return ad.read_h5ad(path)
+    from utils.sampling import stratified_subsample
+
+    backed = ad.read_h5ad(path, backed="r")
+    try:
+        strata = [c for c in (stratify_by or []) if c in backed.obs.columns]
+        skipped = sorted(set(stratify_by or []) - set(strata))
+        if skipped:
+            print(f"  stratify columns not in obs, skipped: {skipped}")
+        n_total = backed.n_obs
+        names = stratified_subsample(backed.obs, subsample, strata, seed=seed)
+        adata = backed[backed.obs_names.isin(names)].to_memory()
+    finally:
+        backed.file.close()
+    print(f"  subsampled {adata.n_obs} of {n_total} rows" + (f" (stratified on {strata})" if strata else ""))
+    return adata
+
+
 def main() -> None:
     args = parse_args()
-    import scanpy as sc
-
     input_path = Path(args.input)
     checkpoint = Path(args.checkpoint)
     for path in (input_path, checkpoint):
@@ -248,7 +277,7 @@ def main() -> None:
             sys.exit(f"Error: not found: {path}")
 
     print(f"Loading data: {input_path}")
-    adata = sc.read_h5ad(str(input_path))
+    adata = read_input(input_path, args.subsample, args.stratify_by, args.seed)
     print(f"  {adata.n_obs} cells x {adata.n_vars} genes")
 
     model = load_model(checkpoint, args.cpu)
@@ -268,6 +297,9 @@ def main() -> None:
             "modality_col": args.modality_col,
             "shared_panel": args.shared_panel,
             "normalize": args.normalize,
+            "subsample": args.subsample if args.subsample and args.subsample > 0 else None,
+            "stratify_by": args.stratify_by if args.subsample and args.subsample > 0 else None,
+            "seed": args.seed,
         },
         obsm_key=args.obsm_key,
     )

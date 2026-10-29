@@ -161,10 +161,10 @@ plus `<dir>/embed.json` (one entry per file: method, checkpoint or options, `pan
 and `<dir>/panel_<hash>.txt`. Evaluation treats every model the same way because of this.
 ```bash
 # embed.py: one h5ad + a CancerFoundation checkpoint -> a directory
-python embed/embed.py --checkpoint model.ckpt --input data.h5ad --out-dir out/ [--normalize cpm_log1p]
+python embed/embed.py --checkpoint model.ckpt --input data.h5ad --out-dir out/ [--normalize cpm_log1p] \n    [--subsample 20000 --stratify-by tissue_general]
 # embed_splits.py: test split + stratified train subset of each modality -> embeddings/<model>/
-python embed/embed_splits.py --model NAME --split tissue_s0 --modalities sc bulk pseudobulk --train-subset 5000
-python embed/embed_splits.py --embedder pca --split tissue_s0          # any embed_any embedder
+python embed/embed_splits.py --model NAME --split tissue_s0 --modalities sc bulk pseudobulk \n    --parts test [train_subset] [--test-subset 20000] [--train-subset 5000] [--stratify-by tissue_general]
+python embed/embed_splits.py --embedder pca --split tissue_s0 --parts test train_subset   # any embed_any embedder
 # embed_any.py: one h5ad + any registered embedder -> a directory
 python embed/embed_any.py --list
 python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --option n_pcs=50
@@ -173,8 +173,14 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
   `write_embeddings`. `embed_adata` chunks large inputs. It fits the panel once on
   `--panel-sample` rows and passes it as `gene_subset` to every chunk.
 - `embed_splits.py` embeds every requested modality and part **in one call, through one
-  shared gene panel**, so alignment plots compare like with like. With `--embedder`, the
-  model is fitted on the train-subset rows only.
+  shared gene panel**, so alignment plots compare like with like. `--parts` picks `test`,
+  `train_subset` or both, and defaults to `test` only. `--test-subset` and
+  `--train-subset` take a stratified subsample on `--stratify-by` (0 or unset for the
+  test part = all rows). `--max-test` and `--train-stratify-by` are kept as aliases. With
+  `--embedder`, the model is fitted on the train-subset rows, so request `train_subset`
+  too; with `test` only it is fitted on the test rows, with a warning.
+- `embed.py --subsample N` embeds a stratified subsample (`--stratify-by`, `--seed`) of
+  the input. The file is opened backed and only those rows are read.
 - `embed_any.py` is the plug-in point for baselines and other foundation models:
   subclass `Embedder`, decorate it with `@register("<name>")`, and implement `embed`
   (plus `fit` if the model learns from data). `--option key=value` becomes a constructor

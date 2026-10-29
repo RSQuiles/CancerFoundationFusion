@@ -1,8 +1,10 @@
-"""Embed the test split and a stratified train subset of each modality for one model.
+"""Embed the test rows and/or a train subset of each modality's split for one model.
 
-For every requested modality, reads ``data/<modality>/<modality>.h5ad``, takes the
-test rows of ``--split`` and a stratified subset of its train rows, and writes them
-to ``embeddings/<model>/`` with the machinery in ``embed.py``::
+For every requested modality, reads ``data/<modality>/<modality>.h5ad``, takes the rows
+of the requested ``--parts`` of ``--split`` (``test``, ``train_subset`` or both; default
+``test`` only), optionally subsampled with stratification (``--test-subset``,
+``--train-subset``, ``--stratify-by``), and writes them to ``embeddings/<model>/`` with
+the machinery in ``embed.py``::
 
     embeddings/<model>/{sc,bulk,pseudobulk}_{test,train_subset}.h5ad   obs + obsm["X_emb"], no X
     embeddings/<model>/embed.json                                     provenance per file
@@ -15,12 +17,15 @@ CancerFoundation model (checkpoint from ``checkpoints/<model>/``, newest ``*.ckp
 unless ``--ckpt`` names one):
 
     python embed_splits.py --model unified_paired_tissue_s0 --split tissue_s0 \\
-        --modalities sc bulk pseudobulk --train-subset 5000 --train-stratify-by tissue_general
+        --modalities sc bulk pseudobulk --parts test --test-subset 20000 --stratify-by tissue_general
+    python embed_splits.py --model unified_paired_tissue_s0 --split tissue_s0 \\
+        --parts test train_subset --train-subset 5000
 
-Any embedder registered in ``embed_any.py`` (fitted on the train-subset rows only,
-written as ``embeddings/<name>/``, ``--name`` defaulting to the embedder's name):
+Any embedder registered in ``embed_any.py`` (written as ``embeddings/<name>/``, ``--name``
+defaulting to the embedder's name). It is fitted on the train-subset rows, so request
+``train_subset`` too; with ``test`` only it is fitted on the test rows, with a warning:
 
-    python embed_splits.py --embedder pca --split tissue_s0 --option n_pcs=50
+    python embed_splits.py --embedder pca --split tissue_s0 --parts test train_subset --option n_pcs=50
     python embed_splits.py --embedder bulkformer --name bulkformer_v1 --split tissue_s0 \\
         --modalities bulk --option repo=/path/to/bulkformer-latest --option gene_column=gene_id
 """
@@ -68,13 +73,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", required=True, help="Split name (data/<modality>/splits/<split>/).")
     parser.add_argument("--modalities", nargs="+", default=["sc", "bulk", "pseudobulk"],
                         help="Modalities to embed.")
-    parser.add_argument("--parts", nargs="+", default=list(EMBEDDING_PARTS), choices=list(EMBEDDING_PARTS),
-                        help="What to embed per modality.")
-    parser.add_argument("--train-subset", type=int, default=5000, help="Train rows per modality (stratified).")
-    parser.add_argument("--train-stratify-by", nargs="*", default=["tissue_general"],
-                        help="obs columns stratifying the subsets (missing ones are skipped).")
-    parser.add_argument("--max-test", type=int, default=None,
-                        help="Cap the test rows per modality (stratified like the train subset).")
+    parser.add_argument("--parts", nargs="+", default=["test"], choices=list(EMBEDDING_PARTS),
+                        help="What to embed per modality: test, train_subset, or both.")
+    parser.add_argument("--test-subset", "--max-test", dest="test_subset", type=int, default=None,
+                        help="Test rows per modality, stratified (default: all).")
+    parser.add_argument("--train-subset", type=int, default=5000,
+                        help="Train rows per modality, stratified (0 or less = all); used with --parts train_subset.")
+    parser.add_argument("--stratify-by", "--train-stratify-by", dest="stratify_by", nargs="*",
+                        default=["tissue_general"],
+                        help="obs columns stratifying both subsets (missing ones are skipped).")
     add_normalization_args(parser)
     add_model_run_args(parser)
     args = parser.parse_args()
@@ -97,6 +104,11 @@ def resolve_checkpoint(layout: ExperimentLayout, model: str, ckpt: str | None) -
     return path
 
 
+def _size(n: int | None) -> int | None:
+    """A subset size; None, 0 or less mean all rows."""
+    return n if n is not None and n > 0 else None
+
+
 def collect_rows(layout: ExperimentLayout, args, label: str):
     """The rows of one modality to embed, in memory, tagged with modality and part."""
     import anndata as ad
@@ -105,7 +117,8 @@ def collect_rows(layout: ExperimentLayout, args, label: str):
     if not raw.exists():
         sys.exit(f"Error: {raw} not found")
     lists = {}
-    for part in ("train", "test"):
+    split_parts = {"test": "test", "train_subset": "train"}
+    for part in sorted({split_parts[p] for p in args.parts}):
         path = layout.split_index_file(label, args.split, part)
         if not path.exists():
             sys.exit(f"Error: split '{args.split}' has no {path.name} for {label} ({path.parent})")
@@ -114,18 +127,19 @@ def collect_rows(layout: ExperimentLayout, args, label: str):
     backed = ad.read_h5ad(raw, backed="r")
     try:
         obs = backed.obs
-        strata = [c for c in args.train_stratify_by if c in obs.columns]
-        skipped = sorted(set(args.train_stratify_by) - set(strata))
+        strata = [c for c in args.stratify_by if c in obs.columns]
+        skipped = sorted(set(args.stratify_by) - set(strata))
         if skipped:
             print(f"  [{label}] stratify columns not in obs, skipped: {skipped}")
 
         selected = {}
         if "test" in args.parts:
             test_obs = obs[obs.index.isin(lists["test"])]
-            selected["test"] = stratified_subsample(test_obs, args.max_test, strata, seed=args.seed)
+            selected["test"] = stratified_subsample(test_obs, _size(args.test_subset), strata, seed=args.seed)
         if "train_subset" in args.parts:
             train_obs = obs[obs.index.isin(lists["train"])]
-            selected["train_subset"] = stratified_subsample(train_obs, args.train_subset, strata, seed=args.seed)
+            selected["train_subset"] = stratified_subsample(train_obs, _size(args.train_subset), strata,
+                                                            seed=args.seed)
 
         pieces = []
         for part, names in selected.items():
@@ -208,9 +222,10 @@ def main() -> None:
         "modalities_embedded_together": labels,
         "shared_panel": bool(args.shared_panel or len(labels) == 1),
         "seed": args.seed,
-        "train_subset": args.train_subset,
-        "train_stratify_by": args.train_stratify_by,
-        "max_test": args.max_test,
+        "parts": args.parts,
+        "test_subset": _size(args.test_subset),
+        "train_subset": _size(args.train_subset) if "train_subset" in args.parts else None,
+        "stratify_by": args.stratify_by,
     })
 
     out_dir = layout.embedding_dir(model_name)
