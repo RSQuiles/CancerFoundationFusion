@@ -94,6 +94,22 @@ def check_machinery() -> None:
         out = ad.read_h5ad(Path(tmp) / "a.h5ad")
         check("obs + obsm only", out.n_vars == 0 and out.obsm["X_emb"].shape == (30, 4))
 
+        skipped = emb[:30].copy()
+        skipped[[2, 5]] = np.nan
+        write_embeddings(Path(tmp), "c", adata.obs, skipped, genes)
+        entry = json.loads((Path(tmp) / EMBED_CARD).read_text())["files"]["c.h5ad"]
+        written = ad.read_h5ad(Path(tmp) / "c.h5ad")
+        check("all-NaN rows (skipped by the embedder) left out of the file",
+              written.n_obs == 28 and not {adata.obs_names[2], adata.obs_names[5]} & set(written.obs_names))
+        check("dropped rows recorded in embed.json",
+              entry["n_dropped"] == 2 and entry["dropped_rows"] == [adata.obs_names[2], adata.obs_names[5]])
+
+    from embed.embed_any import _count_like_rows
+
+    rows = np.array([[1, 2, 0], [0, 0, 0], [1, -1, 3], [1.5, 2, 1], [np.nan, 1, 1], [0, 0, 7]])
+    check("count-like rows: integral, non-negative, finite, positive total",
+          list(_count_like_rows(rows)) == [True, False, False, False, False, True])
+
 
 def check_any() -> None:
     print("\n-- embed_any.py --")

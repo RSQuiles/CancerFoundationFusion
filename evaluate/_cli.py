@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 # Script-specific blocks of a --config YAML; every other top-level key is shared.
-SECTIONS = ("umap", "alignment", "mask_plan", "reconstruction", "compare", "scib")
+SECTIONS = ("umap", "pca", "alignment", "mask_plan", "reconstruction", "compare", "scib")
 
 
 def parse_with_config(
@@ -18,7 +18,7 @@ def parse_with_config(
     """Parse ``argv``; a ``--config`` YAML supplies defaults, the command line wins.
 
     Top-level keys apply to every script reading the file; a block named after a
-    section (``umap:``, ``alignment:``, ``mask_plan:``, ``reconstruction:``, ``compare:``,
+    section (``umap:``, ``pca:``, ``alignment:``, ``mask_plan:``, ``reconstruction:``, ``compare:``,
     ``scib:``) applies only to that script and overrides the top level.
     Keys are the long option names with ``-`` or ``_`` (``stratify_by`` or
     ``stratify-by``). An unknown key is an error rather than silently ignored.

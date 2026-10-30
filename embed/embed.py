@@ -145,18 +145,31 @@ def write_embeddings(
     ``genes`` (the input panel, if the embedder has one) is saved once per distinct
     panel as ``panel_<hash>.txt``; the hash goes into the file's ``embed.json`` entry,
     which is what tells a reader whether two files saw the same inputs.
+
+    A row that is entirely NaN is one the embedder skipped (e.g. BulkFormer on a row
+    that is not raw counts): it is left out of the file with a warning, and the
+    ``embed.json`` entry records how many rows were dropped and which.
     """
     import anndata as ad
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{name}.h5ad"
-    ad.AnnData(obs=obs.copy(), obsm={obsm_key: np.asarray(emb, dtype=np.float32)}).write_h5ad(path)
+    emb = np.asarray(emb, dtype=np.float32)
+    skipped = np.isnan(emb).all(axis=1) if emb.ndim == 2 and emb.shape[1] else np.zeros(len(emb), dtype=bool)
+    dropped_names = [str(n) for n in obs.index[skipped]]
+    if skipped.any():
+        print(f"  [warn] {name}: {int(skipped.sum())} of {len(obs)} rows were not embedded and are left out, "
+              f"e.g. {dropped_names[:5]}")
+        obs, emb = obs.loc[~skipped], emb[~skipped]
+    ad.AnnData(obs=obs.copy(), obsm={obsm_key: emb}).write_h5ad(path)
 
     entry = {
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         **(provenance or {}),
         "n_rows": int(len(obs)),
+        "n_dropped": len(dropped_names),
+        "dropped_rows": dropped_names[:1000],  # first 1000; n_dropped is the full count
         "dim": int(np.asarray(emb).shape[1]),
         "obsm_key": obsm_key,
         "panel_hash": None,

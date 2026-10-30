@@ -195,6 +195,23 @@ def _looks_like_counts(X, max_rows: int = 512) -> bool:
     return bool(vals.size) and float(vals.max()) > 20 and bool(np.allclose(vals, np.round(vals)))
 
 
+def _count_like_rows(X) -> np.ndarray:
+    """Per row: can BulkFormer's ``normalize_data`` treat it as raw counts?
+
+    True when every value is finite, non-negative and integral, and the row has a
+    positive total (the TPM denominator). ``X`` holds the vocabulary-matched genes.
+    """
+    import scipy.sparse as sp
+
+    X = X.toarray() if sp.issparse(X) else np.asarray(X)
+    X = X.astype(np.float64, copy=False)
+    finite = np.isfinite(X).all(axis=1)
+    safe = np.where(np.isfinite(X), X, 0.0)
+    nonneg = (safe >= 0).all(axis=1)
+    integral = np.isclose(safe, np.round(safe)).all(axis=1)
+    return finite & nonneg & integral & (safe.sum(axis=1) > 0)
+
+
 @register("bulkformer")
 class BulkFormerEmbedder(Embedder):
     """bulkformer-latest: mean of the contextual vectors of the observed genes (768-d).
@@ -258,6 +275,7 @@ class BulkFormerEmbedder(Embedder):
         self.batch_size, self.chunk_rows = int(batch_size), int(chunk_rows)
         self.device, self.amp_dtype = device, amp_dtype
         self._api = self._model = self._vocab = self._manifest = None
+        self.dropped_rows: list[str] = []  # rows the last embed() skipped (not count-like)
 
     # -- loading ---------------------------------------------------------------
 
@@ -333,13 +351,20 @@ class BulkFormerEmbedder(Embedder):
         return positions, [ids[p] for p in positions]
 
     def _resolve_input(self, X) -> str:
+        """The input scale; ``auto`` means counts when most sampled rows look like counts.
+
+        Rows that do not look like counts are then dropped by ``embed``, so a few stray
+        normalized rows no longer stop the run; a matrix that is mostly not counts still
+        does, because then the scale is genuinely unknown.
+        """
         if self.input != "auto":
             return self.input
-        if _looks_like_counts(X):
+        ok = _count_like_rows(X)
+        if ok.mean() >= 0.5 and _looks_like_counts(X[np.flatnonzero(ok)]):
             return "counts"
         raise ValueError(
-            "bulkformer input=auto only recognizes raw counts, and these values are not counts. "
-            "Set input=tpm, log_tpm (natural ln(TPM+1)) or log2_tpm."
+            f"bulkformer input=auto only recognizes raw counts, and only {int(ok.sum())} of {len(ok)} "
+            "sampled rows look like counts. Set input=tpm, log_tpm (natural ln(TPM+1)) or log2_tpm."
         )
 
     def _to_log_tpm(self, frame, input_type: str):
@@ -366,25 +391,41 @@ class BulkFormerEmbedder(Embedder):
         print(f"  [bulkformer] input treated as {input_type}; embedding {adata.n_obs} samples "
               f"(batch {self.batch_size})")
 
+        # With count input, a row BulkFormer's normalize_data would reject (negative,
+        # non-integral, non-finite or all-zero over the vocabulary genes) is skipped and
+        # comes back as a NaN row; write_embeddings leaves NaN rows out of the file.
+        dim = int(self._model.config.dim)
+        dropped = np.zeros(adata.n_obs, dtype=bool)
         blocks = []
         for start in range(0, adata.n_obs, self.chunk_rows):
             stop = min(start + self.chunk_rows, adata.n_obs)
             X = adata.X[start:stop][:, positions]
             X = X.toarray() if sp.issparse(X) else np.asarray(X)
-            frame = pd.DataFrame(X.astype(np.float32), index=adata.obs_names[start:stop], columns=ensg)
-            log_tpm = self._to_log_tpm(frame, input_type)
-            # Full release gene axis in vocabulary order; absent genes and NaN become -10.
-            aligned, _, _ = self._api.main_gene_selection(X_df=log_tpm, gene_list=vocab_genes)
-            blocks.append(self._api.extract_feature(
-                model=self._model,
-                expr_array=aligned.to_numpy(),
-                output_feature_type="sample_level",
-                aggregate_type="mean",
-                batch_size=self.batch_size,
-                amp_dtype=self.amp_dtype,
-            ))
+            ok = _count_like_rows(X) if input_type == "counts" else np.ones(len(X), dtype=bool)
+            dropped[start:stop] = ~ok
+            out = np.full((len(X), dim), np.nan, dtype=np.float32)
+            if ok.any():
+                frame = pd.DataFrame(X[ok].astype(np.float32), index=adata.obs_names[start:stop][ok], columns=ensg)
+                log_tpm = self._to_log_tpm(frame, input_type)
+                # Full release gene axis in vocabulary order; absent genes and NaN become -10.
+                aligned, _, _ = self._api.main_gene_selection(X_df=log_tpm, gene_list=vocab_genes)
+                out[ok] = self._api.extract_feature(
+                    model=self._model,
+                    expr_array=aligned.to_numpy(),
+                    output_feature_type="sample_level",
+                    aggregate_type="mean",
+                    batch_size=self.batch_size,
+                    amp_dtype=self.amp_dtype,
+                )
+            blocks.append(out)
             if adata.n_obs > self.chunk_rows:
                 print(f"  [bulkformer] rows {start}-{stop} of {adata.n_obs}")
+        if dropped.any():
+            names = list(adata.obs_names[dropped][:5])
+            print(f"  [bulkformer] [WARNING] {int(dropped.sum())} of {adata.n_obs} rows do not look like raw "
+                  f"counts (negative, non-integral, non-finite or all-zero over the vocabulary genes) and "
+                  f"were not embedded, e.g. {names}")
+        self.dropped_rows = list(map(str, adata.obs_names[dropped]))
         return np.concatenate(blocks, axis=0)
 
     def provenance(self) -> dict[str, Any]:

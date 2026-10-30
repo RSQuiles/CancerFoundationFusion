@@ -194,8 +194,13 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
   only via `match_on=symbol`, with ambiguous ones dropped). Vocabulary genes the input
   lacks are fed as `-10` (missing), never as 0. Raw counts become ln(TPM+1) with the
   release gene lengths, summing over vocabulary-matched genes only. The embedding is the
-  mean of the observed genes' contextual vectors (768-d). `input=auto` accepts only
-  counts; otherwise set `input=tpm|log_tpm|log2_tpm`. Options: `repo` (or
+  mean of the observed genes' contextual vectors (768-d). `input=auto` means counts
+  when at least half of the sampled rows look like counts; otherwise it stops and asks
+  for `input=tpm|log_tpm|log2_tpm`. With count input, a row that is not count-like
+  (negative, non-integral, non-finite, or zero over the vocabulary genes) is skipped with
+  a warning instead of crashing: it comes back as an all-NaN row, and `write_embeddings`
+  leaves all-NaN rows out of the file and records them in `embed.json` (`n_dropped`,
+  `dropped_rows`). Options: `repo` (or
   `$BULKFORMER_REPO`), `model_dir`, `gene_column`, `batch_size` (8), `chunk_rows`,
   `device`, `amp_dtype`. It runs in **BulkFormer's own conda env** (torch_geometric,
   performer_pytorch) plus `anndata` and `pyyaml`. It never imports `cancerfoundation`,
@@ -230,10 +235,21 @@ python -m evaluate.representation.plot_umap --models m1 pca --modality sc \
     --filter tissue_general=lung --subsample 20000 --stratify-by tissue_general --color tissue_general
 python -m evaluate.representation.plot_alignment --models m1 --per-modality sc=5000 --connect-pairs
 python -m evaluate.representation.plot_umap --config evaluate/representation/configs/example_umap_config.yaml
+python -m evaluate.representation.plot_pca --models m1 pca --modality bulk --already-pca pca [--components 1 2]
 ```
 Filtering happens before subsampling. Each figure is saved with a `.parquet` of coordinates
 plus obs. `plot_alignment` fits ONE UMAP over all modalities and refuses files whose
 `panel_hash` differ (`--allow-mixed-panels` overrides).
+- **PCA** (`plot_pca.py`, `plot_pca.sh`, config block `pca:`): the same inputs, filter,
+  subsample, colours, titles and labels as `plot_umap`, but a PCA (centred, not scaled)
+  fitted on the plotted rows, drawing `--components` (default PC1 vs PC2) with the
+  explained variance on the axes. `--already-pca` says the embedding already holds PCs
+  (the `pca` model, an `X_pca`), so the chosen columns are plotted as stored: bare = every
+  input, with names = only those models (`already_pca: [pca]` in YAML). A precomputed
+  `X_pca` from `--input` shows its variance when `uns['pca']['variance_ratio']` exists.
+  Outputs `pca_<modality>_<part>[_<filter>][_pc<a>-<b>].{png,parquet,json}`, the parquet
+  with `pc<a>`/`pc<b>` columns and the json with the variance ratios. Title fields are
+  `plot_umap`'s plus `{pcs}`.
 - **Titles**: `--title` is a format string. `plot_umap` fields: `{model}`, `{modality}`,
   `{modality_name}`, `{part}`, `{filter}`. `plot_alignment` fields: `{model}`, `{part}`,
   `{modalities}`, `{counts}`, `{filter}`. An unknown field is an error, and without
@@ -244,7 +260,7 @@ plus obs. `plot_alignment` fits ONE UMAP over all modalities and refuses files w
 
 **Config files** (`evaluate/_cli.py`, shared by every evaluate script): top-level keys are
 shared, and a block named after the script's section applies to that script only
-(`umap`, `alignment`, `mask_plan`, `reconstruction`, `compare`, `scib`). Unknown keys are
+(`umap`, `pca`, `alignment`, `mask_plan`, `reconstruction`, `compare`, `scib`). Unknown keys are
 errors, so keep only options every reader has at the top level (usually `root`). Mappings
 (`labels`, `condition`) may be YAML dicts or `KEY=VALUE` lists.
 
@@ -681,8 +697,9 @@ evaluate/                     # NEW, works on the experiments root
 ├── representation/
 │   ├── render.py             # compute_umap, palettes, modality markers, panel drawing
 │   ├── plot_umap.py          # per-model UMAP of one modality
+│   ├── plot_pca.py           # per-model PCA of one modality (fitted, or --already-pca)
 │   ├── plot_alignment.py     # joint UMAP of the three modalities
-│   └── configs/example_umap_config.yaml, plot_umap.sh, plot_alignment.sh
+│   └── configs/example_umap_config.yaml, plot_umap.sh, plot_pca.sh, plot_alignment.sh
 ├── reconstruction/
 │   ├── mask_plan.py          # model-independent masked/context genes per sample
 │   ├── reconstructors.py     # Reconstructor registry: cancerfoundation (bins), bulkformer (ln TPM+1)
@@ -790,7 +807,7 @@ DATA/{tissue}/processed_data/train/
 - **Training**: `pretrain.py` — main training script
 - **Data Processing**: `data_preprocess/data_processing.ipynb` (interactive) or `scripts/h5ads_to_sc.py` (CLI batch)
 - **Embedding**: `embed/embed_splits.py` (splits into `embeddings/<model>/`), `embed/embed.py` (one h5ad, CancerFoundation), `embed/embed_any.py` (one h5ad, any registered model)
-- **Representation figures**: `evaluate/representation/plot_umap.py`, `plot_alignment.py`
+- **Representation figures**: `evaluate/representation/plot_umap.py`, `plot_pca.py`, `plot_alignment.py`
 - **Downstream Evaluation** (archived, not yet ported): `evaluate_old/finetune/run_downstream_task.py`
 - **Training named models**: `python -m experiments.launch` — locally or on SLURM; `experiments/rename_model.py` to rename one
 - **Splits**: `data_preprocess/split_train_test.py`, `data_preprocess/build_mix.py`

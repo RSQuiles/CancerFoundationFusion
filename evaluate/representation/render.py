@@ -99,9 +99,9 @@ def assign_colors(
     return rgba, palette, categories
 
 
-def _style_axes(ax, title: str) -> None:
-    ax.set_xlabel("UMAP 1", fontsize=9)
-    ax.set_ylabel("UMAP 2", fontsize=9)
+def _style_axes(ax, title: str, axis_labels: tuple[str, str] = ("UMAP 1", "UMAP 2")) -> None:
+    ax.set_xlabel(axis_labels[0], fontsize=9)
+    ax.set_ylabel(axis_labels[1], fontsize=9)
     ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
     ax.set_title(title, fontsize=10, fontweight="bold")
     for spine in ("top", "right"):
@@ -164,6 +164,7 @@ def draw_umap_panels(
     segments: list[np.ndarray] | None = None,
     highlight: dict[str, np.ndarray] | None = None,
     labels: dict[str, str] | None = None,
+    axis_labels: tuple[str, str] = ("UMAP 1", "UMAP 2"),
 ) -> plt.Figure:
     """One panel per colour key; marker shape encodes modality when ``modality_col`` is set.
 
@@ -173,6 +174,7 @@ def draw_umap_panels(
     outside it are drawn grey in that panel (e.g. unpaired rows on the pair panel).
     ``labels`` maps an obs column to the name shown in panel and legend titles
     (``{"tissue_general": "Tissue"}``); category values are drawn as they are.
+    ``axis_labels`` names the two axes (``plot_pca`` passes ``"PC1 (12.3%)"`` and so on).
     """
     labels = labels or {}
     modality_label = labels.get(modality_col or "modality", "Modality")
@@ -193,10 +195,10 @@ def draw_umap_panels(
             ax.add_collection(LineCollection(segments, colors="black", linewidths=0.3, alpha=0.25, zorder=0))
         if key is None:
             _scatter(ax, coords, modality)
-            _style_axes(ax, "embedding")
+            _style_axes(ax, "embedding", axis_labels)
         elif modality is not None and key == modality_col:
             _scatter(ax, coords, modality)
-            _style_axes(ax, modality_label)
+            _style_axes(ax, modality_label, axis_labels)
             ax.legend(handles=_modality_handles(modality, colored=True), title=modality_label,
                       fontsize=8, title_fontsize=8, loc="center left", bbox_to_anchor=(1.01, 0.5),
                       frameon=False)
@@ -209,7 +211,7 @@ def draw_umap_panels(
                 values, skip_unknown=skip_unknown or mask is not None
             )
             _scatter(ax, coords, modality, colors=colors)
-            _style_axes(ax, labels.get(key, key))
+            _style_axes(ax, labels.get(key, key), axis_labels)
             if palette is not None:
                 _category_legend(ax, palette, categories, labels.get(key, key))
             if modality is not None and len(np.unique(modality)) > 1:
@@ -235,11 +237,16 @@ def save_figure(fig: plt.Figure, path: Path, dpi: int = 200) -> None:
     print(f"  wrote {path}")
 
 
-def save_coords(obs: pd.DataFrame, coords: np.ndarray, path: Path) -> Path:
+def save_coords(
+    obs: pd.DataFrame,
+    coords: np.ndarray,
+    path: Path,
+    columns: tuple[str, str] = ("umap_1", "umap_2"),
+) -> Path:
     """Coordinates plus obs, so a figure can be restyled without refitting the UMAP."""
     table = obs.copy()
-    table["umap_1"] = coords[:, 0]
-    table["umap_2"] = coords[:, 1]
+    table[columns[0]] = coords[:, 0]
+    table[columns[1]] = coords[:, 1]
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         table.to_parquet(path)
