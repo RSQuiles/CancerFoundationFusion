@@ -13,6 +13,7 @@ Layout::
     │   ├── _launches/<launch>_<timestamp>.json   one summary per launcher invocation
     │   └── _renames.jsonl                        log written by rename_model.py
     ├── embeddings/<model>/{modality}_{part}.h5ad (+ embed.json)
+    │   └── geneicl_<suite>/<dataset>.npz          GeneICL-suite embeddings (+ embed.json)
     └── results/
         ├── representation/<model>/
         ├── representation/_alignment/<model>/
@@ -201,6 +202,12 @@ class ExperimentLayout:
 
     def embed_card(self, model: str) -> Path:
         return self.embedding_dir(model) / EMBED_CARD
+
+    def geneicl_embedding_dir(self, model: str, suite: str) -> Path:
+        """``embeddings/<model>/geneicl_<suite>/``: one ``<dataset>.npz`` per GeneICL dataset."""
+        if not _MODEL_NAME_RE.match(str(suite)):
+            raise ValueError(f"Invalid GeneICL suite name {suite!r}")
+        return self.embedding_dir(model) / f"geneicl_{suite}"
 
     # ---- results ----------------------------------------------------------
 

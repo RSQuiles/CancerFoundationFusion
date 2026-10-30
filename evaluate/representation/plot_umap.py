@@ -10,7 +10,7 @@ spent inside the selection. Writes, per model::
 
     python -m evaluate.representation.plot_umap --models m1 m2 pca --modality sc --part test \\
         --filter tissue_general=lung,breast --subsample 20000 --stratify-by tissue_general \\
-        --color tissue_general cancer_type assay --skip-unknown \
+        --color tissue_general cancer_type assay --skip-unknown \\
         --title "{model}: {modality_name} ({part})" --labels tissue_general=Tissue assay=Assay
 
 Any h5ad outside the layout works too (``--input file.h5ad --obsm-key X_pca``);

@@ -46,6 +46,9 @@ def check_paths() -> None:
     check("mix store", L.mix_dir("m") == ROOT / "data/pipeline_ready/m")
     check("checkpoint dir", L.checkpoint_dir("m1") == ROOT / "checkpoints/m1")
     check("embedding file", L.embedding_file("m1", "single_cell", "test") == ROOT / "embeddings/m1/sc_test.h5ad")
+    check("geneicl embedding dir inside the model's embeddings",
+          L.geneicl_embedding_dir("m1", "benchmark") == ROOT / "embeddings/m1/geneicl_benchmark")
+    check("bad geneicl suite rejected", raises(lambda: L.geneicl_embedding_dir("m1", "../x")))
     check("alignment dir", L.alignment_dir("m1") == ROOT / "results/representation/_alignment/m1")
     check("task dir", L.task_dir("canc", "m1") == ROOT / "results/tasks/canc/m1")
     check("unknown modality rejected", raises(lambda: canonical_modality("rna")))

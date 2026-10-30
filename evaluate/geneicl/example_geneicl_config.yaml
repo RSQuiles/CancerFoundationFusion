@@ -1,0 +1,26 @@
+# Defaults for the GeneICL benchmark scripts (--config). Keys are option names; the CLI
+# overrides them. Top-level keys are shared, so keep only options every script has
+# there (root, geneicl_repo, suite); each block applies to one script.
+# root: /cluster/work/boeva/rquiles/unifiedFM_experiments
+geneicl_repo: /cluster/work/boeva/rquiles/GeneICL
+suite: benchmark          # or non_benchmark (GeneICL's training-time monitor)
+
+geneicl_embed:            # python -m evaluate.geneicl.embed_suite (bionemo container, GPU)
+  modality: bulk
+  gene_ids: auto          # symbols or Ensembl IDs, whichever the model vocabulary knows better
+  batch_size: 64
+  # model: unified_v1                  # a CancerFoundation model, or:
+  # embedder: pca
+  # option: [n_pcs=50]
+  # datasets: [GSE107422, GSE116324]   # a subset; default: every dataset of the suite
+
+geneicl_probe:            # python -m evaluate.geneicl.run_probe (GeneICL eval env, CPU)
+  # geneicl_python: /path/to/envs/geneicl-benchmark/bin/python   # run_probe.sh passes its env's python
+  seed: 42                # GeneICL's reported runs use 42
+  # model: unified_v1
+  # resume: true
+
+geneicl_compare:          # python -m evaluate.geneicl.compare (anywhere)
+  reference: [scfoundation, bulkformer, en]   # GeneICL result tags, if their CSVs exist
+  # models: [unified_v1, pca]
+  # name: main

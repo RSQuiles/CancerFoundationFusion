@@ -43,6 +43,7 @@ data/pipeline_ready/<mix>/ (+ mix.json)                 multi-modality store for
 checkpoints/<model>/                                    *.ckpt, run.json, model_config.json, wandb/
 checkpoints/_launches/*.json, checkpoints/_renames.jsonl
 embeddings/<model>/{sc,bulk,pseudobulk}_{test,train_subset}.h5ad + embed.json
+embeddings/<model>/geneicl_<suite>/<dataset>.npz + embed.json   GeneICL benchmark inputs
 results/representation/<model>/, results/representation/_alignment/<model>/
 results/tasks/<task>/<model>/, results/assessment/<analysis>/ (+ manifest.json)
 ```
@@ -338,10 +339,59 @@ python -m evaluate.alignment.scib_benchmark --name tissue_s0_test --models m1 m2
   `scib_minmax.csv`, the results table figure, `label_batch.csv`, `meta.json` (keys,
   counts, panel hashes) and `manifest.json` with `"models"`.
 
+### GeneICL benchmark (`evaluate/geneicl/`)
+The frozen bulk benchmark of GeneICL (52 tasks: 27 classification + 25 regression over 32
+datasets, `<GeneICL>/eval/data/benchmark/`; `--suite non_benchmark` for its 6 monitor
+tasks) as a downstream task. A GeneICL checkout must be on the machine: `--geneicl-repo`,
+else `$GENEICL_REPO`, else `../GeneICL` next to this repo. It is only read, never edited.
+Its task files are named `<dataset>::<task>.npz`, which Windows cannot check out, so it
+runs on Linux. `git lfs pull` fetches the data.
+```bash
+# 1. embed every dataset (bionemo container, GPU) -> embeddings/<model>/geneicl_<suite>/<dataset>.npz
+python -m evaluate.geneicl.embed_suite --model unified_v1 [--datasets GSE107422 ...]
+python -m evaluate.geneicl.embed_suite --embedder pca          # any embed_any embedder
+# 2. GeneICL's probe (GeneICL eval env) -> results/tasks/geneicl_<suite>/<model>/probe_*
+python -m evaluate.geneicl.run_probe --model unified_v1 --geneicl-python <env>/bin/python [--resume]
+# 3. compare on the shared tasks -> results/assessment/geneicl_<suite>[_<name>]/
+python -m evaluate.geneicl.compare --models unified_v1 pca --reference scfoundation en --name main
+```
+- **Embedding.** GeneICL datasets are log1p-CPM over gene symbols and are embedded as
+  stored (`--normalize` off): binning is per-row quantiles, so a monotone transform
+  changes nothing, and panel selection normalizes for itself. The panel is fitted per
+  dataset on all of its rows, label-free, as GeneICL's own FM extractors do (`--modality
+  bulk` by default). `--gene-ids auto` renames symbols to Ensembl IDs
+  (`gene_mappings/symbol_to_ensembl.json`, first symbol per ID) when that overlaps the
+  model vocabulary more. `pca` defaults to `normalize=none` here. Each `.npz` holds `emb`
+  + `obs_names`, GeneICL's `emb_dir` format, and `embed.json` records the panel per
+  dataset. Existing files are skipped, a directory made by another checkpoint or embedder
+  is refused (`--overwrite`), and non-finite rows stop the run, because the probe's
+  imputer would hide them.
+- **Probe.** `run_probe.py` is torch-free. It runs `_probe_shim.py` with the GeneICL env's
+  python (`--geneicl-python`, `$GENEICL_PYTHON`). The shim imports GeneICL's
+  `benchmark.py`, adds the probe key to its hard-coded `EMB_MODELS` and calls its `main`
+  with `HYDRA_MAIN_MODULE=__main__` (otherwise Hydra looks for a config package). The CV
+  (5 folds, patient-grouped when a task has `group`, seed 42), the PCA-95% + untuned
+  elastic net / EN-logistic probe, the metrics and the files are GeneICL's own, so the
+  numbers line up with the FM rows of the GeneICL paper. The CSVs' `model` column is the
+  probe key (`cancerfoundation`, or `cf_<embedder>`), never the model name, so a rename
+  only moves directories. `--datasets` scores a subset through a filtered copy of the
+  index (`_suite_subset/`; the probe reads no `datasets/` in embedding mode). `run.json`
+  records the GeneICL commit, the key and the panel hashes.
+- **Compare.** It takes the tasks every row scored, averages folds and then tasks, and
+  reports AUROC / AUPRC / balanced accuracy / MCC / macro F1, Spearman / Pearson / R2, the
+  pooled out-of-fold R2 (the paper's regression number) and the mean per-task rank.
+  `--reference` adds GeneICL's own `<tag>_*.csv` from its `eval/benchmark/results/` as
+  `ref:<tag>` rows, listed in the manifest apart from `"models"`.
+- **Environments:** `embed_suite.sh` (container), `run_probe.sh` (conda env from
+  GeneICL's `eval/environment.yaml`, default name `geneicl-benchmark`); compare anywhere.
+  Config blocks: `geneicl_embed`, `geneicl_probe`, `geneicl_compare`
+  (`example_geneicl_config.yaml`).
+
 Offline self-checks: `python -m experiments.check.check_layout`, `check_sampling` and
 `check_rename`, `check_resume` (no torch or anndata), plus `python -m evaluate.check.check_representation`,
-`check_reconstruction` and `check_alignment` (need anndata/scanpy; the Benchmarker itself
-is skipped without scib_metrics).
+`check_reconstruction`, `check_alignment` and `check_geneicl` (need anndata/scanpy; the
+Benchmarker itself is skipped without scib_metrics; `check_geneicl` runs against a fake
+GeneICL checkout with a stub `benchmark.py`).
 
 ### `evaluate_old/` (archived)
 **Everything from here to "Survival" below describes `evaluate_old/`**, the evaluation code
@@ -710,7 +760,13 @@ evaluate/                     # NEW, works on the experiments root
 ├── alignment/
 │   ├── scib_benchmark.py     # scib_metrics Benchmarker over several models' embeddings
 │   └── example_scib_config.yaml, scib_benchmark.sh (bulkFM conda env)
-└── check/                    # check_representation, check_reconstruction, check_alignment
+├── geneicl/
+│   ├── suite.py              # GeneICL checkout, suites, datasets, symbol -> Ensembl mapping
+│   ├── embed_suite.py        # every suite dataset -> embeddings/<model>/geneicl_<suite>/*.npz
+│   ├── run_probe.py          # GeneICL's benchmark.py probe via _probe_shim.py (GeneICL env)
+│   ├── compare.py            # models (+ GeneICL reference rows) on shared tasks -> assessment/
+│   └── example_geneicl_config.yaml, embed_suite.sh, run_probe.sh
+└── check/                    # check_representation, check_reconstruction, check_alignment, check_geneicl
 
 evaluate_old/                 # ARCHIVED: the previous evaluate/ (does not run as is)
 ├── run_analysis.py           # Config-driven orchestrator: UMAPs + metrics + benchmark over N experiments
@@ -808,6 +864,7 @@ DATA/{tissue}/processed_data/train/
 - **Data Processing**: `data_preprocess/data_processing.ipynb` (interactive) or `scripts/h5ads_to_sc.py` (CLI batch)
 - **Embedding**: `embed/embed_splits.py` (splits into `embeddings/<model>/`), `embed/embed.py` (one h5ad, CancerFoundation), `embed/embed_any.py` (one h5ad, any registered model)
 - **Representation figures**: `evaluate/representation/plot_umap.py`, `plot_pca.py`, `plot_alignment.py`
+- **GeneICL benchmark**: `evaluate/geneicl/embed_suite.py`, `run_probe.py`, `compare.py`
 - **Downstream Evaluation** (archived, not yet ported): `evaluate_old/finetune/run_downstream_task.py`
 - **Training named models**: `python -m experiments.launch` — locally or on SLURM; `experiments/rename_model.py` to rename one
 - **Splits**: `data_preprocess/split_train_test.py`, `data_preprocess/build_mix.py`
