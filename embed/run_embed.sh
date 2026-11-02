@@ -40,7 +40,11 @@ MODEL="bulk_only"
 SPLIT="leiden_s0"
 
 SCRIPT_ARGS=(
-    --model "$MODEL"
+    # --model "$MODEL"
+    --embedder pca
+    # --embedder bulkformer
+    --option n_pcs=50
+    # --option repo=/cluster/work/boeva/rquiles/Codebases/Bulkformer-latest
     --split "$SPLIT"
     --modalities bulk
     --parts test

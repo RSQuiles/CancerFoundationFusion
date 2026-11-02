@@ -28,7 +28,7 @@ for arg in "$@"; do
 done
 
 PROJECT_ROOT="/cluster/work/boeva/rquiles/CancerFoundationFusion"
-CONFIG="$PROJECT_ROOT/evaluate/reconstruction/example_reconstruction_config.yaml"
+CONFIG="$PROJECT_ROOT/evaluate/reconstruction/bulk_only_reconstruction.yaml"
 
 SCRIPT_ARGS=(
     --config "$CONFIG"

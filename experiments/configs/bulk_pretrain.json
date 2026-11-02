@@ -9,14 +9,17 @@
       "num_workers": 4,
       "precision": "bf16-mixed",
       "strategy": "auto",
-      "epochs": 5,
+      "epochs": 100,
       "seed": 0,
       "val_check_interval": 0.5,
       "log_interval": 50,
       "wandb_entity": "rquiles",
       "wandb": "unifiedFM",
       "compile": true,
-      "ckpt_every_n_steps": 10000
+      "ckpt_every_n_steps": 10000,
+      "save_every": true,
+      "resume_from_checkpoint": "last",
+      "resume_mode": "continue"
     },
     "data": {
       "train_path": {"pipeline_ready": "bulk:leiden_s0"},

@@ -2,14 +2,14 @@
 # overrides them. Top-level keys are shared, so keep only options every script has
 # there (root, geneicl_repo, suite); each block applies to one script.
 # root: /cluster/work/boeva/rquiles/unifiedFM_experiments
-geneicl_repo: /cluster/work/boeva/rquiles/GeneICL
+geneicl_repo: /cluster/work/boeva/rquiles/Codebases/GeneICL
 suite: benchmark          # or non_benchmark (GeneICL's training-time monitor)
 
 geneicl_embed:            # python -m evaluate.geneicl.embed_suite (bionemo container, GPU)
   modality: bulk
   gene_ids: auto          # symbols or Ensembl IDs, whichever the model vocabulary knows better
   batch_size: 64
-  # model: unified_v1                  # a CancerFoundation model, or:
+  model: bulk_only                  # a CancerFoundation model, or:
   # embedder: pca
   # option: [n_pcs=50]
   # datasets: [GSE107422, GSE116324]   # a subset; default: every dataset of the suite

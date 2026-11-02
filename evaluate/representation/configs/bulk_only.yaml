@@ -2,17 +2,19 @@
 # names; any flag given on the command line overrides the value here. Top-level
 # keys apply to both scripts, the umap: / alignment: blocks to one of them.
 # root: /cluster/work/boeva/rquiles/unifiedFM_experiments
-models: [unified_paired_tissue_s0, unified_paired_dat_tissue_s0, pca]
+root: /cluster/work/boeva/rquiles/unifiedFM_experiments
+models: [bulk_only]
 part: test
 stratify_by: [tissue_general]
 skip_unknown: true
 
-umap:
-  modality: sc
-  subsample: 20000
-  color: [tissue_general, assay]
+labels:                          # readable names in panel and legend titles
+  tissue_general: Tissue
+  modality: Data type
+  paired: Pair
 
-alignment:
-  per_modality: ["sc=5000", "bulk=all", "pseudobulk=all"]
-  color: [modality, tissue_general, paired]
-  connect_pairs: true
+umap:
+  modality: bulk
+  subsample: 20000
+  color: [tissue_general]
+  title: "Bulk Pretraining: Test Set"

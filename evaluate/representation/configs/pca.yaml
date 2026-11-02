@@ -2,18 +2,20 @@
 # names; any flag given on the command line overrides the value here. Top-level
 # keys apply to both scripts, the umap: / alignment: blocks to one of them.
 # root: /cluster/work/boeva/rquiles/unifiedFM_experiments
-models: [unified_paired_tissue_s0, unified_paired_dat_tissue_s0, pca]
+models: [pca]
 part: test
-filter: ["tissue_general=lung,breast"]
 stratify_by: [tissue_general]
 skip_unknown: true
+# Names shown in panel and legend titles instead of the raw obs columns.
+labels:
+  tissue_general: Tissue
+  assay: Assay
+  modality: Modality
+  paired: Pair
 
 umap:
-  modality: sc
+  modality: bulk
   subsample: 20000
   color: [tissue_general, assay]
-
-alignment:
-  per_modality: ["sc=5000", "bulk=all", "pseudobulk=all"]
-  color: [modality, tissue_general, paired]
-  connect_pairs: true
+  # Fields: {model} {modality} {modality_name} {part} {filter}
+  title: "PCA: Bulk Test Set"
