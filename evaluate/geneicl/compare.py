@@ -134,6 +134,50 @@ def summarize(table: pd.DataFrame, labels: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def available_models(layout, suite: str) -> list[str]:
+    """Models with ``run_probe`` results on ``suite`` (a ``probe_*.csv`` in their task directory)."""
+    from experiments.layout import validate_model_name
+
+    root = layout.tasks_root / task_name(suite)
+    if not root.is_dir():
+        return []
+    out = []
+    for d in sorted(root.iterdir()):
+        if not d.is_dir() or d.name.startswith(("_", ".")):
+            continue
+        try:
+            validate_model_name(d.name)
+        except ValueError:
+            continue
+        if any((d / f"{OUT_STEM}_{tt}.csv").exists() for tt in TASK_TYPES):
+            out.append(d.name)
+    return out
+
+
+def load_runs(layout, suite: str, models: list[str], reference: list[str] = (),
+              geneicl_repo: Path | None = None, geneicl_results: Path | None = None,
+              ) -> tuple[dict[str, dict], list[str]]:
+    """``{row label: run}`` for ``models`` then the found ``reference`` tags (``ref:<tag>``)."""
+    runs: dict[str, dict] = {}
+    for model in models:
+        prefix = layout.task_dir(task_name(suite), model) / OUT_STEM
+        run = read_run(prefix)
+        if all(run[tt] is None for tt in TASK_TYPES):
+            sys.exit(f"Error: no {prefix}_*.csv; run evaluate.geneicl.run_probe for '{model}' first")
+        runs[model] = run
+    references = []
+    if reference:
+        results = geneicl_results or S.resolve_geneicl(geneicl_repo) / "eval" / "benchmark" / "results"
+        for tag in reference:
+            run = read_run(results / tag)
+            if all(run[tt] is None for tt in TASK_TYPES):
+                print(f"  [warn] no GeneICL results for '{tag}' in {results}; skipped")
+                continue
+            runs[REFERENCE_PREFIX + tag] = run
+            references.append(tag)
+    return runs, references
+
+
 def main(argv: list[str] | None = None) -> pd.DataFrame:
     from experiments.layout import ExperimentLayout
 
@@ -142,23 +186,8 @@ def main(argv: list[str] | None = None) -> pd.DataFrame:
         sys.exit("Error: give --models and/or --reference")
     layout = ExperimentLayout.from_root(args.root)
 
-    runs: dict[str, dict] = {}
-    for model in args.models:
-        prefix = layout.task_dir(task_name(args.suite), model) / OUT_STEM
-        run = read_run(prefix)
-        if all(run[tt] is None for tt in TASK_TYPES):
-            sys.exit(f"Error: no {prefix}_*.csv; run evaluate.geneicl.run_probe for '{model}' first")
-        runs[model] = run
-    references = []
-    if args.reference:
-        results = args.geneicl_results or S.resolve_geneicl(args.geneicl_repo) / "eval" / "benchmark" / "results"
-        for tag in args.reference:
-            run = read_run(results / tag)
-            if all(run[tt] is None for tt in TASK_TYPES):
-                print(f"  [warn] no GeneICL results for '{tag}' in {results}; skipped")
-                continue
-            runs[REFERENCE_PREFIX + tag] = run
-            references.append(tag)
+    runs, references = load_runs(layout, args.suite, args.models, args.reference,
+                                 args.geneicl_repo, args.geneicl_results)
     if not runs:
         sys.exit("Error: nothing to compare")
 

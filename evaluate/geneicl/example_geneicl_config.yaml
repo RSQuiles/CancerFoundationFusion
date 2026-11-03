@@ -24,3 +24,9 @@ geneicl_compare:          # python -m evaluate.geneicl.compare (anywhere)
   reference: [scfoundation, bulkformer, en]   # GeneICL result tags, if their CSVs exist
   # models: [unified_v1, pca]
   # name: main
+
+geneicl_plot:             # python -m evaluate.geneicl.plot_benchmark (anywhere, matplotlib)
+  # models: [unified_v1, pca]            # default: every model with results -> benchmarks/all_models/
+  # plots: [summary_table, heatmap_auroc, heatmap_spearman]   # default: all; "heatmaps" = every heatmap
+  # reference: [scfoundation, en]        # GeneICL's own rows, as in geneicl_compare
+  formats: [png, pdf]

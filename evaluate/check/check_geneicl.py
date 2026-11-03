@@ -4,8 +4,9 @@ The fake checkout has two datasets, three tasks and a stub ``benchmark.py`` that
 like the real one, accepts only models in its ``EMB_MODELS`` set and writes
 ``<out>_<task_type>.csv`` plus the regression OOF companion. Covers checkout
 discovery, gene mapping, ``embed_suite`` (format, resume, refusals), ``run_probe``
-(override quoting, the shim, dataset subsets, ``run.json``) and ``compare`` (task
-intersection, pooled out-of-fold R2, references, manifest).
+(override quoting, the shim, dataset subsets, ``run.json``), ``compare`` (task
+intersection, pooled out-of-fold R2, references, manifest) and ``plot_benchmark``
+(model discovery, selection directory, plot selection, figures, manifest).
 
     python -m evaluate.check.check_geneicl
 """
@@ -25,7 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from embed.embed_any import EMBEDDERS, Embedder, register  # noqa: E402
-from evaluate.geneicl import compare, embed_suite, run_probe  # noqa: E402
+from evaluate.geneicl import compare, embed_suite, plot_benchmark, run_probe  # noqa: E402
 from evaluate.geneicl import suite as S  # noqa: E402
 from experiments.check._harness import check, finish, raises  # noqa: E402
 from experiments.layout import ExperimentLayout  # noqa: E402
@@ -263,6 +264,53 @@ def check_compare(tmp: Path, repo: Path, suite: Path, layout: ExperimentLayout) 
                                                                  "--models", "nobody"]), SystemExit))
 
 
+def check_plot(tmp: Path, layout: ExperimentLayout) -> None:
+    print("\n-- plot_benchmark --")
+    import shutil
+
+    src = layout.task_dir(run_probe.task_name("benchmark"), "fake")
+    dst = layout.task_dir(run_probe.task_name("benchmark"), "fake2")
+    shutil.copytree(src, dst)
+    csv = dst / f"{run_probe.OUT_STEM}_classification.csv"
+    df = pd.read_csv(csv)
+    df["auroc"] = 0.95
+    df.to_csv(csv, index=False)
+    (layout.tasks_root / run_probe.task_name("benchmark") / "_scratch").mkdir()
+    check("available models: those with probe CSVs",
+          compare.available_models(layout, "benchmark") == ["fake", "fake2"])
+
+    root = ["--root", str(tmp / "root"), "--formats", "png"]
+    out = plot_benchmark.main(root)
+    check("all models -> all_models", out == layout.benchmark_plot_dir("all_models", "geneicl_benchmark"))
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    check("manifest lists the models", manifest["models"] == ["fake", "fake2"])
+    drawn = set(manifest["plots"])
+    check("summary table and the AUROC heatmap drawn",
+          {"summary_table", "heatmap_auroc", "heatmap_spearman"} <= drawn
+          and (out / "summary_table.png").exists() and (out / "heatmap_auroc.png").exists())
+    check("every plot either drawn or skipped with a reason",
+          drawn | set(manifest["skipped"]) == set(plot_benchmark.PLOTS))
+    check("plotted numbers saved", (out / "summary.csv").exists() and (out / "per_task.csv").exists())
+    check("every model named explicitly is still all_models",
+          plot_benchmark.main(root + ["--models", "fake2", "fake", "--plots", "summary_table"]) == out)
+
+    sub = plot_benchmark.main(root + ["--models", "fake2", "--plots", "heatmaps"])
+    check("subset -> models joined", sub == layout.benchmark_plot_dir("fake2", "geneicl_benchmark"))
+    check("plot group expanded, summary left out",
+          (sub / "heatmap_auroc.png").exists() and not (sub / "summary_table.png").exists())
+    check("selection name joins in the given order",
+          plot_benchmark.select_models(["b", "a"], ["a", "b", "c"]) == (["b", "a"], "b_a"))
+    check("best mask keeps ties and ignores NaN", plot_benchmark._is_best(
+        np.array([0.5, np.nan, 0.5, 0.2]), "max").tolist() == [True, False, True, False])
+    check("best of a rank is the lowest",
+          plot_benchmark._is_best(np.array([2.0, 1.5]), "min").tolist() == [False, True])
+    check("unknown plot refused", raises(lambda: plot_benchmark.main(root + ["--plots", "violin"]), SystemExit))
+    check("model without results refused",
+          raises(lambda: plot_benchmark.main(root + ["--models", "nobody"]), SystemExit))
+    check("plot manifest is a rename reference file",
+          out / "manifest.json" in layout.model_reference_files())
+
+
 def main() -> None:
     try:
         with tempfile.TemporaryDirectory() as d:
@@ -274,6 +322,7 @@ def main() -> None:
             check_embed(tmp, repo, suite, layout)
             check_probe(tmp, repo, layout)
             check_compare(tmp, repo, suite, layout)
+            check_plot(tmp, layout)
     finally:
         EMBEDDERS.pop("_geneicl_fake", None)
     finish()

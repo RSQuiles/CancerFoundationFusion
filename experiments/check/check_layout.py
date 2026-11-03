@@ -49,6 +49,9 @@ def check_paths() -> None:
     check("geneicl embedding dir inside the model's embeddings",
           L.geneicl_embedding_dir("m1", "benchmark") == ROOT / "embeddings/m1/geneicl_benchmark")
     check("bad geneicl suite rejected", raises(lambda: L.geneicl_embedding_dir("m1", "../x")))
+    check("benchmark plot dir", L.benchmark_plot_dir("all_models", "geneicl_benchmark")
+          == ROOT / "benchmarks/all_models/geneicl_benchmark")
+    check("bad benchmark selection rejected", raises(lambda: L.benchmark_plot_dir("../x", "geneicl_benchmark")))
     check("alignment dir", L.alignment_dir("m1") == ROOT / "results/representation/_alignment/m1")
     check("task dir", L.task_dir("canc", "m1") == ROOT / "results/tasks/canc/m1")
     check("unknown modality rejected", raises(lambda: canonical_modality("rna")))

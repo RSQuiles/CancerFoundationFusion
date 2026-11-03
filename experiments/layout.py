@@ -19,6 +19,7 @@ Layout::
         ├── representation/_alignment/<model>/
         ├── tasks/<task>/<model>/
         └── assessment/<analysis>/                (+ manifest.json listing its models)
+    └── benchmarks/{all_models,<m1>_<m2>_...}/<benchmark>/   figures (+ manifest.json)
 
 Rules every writer follows, so ``rename_model.py`` never has to guess:
 per-model output lives under a directory named after the model (never in a
@@ -239,6 +240,20 @@ class ExperimentLayout:
     def assessment_dir(self, name: str) -> Path:
         return self.assessment_root / name
 
+    # ---- benchmark figures ------------------------------------------------
+
+    @property
+    def benchmarks_root(self) -> Path:
+        return self.root / "benchmarks"
+
+    def benchmark_plot_dir(self, selection: str, benchmark: str) -> Path:
+        """``benchmarks/<selection>/<benchmark>/``: ``selection`` is ``all_models`` or the
+        plotted models joined by ``_``; the manifest there lists them under ``"models"``."""
+        for part in (selection, benchmark):
+            if not _MODEL_NAME_RE.match(str(part)):
+                raise ValueError(f"Invalid benchmark directory name {part!r}")
+        return self.benchmarks_root / selection / benchmark
+
     # ---- everything that belongs to / mentions one model -------------------
 
     def model_owned_dirs(self, model: str) -> list[Path]:
@@ -267,4 +282,6 @@ class ExperimentLayout:
             files.extend(sorted(self.launches_dir.glob("*.json")))
         if self.assessment_root.is_dir():
             files.extend(sorted(self.assessment_root.glob(f"*/{ASSESSMENT_MANIFEST}")))
+        if self.benchmarks_root.is_dir():
+            files.extend(sorted(self.benchmarks_root.glob(f"*/*/{ASSESSMENT_MANIFEST}")))
         return files
