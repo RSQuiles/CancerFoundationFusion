@@ -10,7 +10,7 @@ skip_unknown: true
 
 labels:                          # readable names in panel and legend titles
   tissue_general: Tissue
-  modality: Data type
+  modality: Modality
   paired: Pair
 
 umap:

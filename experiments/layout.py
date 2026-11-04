@@ -244,7 +244,7 @@ class ExperimentLayout:
 
     @property
     def benchmarks_root(self) -> Path:
-        return self.root / "benchmarks"
+        return self.root / "results" / "benchmarks"
 
     def benchmark_plot_dir(self, selection: str, benchmark: str) -> Path:
         """``benchmarks/<selection>/<benchmark>/``: ``selection`` is ``all_models`` or the

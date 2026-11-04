@@ -150,7 +150,7 @@ class PCAEmbedder(Embedder):
 # --------------------------------------------------------------------------- #
 
 BULKFORMER_REPO_ENV = "BULKFORMER_REPO"
-BULKFORMER_INPUTS = ("auto", "counts", "tpm", "log_tpm", "log2_tpm")
+BULKFORMER_INPUTS = ("auto", "counts", "cpm", "log1p_cpm", "tpm", "log_tpm", "log2_tpm")
 
 
 def _load_bulkformer_api(repo: Path):
@@ -233,7 +233,7 @@ class BulkFormerEmbedder(Embedder):
       ``repo``        bulkformer-latest checkout (default: ``$BULKFORMER_REPO``).
       ``model_dir``   the six release files (default: ``<repo>/model/bulkformer-latest``).
       ``input``       ``auto`` (default: raw counts if they look like counts, otherwise an
-                      error asking for the scale), ``counts``, ``tpm``, ``log_tpm``
+                      error asking for the scale), ``counts``, ``cpm``, ``log1p_cpm``, ``tpm``, ``log_tpm``
                       (natural ln(TPM+1)) or ``log2_tpm``.
       ``gene_column`` var column holding the gene IDs (default: ``var_names``).
       ``match_on``    ``auto`` (Ensembl when most IDs start with ENSG), ``ensembl`` or
@@ -369,8 +369,10 @@ class BulkFormerEmbedder(Embedder):
 
     def _to_log_tpm(self, frame, input_type: str):
         """Natural ln(TPM + 1), as BulkFormer's usage guide prescribes per input scale."""
-        if input_type == "counts":
+        if input_type in {"counts", "cpm"}:
             return self._api.normalize_data(X_df=frame, gene_vocab=self._vocab)
+        if input_type == "log1p_cpm":
+            return self._api.normalize_data(X_df=np.expm1(frame), gene_vocab=self._vocab)
         if input_type == "tpm":
             return np.log1p(frame)
         if input_type == "log2_tpm":
