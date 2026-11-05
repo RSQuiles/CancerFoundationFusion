@@ -41,6 +41,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from evaluate._cli import parse_with_config  # noqa: E402
+from evaluate._plot_style import (  # noqa: E402
+    INK, INK_2, MISSING, MUTED, SEQ_RAMP, SURFACE, Col, draw_metric_table, is_best, pyplot, save,
+)
 from evaluate.geneicl import compare as C  # noqa: E402
 from evaluate.geneicl import suite as S  # noqa: E402
 from evaluate.geneicl.run_probe import task_name  # noqa: E402
@@ -64,33 +67,22 @@ SUMMARY_PLOT = "summary_table"
 PLOTS = [*HEATMAP_PLOTS, SUMMARY_PLOT]
 PLOT_GROUPS = {"heatmaps": HEATMAP_PLOTS, "all": PLOTS}
 
-# Summary-table columns: (summary column, header, task type, best = "max" | "min" | None).
+# Summary-table columns, grouped by task type; rank columns are lower-is-better.
 SUMMARY_COLUMNS = [
-    ("n_classification_tasks", "Tasks", "classification", None),
-    ("cla_auroc", "AUROC", "classification", "max"),
-    ("cla_auprc", "AUPRC", "classification", "max"),
-    ("cla_balanced_accuracy", "Bal. acc.", "classification", "max"),
-    ("cla_mcc", "MCC", "classification", "max"),
-    ("cla_f1_macro", "Macro F1", "classification", "max"),
-    ("cla_rank_auroc", "Rank AUROC", "classification", "min"),
-    ("n_regression_tasks", "Tasks", "regression", None),
-    ("reg_spearman", "Spearman", "regression", "max"),
-    ("reg_pearson", "Pearson", "regression", "max"),
-    ("reg_r2", "R²", "regression", "max"),
-    ("reg_r2_pooled_oof", "R² pooled", "regression", "max"),
-    ("reg_rank_spearman", "Rank Spearman", "regression", "min"),
+    Col("n_classification_tasks", "Tasks", "classification", None),
+    Col("cla_auroc", "AUROC", "classification"),
+    Col("cla_auprc", "AUPRC", "classification"),
+    Col("cla_balanced_accuracy", "Bal. acc.", "classification"),
+    Col("cla_mcc", "MCC", "classification"),
+    Col("cla_f1_macro", "Macro F1", "classification"),
+    Col("cla_rank_auroc", "Rank AUROC", "classification", "min", "{:.2f}"),
+    Col("n_regression_tasks", "Tasks", "regression", None),
+    Col("reg_spearman", "Spearman", "regression"),
+    Col("reg_pearson", "Pearson", "regression"),
+    Col("reg_r2", "R²", "regression"),
+    Col("reg_r2_pooled_oof", "R² pooled", "regression"),
+    Col("reg_rank_spearman", "Rank Spearman", "regression", "min", "{:.2f}"),
 ]
-
-# Reference palette (dataviz skill): one-hue blue ramp for magnitude, recessive ink.
-SEQ_RAMP = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
-SURFACE = "#fcfcfb"
-INK = "#0b0b0b"
-INK_2 = "#52514e"
-MUTED = "#898781"
-HAIRLINE = "#e1e0d9"
-MISSING = "#f0efec"
-BEST_FILL = "#cde2fb"
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Figures comparing models on a GeneICL task suite.")
@@ -143,45 +135,8 @@ def select_plots(requested: list[str]) -> list[str]:
 
 # ---- drawing ----------------------------------------------------------------
 
-def _pyplot():
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    plt.rcParams.update({
-        "font.size": 9, "axes.edgecolor": HAIRLINE, "axes.labelcolor": INK_2,
-        "xtick.color": INK_2, "ytick.color": INK_2, "text.color": INK,
-        "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE,
-        "pdf.fonttype": 42, "svg.fonttype": "none",
-    })
-    return plt
-
-
-def _save(fig, stem: Path, formats: list[str], dpi: int) -> list[str]:
-    import matplotlib.pyplot as plt
-
-    written = []
-    for fmt in formats:
-        path = stem.with_suffix(f".{fmt}")
-        fig.savefig(path, dpi=dpi, bbox_inches="tight")
-        written.append(path.name)
-        print(f"  wrote {path}")
-    plt.close(fig)
-    return written
-
-
 def _label(row: str) -> str:
     return row[len(C.REFERENCE_PREFIX):] + " (GeneICL)" if row.startswith(C.REFERENCE_PREFIX) else row
-
-
-def _is_best(values: np.ndarray, best: str) -> np.ndarray:
-    """Mask of the best finite value(s), ties included."""
-    finite = np.isfinite(values)
-    if not finite.any():
-        return np.zeros_like(values, dtype=bool)
-    target = np.nanmax(values) if best == "max" else np.nanmin(values)
-    return finite & np.isclose(values, target, rtol=0, atol=1e-12)
 
 
 def heatmap_matrix(table: pd.DataFrame, metric: str, rows: list[str]) -> pd.DataFrame:
@@ -200,7 +155,7 @@ def plot_heatmap(mat: pd.DataFrame, metric: str, suite: str):
     from matplotlib.colors import LinearSegmentedColormap
     from matplotlib.patches import Rectangle
 
-    plt = _pyplot()
+    plt = pyplot()
     tt, display = HEATMAP_METRICS[metric]
     values = mat.to_numpy(float)
     means = np.nanmean(np.where(np.isfinite(values), values, np.nan), axis=0) \
@@ -224,7 +179,7 @@ def plot_heatmap(mat: pd.DataFrame, metric: str, suite: str):
     rows_y = list(range(n_tasks)) + [n_tasks + gap]
     all_values = np.vstack([values, means[None, :]])
     for i, y in enumerate(rows_y):
-        best = _is_best(all_values[i], "max")
+        best = is_best(all_values[i], "max")
         for j in range(n_cols):
             v = all_values[i, j]
             if np.isfinite(v):
@@ -263,78 +218,14 @@ def plot_heatmap(mat: pd.DataFrame, metric: str, suite: str):
 
 
 def plot_summary_table(summary: pd.DataFrame, suite: str):
-    from matplotlib.patches import Rectangle
-
-    plt = _pyplot()
-    cols = [c for c in SUMMARY_COLUMNS if c[0] in summary.columns and summary[c[0]].notna().any()]
-    present_types = [tt for tt in C.TASK_TYPES
-                     if f"n_{tt}_tasks" in summary.columns and (summary[f"n_{tt}_tasks"] > 0).any()]
-    cols = [c for c in cols if c[2] in present_types]
-    labels = [_label(r) for r in summary["row"]]
-
-    row_h, col_w = 0.34, 0.95
-    name_w = max(1.4, 0.075 * max(len(x) for x in labels) + 0.3)
-    # each column fits its bold header plus the direction arrow
-    widths = [name_w] + [0.6 if c[3] is None else max(col_w, 0.085 * (len(c[1]) + 2) + 0.2) for c in cols]
-    xs = np.concatenate([[0.0], np.cumsum(widths)])
-    total_w = xs[-1]
-    n = len(summary)
-    header_rows = 2
-    total_h = row_h * (n + header_rows) + 0.15
-
-    fig = plt.figure(figsize=(total_w + 0.2, total_h + 0.75))
-    ax = fig.add_axes([0.02, 0.12, 0.96, 0.78])
-    ax.set_xlim(0, total_w)
-    ax.set_ylim(total_h, 0)
-    ax.axis("off")
-
-    # group header (task type) over its columns, with a hairline under it
-    for tt in present_types:
-        idx = [i for i, c in enumerate(cols) if c[2] == tt]
-        x0, x1 = xs[1 + idx[0]], xs[1 + idx[-1] + 1]
-        ax.text((x0 + x1) / 2, row_h * 0.5, tt.capitalize(), ha="center", va="center",
-                fontsize=9, fontweight="bold", color=INK)
-        ax.plot([x0 + 0.08, x1 - 0.08], [row_h * 0.95] * 2, color=MUTED, linewidth=0.8)
-    # column headers
-    ax.text(0.08, row_h * 1.5, "Model", ha="left", va="center", fontsize=8.5, color=INK_2, fontweight="bold")
-    for i, (_, header, _, best) in enumerate(cols):
-        arrow = " ↓" if best == "min" else (" ↑" if best == "max" else "")
-        ax.text((xs[1 + i] + xs[2 + i]) / 2, row_h * 1.5, header + arrow, ha="center", va="center",
-                fontsize=8, color=INK_2, fontweight="bold")
-    ax.plot([0, total_w], [row_h * 2] * 2, color=MUTED, linewidth=1.0)
-
-    best_masks = {c[0]: _is_best(summary[c[0]].to_numpy(float), c[3]) for c in cols if c[3]}
-    for r in range(n):
-        y = row_h * (header_rows + r)
-        ax.text(0.08, y + row_h / 2, labels[r], ha="left", va="center", fontsize=8.5, color=INK)
-        for i, (col, _, _, best) in enumerate(cols):
-            v = summary[col].iloc[r]
-            x0, x1 = xs[1 + i], xs[2 + i]
-            is_best = bool(best and best_masks[col][r])
-            if is_best:
-                ax.add_patch(Rectangle((x0 + 0.03, y + 0.03), x1 - x0 - 0.06, row_h - 0.06,
-                                       facecolor=BEST_FILL, edgecolor="none"))
-            if pd.isna(v):
-                text, color = "n/a", MUTED
-            elif best is None:
-                text, color = f"{int(v)}", INK_2
-            elif col.startswith(("cla_rank", "reg_rank")):
-                text, color = f"{v:.2f}", INK
-            else:
-                text, color = f"{v:.3f}", INK
-            ax.text((x0 + x1) / 2, y + row_h / 2, text, ha="center", va="center", fontsize=8,
-                    color=color, fontweight="bold" if is_best else "normal", family="DejaVu Sans Mono")
-        ax.plot([0, total_w], [y + row_h] * 2, color=HAIRLINE, linewidth=0.6)
-    # separator between the two task types
-    for tt in present_types[1:]:
-        i0 = next(i for i, c in enumerate(cols) if c[2] == tt)
-        ax.plot([xs[1 + i0]] * 2, [row_h * 0.2, total_h - 0.15], color=HAIRLINE, linewidth=0.8)
-
-    fig.suptitle(f"GeneICL {suite}: mean over the tasks every row scored", x=0.02, ha="left",
-                 fontsize=10, color=INK)
-    fig.text(0.02, 0.04, "Shaded, bold: best per column (↑ higher is better, ↓ lower). "
-             "Rank: mean per-task rank, 1 = best.", fontsize=7, color=MUTED, ha="left")
-    return fig
+    present = [tt for tt in C.TASK_TYPES
+               if f"n_{tt}_tasks" in summary.columns and (summary[f"n_{tt}_tasks"] > 0).any()]
+    cols = [Col(c.key, c.header, c.group.capitalize(), c.best, c.fmt) for c in SUMMARY_COLUMNS
+            if c.group in present]
+    return draw_metric_table(
+        summary, [_label(r) for r in summary["row"]], cols,
+        f"GeneICL {suite}: mean over the tasks every row scored",
+        "Shaded, bold: best per column (↑ higher is better, ↓ lower). Rank: mean per-task rank, 1 = best.")
 
 
 # ---- main -------------------------------------------------------------------
@@ -380,7 +271,7 @@ def main(argv: list[str] | None = None) -> Path | None:
                 print(f"  [skip] {plot}: no {metric} values on the shared tasks")
                 continue
             fig = plot_heatmap(mat, metric, args.suite)
-        written[plot] = _save(fig, out_dir / plot, args.formats, args.dpi)
+        written[plot] = save(fig, out_dir / plot, args.formats, args.dpi)
 
     (out_dir / ASSESSMENT_MANIFEST).write_text(json.dumps({
         "analysis": "geneicl_plot", "suite": args.suite, "selection": selection,

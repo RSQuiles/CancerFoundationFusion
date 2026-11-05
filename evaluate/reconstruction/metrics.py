@@ -20,6 +20,9 @@ import numpy as np
 import pandas as pd
 
 PREDICTORS = ("pred", "gene_mean", "sample_mean")
+# Per entry, the bins a tied target could equally have been given (bins space only; see
+# reconstructors.bin_tie_range). Absent in runs made before they were recorded.
+TIE_COLUMNS = ("target_lo", "target_hi")
 
 
 def baselines(targets: np.ndarray, plan) -> tuple[np.ndarray, np.ndarray]:
@@ -56,10 +59,25 @@ def entries_frame(result: dict, plan, obs: pd.DataFrame, group_cols: list[str] |
         "target": targets[row, gene], "pred": result["pred"],
         "gene_mean": gene_mean[gene], "sample_mean": sample_mean[row],
     })
+    for col in TIE_COLUMNS:
+        if col in result:
+            frame[col] = result[col][row, gene]
     for col in group_cols or []:
         if col in obs.columns:
             frame[col] = obs[col].astype(str).to_numpy()[row]
     return frame[np.isfinite(frame["target"].to_numpy())].reset_index(drop=True)
+
+
+def has_ties(frame: pd.DataFrame) -> bool:
+    """Whether ``frame`` carries the tied-bin ranges (runs made before them do not)."""
+    return all(c in frame.columns for c in TIE_COLUMNS)
+
+
+def tie_error(frame: pd.DataFrame, col: str = "pred") -> np.ndarray:
+    """Distance of ``col`` to the nearest equally correct bin ``[target_lo, target_hi]``."""
+    p = frame[col].to_numpy(dtype=float)
+    lo, hi = frame["target_lo"].to_numpy(dtype=float), frame["target_hi"].to_numpy(dtype=float)
+    return np.maximum(np.maximum(lo - p, 0.0), p - hi)
 
 
 def _corr(x: np.ndarray, y: np.ndarray) -> float:
@@ -130,19 +148,36 @@ def native(frame: pd.DataFrame, space: str, col: str = "pred") -> dict:
         rounded = np.rint(p)
         out["acc_exact"] = float(np.mean(rounded == t))
         out["acc_within1"] = float(np.mean(np.abs(rounded - t) <= 1))
+        if has_ties(frame):
+            # Tie-aware: any bin the binning could have given the value counts as correct.
+            tie = tie_error(frame, col)
+            tie_rounded = tie_error(frame.assign(**{col: rounded}), col)
+            out["mae_tie"] = float(np.mean(tie)) if len(tie) else np.nan
+            out["mse_tie"] = float(np.mean(tie ** 2)) if len(tie) else np.nan
+            # A zero target is never tied (bin 0 only), so mae_zero_target is already tie-aware.
+            out["mae_nonzero_target_tie"] = float(np.mean(tie[~zero])) if (~zero).any() else np.nan
+            out["acc_exact_tie"] = float(np.mean(tie_rounded == 0)) if len(tie) else np.nan
+            out["acc_within1_tie"] = float(np.mean(tie_rounded <= 1)) if len(tie) else np.nan
     return out
 
 
 def mae_by_target(frame: pd.DataFrame, space: str, col: str = "pred", n_groups: int = 10) -> pd.DataFrame:
-    """MAE grouped by the target: by true bin (bins) or by target decile (other spaces)."""
+    """MAE grouped by the target: by true bin (bins) or by target decile (other spaces).
+
+    With the tied-bin ranges (bins), ``mae_tie`` is the tie-aware MAE of each group.
+    """
     t = frame["target"]
     if space == "bins":
         width = max(1, int(np.ceil((t.max() + 1) / n_groups)))
         key = (t // width * width).astype(int).rename("target_group")
     else:
         key = pd.qcut(t, q=n_groups, duplicates="drop").astype(str).rename("target_group")
-    err = (frame[col] - t).abs()
-    return err.groupby(key).agg(["mean", "count"]).rename(columns={"mean": "mae", "count": "n"}).reset_index()
+    err = pd.DataFrame({"mae": (frame[col] - t).abs()})
+    if space == "bins" and has_ties(frame):
+        err["mae_tie"] = tie_error(frame, col)
+    out = err.groupby(key).mean()
+    out["n"] = err.groupby(key).size()
+    return out.reset_index()
 
 
 def evaluate(frame: pd.DataFrame, space: str) -> dict:

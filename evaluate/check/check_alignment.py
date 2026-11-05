@@ -1,9 +1,10 @@
 """Self-check for ``evaluate/alignment/scib_benchmark.py`` on synthetic embeddings.
 
 Covers loading several models on their shared rows, the filter and the label-stratified
-per-modality quotas, the label x batch pre-flight report and the dry-run outputs. The
-Benchmarker itself runs only where ``scib_metrics`` imports (the bulkFM env); otherwise
-it is skipped.
+per-modality quotas, the label x batch pre-flight report, the dry-run outputs and the
+results table figure with custom row labels (``--plot-only`` on a synthetic results CSV;
+skipped without ``plottable``). The Benchmarker itself runs only where ``scib_metrics``
+imports (the bulkFM env); otherwise it is skipped.
 
     python -m evaluate.check.check_alignment
 """
@@ -92,6 +93,34 @@ def main() -> None:
               raises(lambda: scib_benchmark.main(["--root", tmp, "--name", "t3", "--models", "m1",
                                                   "--modalities", "bulk", "--dry-run"]), SystemExit))
 
+        print("\n-- results table figure --")
+        try:
+            import plottable  # noqa: F401
+        except ImportError:
+            print("  SKIP  plottable not importable here (it comes with scib_metrics)")
+        else:
+            _fake_results(out)
+            base = ["--root", tmp, "--name", "t", "--plot-only", "--plot-formats", "png"]
+            scib_benchmark.main(base + ["--row-labels", "m1=Model one (long label)", "m2=Model two"])
+            check("raw and min-max tables drawn",
+                  (out / "scib_results.png").exists() and (out / "scib_results_minmax.png").exists())
+            manifest = json.loads((out / "manifest.json").read_text())
+            check("row labels and figures recorded, models kept",
+                  manifest["row_labels"] == {"m1": "Model one (long label)", "m2": "Model two"}
+                  and "scib_results.png" in manifest["figures"] and manifest["models"] == ["m1", "m2", "pca"])
+            from evaluate.alignment.scib_plot import read_results, relabel
+
+            relabeled = relabel(read_results(out / "scib.csv"), {"m1": "A"})
+            check("relabel renames rows, keeps the Metric Type row",
+                  list(relabeled.index) == ["A", "m2", "Metric Type"])
+            check("CSV keeps the model names", "m1" in read_results(out / "scib.csv").index)
+            check("duplicate labels refused", raises(lambda: scib_benchmark.main(
+                base + ["--row-labels", "m1=X", "m2=X"]), SystemExit))
+            check("malformed label refused", raises(lambda: scib_benchmark.main(
+                base + ["--row-labels", "m1"]), SystemExit))
+            check("plot-only needs an earlier run", raises(lambda: scib_benchmark.main(
+                ["--root", tmp, "--name", "none", "--plot-only"]), SystemExit))
+
         print("\n-- Benchmarker --")
         try:
             import scib_metrics  # noqa: F401
@@ -102,7 +131,30 @@ def main() -> None:
                                        "--pre-integrated", "pca"])
             results = pd.read_csv(out / "scib.csv", index_col=0)
             check("one row per model plus the Metric Type row", {"m1", "m2", "Metric Type"} <= set(results.index))
+            check("results table figure drawn", (out / "scib_results.png").exists())
     finish()
+
+
+def _fake_results(out: Path) -> None:
+    """``scib.csv`` / ``scib_minmax.csv`` shaped like ``Benchmarker.get_results``."""
+    types = {"Isolated labels": "Bio conservation", "KMeans NMI": "Bio conservation",
+             "Silhouette label": "Bio conservation", "iLISI": "Batch correction",
+             "Graph connectivity": "Batch correction", "Batch correction": "Aggregate score",
+             "Bio conservation": "Aggregate score", "Total": "Aggregate score"}
+    values = {"m1": [0.6, 0.7, 0.55, 0.2, 0.9], "m2": [0.5, 0.6, 0.52, 0.4, 0.95]}
+    for name, scale in (("scib.csv", False), ("scib_minmax.csv", True)):
+        rows = {}
+        for model, v in values.items():
+            v = np.array(v)
+            if scale:
+                other = np.array(values["m2" if model == "m1" else "m1"])
+                v = (v >= other).astype(float)
+            bio, batch = v[:3].mean(), v[3:].mean()
+            rows[model] = [*v, batch, bio, 0.4 * batch + 0.6 * bio]
+        df = pd.DataFrame(rows, index=list(types)).T.astype(object)
+        df.loc["Metric Type"] = list(types.values())
+        df.index.name = "Embedding"
+        df.to_csv(out / name)
 
 
 if __name__ == "__main__":

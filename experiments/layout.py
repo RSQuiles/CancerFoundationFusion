@@ -18,6 +18,7 @@ Layout::
         ├── representation/<model>/
         ├── representation/_alignment/<model>/
         ├── tasks/<task>/<model>/
+        ├── tasks/<task>/_plots/{all_models,<m1>_<m2>_...}/<name>/   figures (+ manifest.json)
         └── assessment/<analysis>/                (+ manifest.json listing its models)
     └── benchmarks/{all_models,<m1>_<m2>_...}/<benchmark>/   figures (+ manifest.json)
 
@@ -56,7 +57,7 @@ SPLIT_PARTS = ("train", "test")
 EMBEDDING_PARTS = ("test", "train_subset")
 
 PCA_MODEL = "pca"
-_RESERVED_NAMES = {"_launches", "_alignment", "_renames.jsonl"}
+_RESERVED_NAMES = {"_launches", "_alignment", "_renames.jsonl", "_plots"}
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 RUN_CARD = "run.json"
@@ -233,6 +234,15 @@ class ExperimentLayout:
     def task_dir(self, task: str, model: str) -> Path:
         return self.tasks_root / task / validate_model_name(model)
 
+    def task_plot_dir(self, task: str, selection: str, name: str) -> Path:
+        """``tasks/<task>/_plots/<selection>/<name>/``: figures comparing models on one task
+        (``selection`` as in ``benchmark_plot_dir``); the manifest there lists them under
+        ``"models"``. ``_plots`` is reserved, so it never collides with a model directory."""
+        for part in (task, selection, name):
+            if not _MODEL_NAME_RE.match(str(part)):
+                raise ValueError(f"Invalid task plot directory name {part!r}")
+        return self.tasks_root / task / "_plots" / selection / name
+
     @property
     def assessment_root(self) -> Path:
         return self.results_dir / "assessment"
@@ -284,4 +294,6 @@ class ExperimentLayout:
             files.extend(sorted(self.assessment_root.glob(f"*/{ASSESSMENT_MANIFEST}")))
         if self.benchmarks_root.is_dir():
             files.extend(sorted(self.benchmarks_root.glob(f"*/*/{ASSESSMENT_MANIFEST}")))
+        if self.tasks_root.is_dir():
+            files.extend(sorted(self.tasks_root.glob(f"*/_plots/*/*/{ASSESSMENT_MANIFEST}")))
         return files

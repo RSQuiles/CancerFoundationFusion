@@ -7,8 +7,8 @@ from pathlib import Path
 
 
 # Script-specific blocks of a --config YAML; every other top-level key is shared.
-SECTIONS = ("umap", "pca", "alignment", "mask_plan", "reconstruction", "compare", "scib",
-            "geneicl_embed", "geneicl_probe", "geneicl_compare", "geneicl_plot")
+SECTIONS = ("umap", "pca", "alignment", "mask_plan", "reconstruction", "compare", "reconstruction_plot",
+            "scib", "geneicl_embed", "geneicl_probe", "geneicl_compare", "geneicl_plot")
 
 
 def parse_with_config(
@@ -20,6 +20,7 @@ def parse_with_config(
 
     Top-level keys apply to every script reading the file; a block named after a
     section (``umap:``, ``pca:``, ``alignment:``, ``mask_plan:``, ``reconstruction:``, ``compare:``,
+    ``reconstruction_plot:``,
     ``scib:``, ``geneicl_embed:``, ``geneicl_probe:``, ``geneicl_compare:``, ``geneicl_plot:``) applies
     only to that script and overrides the top level.
     Keys are the long option names with ``-`` or ``_`` (``stratify_by`` or

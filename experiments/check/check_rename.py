@@ -59,6 +59,7 @@ def _build_root(root: Path) -> tuple[ExperimentLayout, Path]:
         "runs": [{"model_name": OLD, "checkpoint_dir": save_dir}, {"model_name": OTHER}],
     })
     _write(layout.assessment_dir("scib") / "manifest.json", {"models": {OLD: "row1", OTHER: "row2"}})
+    _write(layout.task_plot_dir("canc_type", "all_models", "plan") / "manifest.json", {"models": [OLD, OTHER]})
     cfg = root.parent / "launch_cfg.json"
     _write(cfg, {"models": [{"name": OLD, "overrides": {"trainer": {"wandb_name": OLD}}}, {"name": OTHER}]})
     return layout, cfg
@@ -102,6 +103,8 @@ def check_rename() -> None:
         check("binary checkpoint carried over", (layout.checkpoint_dir(NEW) / "epoch_00.ckpt").read_bytes() == b"binary")
         manifest = json.loads((layout.assessment_dir("scib") / "manifest.json").read_text())
         check("manifest dict key renamed", set(manifest["models"]) == {NEW, OTHER})
+        plots = json.loads((layout.task_plot_dir("canc_type", "all_models", "plan") / "manifest.json").read_text())
+        check("task plot manifest renamed", plots["models"] == [NEW, OTHER])
         launch = json.loads((layout.launches_dir / "launch_1.json").read_text())
         check("launch summary list renamed", launch["models"] == [NEW, OTHER])
         raw_cfg = json.loads(cfg.read_text())

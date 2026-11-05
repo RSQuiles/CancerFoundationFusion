@@ -42,6 +42,40 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def available_models(layout, slug: str) -> list[str]:
+    """Models with ``entries.parquet`` for the plan ``slug``, sorted."""
+    root = layout.tasks_root / RESULTS_TASK
+    if not root.is_dir():
+        return []
+    return sorted(p.name for p in root.iterdir()
+                  if p.is_dir() and not p.name.startswith("_") and (p / slug / "entries.parquet").exists())
+
+
+def load_runs(layout, models: list[str], slug: str) -> tuple[dict[str, pd.DataFrame], dict[str, dict]]:
+    """``(entries per model, metrics.json per model)``; exits when a run is missing."""
+    frames, cards = {}, {}
+    for model in models:
+        run_dir = layout.task_dir(RESULTS_TASK, model) / slug
+        path = run_dir / "entries.parquet"
+        if not path.exists():
+            sys.exit(f"Error: {path} not found; run run_reconstruction for '{model}' on this plan first")
+        frames[model] = pd.read_parquet(path)
+        cards[model] = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+    return frames, cards
+
+
+def shared_entries(frames: dict[str, pd.DataFrame]) -> tuple[set, dict[str, pd.DataFrame]]:
+    """The (sample, gene) entries every model scored, and each frame restricted to them."""
+    keys = None
+    for frame in frames.values():
+        k = set(zip(frame["sample"], frame["gene"]))
+        keys = k if keys is None else keys & k
+    keys = keys or set()
+    subs = {m: f[pd.MultiIndex.from_frame(f[["sample", "gene"]]).isin(list(keys))].reset_index(drop=True)
+            for m, f in frames.items()}
+    return keys, subs
+
+
 def main(argv: list[str] | None = None) -> pd.DataFrame:
     from experiments.layout import ExperimentLayout
 
@@ -52,19 +86,9 @@ def main(argv: list[str] | None = None) -> pd.DataFrame:
     plan = load_plan(resolve_plan_path(args.plan, args.root))
     slug = plan_slug(plan)
 
-    frames, spaces = {}, {}
-    for model in args.models:
-        run_dir = layout.task_dir(RESULTS_TASK, model) / slug
-        path = run_dir / "entries.parquet"
-        if not path.exists():
-            sys.exit(f"Error: {path} not found; run run_reconstruction for '{model}' on this plan first")
-        frames[model] = pd.read_parquet(path)
-        spaces[model] = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))["space"]
-
-    keys = None
-    for frame in frames.values():
-        k = set(zip(frame["sample"], frame["gene"]))
-        keys = k if keys is None else keys & k
+    frames, cards = load_runs(layout, args.models, slug)
+    spaces = {m: card["space"] for m, card in cards.items()}
+    keys, subs = shared_entries(frames)
     if not keys:
         sys.exit("Error: the models share no scored masked entry")
     print(f"{len(keys)} masked entries scored by all {len(frames)} models "
@@ -72,8 +96,7 @@ def main(argv: list[str] | None = None) -> pd.DataFrame:
 
     rows, per_sample = [], []
     shared_space = len(set(spaces.values())) == 1
-    for model, frame in frames.items():
-        sub = frame[[key in keys for key in zip(frame["sample"], frame["gene"])]]
+    for model, sub in subs.items():
         predictors = M.PREDICTORS if args.baselines else ("pred",)
         for col in predictors:
             sub_c = sub[sub[col].notna()]

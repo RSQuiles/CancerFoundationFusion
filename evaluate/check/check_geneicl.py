@@ -300,10 +300,10 @@ def check_plot(tmp: Path, layout: ExperimentLayout) -> None:
           (sub / "heatmap_auroc.png").exists() and not (sub / "summary_table.png").exists())
     check("selection name joins in the given order",
           plot_benchmark.select_models(["b", "a"], ["a", "b", "c"]) == (["b", "a"], "b_a"))
-    check("best mask keeps ties and ignores NaN", plot_benchmark._is_best(
+    check("best mask keeps ties and ignores NaN", plot_benchmark.is_best(
         np.array([0.5, np.nan, 0.5, 0.2]), "max").tolist() == [True, False, True, False])
     check("best of a rank is the lowest",
-          plot_benchmark._is_best(np.array([2.0, 1.5]), "min").tolist() == [False, True])
+          plot_benchmark.is_best(np.array([2.0, 1.5]), "min").tolist() == [False, True])
     check("unknown plot refused", raises(lambda: plot_benchmark.main(root + ["--plots", "violin"]), SystemExit))
     check("model without results refused",
           raises(lambda: plot_benchmark.main(root + ["--models", "nobody"]), SystemExit))

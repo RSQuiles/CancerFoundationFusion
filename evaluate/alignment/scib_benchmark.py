@@ -10,9 +10,17 @@ modality as batch and a biological label (e.g. tissue) as label.
         --modalities bulk pseudobulk --per-modality bulk=all pseudobulk=all --label-key tissue_general
 
 Writes ``results/assessment/scib_<name>/``: ``scib.csv`` (``get_results(min_max_scale=False,
-clean_names=True)``, the trailing ``Metric Type`` row included), ``scib_minmax.csv``, the
-results table figure, ``label_batch.csv`` (the pre-flight crosstab), ``meta.json`` and
-``manifest.json`` listing the models.
+clean_names=True)``, the trailing ``Metric Type`` row included), ``scib_minmax.csv``,
+``label_batch.csv`` (the pre-flight crosstab), ``meta.json``, ``manifest.json`` listing the
+models, and the classical scIB results table (``scib_plot.py``) as
+``scib_results.{png,pdf,svg}`` (raw values) and ``scib_results_minmax.*`` (min-max scaled).
+
+The table's rows are the model names unless ``--row-labels MODEL=LABEL ...`` renames them
+(a YAML mapping in the config works too); the CSVs keep the model names. To change the
+labels later without rerunning the benchmark:
+
+    python -m evaluate.alignment.scib_benchmark --name tissue_s0_test --plot-only \
+        --row-labels unified_v1="CF unified" bulkformer=BulkFormer
 
 Reading the numbers:
 
@@ -45,7 +53,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from evaluate._cli import parse_quotas, parse_with_config  # noqa: E402
+from evaluate._cli import parse_mapping, parse_quotas, parse_with_config  # noqa: E402
 from evaluate.io import EMB_KEY, load_embedding, panel_hashes  # noqa: E402
 from evaluate.modalities import MOD_BULK, MOD_PB  # noqa: E402
 from experiments.layout import ExperimentLayout, canonical_modality, validate_model_name  # noqa: E402
@@ -75,7 +83,43 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n-jobs", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true", help="Pre-flight report only; no scib_metrics needed")
+    parser.add_argument("--row-labels", nargs="*", default=None, metavar="MODEL=LABEL",
+                        help="Row names of the results table figure (default: the model names)")
+    parser.add_argument("--plot-only", action="store_true",
+                        help="Redraw the results table from an earlier run's CSVs (needs only plottable)")
+    parser.add_argument("--plot-formats", nargs="+", default=["png", "pdf", "svg"],
+                        help="File formats of the results table figure")
     return parser
+
+
+def draw_figures(out_dir: Path, args, labels: dict[str, str]) -> list[str]:
+    """The results table figures; a failure only warns, since the CSVs are the result."""
+    from evaluate.alignment.scib_plot import draw_scib_figures
+
+    try:
+        return draw_scib_figures(out_dir, labels, args.plot_formats)
+    except ValueError as exc:  # bad --row-labels
+        sys.exit(f"Error: {exc}")
+    except Exception as exc:  # noqa: BLE001 - the CSVs are the result; the figure is a convenience
+        print(f"  [warn] results table figure failed ({type(exc).__name__}: {exc})")
+        return []
+
+
+def update_manifest(out_dir: Path, **fields) -> None:
+    path = out_dir / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"analysis": "scib"}
+    manifest.update(fields)
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
+def plot_only(layout: ExperimentLayout, args, labels: dict[str, str]) -> Path:
+    out_dir = layout.assessment_dir(f"scib_{args.name}")
+    if not (out_dir / "scib.csv").exists():
+        sys.exit(f"Error: {out_dir / 'scib.csv'} not found; run the benchmark first")
+    figures = draw_figures(out_dir, args, labels)
+    update_manifest(out_dir, row_labels=labels, figures=figures)
+    print(f"wrote {out_dir}")
+    return out_dir
 
 
 def load_models(layout: ExperimentLayout, models: list[str], modalities: list[str], part: str):
@@ -158,15 +202,26 @@ def main(argv: list[str] | None = None) -> Path:
     import anndata as ad
 
     args = parse_with_config(build_parser(), "scib", argv)
+    try:
+        labels = parse_mapping(args.row_labels, "--row-labels")
+    except ValueError as exc:
+        sys.exit(f"Error: {exc}")
+    layout = ExperimentLayout.from_root(args.root)
+    if args.plot_only:
+        if not args.name:
+            sys.exit("Error: give --name")
+        return plot_only(layout, args, labels)
     if not (args.models and args.name):
         sys.exit("Error: give --models and --name")
-    layout = ExperimentLayout.from_root(args.root)
     rows = [validate_model_name(m) for m in args.models if m != args.pre_integrated]
     if args.pre_integrated in args.models:
         print(f"  '{args.pre_integrated}' is the pre-integrated reference, so it is not also a row")
     if not rows:
         sys.exit("Error: no model left to benchmark")
     models = rows + ([args.pre_integrated] if args.pre_integrated else [])
+    shown = [labels.get(r, r) for r in rows]
+    if len(set(shown)) < len(shown):
+        sys.exit(f"Error: --row-labels must give the rows unique names, got {shown}")
     modalities = [canonical_modality(m) for m in args.modalities]
 
     print(f"scIB '{args.name}': {rows} on {modalities} ({args.part})"
@@ -199,7 +254,8 @@ def main(argv: list[str] | None = None) -> Path:
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     (out_dir / "manifest.json").write_text(json.dumps(
-        {"analysis": "scib", "models": models, "rows": rows, "pre_integrated": args.pre_integrated},
+        {"analysis": "scib", "models": models, "rows": rows, "pre_integrated": args.pre_integrated,
+         "row_labels": labels},
         indent=2), encoding="utf-8")
     if args.dry_run:
         print(f"  dry run: pre-flight report written to {out_dir}")
@@ -212,11 +268,7 @@ def main(argv: list[str] | None = None) -> Path:
     bm = run_benchmark(adata, args, rows, args.pre_integrated)
     bm.get_results(min_max_scale=False, clean_names=True).to_csv(out_dir / "scib.csv")
     bm.get_results(min_max_scale=True, clean_names=True).to_csv(out_dir / "scib_minmax.csv")
-    try:
-        tab = bm.plot_results_table(min_max_scale=False, show=False, save_dir=str(out_dir))
-        tab.ax.get_figure().savefig(out_dir / "scib_results.png", dpi=200, bbox_inches="tight")
-    except Exception as exc:  # noqa: BLE001 - the CSVs are the result; the figure is a convenience
-        print(f"  [warn] results table figure failed ({type(exc).__name__}: {exc})")
+    update_manifest(out_dir, figures=draw_figures(out_dir, args, labels))
     print(bm.get_results(min_max_scale=False, clean_names=True))
     print(f"wrote {out_dir}")
     return out_dir

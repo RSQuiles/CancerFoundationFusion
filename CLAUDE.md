@@ -46,6 +46,7 @@ embeddings/<model>/{sc,bulk,pseudobulk}_{test,train_subset}.h5ad + embed.json
 embeddings/<model>/geneicl_<suite>/<dataset>.npz + embed.json   GeneICL benchmark inputs
 results/representation/<model>/, results/representation/_alignment/<model>/
 results/tasks/<task>/<model>/, results/assessment/<analysis>/ (+ manifest.json)
+results/tasks/<task>/_plots/{all_models,<m1>_<m2>_...}/<name>/ (+ manifest.json)   task figures
 benchmarks/{all_models,<m1>_<m2>_...}/<benchmark>/ (+ manifest.json)   comparison figures
 ```
 
@@ -262,7 +263,8 @@ plus obs. `plot_alignment` fits ONE UMAP over all modalities and refuses files w
 
 **Config files** (`evaluate/_cli.py`, shared by every evaluate script): top-level keys are
 shared, and a block named after the script's section applies to that script only
-(`umap`, `pca`, `alignment`, `mask_plan`, `reconstruction`, `compare`, `scib`, `geneicl_embed`,
+(`umap`, `pca`, `alignment`, `mask_plan`, `reconstruction`, `compare`, `reconstruction_plot`,
+`scib`, `geneicl_embed`,
 `geneicl_probe`, `geneicl_compare`, `geneicl_plot`). Unknown keys are
 errors, so keep only options every reader has at the top level (usually `root`). Mappings
 (`labels`, `condition`) may be YAML dicts or `KEY=VALUE` lists.
@@ -278,6 +280,9 @@ python -m evaluate.reconstruction.run_reconstruction --reconstructor bulkformer 
     --plan bulk:leiden_s0:test:r25 --option repo=/path gene_column=gene_id [--context plan]
 # 3. compare on the entries all of them scored -> results/assessment/reconstruction_<plan>/
 python -m evaluate.reconstruction.compare --models unified_v1 bulkformer --plan bulk:leiden_s0:test:r25
+# 4. figures -> results/tasks/reconstruction/_plots/{all_models,<m1>_<m2>_...}/<plan>/<group>/
+python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test:r25 \
+    [--models unified_v1 bulkformer] [--plots mae_by_bin metrics_table] [--baselines] [--list]
 ```
 - **The plan fixes the masked entries for every model.** Per sample it draws `seq_len - 1`
   genes, uniformly or with `--zero-fraction` zeros, and masks `int((seq_len-1)*mask_ratio)`
@@ -287,6 +292,12 @@ python -m evaluate.reconstruction.compare --models unified_v1 bulkformer --plan 
 - **CancerFoundation (space `bins`).**
   - **Targets:** bins of the full sample. Each row is binned over all its vocabulary genes
     before any gene is chosen, as in training; ties are seeded.
+  - **Tied bins:** when quantile edges repeat, `binning` gives a value on them a random
+    bin among several equally correct ones. `bin_tie_range` records that range per entry
+    (`target_lo`, `target_hi` in `entries.parquet`), and `metrics.native` adds tie-aware
+    `mae_tie`, `mse_tie`, `mae_nonzero_target_tie`, `acc_exact_tie` and `acc_within1_tie`,
+    where the error is the distance to the nearest correct bin. The raw metrics stay. Runs
+    made before this have no ranges; rerun `run_reconstruction` to get them.
   - **Generative models:** context in the perception stream and masked genes as gen tokens,
     the training layout. Gen tokens see only the context and themselves, so many masked
     genes in one pass is exact.
@@ -312,14 +323,34 @@ python -m evaluate.reconstruction.compare --models unified_v1 bulkformer --plan 
     AUROC and the global Spearman. Only these are compared across spaces in `compare.py`.
 
   `entries.parquet` keeps every scored entry, so new metrics need no rerun.
+- **Figures** (`plot_reconstruction.py`): no `--models` means every model with results on
+  the plan (`all_models`).
+  - **Groups:** models are grouped by space, and bins models also by `n_bins` (`bins51`,
+    `ln_tpm1`); each group is compared on the entries all its models scored. With two or
+    more models, the group `all` holds every model on their shared entries.
+  - **Per space group:** `mae_by_bin` (bins: MAE by true bin, tie-aware when the runs have
+    ranges, `--bin-width`), `mae_by_target` (other spaces: zeros, then quantiles of the
+    non-zero targets) and `metrics_table` (MAE, accuracy for bins, Pearson, Spearman, plus
+    zero AUROC outside bins; best per column shaded).
+  - **Cross-space (`all`):** `space_free_table`, `per_sample_spearman` and
+    `rank_mae_by_target` (per-sample percentile ranks, mean rank error by target decile).
+    These never show baselines; `--baselines` adds them to the per-space plots only.
+  - **Extending:** add a plot with a `compute` and a `draw` function plus a `PlotSpec` in
+    `PLOTS`, and give a new space its own columns in `TABLE_COLUMNS` (else `"*"`). Every
+    plot also writes its numbers as `<plot>.csv`.
+  - The styling (palette, metric table) is shared with `plot_benchmark` through
+    `evaluate/_plot_style.py`.
 - **Environments:** CF runs in the container (`run_reconstruction.sh`, GPU); BulkFormer in
-  its own env; `mask_plan.py` and `compare.py` anywhere.
+  its own env; `mask_plan.py`, `compare.py` and `plot_reconstruction.py` (CPU,
+  `plot_reconstruction.sh`) anywhere with pandas and pyarrow.
 
 ### Alignment: scIB (`evaluate/alignment/`)
 ```bash
 python -m evaluate.alignment.scib_benchmark --name tissue_s0_test --models m1 m2 bulkformer \
     --pre-integrated pca --modalities bulk pseudobulk --per-modality bulk=all pseudobulk=all \
-    --label-key tissue_general [--kbet] [--leiden] [--dry-run]
+    --label-key tissue_general [--kbet] [--leiden] [--dry-run] [--row-labels m1="CF unified" ...]
+# redraw the results table from the saved CSVs (new labels, no rerun; needs only plottable)
+python -m evaluate.alignment.scib_benchmark --name tissue_s0_test --plot-only --row-labels m1="CF unified"
 ./evaluate/alignment/scib_benchmark.sh          # bulkFM conda env (scib_metrics is not in the container)
 ```
 - **Rows:** only the rows every model embedded are kept (row names `<modality>:<obs name>`).
@@ -338,8 +369,14 @@ python -m evaluate.alignment.scib_benchmark --name tissue_s0_test --models m1 m2
   batches, ≥ `--min-label-cells`). Fewer than 2 is warned about: rank on iLISI then.
 - **Outputs** in `results/assessment/scib_<name>/`: `scib.csv`
   (`get_results(min_max_scale=False, clean_names=True)`, with the Metric Type row),
-  `scib_minmax.csv`, the results table figure, `label_batch.csv`, `meta.json` (keys,
-  counts, panel hashes) and `manifest.json` with `"models"`.
+  `scib_minmax.csv`, `label_batch.csv`, `meta.json` (keys, counts, panel hashes) and
+  `manifest.json` with `"models"`, `"row_labels"` and `"figures"`.
+- **Results table figure** (`scib_plot.py`): the classical scIB table (scib_metrics'
+  `plot_results_table`, redrawn from the CSVs), rows sorted by Total, as
+  `scib_results.{png,pdf,svg}` (raw) and `scib_results_minmax.*` (min-max scaled);
+  `--plot-formats` picks the formats. `--row-labels MODEL=LABEL` (or a YAML mapping) names
+  the rows; the CSVs keep the model names, and labels must be unique. A failed figure only
+  warns, since the CSVs are the result.
 
 ### GeneICL benchmark (`evaluate/geneicl/`)
 The frozen bulk benchmark of GeneICL (52 tasks: 27 classification + 25 regression over 32
@@ -761,6 +798,7 @@ experiments/                  # was ablate/; torch-free at import time
 
 evaluate/                     # NEW, works on the experiments root
 ├── _cli.py                   # --config YAML sections, KEY=VALUE mappings, title templates
+├── _plot_style.py            # shared palette, figure saving, best-highlighted metric table
 ├── io.py                     # load_embedding, load_external, panel_hashes
 ├── modalities.py             # sc / pseudobulk / bulk labels and display names
 ├── representation/
@@ -775,9 +813,11 @@ evaluate/                     # NEW, works on the experiments root
 │   ├── run_reconstruction.py # one model x one plan -> metrics.json, entries.parquet
 │   ├── metrics.py            # native-space + space-free metrics, baselines
 │   ├── compare.py            # several models on their shared entries -> assessment/
-│   └── example_reconstruction_config.yaml, run_reconstruction.sh
+│   ├── plot_reconstruction.py # MAE by bin/target, metric tables -> tasks/reconstruction/_plots/
+│   └── example_reconstruction_config.yaml, run_reconstruction.sh, plot_reconstruction.sh
 ├── alignment/
 │   ├── scib_benchmark.py     # scib_metrics Benchmarker over several models' embeddings
+│   ├── scib_plot.py          # classical scIB results table from the CSVs, custom row labels
 │   └── example_scib_config.yaml, scib_benchmark.sh (bulkFM conda env)
 ├── geneicl/
 │   ├── suite.py              # GeneICL checkout, suites, datasets, symbol -> Ensembl mapping
@@ -885,6 +925,7 @@ DATA/{tissue}/processed_data/train/
 - **Embedding**: `embed/embed_splits.py` (splits into `embeddings/<model>/`), `embed/embed.py` (one h5ad, CancerFoundation), `embed/embed_any.py` (one h5ad, any registered model)
 - **Representation figures**: `evaluate/representation/plot_umap.py`, `plot_pca.py`, `plot_alignment.py`
 - **GeneICL benchmark**: `evaluate/geneicl/embed_suite.py`, `run_probe.py`, `compare.py`, `plot_benchmark.py`
+- **Reconstruction**: `evaluate/reconstruction/mask_plan.py`, `run_reconstruction.py`, `compare.py`, `plot_reconstruction.py`
 - **Downstream Evaluation** (archived, not yet ported): `evaluate_old/finetune/run_downstream_task.py`
 - **Training named models**: `python -m experiments.launch` — locally or on SLURM; `experiments/rename_model.py` to rename one
 - **Splits**: `data_preprocess/split_train_test.py`, `data_preprocess/build_mix.py`

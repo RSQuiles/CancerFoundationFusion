@@ -91,6 +91,30 @@ def decode_bins(raw: np.ndarray, loss: str, n_bins: int, normalise_bins: bool = 
     raise ValueError(f"Cannot decode loss {loss!r} into bins (zinb predicts counts, not bins)")
 
 
+def bin_tie_range(row: np.ndarray, n_bins: int) -> tuple[np.ndarray, np.ndarray]:
+    """``(lo, hi)``: every bin ``preprocess.binning`` may give each value of ``row``.
+
+    ``binning`` cuts a row at quantile edges; when several edges are equal, a value on
+    them gets a random bin between the two ``np.digitize`` sides (``_digitize``), so
+    any bin in ``[lo, hi]`` is an equally correct target. The edges are those of
+    ``binning`` exactly; zeros are bin 0.
+    """
+    row = np.asarray(row)  # same dtype as binning's input, so the quantile edges match
+    lo = np.zeros(row.shape, dtype=np.int64)
+    hi = np.zeros(row.shape, dtype=np.int64)
+    if row.size == 0 or row.max() == 0:
+        return lo, hi
+    ids = row.nonzero()[0] if row.min() <= 0 else np.arange(row.size)
+    values = row[ids]
+    edges = np.quantile(values, np.linspace(0, 1, n_bins - 1))
+    left = np.digitize(values, edges)
+    right = np.digitize(values, edges, right=True)
+    # _digitize: ceil(U * (right - left) + left), U in [0, 1), so right < left gives right+1..left.
+    lo[ids] = np.where(right < left, right + 1, left)
+    hi[ids] = left
+    return lo, hi
+
+
 def _str_value(x) -> str:
     return getattr(x, "value", x) if not isinstance(x, str) else x
 
@@ -220,6 +244,9 @@ class CancerFoundationReconstructor(Reconstructor):
         np.random.seed(self.seed)  # binning breaks ties with np.random
         n, n_genes = plan.n_samples, len(plan.genes)
         targets = np.full((n, n_genes), np.nan, dtype=np.float32)
+        # Bins a tied target could equally have been given (see bin_tie_range).
+        target_lo = np.full((n, n_genes), np.nan, dtype=np.float32)
+        target_hi = np.full((n, n_genes), np.nan, dtype=np.float32)
         rows, genes, preds = [], [], []
         norm = model.normalise_bins
 
@@ -230,9 +257,12 @@ class CancerFoundationReconstructor(Reconstructor):
                 row = adata.X[i]
                 row = np.asarray(row.toarray() if sp.issparse(row) else row, dtype=np.float32).ravel()
                 binned = binning(row[vocab_cols], model.n_bins).astype(np.float32)
+                lo, hi = bin_tie_range(row[vocab_cols], model.n_bins)
                 t = np.full(n_genes, np.nan, dtype=np.float32)
                 t[in_vocab] = binned[plan_in_row[in_vocab]]
                 targets[i] = t
+                target_lo[i, in_vocab] = lo[plan_in_row[in_vocab]]
+                target_hi[i, in_vocab] = hi[plan_in_row[in_vocab]]
                 ctx = plan.context(i)
                 ctx = ctx[in_vocab[ctx]]
                 msk = plan.masked(i)
@@ -253,7 +283,8 @@ class CancerFoundationReconstructor(Reconstructor):
             if (start // self.batch_size) % 20 == 0:
                 print(f"  [cf] {min(start + self.batch_size, n)}/{n} samples")
 
-        return {"targets": targets, "row": np.concatenate(rows), "gene": np.concatenate(genes),
+        return {"targets": targets, "target_lo": target_lo, "target_hi": target_hi,
+                "row": np.concatenate(rows), "gene": np.concatenate(genes),
                 "pred": np.concatenate(preds).astype(np.float32),
                 "n_dropped": int(sum(len(plan.masked(i)) for i in range(n)) - sum(len(g) for g in genes))}
 

@@ -13,3 +13,8 @@ scib:
   label_key: tissue_general
   # filter: ["tissue_general=lung,breast"]
   n_jobs: 4
+  # row_labels:                # names of the results table rows (default: the model names)
+  #   unified_paired_tissue_s0: CF paired
+  #   unified_paired_dat_tissue_s0: CF paired + DAT
+  #   bulkformer: BulkFormer
+  # plot_formats: [png, pdf, svg]

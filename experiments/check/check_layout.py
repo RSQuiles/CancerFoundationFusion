@@ -54,6 +54,10 @@ def check_paths() -> None:
     check("bad benchmark selection rejected", raises(lambda: L.benchmark_plot_dir("../x", "geneicl_benchmark")))
     check("alignment dir", L.alignment_dir("m1") == ROOT / "results/representation/_alignment/m1")
     check("task dir", L.task_dir("canc", "m1") == ROOT / "results/tasks/canc/m1")
+    check("task plot dir", L.task_plot_dir("reconstruction", "all_models", "bulk_s0_test_r25")
+          == ROOT / "results/tasks/reconstruction/_plots/all_models/bulk_s0_test_r25")
+    check("bad task plot selection rejected", raises(lambda: L.task_plot_dir("reconstruction", "../x", "p")))
+    check("_plots is not a model name", raises(lambda: L.task_dir("reconstruction", "_plots")))
     check("unknown modality rejected", raises(lambda: canonical_modality("rna")))
     check("unknown embedding part rejected", raises(lambda: L.embedding_file("m1", "sc", "val")))
 
