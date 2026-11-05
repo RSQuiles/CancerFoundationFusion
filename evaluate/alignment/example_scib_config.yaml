@@ -12,6 +12,8 @@ scib:
   batch_key: modality
   label_key: tissue_general
   # filter: ["tissue_general=lung,breast"]
+  # bio_only: true             # bio conservation only (no batch metrics); one modality is enough,
+                               # drop pre_integrated then (list pca under models as a row)
   n_jobs: 4
   # row_labels:                # names of the results table rows (default: the model names)
   #   unified_paired_tissue_s0: CF paired

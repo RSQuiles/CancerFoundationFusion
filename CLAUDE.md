@@ -367,6 +367,11 @@ python -m evaluate.alignment.scib_benchmark --name tissue_s0_test --plot-only --
     the first model stands in for Benchmarker's PCA and PCR is off.
 - **Pre-flight:** the label x batch crosstab and how many labels BRAS/kBET can use (both
   batches, ≥ `--min-label-cells`). Fewer than 2 is warned about: rank on iLISI then.
+- **Bio conservation only** (`--bio-only`, config `bio_only: true`): the batch-correction
+  group is off (`batch_correction_metrics=None`), so a single modality is accepted
+  (several are pooled); without the flag one modality is refused. The table has a "Bio
+  conservation" score and no "Total". `--kbet` and `--pre-integrated` are refused with
+  it; list `pca` under `--models` to show it as a baseline row.
 - **Outputs** in `results/assessment/scib_<name>/`: `scib.csv`
   (`get_results(min_max_scale=False, clean_names=True)`, with the Metric Type row),
   `scib_minmax.csv`, `label_batch.csv`, `meta.json` (keys, counts, panel hashes) and

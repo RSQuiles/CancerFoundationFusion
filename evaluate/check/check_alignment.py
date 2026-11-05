@@ -93,6 +93,19 @@ def main() -> None:
               raises(lambda: scib_benchmark.main(["--root", tmp, "--name", "t3", "--models", "m1",
                                                   "--modalities", "bulk", "--dry-run"]), SystemExit))
 
+        print("\n-- bio conservation only --")
+        bio = ["--root", tmp, "--name", "bio", "--models", "m1", "m2", "pca", "--modalities", "bulk", "--bio-only"]
+        out_bio = scib_benchmark.main(bio + ["--dry-run"])
+        check("one modality accepted with --bio-only",
+              json.loads((out_bio / "manifest.json").read_text())["bio_only"] is True
+              and json.loads((out_bio / "meta.json").read_text())["batch_counts"] == {"bulk": 75})
+        check("pca is a plain row with --bio-only",
+              json.loads((out_bio / "manifest.json").read_text())["rows"] == ["m1", "m2", "pca"])
+        check("--bio-only with --kbet refused",
+              raises(lambda: scib_benchmark.main(bio + ["--kbet", "--dry-run"]), SystemExit))
+        check("--bio-only with --pre-integrated refused",
+              raises(lambda: scib_benchmark.main(bio + ["--pre-integrated", "pca", "--dry-run"]), SystemExit))
+
         print("\n-- results table figure --")
         try:
             import plottable  # noqa: F401
@@ -120,6 +133,10 @@ def main() -> None:
                 base + ["--row-labels", "m1"]), SystemExit))
             check("plot-only needs an earlier run", raises(lambda: scib_benchmark.main(
                 ["--root", tmp, "--name", "none", "--plot-only"]), SystemExit))
+            _fake_results(out_bio, bio_only=True)
+            scib_benchmark.main(["--root", tmp, "--name", "bio", "--plot-only", "--plot-formats", "png",
+                                 "--row-labels", "m1=Model one"])
+            check("bio-only table (no Total) drawn", (out_bio / "scib_results.png").exists())
 
         print("\n-- Benchmarker --")
         try:
@@ -132,16 +149,22 @@ def main() -> None:
             results = pd.read_csv(out / "scib.csv", index_col=0)
             check("one row per model plus the Metric Type row", {"m1", "m2", "Metric Type"} <= set(results.index))
             check("results table figure drawn", (out / "scib_results.png").exists())
+            out = scib_benchmark.main(["--root", tmp, "--name", "bio_full", "--models", "m1", "m2",
+                                       "--modalities", "bulk", "--bio-only"])
+            results = pd.read_csv(out / "scib.csv", index_col=0)
+            check("--bio-only: no batch metrics, no Total",
+                  "Total" not in results.columns and "Batch correction" not in results.columns)
     finish()
 
 
-def _fake_results(out: Path) -> None:
+def _fake_results(out: Path, bio_only: bool = False) -> None:
     """``scib.csv`` / ``scib_minmax.csv`` shaped like ``Benchmarker.get_results``."""
     types = {"Isolated labels": "Bio conservation", "KMeans NMI": "Bio conservation",
              "Silhouette label": "Bio conservation", "iLISI": "Batch correction",
              "Graph connectivity": "Batch correction", "Batch correction": "Aggregate score",
              "Bio conservation": "Aggregate score", "Total": "Aggregate score"}
     values = {"m1": [0.6, 0.7, 0.55, 0.2, 0.9], "m2": [0.5, 0.6, 0.52, 0.4, 0.95]}
+    drop = {"iLISI", "Graph connectivity", "Batch correction", "Total"} if bio_only else set()
     for name, scale in (("scib.csv", False), ("scib_minmax.csv", True)):
         rows = {}
         for model, v in values.items():
@@ -151,8 +174,8 @@ def _fake_results(out: Path) -> None:
                 v = (v >= other).astype(float)
             bio, batch = v[:3].mean(), v[3:].mean()
             rows[model] = [*v, batch, bio, 0.4 * batch + 0.6 * bio]
-        df = pd.DataFrame(rows, index=list(types)).T.astype(object)
-        df.loc["Metric Type"] = list(types.values())
+        df = pd.DataFrame(rows, index=list(types)).T.drop(columns=list(drop)).astype(object)
+        df.loc["Metric Type"] = [types[c] for c in df.columns]
         df.index.name = "Embedding"
         df.to_csv(out / name)
 

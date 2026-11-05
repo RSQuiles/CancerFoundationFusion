@@ -32,6 +32,13 @@ Reading the numbers:
   pca`` (the reserved PCA pseudo-model) enables it, and that model is then the reference
   rather than a row. Without it PCR is off.
 - BRAS uses cosine distance while iLISI and the UMAPs use Euclidean, so they can disagree.
+- **Bio conservation only** (``--bio-only``): no batch-correction metric is computed, so
+  one modality is enough (several are pooled). The table then has a "Bio conservation"
+  score and no "Total". kBET and ``--pre-integrated`` are batch-only and refused; list
+  ``pca`` under ``--models`` to show it as a baseline row instead::
+
+      python -m evaluate.alignment.scib_benchmark --name tissue_bulk --models m1 m2 pca \\
+          --modalities bulk --per-modality bulk=all --label-key tissue_general --bio-only
 
 ``scib_metrics`` lives in the ``bulkFM`` conda env, not the bionemo container
 (``scib_benchmark.sh`` activates it). ``--dry-run`` stops after the pre-flight report and
@@ -83,6 +90,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n-jobs", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true", help="Pre-flight report only; no scib_metrics needed")
+    parser.add_argument("--bio-only", action="store_true",
+                        help="Bio conservation metrics only (no batch correction); allows a single modality")
     parser.add_argument("--row-labels", nargs="*", default=None, metavar="MODEL=LABEL",
                         help="Row names of the results table figure (default: the model names)")
     parser.add_argument("--plot-only", action="store_true",
@@ -160,8 +169,9 @@ def select_rows(obs: pd.DataFrame, args, modalities: list[str]) -> np.ndarray:
     return obs.index.isin(list(chosen))
 
 
-def label_batch_report(obs: pd.DataFrame, batch_key: str, label_key: str, min_cells: int) -> tuple[pd.DataFrame, dict]:
-    """Label x batch crosstab and how many labels BRAS / kBET can use."""
+def label_batch_report(obs: pd.DataFrame, batch_key: str, label_key: str, min_cells: int,
+                       bio_only: bool = False) -> tuple[pd.DataFrame, dict]:
+    """Label x batch crosstab and how many labels BRAS / kBET can use (moot when ``bio_only``)."""
     table = pd.crosstab(obs[label_key], obs[batch_key])
     n_batches = (table > 0).sum(axis=1)
     usable = (n_batches >= 2) & (table.sum(axis=1) >= min_cells)
@@ -170,7 +180,7 @@ def label_batch_report(obs: pd.DataFrame, batch_key: str, label_key: str, min_ce
                "batch_counts": {str(k): int(v) for k, v in obs[batch_key].value_counts().items()}}
     print(f"  {summary['n_labels']} labels; {summary['n_labels_usable']} present in >= 2 batches with "
           f">= {min_cells} cells (usable by BRAS / kBET)")
-    if summary["n_labels_usable"] < 2:
+    if summary["n_labels_usable"] < 2 and not bio_only:
         print("  [WARNING] fewer than 2 usable labels: BRAS and kBET measure almost nothing; rank on iLISI")
     return table, summary
 
@@ -186,11 +196,12 @@ def run_benchmark(adata, args, row_keys: list[str], pre_key: str | None):
         bio_conservation_metrics=BioConservation(
             isolated_labels=True, silhouette_label=True, clisi_knn=True,
             nmi_ari_cluster_labels_kmeans=True, nmi_ari_cluster_labels_leiden=args.leiden),
-        batch_correction_metrics=BatchCorrection(
+        batch_correction_metrics=None if args.bio_only else BatchCorrection(
             bras=True, ilisi_knn=True, graph_connectivity=True, kbet_per_label=args.kbet,
             pcr_comparison=args.pre_integrated is not None),
         # Benchmarker computes a PCA of X when no reference is given; these files hold no
-        # X, so without --pre-integrated the first row stands in (PCR is off then).
+        # X, so without --pre-integrated the first row stands in (PCR is off then, and
+        # always with --bio-only).
         pre_integrated_embedding_obsm_key=pre_key or row_keys[0],
         n_jobs=args.n_jobs,
     )
@@ -213,6 +224,11 @@ def main(argv: list[str] | None = None) -> Path:
         return plot_only(layout, args, labels)
     if not (args.models and args.name):
         sys.exit("Error: give --models and --name")
+    if args.bio_only and args.kbet:
+        sys.exit("Error: --kbet is a batch-correction metric; drop it with --bio-only")
+    if args.bio_only and args.pre_integrated:
+        sys.exit(f"Error: --pre-integrated only serves PCR (batch correction); drop it with --bio-only, "
+                 f"or list '{args.pre_integrated}' under --models to show it as a baseline row")
     rows = [validate_model_name(m) for m in args.models if m != args.pre_integrated]
     if args.pre_integrated in args.models:
         print(f"  '{args.pre_integrated}' is the pre-integrated reference, so it is not also a row")
@@ -235,27 +251,30 @@ def main(argv: list[str] | None = None) -> Path:
     obs[args.label_key] = obs[args.label_key].astype(object).where(obs[args.label_key].notna(), UNKNOWN_LABEL).astype(str)
     obs[args.batch_key] = obs[args.batch_key].astype(str)
     print(f"  {len(obs)} rows: " + ", ".join(f"{k}={v}" for k, v in obs[args.batch_key].value_counts().items()))
-    if obs[args.batch_key].nunique() < 2:
-        sys.exit(f"Error: only one '{args.batch_key}' value left; nothing to integrate")
+    if obs[args.batch_key].nunique() < 2 and not args.bio_only:
+        sys.exit(f"Error: only one '{args.batch_key}' value left: nothing to integrate; "
+                 f"pass --bio-only to score bio conservation on it")
     distinct = {tuple(sorted(set(h.values()) - {None})) for h in hashes.values()}
     if len(distinct) > 1:
         print("  [note] the models used different gene panels (expected across models)")
 
     out_dir = layout.assessment_dir(f"scib_{args.name}")
     out_dir.mkdir(parents=True, exist_ok=True)
-    table, summary = label_batch_report(obs, args.batch_key, args.label_key, args.min_label_cells)
+    table, summary = label_batch_report(obs, args.batch_key, args.label_key, args.min_label_cells,
+                                        args.bio_only)
     table.to_csv(out_dir / "label_batch.csv")
     meta = {
         "name": args.name, "models": rows, "pre_integrated": args.pre_integrated, "part": args.part,
         "modalities": modalities, "batch_key": args.batch_key, "label_key": args.label_key,
         "filters": parse_filter_specs(args.filter), "per_modality": args.per_modality, "seed": args.seed,
-        "n_rows": int(len(obs)), "kbet": args.kbet, "leiden": args.leiden, "panel_hashes": hashes,
+        "n_rows": int(len(obs)), "kbet": args.kbet, "leiden": args.leiden, "bio_only": args.bio_only,
+        "panel_hashes": hashes,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"), **summary,
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     (out_dir / "manifest.json").write_text(json.dumps(
         {"analysis": "scib", "models": models, "rows": rows, "pre_integrated": args.pre_integrated,
-         "row_labels": labels},
+         "row_labels": labels, "bio_only": args.bio_only},
         indent=2), encoding="utf-8")
     if args.dry_run:
         print(f"  dry run: pre-flight report written to {out_dir}")
