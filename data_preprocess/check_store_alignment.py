@@ -622,18 +622,46 @@ def check_corruption(report: Report, ds, vocab: dict, source: Path, store: Path,
             repro = _repro(reader, take, in_vocab, names, vocab, scratch)
 
     line = _diagnosis_line(ptr_test, rows_out) if rows_out else "per-row analysis unavailable"
+    rows_corrupt, broken = corruption_status(rows_out, ptr_test)
+    repro_reproduced = bool(repro) and repro.get("as_read", {}).get("status") == "FAIL"
     if repro:
-        broken = repro.get("as_read", {}).get("status") == "FAIL"
         fixes = [k for k in ("canonical", "f32_i32", "f32_i64", "as_read_keep_features")
                  if repro.get(k, {}).get("status") == "PASS"]
-        if broken:
+        if repro_reproduced:
             line += f"; repro: as_read FAILS, clean variants: {fixes or 'none'}"
         elif repro.get("as_read", {}).get("status") == "PASS":
-            line += "; repro: as_read is clean at this size (size- or paging-dependent: try more --repro-rows)"
-    corrupt = bool(rows_out) and not all(
-        r["identity_own_row"]["values"] == 1.0 and r["stored_entries"] == r["expected_entries"] for r in rows_out)
-    report.add("1b. corruption mechanism", not corrupt, diagnosis=line, rows_in_source_order=monotonic,
+            line += ("; store corrupt, but the repro did not reproduce it at this size (paging-dependent)"
+                     if rows_corrupt else "; repro: as_read is clean")
+    ok = None if not rows_out else rows_corrupt == 0
+    report.add("1b. corruption mechanism", ok, diagnosis=line, rows_corrupt=rows_corrupt,
+               broken_arrays=broken, repro_reproduced=repro_reproduced, rows_in_source_order=monotonic,
                inventory=inventory, row_pointers=ptr_test, rows=rows_out, repro=repro)
+
+
+def corruption_status(rows_out: list[dict], ptr_test: dict) -> tuple[int, list[str]]:
+    """``(corrupt rows, broken arrays)``: a row is corrupt when its columns, values, entry count
+    or the dataset's read of it differ from the source."""
+    broken = set()
+    if ptr_test.get("available") and not ptr_test.get("row_pointers_equal"):
+        broken.add("row_index")
+    corrupt = 0
+    for r in rows_out:
+        bad = False
+        if r["identity_own_row"]["cols"] < 1.0:
+            broken.add("col_index")
+            bad = True
+        if r["identity_own_row"]["values"] < 1.0:
+            broken.add("data")
+            bad = True
+        if r["stored_entries"] != r["expected_entries"]:
+            broken.add("row_index")
+            bad = True
+        if not r["dataset_row_equals_raw_arrays"]:
+            broken.add("read_path")
+            bad = True
+        corrupt += bad
+    order = ["col_index", "data", "row_index", "read_path"]
+    return corrupt, [a for a in order if a in broken]
 
 
 # --------------------------------------------------------------------------- #
