@@ -88,6 +88,25 @@ class SourceReader:
             return sp.csr_matrix((0, len(self.var)))
         return sp.vstack(blocks, format="csr")
 
+    def row_nnz(self, positions: np.ndarray) -> np.ndarray | None:
+        """Stored entries of the rows at ``positions``, from ``X/indptr`` alone (CSR only).
+
+        Returns None for a dense or CSC ``X``, where the count is not stored per row.
+        """
+        import h5py
+
+        X = self._file["X"]
+        if not isinstance(X, h5py.Group):
+            return None
+        encoding = X.attrs.get("encoding-type")
+        if isinstance(encoding, bytes):
+            encoding = encoding.decode()
+        if encoding != "csr_matrix":
+            return None
+        indptr = X["indptr"][:]
+        positions = np.asarray(positions, dtype=np.int64)
+        return (indptr[positions + 1] - indptr[positions]).astype(np.int64)
+
     def subset(self, positions: np.ndarray):
         """In-memory AnnData of the rows at ``positions`` (X, obs and var only)."""
         import anndata as ad

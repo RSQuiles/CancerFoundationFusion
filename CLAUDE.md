@@ -77,11 +77,21 @@ python bulk_sc_data_preprocessing.py --h5ad-path a.h5ad b.h5ad --data-path out/ 
 - **Sources are only ever read** (`h5ad_io.SourceReader`, h5py read-only, `uns` never
   parsed). Nothing is normalized at any point: the store holds the source `X` values.
   `--cluster-transform` only shapes the features Leiden clusters on.
-- **One transient h5ad per source is unavoidable.** SCDL converts only h5ad *files*, and
+- **Transient h5ads are unavoidable.** SCDL converts only h5ad *files*, and
   the loaders read each gene's token id from a `_cf_gene_id` var column and expect every
   stored column to be in the vocabulary. So `build_pipeline_ready` writes the selected rows
   and in-vocabulary genes, plus that column, to `<store>/_transient/`, converts it, and
-  deletes it before reading the next source.
+  deletes it before reading the next one.
+- **Transients are chunked and int32.** SCDL 0.1.2 stores column indices as uint32 and,
+  on its large-file path, copies int64 indices byte for byte, so every row reads the wrong
+  genes (half of them collapsing on gene 0). Each source is therefore written in
+  consecutive chunks of at most `MAX_TRANSIENT_NNZ` (5e8, `--max-transient-nnz`) entries,
+  each as float32 data with int32 `indices`/`indptr` (`_transient_matrix`). After
+  `flatten`, `verify_store` reads random rows plus every chunk's first and last row back
+  through `SingleCellDataset` and raises on any difference from the source; `store.json`
+  records `verified` and `transient_dtypes`. Stores built before this fix are corrupt if
+  their source had more than 2^31 entries: check them with
+  `data_preprocess/check_store_alignment.py` (`--only-diagnose` for the mechanism check).
 - **Store contract**: `modality` is always stored (the file's own column, else the
   source's label, else `--default-modality`). An absent obs column is filled with `0`, and
   category `"0"` means "none" to the loaders (unpaired, no pseudobulk). The

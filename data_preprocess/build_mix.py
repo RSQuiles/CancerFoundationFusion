@@ -83,6 +83,7 @@ def main(args):
         vocab_mode=args.vocab_mode,
         gene_column=args.gene_column,
         pb_id_column=args.pb_id_column,
+        max_transient_nnz=args.max_transient_nnz,
     )
     (store / "mix.json").write_text(json.dumps({
         "name": args.name,
@@ -109,8 +110,15 @@ def get_args():
     parser.add_argument("--gene-column", default=None, help="var column holding the gene names")
     parser.add_argument("--pb-id-column", default=None,
                         help="Keep this pseudobulk -> cell link column in the store")
+    parser.add_argument("--max-transient-nnz", type=int, default=None,
+                        help="Stored entries per transient file handed to SCDL (default: the builder's)")
     parser.add_argument("--overwrite", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.max_transient_nnz is None:
+        from bulk_sc_data_preprocessing import MAX_TRANSIENT_NNZ
+
+        args.max_transient_nnz = MAX_TRANSIENT_NNZ
+    return args
 
 
 if __name__ == "__main__":

@@ -50,6 +50,9 @@ class FakeDatasetDir:
 class FakeCollection:
     """Records each transient file at load time; ``flatten`` writes the concatenation."""
 
+    # (file stem, X/indices dtype, X/indptr dtype) of every transient file loaded
+    loaded: list[tuple[str, str, str]] = []
+
     def __init__(self, data_path):
         self.data_path = Path(data_path)
         self.fname_to_mmap = {}
@@ -57,7 +60,13 @@ class FakeCollection:
     def load_h5ad(self, h5ad_path, use_X_not_raw=False):
         import anndata as ad
 
+        import h5py
+
         assert use_X_not_raw, "X must be used, not raw.X"
+        with h5py.File(h5ad_path, "r") as f:
+            X = f["X"]
+            dtypes = (str(X["indices"].dtype), str(X["indptr"].dtype)) if "indices" in X else ("dense", "dense")
+        FakeCollection.loaded.append((Path(h5ad_path).stem, *dtypes))
         a = ad.read_h5ad(h5ad_path)
         self.fname_to_mmap[self.data_path / Path(h5ad_path).stem] = a
 
@@ -89,6 +98,10 @@ install_fakes()
 import bulk_sc_data_preprocessing as pre  # noqa: E402
 import build_mix  # noqa: E402
 import split_train_test as stt  # noqa: E402
+
+# verify_store reads the store back through the real SingleCellDataset/SCDL, which the
+# fakes replace; its real test is a container build.
+pre.VERIFY_STORES = False
 
 # --------------------------------------------------------------------------- #
 # Synthetic experiments root
@@ -231,7 +244,8 @@ def check_mix(root: Path, paths: dict[str, Path]) -> None:
     codes = obs["modality"].map(inv)
     check("modality per source: layout label or the file's own column",
           set(codes) == {"sc", "bulk", "pseudobulk"} and codes.iloc[-1] == "pseudobulk")
-    check("blocks in source order", [Path(r[0]).name.split("_", 1)[1] for r in rows] == ["single_cell", "bulk", "pseudobulk"])
+    check("blocks in source order",
+          [Path(r[0]).name.split("_", 1)[1].rsplit("_c", 1)[0] for r in rows] == ["single_cell", "bulk", "pseudobulk"])
     check("dense source read too", len(rows[1][3]) > 0)
     check("no staged copies left", not (store / pre.TRANSIENT_DIR).exists() and not list(store.rglob("*.h5ad")))
     check("sources untouched by the mix", before == {k: _sha(p) for k, p in paths.items()})
@@ -251,6 +265,51 @@ def check_cli(root: Path, paths: dict[str, Path]) -> None:
     check("non-empty output refused without --overwrite", raises(lambda: pre.main(pre.get_args()), FileExistsError))
 
 
+def check_transient_chunks(root: Path) -> None:
+    """Large sources: int32 transient files in consecutive chunks, rows and obs in order."""
+    import anndata as ad
+
+    print("\n-- transient files: int32 indices, chunked --")
+    n, genes = 50, [f"G{i}" for i in range(20)]
+    X = sp.csr_matrix(RNG.poisson(1.0, size=(n, len(genes))).astype(np.float32))
+    X.indices, X.indptr = X.indices.astype(np.int64), X.indptr.astype(np.int64)  # like a >2**31-entry file
+    src = root / "data/big/big.h5ad"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    names = [f"big_{i}" for i in range(n)]
+    ad.AnnData(X=X, obs=pd.DataFrame({"tissue_general": "lung"}, index=names), var=pd.DataFrame(index=genes)).write_h5ad(src)
+
+    limit = X.nnz // 3 + 1
+    FakeCollection.loaded.clear()
+    summary = pre.build_pipeline_ready([pre.Source(path=src, modality="bulk")], root / "chunks",
+                                       obs_columns=["tissue_general"], max_transient_nnz=limit)
+    rows = json.loads((root / "chunks/mem.map/rows.json").read_text())
+    obs = pd.read_parquet(root / "chunks/obs.parquet")
+    check("source split into several transient files", len(FakeCollection.loaded) >= 3
+          and summary["sources"][0]["transient_files"] == len(FakeCollection.loaded))
+    check("every transient file has int32 indices and indptr",
+          all(i == "int32" and p == "int32" for _, i, p in FakeCollection.loaded))
+    stored = np.concatenate([np.array(r[2]) for r in rows])
+    check("rows concatenate back to the source, in order", np.array_equal(stored, X.toarray())
+          and [nm for r in rows for nm in r[3]] == names)
+    check("obs follows the same order", list(obs.index) == names)
+    check("no transient file over the limit", all(
+        int(sp.csr_matrix(np.array(r[2])).nnz) <= limit for r in rows))
+    check("summary records the transient dtypes", summary["transient_dtypes"]["indices"] == "int32"
+          and summary["verified"]["status"] == "SKIPPED")
+
+    one = sp.csr_matrix(np.ones((3, 5), dtype=np.float32))
+    one.indices, one.indptr = one.indices.astype(np.int64), one.indptr.astype(np.int64)
+    t = pre._transient_matrix(one)
+    check("_transient_matrix casts to float32 / int32", t.dtype == np.float32 and t.indices.dtype == np.int32
+          and t.indptr.dtype == np.int32 and np.array_equal(t.toarray(), one.toarray()))
+
+    class _Reader:
+        def row_nnz(self, positions):
+            return np.array([5, 50, 5, 5])
+    chunks = pre._row_chunks(_Reader(), np.arange(4), 20, max_nnz=10)
+    check("a row above the limit is a chunk of its own", [c.tolist() for c in chunks] == [[0], [1], [2, 3]])
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -259,6 +318,7 @@ def main() -> None:
         check_store(root, paths)
         check_mix(root, paths)
         check_cli(root, paths)
+        check_transient_chunks(root)
     finish()
 
 

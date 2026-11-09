@@ -413,6 +413,7 @@ def build_store_from_split(args, source, out_dir, layout, modality, rows) -> Non
         vocab_path=args.vocab_path,
         gene_column=args.gene_column,
         pb_id_column=args.pb_id_column,
+        **({"max_transient_nnz": args.max_transient_nnz} if args.max_transient_nnz else {}),
     )
     summary.update({"split": str(out_dir), "part": args.store_part})
     (store / "store.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -474,6 +475,8 @@ def get_args():
     out.add_argument("--vocab-path", type=Path, default=None, help="Existing vocab.json for the store")
     out.add_argument("--gene-column", default=None, help="var column holding the gene names")
     out.add_argument("--pb-id-column", default=None, help="Pseudobulk -> cell link column kept in the store")
+    out.add_argument("--max-transient-nnz", type=int, default=None,
+                     help="Stored entries per transient file handed to SCDL (default: the builder's)")
     args = parser.parse_args()
     if args.build_store and args.fractions and args.store_part not in [f.split("=")[0] for f in args.fractions]:
         parser.error(f"--store-part {args.store_part!r} is not one of the --fractions parts")
