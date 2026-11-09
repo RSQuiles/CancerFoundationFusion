@@ -1,7 +1,7 @@
 """Check that a training store matches its source h5ad and the file evaluation reads.
 
 Read-only diagnostic for a store built by ``build_pipeline_ready`` (or
-``split_train_test.py --build-store``). Four checks, each PASS or FAIL:
+``split_train_test.py --build-store``). Five checks, each PASS or FAIL (3 is informative):
 
 0. **Sources.** The store is built from the split's input (``split.json`` -> source path);
    reconstruction reads the mask plan's source (``layout.raw_h5ad`` unless ``--input`` was
@@ -9,6 +9,12 @@ Read-only diagnostic for a store built by ``build_pipeline_ready`` (or
    compared.
 1. **Store vs training source, row by row.** Token ids map back (through ``vocab.json``)
    to the source's in-vocabulary genes, and the stored values equal the source values.
+1b. **Corruption mechanism.** How the stored entries relate to the ones SCDL was given:
+   memmap/source inventory (dtypes, sizes, SCDL version), row pointers vs the source
+   ``indptr``, per-row identity / integer-width-misread / offset tests on the raw memmap
+   arrays, and a reproduction of the builder's conversion on ``--repro-rows`` rows with
+   variants of the transient matrix (as read, canonical CSR, float32+int32, float32+int64).
+   ``--only-diagnose`` runs this check alone and writes ``corruption.json``.
 2. **Evaluation-side gene ids.** The reconstructor maps ``var_names`` through the vocabulary;
    the builder mapped ``--gene-column`` (default: also ``var_names``). Any column whose two
    ids differ, and any mask-plan gene affected, is reported.
@@ -17,6 +23,7 @@ Read-only diagnostic for a store built by ``build_pipeline_ready`` (or
    context carries.
 
     python data_preprocess/check_store_alignment.py --modality bulk --split leiden_s0
+    python data_preprocess/check_store_alignment.py --modality bulk --split leiden_s0 --only-diagnose
     python data_preprocess/check_store_alignment.py --store <dir> --source a.h5ad \\
         --eval-source b.h5ad --test-names test.txt --out-dir out/
 
@@ -33,6 +40,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 for _p in (PROJECT_ROOT, PROJECT_ROOT / "data_preprocess"):
@@ -281,6 +289,353 @@ def check_profile(report: Report, ds, vocab: dict, eval_source: Path, test_names
 
 
 # --------------------------------------------------------------------------- #
+# 1b. corruption mechanism
+# --------------------------------------------------------------------------- #
+
+COL_WIDTHS = [("int64", "int32"), ("int64", "uint32"), ("int32", "int64"), ("int32", "uint16"),
+              ("int64", "uint16"), ("int32", "int32"), ("int64", "int64")]
+DATA_WIDTHS = [("float64", "float32"), ("float32", "float64"), ("int64", "float32"), ("int64", "int32"),
+               ("int32", "float32"), ("float32", "int32"), ("float64", "float64"), ("float32", "float32")]
+
+
+def _memmap_arrays(memmap) -> dict:
+    """``{"data", "cols", "rows"}`` arrays of an SCDL memmap dataset, found by name then shape."""
+    arrays = {k: v for k, v in vars(memmap).items() if isinstance(v, np.ndarray)}
+    found = {}
+    for role, names in (("data", ("data",)), ("cols", ("col_index", "col_ptr", "colptr", "indices")),
+                        ("rows", ("row_index", "row_ptr", "rowptr", "indptr"))):
+        for name in names:
+            if name in arrays:
+                found[role] = (name, arrays[name])
+                break
+    return found, {k: {"dtype": str(v.dtype), "shape": list(v.shape)} for k, v in arrays.items()}
+
+
+def _inventory(store: Path, memmap, reader: SourceReader) -> dict:
+    inv: dict = {}
+    try:
+        from importlib.metadata import version
+
+        inv["bionemo_scdl_version"] = version("bionemo-scdl")
+    except Exception as exc:  # not installed as a distribution, or another name
+        inv["bionemo_scdl_version"] = f"unknown ({exc.__class__.__name__})"
+    mm_dir = store / "mem.map"
+    files = {}
+    for path in sorted(mm_dir.rglob("*")) if mm_dir.exists() else []:
+        if path.is_file():
+            rel = str(path.relative_to(mm_dir))
+            files[rel] = path.stat().st_size
+            if path.suffix == ".json" and path.stat().st_size < 20_000:
+                try:
+                    inv.setdefault("json", {})[rel] = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+    inv["memmap_files"] = files
+    _, inv["memmap_arrays"] = _memmap_arrays(memmap)
+    for attr in ("dtypes", "data_dtype", "version", "mode"):
+        if hasattr(memmap, attr):
+            inv[f"memmap.{attr}"] = str(getattr(memmap, attr))
+    X = reader._file["X"]
+    import h5py
+
+    if isinstance(X, h5py.Group):
+        inv["source_X"] = {"encoding": str(X.attrs.get("encoding-type")), "shape": [int(s) for s in X.attrs.get("shape", [])],
+                           **{k: str(X[k].dtype) for k in ("data", "indices", "indptr") if k in X}}
+    else:
+        inv["source_X"] = {"encoding": "dense", "dtype": str(X.dtype), "shape": list(X.shape)}
+    return inv
+
+
+class _Stream:
+    """The entry stream SCDL was given: CSR rows of the store's source rows, in store order."""
+
+    def __init__(self, reader: SourceReader, positions: np.ndarray, in_vocab: np.ndarray, ptr: np.ndarray | None):
+        self.reader, self.positions, self.in_vocab, self.ptr = reader, positions, in_vocab, ptr
+
+    def rows(self, r0: int, r1: int):
+        pos = self.positions[r0:r1]
+        order = np.argsort(pos)
+        X = self.reader.rows(pos[order])[:, self.in_vocab].tocsr()
+        inv = np.empty_like(order)
+        inv[order] = np.arange(len(order))
+        return X[inv]
+
+    def entries(self, lo: int, hi: int):
+        """``(cols, values)`` of global entries ``[lo, hi)`` (clipped)."""
+        lo, hi = max(lo, 0), min(hi, int(self.ptr[-1]))
+        if hi <= lo:
+            return np.zeros(0, np.int64), np.zeros(0, np.float64)
+        r0 = int(np.searchsorted(self.ptr, lo, side="right") - 1)
+        r1 = int(np.searchsorted(self.ptr, hi, side="left"))
+        X = self.rows(r0, r1)
+        base = int(self.ptr[r0])
+        return X.indices[lo - base:hi - base], X.data[lo - base:hi - base]
+
+
+def _as_read(stream: _Stream, which: int, orig: str, read: str, g0: int, g1: int) -> np.ndarray:
+    """Global entries ``[g0, g1)`` as they would look if an ``orig`` array were read as ``read``."""
+    wo, wr = np.dtype(orig).itemsize, np.dtype(read).itemsize
+    e_lo, e_hi = (g0 * wr) // wo, -(-(g1 * wr) // wo) + 1
+    seg = stream.entries(e_lo, e_hi)[which]
+    view = np.frombuffer(np.asarray(seg).astype(orig).tobytes(), dtype=read)
+    skip = (g0 * wr - e_lo * wo) // wr
+    out = np.full(g1 - g0, np.nan)
+    got = view[skip:skip + (g1 - g0)].astype(np.float64)
+    out[:len(got)] = got
+    return out
+
+
+def _match(a, b) -> float:
+    a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
+    n = min(len(a), len(b))
+    return float(np.mean(a[:n] == b[:n])) if n else float("nan")
+
+
+def _find_offset(stream: _Stream, values: np.ndarray, g0: int, window: int) -> int | None:
+    """Offset ``d`` such that the stored values equal the original stream at ``g0 + d``."""
+    probe = values[values != 0][:16]
+    if len(probe) < 4:
+        return None
+    lo = max(g0 - window, 0)
+    _, seg = stream.entries(lo, g0 + len(values) + window)
+    seg = np.asarray(seg, dtype=np.float64)
+    nz = np.flatnonzero(seg != 0)
+    segnz = seg[nz]
+    for c in np.flatnonzero(segnz == probe[0]):
+        if c + len(probe) <= len(segnz) and np.array_equal(segnz[c:c + len(probe)], probe):
+            first_stored = int(np.flatnonzero(values != 0)[0])
+            return int(lo + nz[c] - (g0 + first_stored))
+    return None
+
+
+def _diagnose_rows(stream: _Stream, data, cols, rp, ds, rows: list[int]) -> list[dict]:
+    out = []
+    mean_nnz = float(stream.ptr[-1] / max(len(stream.ptr) - 1, 1))
+    for r in rows:
+        g0, g1 = int(rp[r]), int(rp[r + 1])
+        e0, e1 = int(stream.ptr[r]), int(stream.ptr[r + 1])
+        sc, sv = np.asarray(cols[g0:g1]), np.asarray(data[g0:g1])
+        src = stream.rows(r, r + 1)
+        res = {"row": r, "obs_name": str(ds.obs.index[r]), "stored_entries": g1 - g0, "expected_entries": e1 - e0,
+               "stored_start": g0, "expected_start": e0,
+               "stored_nonzero": int((sv != 0).sum()), "expected_nonzero": int((src.data != 0).sum()),
+               "source_row_sorted_indices": bool(np.all(np.diff(src.indices) > 0)),
+               "source_row_explicit_zeros": int((src.data == 0).sum()),
+               # Global-position tests assume the stream has exactly the indptr's entries.
+               "stream_consistent": bool(src.nnz == e1 - e0)}
+        oc, ov = stream.entries(g0, g1)
+        res["identity_same_global_position"] = {"cols": _match(sc, oc), "values": _match(sv, ov)}
+        res["identity_own_row"] = {"cols": _match(sc, src.indices), "values": _match(sv, src.data)}
+        res["cols_width_views"] = {f"{o}->{w}": _match(sc, _as_read(stream, 0, o, w, g0, g1)) for o, w in COL_WIDTHS}
+        res["data_width_views"] = {f"{o}->{w}": _match(sv, _as_read(stream, 1, o, w, g0, g1)) for o, w in DATA_WIDTHS}
+        res["value_offset_in_stream"] = _find_offset(stream, sv, g0, int(5 * mean_nnz))
+        # Read path: the dense row SingleCellDataset returns vs the raw arrays placed by column.
+        dense = ds[r]["expressions"].numpy()[1:].astype(np.float64)
+        raw = np.zeros_like(dense)
+        ok_cols = (sc >= 0) & (sc < len(raw))
+        raw[sc[ok_cols].astype(np.int64)] = sv[ok_cols]
+        res["dataset_row_equals_raw_arrays"] = bool(np.array_equal(dense, raw))
+        out.append(res)
+    return out
+
+
+def _diagnosis_line(ptr_test: dict, rows: list[dict]) -> str:
+    def mean(key, sub):
+        vals = [r[key][sub] for r in rows if np.isfinite(r[key][sub])]
+        return float(np.mean(vals)) if vals else float("nan")
+
+    parts = []
+    if not ptr_test.get("available"):
+        parts.append("row pointers: not testable (expected nnz unknown)")
+    elif ptr_test["row_pointers_equal"]:
+        parts.append("row pointers: correct")
+    else:
+        parts.append(f"row pointers: WRONG (equal {ptr_test['fraction_equal']:.2%}, "
+                     f"x2 {ptr_test['fraction_twice']:.2%}, /2 {ptr_test['fraction_half']:.2%})")
+    if not all(r["dataset_row_equals_raw_arrays"] for r in rows):
+        parts.append("read path: get_row_padded differs from the raw arrays")
+    if mean("identity_same_global_position", "cols") > 0.99 and mean("identity_same_global_position", "values") > 0.99:
+        parts.append("memmap arrays hold the original entries")
+        if ptr_test.get("available") and not ptr_test["row_pointers_equal"]:
+            parts.append("=> rows are cut at the wrong boundaries")
+        return "; ".join(parts)
+    for key, label in (("cols_width_views", "column indices"), ("data_width_views", "values")):
+        scores = {k: np.nanmean([r[key][k] for r in rows]) for k in rows[0][key]}
+        best = max(scores, key=lambda k: -1 if np.isnan(scores[k]) else scores[k])
+        same = best.split("->")[0] == best.split("->")[1]
+        if scores[best] > 0.9:
+            parts.append(f"{label}: {'intact' if same else 'written as ' + best.replace('->', ', read as ')} "
+                         f"({scores[best]:.2%} match)")
+        else:
+            parts.append(f"{label}: no width view explains them (best {best} {scores[best]:.2%})")
+    offsets = {r["value_offset_in_stream"] for r in rows}
+    if offsets - {None, 0}:
+        parts.append(f"stored values found in the stream at offsets {sorted(o for o in offsets if o is not None)}")
+    return "; ".join(parts)
+
+
+def _repro(reader: SourceReader, positions: np.ndarray, in_vocab: np.ndarray, names, vocab: dict,
+           scratch: Path) -> dict:
+    """Run the builder's exact conversion on ``positions`` with variants of the transient matrix."""
+    import shutil
+
+    import anndata as ad
+    from bionemo.scdl.io.single_cell_collection import SingleCellCollection
+    from bionemo.scdl.io.single_cell_memmap_dataset import SingleCellMemMapDataset
+
+    from bulk_sc_data_preprocessing import GENE_ID, _load_into_collection
+
+    order = np.argsort(positions)
+    X0 = reader.rows(positions[order])[:, in_vocab].tocsr()
+    gene_names = names[in_vocab]
+    ids = np.array([vocab[g] for g in gene_names])
+    expected = X0.toarray().astype(np.float64)
+
+    def canonical(X):
+        X = X.copy()
+        X.sum_duplicates()
+        X.sort_indices()
+        return X
+
+    def cast(X, data, idx, ptr):
+        X = X.copy()
+        X.data, X.indices, X.indptr = X.data.astype(data), X.indices.astype(idx), X.indptr.astype(ptr)
+        return X
+
+    variants = {
+        "as_read": (lambda X: X, True),
+        "as_read_keep_features": (lambda X: X, False),
+        "canonical": (canonical, True),
+        "f32_i32": (lambda X: cast(canonical(X), np.float32, np.int32, np.int64), True),
+        "f32_i64": (lambda X: cast(canonical(X), np.float32, np.int64, np.int64), True),
+    }
+    results = {"rows": int(len(positions)), "source_dtypes": {
+        "data": str(X0.data.dtype), "indices": str(X0.indices.dtype), "indptr": str(X0.indptr.dtype)}}
+    obs_index = pd.Index([str(i) for i in range(len(positions))])
+    for name, (transform, drop_features) in variants.items():
+        work = scratch / name
+        shutil.rmtree(work, ignore_errors=True)
+        work.mkdir(parents=True)
+        X = transform(X0)
+        tmp = work / "transient.h5ad"
+        ad.AnnData(X=X, obs=pd.DataFrame(index=obs_index), var=pd.DataFrame({GENE_ID: ids}, index=gene_names)).write_h5ad(tmp)
+        try:
+            collection = SingleCellCollection(str(work / "tmp"))
+            _load_into_collection(collection, tmp)
+            mm_path = work / "mem.map"
+            collection.flatten(mm_path, destroy_on_copy=True)
+            if drop_features and (mm_path / "features/dataframe_00.parquet").is_file():
+                (mm_path / "features/dataframe_00.parquet").unlink()  # as build_pipeline_ready does
+            mm = SingleCellMemMapDataset(str(mm_path))
+            lookup = np.full(int(ids.max()) + 1, -1, dtype=np.int64)
+            lookup[ids] = np.arange(len(ids))
+            bad, nnz_ratio = 0, []
+            for i in range(len(positions)):
+                exp_row, feats = mm.get_row_padded(i, return_features=True, feature_vars=[GENE_ID])
+                exp_row = np.asarray(exp_row, dtype=np.float64)
+                feat_ids = np.asarray(feats[0]).astype(np.int64)
+                ok = (feat_ids >= 0) & (feat_ids < len(lookup))
+                col = np.where(ok, lookup[np.clip(feat_ids, 0, len(lookup) - 1)], -1)
+                want = np.where(col >= 0, expected[i, np.maximum(col, 0)], 0.0)
+                if not np.array_equal(exp_row, want):
+                    bad += 1
+                nnz_ratio.append((exp_row != 0).sum() / max((want != 0).sum(), 1))
+            _, arrays = _memmap_arrays(mm)
+            results[name] = {"status": "PASS" if bad == 0 else "FAIL", "rows_wrong": bad,
+                             "median_stored_over_expected_nonzero": float(np.median(nnz_ratio)),
+                             "transient_dtypes": {"data": str(X.data.dtype), "indices": str(X.indices.dtype),
+                                                  "indptr": str(X.indptr.dtype)},
+                             "memmap_arrays": arrays}
+        except Exception as exc:
+            results[name] = {"status": "ERROR", "error": f"{exc.__class__.__name__}: {exc}"}
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        print(f"    repro {name:24s} {results[name].get('status')} "
+              f"{results[name].get('rows_wrong', '')} {results[name].get('error', '')}")
+    return results
+
+
+def check_corruption(report: Report, ds, vocab: dict, source: Path, store: Path, gene_column: str | None,
+                     n_rows: int, repro_rows: int, scratch: Path | None, rng: np.random.Generator) -> None:
+    import h5py
+
+    memmap = ds.memmap
+    with SourceReader(source) as reader:
+        inventory = _inventory(store, memmap, reader)
+        print("\n  inventory:")
+        print(json.dumps({k: v for k, v in inventory.items() if k != "json"}, indent=2, default=str))
+        found, _ = _memmap_arrays(memmap)
+        if set(found) != {"data", "cols", "rows"}:
+            report.add("1b. corruption mechanism", False, note="could not identify the memmap arrays",
+                       inventory=inventory)
+            return
+        data, cols, rp = found["data"][1], found["cols"][1], found["rows"][1]
+
+        in_vocab, names = builder_genes(reader, vocab, gene_column)
+        positions = reader.obs.index.astype(str).get_indexer(ds.obs.index.astype(str))
+        if (positions < 0).any():
+            report.add("1b. corruption mechanism", False, note="store rows missing from the source",
+                       missing=int((positions < 0).sum()))
+            return
+        monotonic = bool(np.all(np.diff(positions) > 0))
+
+        # Global pointer test from the source indptr (exact when every gene is in the vocabulary).
+        X = reader._file["X"]
+        ptr_test: dict = {"available": False}
+        ptr = None
+        if isinstance(X, h5py.Group) and str(X.attrs.get("encoding-type")) == "csr_matrix" and in_vocab.all():
+            nnz = np.diff(X["indptr"][:])
+            ptr = np.concatenate([[0], np.cumsum(nnz[positions])]).astype(np.int64)
+            rp_arr = np.asarray(rp, dtype=np.int64)
+            n = min(len(rp_arr), len(ptr))
+            ptr_test = {"available": True, "stored_rows": int(len(rp_arr) - 1), "expected_rows": int(len(ptr) - 1),
+                        "stored_total_entries": int(len(data)), "stored_last_pointer": int(rp_arr[-1]),
+                        "expected_total_entries": int(ptr[-1]),
+                        "fraction_equal": float(np.mean(rp_arr[:n] == ptr[:n])),
+                        "fraction_twice": float(np.mean(rp_arr[1:n] == 2 * ptr[1:n])),
+                        "fraction_half": float(np.mean(2 * rp_arr[1:n] == ptr[1:n])),
+                        "first_mismatch_row": (int(np.flatnonzero(rp_arr[:n] != ptr[:n])[0])
+                                               if (rp_arr[:n] != ptr[:n]).any() else None)}
+            ptr_test["row_pointers_equal"] = ptr_test["fraction_equal"] == 1.0 and len(rp_arr) == len(ptr)
+        else:
+            ptr_test["reason"] = "source X is not CSR or not every gene is in the vocabulary"
+        print("\n  row pointers:", json.dumps(ptr_test, default=str))
+
+        rows_out: list[dict] = []
+        if ptr is not None:
+            stream = _Stream(reader, positions, in_vocab, ptr)
+            picks = sorted({0, 1, *rng.choice(len(ds), size=max(n_rows - 2, 0), replace=False).tolist()})
+            rows_out = _diagnose_rows(stream, data, cols, rp, ds, picks)
+            for r in rows_out:
+                print(f"\n  row {r['row']} ({r['obs_name']}): stored {r['stored_entries']} entries "
+                      f"({r['stored_nonzero']} non-zero) vs expected {r['expected_entries']} ({r['expected_nonzero']})")
+                print(f"    identity same position: {r['identity_same_global_position']}, own row: {r['identity_own_row']}")
+                print(f"    best col view: {max(r['cols_width_views'].items(), key=lambda kv: np.nan_to_num(kv[1]))}, "
+                      f"best data view: {max(r['data_width_views'].items(), key=lambda kv: np.nan_to_num(kv[1]))}")
+                print(f"    value offset in stream: {r['value_offset_in_stream']}, "
+                      f"dataset row == raw arrays: {r['dataset_row_equals_raw_arrays']}")
+        repro = None
+        if repro_rows > 0 and scratch is not None:
+            print(f"\n  reproducing the conversion on {repro_rows} rows under {scratch}")
+            take = positions[:repro_rows]
+            repro = _repro(reader, take, in_vocab, names, vocab, scratch)
+
+    line = _diagnosis_line(ptr_test, rows_out) if rows_out else "per-row analysis unavailable"
+    if repro:
+        broken = repro.get("as_read", {}).get("status") == "FAIL"
+        fixes = [k for k in ("canonical", "f32_i32", "f32_i64", "as_read_keep_features")
+                 if repro.get(k, {}).get("status") == "PASS"]
+        if broken:
+            line += f"; repro: as_read FAILS, clean variants: {fixes or 'none'}"
+        elif repro.get("as_read", {}).get("status") == "PASS":
+            line += "; repro: as_read is clean at this size (size- or paging-dependent: try more --repro-rows)"
+    corrupt = bool(rows_out) and not all(
+        r["identity_own_row"]["values"] == 1.0 and r["stored_entries"] == r["expected_entries"] for r in rows_out)
+    report.add("1b. corruption mechanism", not corrupt, diagnosis=line, rows_in_source_order=monotonic,
+               inventory=inventory, row_pointers=ptr_test, rows=rows_out, repro=repro)
+
+
+# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 
@@ -303,6 +658,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--context-len", type=int, default=720)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out-dir", type=Path, default=None)
+    diag = p.add_argument_group("1b. corruption mechanism")
+    diag.add_argument("--only-diagnose", action="store_true",
+                      help="Run only check 1b (writes corruption.json instead of report.json)")
+    diag.add_argument("--diag-rows", type=int, default=5, help="Rows analysed entry by entry (rows 0 and 1 always)")
+    diag.add_argument("--repro-rows", type=int, default=2000,
+                      help="Rows converted again through SCDL with variants of the transient matrix (0 = skip)")
+    diag.add_argument("--scratch", type=Path, default=None,
+                      help="Directory for the reproduction (default: <out-dir>/_repro, deleted afterwards)")
     return p
 
 
@@ -362,20 +725,25 @@ def main(argv: list[str] | None = None) -> int:
     report = Report()
     rng = np.random.default_rng(args.seed)
 
-    check_sources(report, source, eval_source, test_names, args.n_rows, rng)
-    check_store_rows(report, ds, vocab, source, args.gene_column, args.n_rows, rng)
-    check_eval_ids(report, vocab, eval_source, args.gene_column, plan_path)
-    if test_names:
-        check_profile(report, ds, vocab, eval_source, test_names, args.profile_rows, args.n_bins,
-                      args.context_len, rng)
-    else:
-        print("\n[SKIP] 3. data profile: no test row names")
-
     out_dir.mkdir(parents=True, exist_ok=True)
+    scratch = args.scratch or out_dir / "_repro"
+    if not args.only_diagnose:
+        check_sources(report, source, eval_source, test_names, args.n_rows, rng)
+        check_store_rows(report, ds, vocab, source, args.gene_column, args.n_rows, rng)
+    check_corruption(report, ds, vocab, source, store, args.gene_column, args.diag_rows,
+                     args.repro_rows, scratch, rng)
+    if not args.only_diagnose:
+        check_eval_ids(report, vocab, eval_source, args.gene_column, plan_path)
+        if test_names:
+            check_profile(report, ds, vocab, eval_source, test_names, args.profile_rows, args.n_bins,
+                          args.context_len, rng)
+        else:
+            print("\n[SKIP] 3. data profile: no test row names")
+
     payload = {"store": str(store), "source": str(source), "eval_source": str(eval_source),
                "plan": str(plan_path) if plan_path else None, "gene_column": args.gene_column,
                "seed": args.seed, "checks": report.checks}
-    out = out_dir / "report.json"
+    out = out_dir / ("corruption.json" if args.only_diagnose else "report.json")
     out.write_text(json.dumps(payload, indent=2, default=lambda o: o.item() if hasattr(o, "item") else str(o)),
                    encoding="utf-8")
     print(f"\n{'FAIL' if report.failed else 'PASS'}: wrote {out}")
