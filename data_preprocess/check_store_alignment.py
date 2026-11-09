@@ -377,7 +377,8 @@ def _as_read(stream: _Stream, which: int, orig: str, read: str, g0: int, g1: int
     wo, wr = np.dtype(orig).itemsize, np.dtype(read).itemsize
     e_lo, e_hi = (g0 * wr) // wo, -(-(g1 * wr) // wo) + 1
     seg = stream.entries(e_lo, e_hi)[which]
-    view = np.frombuffer(np.asarray(seg).astype(orig).tobytes(), dtype=read)
+    raw = np.asarray(seg).astype(orig).tobytes()
+    view = np.frombuffer(raw[: len(raw) // wr * wr], dtype=read)  # a wider read can leave a partial tail
     skip = (g0 * wr - e_lo * wo) // wr
     out = np.full(g1 - g0, np.nan)
     got = view[skip:skip + (g1 - g0)].astype(np.float64)
