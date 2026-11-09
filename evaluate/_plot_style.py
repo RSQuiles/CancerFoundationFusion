@@ -144,5 +144,10 @@ def draw_metric_table(frame: pd.DataFrame, labels: list[str], columns: list[Col]
         ax.plot([xs[1 + i0]] * 2, [row_h * 0.2, total_h - 0.15], color=HAIRLINE, linewidth=0.8)
 
     fig.suptitle(title, x=0.02, ha="left", fontsize=10, color=INK)
-    fig.text(0.02, 0.04, footnote, fontsize=7, color=MUTED, ha="left")
+    # Wrapped to the table width (about 17 characters per inch at 7 pt), so a long note
+    # never widens the figure; the lines run below the table and bbox_inches="tight" keeps them.
+    import textwrap
+
+    fig.text(0.02, 0.07, "\n".join(textwrap.wrap(footnote, max(40, int(total_w * 17)), break_on_hyphens=False)),
+             fontsize=7, color=MUTED, ha="left", va="top")
     return fig

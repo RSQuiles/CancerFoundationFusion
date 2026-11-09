@@ -5,8 +5,9 @@
 Reads ``results/tasks/reconstruction/<model>/<plan>/entries.parquet`` per model, keeps
 the masked (sample, gene) entries every model scored, and recomputes the space-free
 metrics there (per-sample Pearson / Spearman, zero AUROC, global Spearman), which are
-comparable across target spaces. Native-space metrics are listed only for models that
-share a space. Writes ``results/assessment/reconstruction_<plan>[_<name>]/``:
+comparable across target spaces; for bins runs with tie ranges the correlations use the
+tie midpoint as the target (``metrics.correlation_target``, column ``tie_midpoint_target``).
+Native-space metrics are listed only for models that share a space. Writes ``results/assessment/reconstruction_<plan>[_<name>]/``:
 ``table.csv``, ``per_sample_spearman.png`` and ``manifest.json`` listing the models.
 """
 

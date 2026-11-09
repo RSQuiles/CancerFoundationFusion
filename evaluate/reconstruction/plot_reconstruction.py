@@ -29,7 +29,10 @@ Plots (``--plots``; default all), each drawn once per group it applies to:
 edges gets a random bin among several equally correct ones. Runs that recorded those
 ranges (``target_lo`` / ``target_hi`` in ``entries.parquet``) are scored tie-aware: the
 error is the distance to the nearest equally correct bin, and a prediction inside the
-range is exact. Older runs fall back to the raw bin error, which the figure notes.
+range is exact. Older runs fall back to the raw bin error, which the figure notes. The
+correlation and rank plots of those runs use the range midpoint as the target
+(``metrics.correlation_target``), so tied values share a rank instead of a random order;
+the figures and the manifest (``tie_midpoint_models``) name the models this applies to.
 
 Add a plot by writing a ``compute`` (the plotted numbers, saved as ``<plot>.csv``) and
 a ``draw`` function and one ``PlotSpec`` in ``PLOTS``; give a new space its table
@@ -124,6 +127,8 @@ class Group:
     n_shared: int
     tie_aware: bool = False
     notes: list[str] = field(default_factory=list)
+    # Models whose correlation / rank target is the tie midpoint (runs with tie ranges).
+    midpoint_models: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -195,6 +200,8 @@ def build_groups(frames: dict[str, pd.DataFrame], cards: dict[str, dict]) -> lis
     if len(frames) > 1:
         keys, subs = C.shared_entries(frames)
         groups.append(Group(CROSS_GROUP, None, list(frames), subs, len(keys)))
+    for group in groups:
+        group.midpoint_models = [m for m, f in group.frames.items() if M.has_ties(f)]
     return groups
 
 
@@ -302,11 +309,14 @@ def compute_rank_mae_by_target(group: Group, args) -> pd.DataFrame:
     n_q = max(1, int(args.n_quantiles))
     out = []
     for label, col, frame in predictor_rows(group, args.baselines):
-        by = frame.groupby("sample")
-        n = by["target"].transform("size").to_numpy(float)
+        # Ranks of the tie midpoint when the run has tie ranges (metrics.correlation_target):
+        # genes the binning tied share a rank instead of a random order.
+        ranked = frame.assign(_rank_target=M.correlation_target(frame))
+        by = ranked.groupby("sample")
+        n = by["_rank_target"].transform("size").to_numpy(float)
         scale = np.where(n > 1, n - 1, np.nan)
         # Percentile ranks within the sample, 0 = lowest, 1 = highest; ties get the average rank.
-        rt = (by["target"].rank(method="average").to_numpy(float) - 1) / scale
+        rt = (by["_rank_target"].rank(method="average").to_numpy(float) - 1) / scale
         rp = (by[col].rank(method="average").to_numpy(float) - 1) / scale
         ok = np.isfinite(rt) & np.isfinite(rp)
         decile = np.minimum((rt[ok] * n_q).astype(int), n_q - 1)
@@ -344,6 +354,14 @@ def _footnote(group: Group, extra: str = "") -> str:
         parts.append(extra)
     parts.extend(n[0].upper() + n[1:] + "." for n in group.notes)
     return " ".join(parts)
+
+
+def _midpoint_note(group: Group) -> str:
+    """Footnote for plots built on correlations or ranks: whose target is the tie midpoint."""
+    if not group.midpoint_models:
+        return ""
+    return (f"Correlations and ranks of {', '.join(group.midpoint_models)} use the midpoint of each "
+            f"tied bin range as the target, so genes the binning tied share a rank.")
 
 
 def _add_footnote(fig, text: str) -> None:
@@ -414,7 +432,7 @@ def draw_rank_mae_by_target(data: pd.DataFrame, group: Group, args):
     return _line_panel(data, group, "quantile", "mae_rank", "Target rank within the sample (quantile, low to high)",
                        "Mean absolute rank error", _title(group, "rank error by target", args.plan_id),
                        _footnote(group, "Ranks are percentiles over each sample's shared masked genes; "
-                                        "tied targets (zeros, tied bins) share their average rank."),
+                                        "tied targets share their average rank. " + _midpoint_note(group)),
                        xticks=(ticks, [f"Q{q + 1}" for q in ticks]))
 
 
@@ -426,14 +444,15 @@ def _draw_table(data: pd.DataFrame, group: Group, args, columns: list[Col], what
 def draw_metrics_table(data: pd.DataFrame, group: Group, args):
     extra = ""
     if group.space == "bins":
-        extra = ("MAE and accuracy count any bin a tied value could have been given as correct."
+        extra = ("MAE and accuracy count any bin a tied value could have been given as correct. "
                  if group.tie_aware else "")
+    extra += _midpoint_note(group)
     return _draw_table(data, group, args, drawn_columns(group), "global metrics", extra)
 
 
 def draw_space_free_table(data: pd.DataFrame, group: Group, args):
     return _draw_table(data, group, args, SPACE_FREE_TABLE, "space-free metrics",
-                       "Scale-invariant, so comparable across target spaces.")
+                       "Scale-invariant, so comparable across target spaces. " + _midpoint_note(group))
 
 
 def draw_per_sample_spearman(data: pd.DataFrame, group: Group, args):
@@ -456,7 +475,8 @@ def draw_per_sample_spearman(data: pd.DataFrame, group: Group, args):
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     ax.set_title(_title(group, "per-sample Spearman", args.plan_id), fontsize=10, color=INK, loc="left")
-    _add_footnote(fig, _footnote(group, "Boxes: quartiles; whiskers: 1.5 IQR; outliers hidden."))
+    _add_footnote(fig, _footnote(group, "Boxes: quartiles; whiskers: 1.5 IQR; outliers hidden. "
+                                        + _midpoint_note(group)))
     return fig
 
 
@@ -539,7 +559,8 @@ def main(argv: list[str] | None = None) -> Path | None:
     (out_dir / ASSESSMENT_MANIFEST).write_text(json.dumps({
         "analysis": "reconstruction_plot", "plan": plan.plan_id, "selection": selection, "models": models,
         "groups": {g.name: {"space": g.space, "models": g.models, "n_shared_entries": g.n_shared,
-                            "tie_aware": g.tie_aware, "notes": g.notes} for g in groups},
+                            "tie_aware": g.tie_aware, "tie_midpoint_models": g.midpoint_models,
+                            "notes": g.notes} for g in groups},
         "baselines": bool(args.baselines), "plots": written, "skipped": skipped,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }, indent=2), encoding="utf-8")

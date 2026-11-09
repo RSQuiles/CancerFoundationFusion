@@ -12,6 +12,15 @@ Two families:
 Every metric is also computed for two baselines on the same entries, so a number has a
 reference: ``gene_mean`` (each gene's mean target over the plan's samples where it was
 NOT masked) and ``sample_mean`` (each sample's mean target over its context genes).
+
+**Tied bins in the correlations.** A CancerFoundation target on repeated quantile edges
+is one random bin of an equally correct range (see ``reconstructors.bin_tie_range``), so
+two genes with the same raw value can carry different bins. When a run recorded the
+ranges, the correlation metrics (per-sample Pearson / Spearman, their non-zero variants,
+the global Spearman) use the range midpoint ``(target_lo + target_hi) / 2`` as the target
+(``correlation_target``): equal raw values then tie, as continuous targets (BulkFormer)
+do, instead of being ordered at random. Every result says whether it did
+(``TIE_MIDPOINT_FLAG``). Native metrics keep their own tie handling (``tie_error``).
 """
 
 from __future__ import annotations
@@ -23,6 +32,8 @@ PREDICTORS = ("pred", "gene_mean", "sample_mean")
 # Per entry, the bins a tied target could equally have been given (bins space only; see
 # reconstructors.bin_tie_range). Absent in runs made before they were recorded.
 TIE_COLUMNS = ("target_lo", "target_hi")
+# Key in space_free's output: True when the correlations used the tie midpoint.
+TIE_MIDPOINT_FLAG = "tie_midpoint_target"
 
 
 def baselines(targets: np.ndarray, plan) -> tuple[np.ndarray, np.ndarray]:
@@ -80,6 +91,19 @@ def tie_error(frame: pd.DataFrame, col: str = "pred") -> np.ndarray:
     return np.maximum(np.maximum(lo - p, 0.0), p - hi)
 
 
+def correlation_target(frame: pd.DataFrame) -> np.ndarray:
+    """The target the correlation and rank metrics use.
+
+    With tie ranges (bins runs that recorded them): the midpoint of each entry's range, so
+    values the binning tied share one target instead of a random bin each; the midpoint
+    is also the mean of that random draw. Otherwise the target as stored. Zeros are
+    unchanged either way (their range is [0, 0]).
+    """
+    if has_ties(frame):
+        return ((frame["target_lo"].to_numpy(float) + frame["target_hi"].to_numpy(float)) / 2)
+    return frame["target"].to_numpy(float)
+
+
 def _corr(x: np.ndarray, y: np.ndarray) -> float:
     if len(x) < 3 or np.std(x) == 0 or np.std(y) == 0:
         return np.nan
@@ -105,10 +129,14 @@ def auroc(scores: np.ndarray, labels: np.ndarray) -> float:
 
 
 def per_sample(frame: pd.DataFrame, col: str = "pred") -> pd.DataFrame:
-    """Per-sample Pearson / Spearman of ``col`` against the target (all and non-zero targets)."""
+    """Per-sample Pearson / Spearman of ``col`` against the target (all and non-zero targets).
+
+    The target is ``correlation_target`` (the tie midpoint when the run has tie ranges).
+    """
     out = []
+    frame = frame.assign(_corr_target=correlation_target(frame))
     for sample, g in frame.groupby("sample", sort=False):
-        t, p = g["target"].to_numpy(), g[col].to_numpy()
+        t, p = g["_corr_target"].to_numpy(), g[col].to_numpy()
         nz = t != 0
         out.append({"sample": sample, "n": len(g), "pearson": _corr(t, p), "spearman": _spearman(t, p),
                     "spearman_nonzero": _spearman(t[nz], p[nz]) if nz.sum() >= 3 else np.nan})
@@ -123,14 +151,19 @@ def _summary(values: pd.Series, prefix: str) -> dict:
 
 
 def space_free(frame: pd.DataFrame, col: str = "pred") -> dict:
-    """Scale-invariant metrics of predictor ``col``."""
+    """Scale-invariant metrics of predictor ``col``.
+
+    Correlations use ``correlation_target``; ``TIE_MIDPOINT_FLAG`` records whether that
+    was the tie midpoint. The zero AUROC needs no midpoint (a zero is never tied).
+    """
     ps = per_sample(frame, col)
     t, p = frame["target"].to_numpy(), frame[col].to_numpy()
     zero = t == 0
     out = {"n_entries": int(len(frame)), "n_samples": int(frame["sample"].nunique()),
-           "spearman_global": _spearman(t, p), "zero_frac": float(zero.mean()) if len(t) else np.nan,
+           "spearman_global": _spearman(correlation_target(frame), p),
+           "zero_frac": float(zero.mean()) if len(t) else np.nan,
            # A lower prediction should mean "more likely zero", hence the minus sign.
-           "auroc_zero": auroc(-p, zero)}
+           "auroc_zero": auroc(-p, zero), TIE_MIDPOINT_FLAG: has_ties(frame)}
     for metric in ("pearson", "spearman", "spearman_nonzero"):
         out.update(_summary(ps[metric], metric))
     return out

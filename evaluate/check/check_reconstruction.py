@@ -170,6 +170,22 @@ def check_ties() -> None:
           "mae_tie" not in M.native(frame.drop(columns=["target_lo", "target_hi"]), "bins"))
     check("mae_by_target gains mae_tie", "mae_tie" in M.mae_by_target(frame, "bins").columns)
 
+    # Tie midpoint as the correlation target: two genes with the same raw value were given
+    # bins 4 and 6 at random (range [4, 6]); the midpoint makes them tie.
+    tied = pd.DataFrame({"sample": "s", "target": [0., 1., 4., 6., 9.], "target_lo": [0., 1., 4., 4., 9.],
+                         "target_hi": [0., 1., 6., 6., 9.], "pred": [0.1, 1.2, 5.2, 4.8, 8.7]})
+    check("correlation target is the tie midpoint",
+          np.allclose(M.correlation_target(tied), [0, 1, 5, 5, 9]))
+    sf = M.space_free(tied)
+    check("predicting the tied pair in either order costs nothing",
+          np.isclose(sf["spearman_mean"], M.space_free(tied.assign(pred=[0.1, 1.2, 4.8, 5.2, 8.7]))["spearman_mean"]))
+    check("midpoint flagged", sf[M.TIE_MIDPOINT_FLAG] is True)
+    raw = tied.drop(columns=list(M.TIE_COLUMNS))
+    check("without ranges: stored target, flag off", np.allclose(M.correlation_target(raw), raw["target"])
+          and M.space_free(raw)[M.TIE_MIDPOINT_FLAG] is False)
+    check("random tie order lowers Spearman without the midpoint",
+          M.space_free(raw)["spearman_mean"] < sf["spearman_mean"])
+
 
 @register("_fake_perfect")
 class _Perfect(Reconstructor):
@@ -304,6 +320,12 @@ def check_plots(tmp: Path, layout: ExperimentLayout) -> None:
     check("rank error in [0, 1] by decile", rank["mae_rank"].between(0, 1).all() and rank["quantile"].max() <= 9)
     by_target = pd.read_csv(out / "ln_tpm1" / "mae_by_target.csv")
     check("zero targets get their own group", "zero" in set(by_target["label"]))
+    check("manifest names the tie-midpoint models",
+          manifest["groups"]["all"]["tie_midpoint_models"] == ["cf_good", "cf_bad"]
+          and manifest["groups"]["ln_tpm1"]["tie_midpoint_models"] == [])
+    free = pd.read_csv(out / "all" / "space_free_table.csv").set_index("row")
+    check("space-free table flags the midpoint per model",
+          bool(free.loc["cf_good", "tie_midpoint_target"]) and not bool(free.loc["bf", "tie_midpoint_target"]))
 
     alone = plot_reconstruction.main(base + ["--models", "cf_good", "--plots", "mae_by_bin"])
     check("single model: no cross-space group",

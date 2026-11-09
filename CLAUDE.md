@@ -298,6 +298,13 @@ python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test
     `mae_tie`, `mse_tie`, `mae_nonzero_target_tie`, `acc_exact_tie` and `acc_within1_tie`,
     where the error is the distance to the nearest correct bin. The raw metrics stay. Runs
     made before this have no ranges; rerun `run_reconstruction` to get them.
+  - **Tied bins in correlations:** with those ranges, the correlation metrics (per-sample
+    Pearson / Spearman, non-zero, global Spearman) and `rank_mae_by_target` use the range
+    midpoint `(target_lo + target_hi) / 2` as the target (`metrics.correlation_target`), so
+    genes with the same raw value tie instead of being ordered by the random bin, as they
+    would for a continuous target (BulkFormer). Flagged as `tie_midpoint_target` in every
+    space-free result (metrics.json, compare's table.csv, the plot CSVs), as
+    `tie_midpoint_models` in the plot manifest, and in the figure footnotes.
   - **Generative models:** context in the perception stream and masked genes as gen tokens,
     the training layout. Gen tokens see only the context and themselves, so many masked
     genes in one pass is exact.
