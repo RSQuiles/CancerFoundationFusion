@@ -1,10 +1,11 @@
 """Figures comparing models' reconstruction of one mask plan.
 
-    python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test:r25 \\
+    python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test:r25 --name cf_vs_bf \\
         [--models unified_v1 unified_v2 bulkformer] [--plots mae_by_bin metrics_table] [--baselines]
 
 Reads the ``run_reconstruction`` results of the selected models (``--models``; default
-every model with results on the plan). Models are grouped by target space, bins models
+every model with results on the plan). ``--name`` (required) names the comparison, so one
+plan can hold several comparisons of different models. Models are grouped by target space, bins models
 also by ``n_bins`` (``bins51``, ``ln_tpm1``, ...): native-space numbers only compare
 within a group, each on the masked entries every model of the group scored. The group
 ``all`` holds every selected model on the entries they all scored, for the space-free
@@ -34,14 +35,22 @@ correlation and rank plots of those runs use the range midpoint as the target
 (``metrics.correlation_target``), so tied values share a rank instead of a random order;
 the figures and the manifest (``tie_midpoint_models``) name the models this applies to.
 
+**Baselines** (``--baselines``): one ``gene_mean`` and one ``sample_mean`` row per space
+group, labeled ``baseline: ...``, not one per model. Every model of a group is scored on
+the same entries of the same plan, so their stored baselines are normally identical;
+they are taken from the group's first model, and if another model's differ (e.g. CF
+models with different vocabularies bin a sample differently) the figures and the
+manifest (``baseline_source``) say so. The cross-space group has no baselines (a
+baseline lives in one space).
+
 Add a plot by writing a ``compute`` (the plotted numbers, saved as ``<plot>.csv``) and
 a ``draw`` function and one ``PlotSpec`` in ``PLOTS``; give a new space its table
 columns in ``TABLE_COLUMNS`` (otherwise ``"*"`` applies).
 
-Writes ``results/tasks/reconstruction/_plots/<selection>/<plan>/<group>/`` where
-``<selection>`` is ``all_models`` when every available model is plotted and the plotted
-models joined by ``_`` otherwise: one ``.png`` / ``.pdf`` and ``.csv`` per plot, and
-``manifest.json`` (``"models"``, groups, plots) in the plan directory.
+Writes ``results/tasks/reconstruction/_plots/<plan>/<name>/<group>/``: one ``.png`` /
+``.pdf`` and ``.csv`` per plot, and ``manifest.json`` (``"models"``, groups, plots) in
+``<name>/``. Rerunning a name overwrites its figures; a group no longer plotted keeps its
+old files, so use a new name for a different set of models.
 """
 
 from __future__ import annotations
@@ -79,9 +88,10 @@ from evaluate.reconstruction import metrics as M  # noqa: E402
 from evaluate.reconstruction.mask_plan import load_plan, resolve_plan_path  # noqa: E402
 from evaluate.reconstruction.run_reconstruction import RESULTS_TASK, plan_slug  # noqa: E402
 
-ALL_MODELS = "all_models"
 CROSS_GROUP = "all"
 BASELINES = ("gene_mean", "sample_mean")
+# Row label of each baseline: one row per space group, shared by its models.
+BASELINE_LABELS = {"gene_mean": "baseline: gene mean", "sample_mean": "baseline: sample mean"}
 
 # Columns of metrics_table per space ("*": any space without its own list). The bins keys
 # are the tie-aware metrics; runs without tie ranges fall back to TIE_FALLBACK.
@@ -129,6 +139,8 @@ class Group:
     notes: list[str] = field(default_factory=list)
     # Models whose correlation / rank target is the tie midpoint (runs with tie ranges).
     midpoint_models: list[str] = field(default_factory=list)
+    # Model whose stored baselines the group shows (space groups with --baselines).
+    baseline_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -144,11 +156,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Figures comparing models' reconstruction of one mask plan.")
     parser.add_argument("--root", type=Path, default=None, help="Experiments root")
     parser.add_argument("--plan", default=None, help="MODALITY:SPLIT:PART:NAME or a .npz path")
+    parser.add_argument("--name", default=None,
+                        help="Name of this comparison (required): _plots/<plan>/<name>/")
     parser.add_argument("--models", nargs="*", default=[],
                         help="Models to plot (default: every model with results on the plan)")
     parser.add_argument("--plots", nargs="*", default=[], help="Plots to draw (default: all; see --list)")
     parser.add_argument("--baselines", action="store_true",
-                        help="Also show the gene-mean and sample-mean baselines")
+                        help="Also show the gene-mean and sample-mean baselines (one row each per space group)")
     parser.add_argument("--bin-width", type=int, default=1, help="mae_by_bin: true bins merged per point")
     parser.add_argument("--n-quantiles", type=int, default=10,
                         help="mae_by_target / rank_mae_by_target: quantile groups of the target")
@@ -160,19 +174,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 # ---- selection and groups -----------------------------------------------------
 
-def select_models(requested: list[str], available: list[str], plan_id: str) -> tuple[list[str], str]:
-    """The models to plot, in order, and the selection directory name."""
+def select_models(requested: list[str], available: list[str], plan_id: str) -> list[str]:
+    """The models to plot, in order (default: every model with results on the plan)."""
     if not available:
         sys.exit(f"Error: no model has reconstruction results on {plan_id}; run run_reconstruction first")
     if not requested:
-        return list(available), ALL_MODELS
+        return list(available)
     models = list(dict.fromkeys(requested))
     unknown = [m for m in models if m not in available]
     if unknown:
         sys.exit(f"Error: no results on {plan_id} for {unknown}; available: {available}")
-    if set(models) == set(available):
-        return models, ALL_MODELS
-    return models, "_".join(models)
+    return models
 
 
 def space_group(card: dict) -> str:
@@ -182,7 +194,23 @@ def space_group(card: dict) -> str:
     return f"bins{int(n_bins)}" if space == "bins" and n_bins is not None else str(space)
 
 
-def build_groups(frames: dict[str, pd.DataFrame], cards: dict[str, dict]) -> list[Group]:
+def baseline_source(frames: dict[str, pd.DataFrame]) -> tuple[str, list[str]]:
+    """``(model whose baselines are shown, models whose baselines differ from it)``.
+
+    ``frames`` are a group's models on their shared entries, so on the same plan their
+    stored baselines agree unless the models' targets differ.
+    """
+    models = list(frames)
+    ref = frames[models[0]].set_index(["sample", "gene"])[list(BASELINES)]
+    differ = []
+    for model in models[1:]:
+        other = frames[model].set_index(["sample", "gene"])[list(BASELINES)].reindex(ref.index)
+        if not np.allclose(ref.to_numpy(float), other.to_numpy(float), rtol=1e-5, atol=1e-6, equal_nan=True):
+            differ.append(model)
+    return models[0], differ
+
+
+def build_groups(frames: dict[str, pd.DataFrame], cards: dict[str, dict], baselines: bool = False) -> list[Group]:
     """One group per space (models in input order), plus the cross-space group."""
     by_group: dict[str, list[str]] = {}
     for model in frames:
@@ -196,6 +224,13 @@ def build_groups(frames: dict[str, pd.DataFrame], cards: dict[str, dict]) -> lis
             if not group.tie_aware:
                 stale = [m for m, f in subs.items() if not M.has_ties(f)]
                 group.notes.append(f"raw bin error: no tie ranges for {stale} (rerun run_reconstruction)")
+        if baselines and len(keys):
+            group.baseline_source, differ = baseline_source(subs)
+            if differ:
+                note = (f"baselines from {group.baseline_source}; those of {differ} differ "
+                        f"(different targets, e.g. another vocabulary)")
+                print(f"  [warn] {name}: {note}")
+                group.notes.append(note)
         groups.append(group)
     if len(frames) > 1:
         keys, subs = C.shared_entries(frames)
@@ -206,17 +241,16 @@ def build_groups(frames: dict[str, pd.DataFrame], cards: dict[str, dict]) -> lis
 
 
 def predictor_rows(group: Group, baselines: bool) -> list[tuple[str, str, pd.DataFrame]]:
-    """``(label, column, entries)`` per row: every model, then its baselines if asked.
+    """``(label, column, entries)`` per row: every model, then the group's baselines if asked.
 
-    A baseline lives in its model's space, so the cross-space group never shows them.
+    The baselines are one row each per space group (from ``group.baseline_source``), not
+    one per model. A baseline lives in one space, so the cross-space group has none.
     """
-    rows = []
-    for model, frame in group.frames.items():
-        rows.append((model, "pred", frame))
-    if baselines and group.space is not None:
-        for model, frame in group.frames.items():
-            for col in BASELINES:
-                rows.append((f"{model}:{col}", col, frame[frame[col].notna()]))
+    rows = [(model, "pred", frame) for model, frame in group.frames.items()]
+    if baselines and group.space is not None and group.baseline_source:
+        frame = group.frames[group.baseline_source]
+        for col in BASELINES:
+            rows.append((BASELINE_LABELS[col], col, frame[frame[col].notna()]))
     return rows
 
 
@@ -333,14 +367,11 @@ def table_columns(space: str | None) -> list[Col]:
 # ---- draw ---------------------------------------------------------------------
 
 def _colors(rows: list[str], group: Group) -> dict[str, tuple[str, str]]:
-    """``{row: (color, linestyle)}``: models take the categorical slots in order; baselines
-    are dashed (gene mean) or dotted (sample mean) in their model's color."""
+    """``{row: (color, linestyle)}``: models take the categorical slots in order, solid;
+    the shared baselines are grey, dashed (gene mean) or dotted (sample mean)."""
     slot = dict(zip(group.models, SERIES))
-    out = {}
-    for row in rows:
-        model, _, base = row.partition(":")
-        out[row] = (slot.get(model, MUTED), {"": "-", "gene_mean": "--", "sample_mean": ":"}[base])
-    return out
+    style = {BASELINE_LABELS["gene_mean"]: (MUTED, "--"), BASELINE_LABELS["sample_mean"]: (MUTED, ":")}
+    return {row: style.get(row, (slot.get(row, MUTED), "-")) for row in rows}
 
 
 def _title(group: Group, what: str, plan_id: str) -> str:
@@ -514,6 +545,8 @@ def main(argv: list[str] | None = None) -> Path | None:
     args = parse_with_config(build_parser(), "reconstruction_plot", argv)
     if not args.plan:
         sys.exit("Error: give --plan")
+    if not args.name and not args.list:
+        sys.exit("Error: give --name (the comparison's folder under _plots/<plan>/)")
     layout = ExperimentLayout.from_root(args.root)
     plan = load_plan(resolve_plan_path(args.plan, args.root))
     slug = plan_slug(plan)
@@ -523,12 +556,17 @@ def main(argv: list[str] | None = None) -> Path | None:
         print(f"models with results on {plan.plan_id}: {available or 'none'}")
         print(f"plots: {PLOT_NAMES}")
         return None
-    models, selection = select_models(args.models, available, plan.plan_id)
+    try:
+        out_dir = layout.task_plot_dir(RESULTS_TASK, slug, args.name)
+    except ValueError as exc:
+        sys.exit(f"Error: --name: {exc}")
+    models = select_models(args.models, available, plan.plan_id)
     plots = select_plots(args.plots)
 
     frames, cards = C.load_runs(layout, models, slug)
-    groups = build_groups(frames, cards)
-    out_dir = layout.task_plot_dir(RESULTS_TASK, selection, slug)
+    groups = build_groups(frames, cards, args.baselines)
+    if (out_dir / ASSESSMENT_MANIFEST).exists():
+        print(f"  [note] comparison '{args.name}' exists; its figures are overwritten")
     print(f"plotting {models} on {plan.plan_id} -> {out_dir}")
 
     written: dict[str, list[str]] = {}
@@ -557,10 +595,10 @@ def main(argv: list[str] | None = None) -> Path | None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / ASSESSMENT_MANIFEST).write_text(json.dumps({
-        "analysis": "reconstruction_plot", "plan": plan.plan_id, "selection": selection, "models": models,
+        "analysis": "reconstruction_plot", "plan": plan.plan_id, "name": args.name, "models": models,
         "groups": {g.name: {"space": g.space, "models": g.models, "n_shared_entries": g.n_shared,
                             "tie_aware": g.tie_aware, "tie_midpoint_models": g.midpoint_models,
-                            "notes": g.notes} for g in groups},
+                            "baseline_source": g.baseline_source, "notes": g.notes} for g in groups},
         "baselines": bool(args.baselines), "plots": written, "skipped": skipped,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }, indent=2), encoding="utf-8")

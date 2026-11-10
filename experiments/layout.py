@@ -18,9 +18,8 @@ Layout::
         ├── representation/<model>/
         ├── representation/_alignment/<model>/
         ├── tasks/<task>/<model>/
-        ├── tasks/<task>/_plots/{all_models,<m1>_<m2>_...}/<name>/   figures (+ manifest.json)
+        ├── tasks/<task>/_plots/[<plan>/]<name>/  named model comparisons (+ manifest.json)
         └── assessment/<analysis>/                (+ manifest.json listing its models)
-    └── benchmarks/{all_models,<m1>_<m2>_...}/<benchmark>/   figures (+ manifest.json)
 
 Rules every writer follows, so ``rename_model.py`` never has to guess:
 per-model output lives under a directory named after the model (never in a
@@ -234,14 +233,17 @@ class ExperimentLayout:
     def task_dir(self, task: str, model: str) -> Path:
         return self.tasks_root / task / validate_model_name(model)
 
-    def task_plot_dir(self, task: str, selection: str, name: str) -> Path:
-        """``tasks/<task>/_plots/<selection>/<name>/``: figures comparing models on one task
-        (``selection`` as in ``benchmark_plot_dir``); the manifest there lists them under
-        ``"models"``. ``_plots`` is reserved, so it never collides with a model directory."""
-        for part in (task, selection, name):
+    def task_plot_dir(self, task: str, *parts: str) -> Path:
+        """``tasks/<task>/_plots/<part>/...``: figures of one named model comparison on a
+        task, e.g. ``(reconstruction, <plan>, <name>)`` or ``(geneicl_<suite>, <name>)``.
+        The manifest there lists the models under ``"models"``. ``_plots`` is reserved, so
+        it never collides with a model directory."""
+        if not parts:
+            raise ValueError("task_plot_dir needs at least the comparison name")
+        for part in (task, *parts):
             if not _MODEL_NAME_RE.match(str(part)):
                 raise ValueError(f"Invalid task plot directory name {part!r}")
-        return self.tasks_root / task / "_plots" / selection / name
+        return self.tasks_root.joinpath(task, "_plots", *parts)
 
     @property
     def assessment_root(self) -> Path:
@@ -249,20 +251,6 @@ class ExperimentLayout:
 
     def assessment_dir(self, name: str) -> Path:
         return self.assessment_root / name
-
-    # ---- benchmark figures ------------------------------------------------
-
-    @property
-    def benchmarks_root(self) -> Path:
-        return self.root / "results" / "benchmarks"
-
-    def benchmark_plot_dir(self, selection: str, benchmark: str) -> Path:
-        """``benchmarks/<selection>/<benchmark>/``: ``selection`` is ``all_models`` or the
-        plotted models joined by ``_``; the manifest there lists them under ``"models"``."""
-        for part in (selection, benchmark):
-            if not _MODEL_NAME_RE.match(str(part)):
-                raise ValueError(f"Invalid benchmark directory name {part!r}")
-        return self.benchmarks_root / selection / benchmark
 
     # ---- everything that belongs to / mentions one model -------------------
 
@@ -292,8 +280,7 @@ class ExperimentLayout:
             files.extend(sorted(self.launches_dir.glob("*.json")))
         if self.assessment_root.is_dir():
             files.extend(sorted(self.assessment_root.glob(f"*/{ASSESSMENT_MANIFEST}")))
-        if self.benchmarks_root.is_dir():
-            files.extend(sorted(self.benchmarks_root.glob(f"*/*/{ASSESSMENT_MANIFEST}")))
         if self.tasks_root.is_dir():
-            files.extend(sorted(self.tasks_root.glob(f"*/_plots/*/*/{ASSESSMENT_MANIFEST}")))
+            # Comparison manifests sit at any depth under _plots (with or without a plan level).
+            files.extend(sorted(self.tasks_root.glob(f"*/_plots/**/{ASSESSMENT_MANIFEST}")))
         return files

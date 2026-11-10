@@ -272,7 +272,9 @@ def check_plots(tmp: Path, layout: ExperimentLayout) -> None:
     print("\n-- plot_reconstruction --")
     slug = "bulk_s0_test_r25"
     rng = np.random.default_rng(0)
-    good, bad = _bins_frame(rng, 0.5, 51), _bins_frame(rng, 4.0, 51)
+    good = _bins_frame(rng, 0.5, 51)
+    # Same plan and model family: same targets and baselines, a noisier prediction.
+    bad = good.assign(pred=np.clip(good["target"] + rng.normal(0, 4.0, len(good)), 0, 50))
     _fake_run(layout, "cf_good", slug, good, "bins", 51)
     _fake_run(layout, "cf_bad", slug, bad.iloc[:-40], "bins", 51)  # one sample fewer
     _fake_run(layout, "cf_small", slug, _bins_frame(rng, 1.0, 21, ties=False), "bins", 21)
@@ -282,10 +284,15 @@ def check_plots(tmp: Path, layout: ExperimentLayout) -> None:
 
     base = ["--root", str(tmp), "--plan", "bulk:s0:test:r25", "--formats", "png"]
     models = ["cf_good", "cf_bad", "cf_small", "bf"]
-    out = plot_reconstruction.main(base + ["--models", *models, "--baselines"])
-    check("written under results/tasks/reconstruction/_plots/<selection>/<plan>/",
-          out == layout.task_plot_dir("reconstruction", "_".join(models), slug))
+    check("a comparison name is required",
+          raises(lambda: plot_reconstruction.main(base + ["--models", *models]), SystemExit))
+    check("a bad comparison name is refused",
+          raises(lambda: plot_reconstruction.main(base + ["--name", "a/b"]), SystemExit))
+    out = plot_reconstruction.main(base + ["--name", "cmp", "--models", *models, "--baselines"])
+    check("written under results/tasks/reconstruction/_plots/<plan>/<name>/",
+          out == layout.tasks_root / "reconstruction" / "_plots" / slug / "cmp")
     manifest = json.loads((out / "manifest.json").read_text())
+    check("manifest records the name", manifest["name"] == "cmp" and "selection" not in manifest)
     check("one group per space and n_bins, plus all",
           set(manifest["groups"]) == {"bins51", "bins21", "ln_tpm1", "all"})
     check("manifest lists the models", manifest["models"] == models)
@@ -306,7 +313,17 @@ def check_plots(tmp: Path, layout: ExperimentLayout) -> None:
     ref = M.native(subs["cf_good"], "bins")
     check("table matches metrics.native on the shared entries",
           np.isclose(table.loc["cf_good", "mae_tie"], ref["mae_tie"]))
-    check("baseline rows included", "cf_good:gene_mean" in table.index)
+    check("one shared baseline row each, not one per model",
+          [r for r in table.index if "gene_mean" in r or "baseline" in r]
+          == ["baseline: gene mean", "baseline: sample mean"])
+    check("baselines taken from the group's first model, agreeing",
+          manifest["groups"]["bins51"]["baseline_source"] == "cf_good"
+          and not any("baselines from" in n for n in manifest["groups"]["bins51"]["notes"]))
+    check("no baselines in the cross-space group",
+          not any("baseline" in r for r in pd.read_csv(out / "all" / "space_free_table.csv")["row"]))
+    by_bin_rows = set(pd.read_csv(out / "bins51" / "mae_by_bin.csv")["row"])
+    check("mae_by_bin has the shared baseline lines", by_bin_rows == {"cf_good", "cf_bad", "baseline: gene mean",
+                                                                     "baseline: sample mean"})
     from evaluate._plot_style import is_best
 
     check("best MAE is the better model",
@@ -327,14 +344,26 @@ def check_plots(tmp: Path, layout: ExperimentLayout) -> None:
     check("space-free table flags the midpoint per model",
           bool(free.loc["cf_good", "tie_midpoint_target"]) and not bool(free.loc["bf", "tie_midpoint_target"]))
 
-    alone = plot_reconstruction.main(base + ["--models", "cf_good", "--plots", "mae_by_bin"])
+    alone = plot_reconstruction.main(base + ["--name", "alone", "--models", "cf_good", "--plots", "mae_by_bin"])
+    check("a second comparison on the plan gets its own folder",
+          alone == layout.task_plot_dir("reconstruction", slug, "alone") and (out / "manifest.json").exists())
     check("single model: no cross-space group",
           not (alone / "all").exists() and (alone / "bins51" / "mae_by_bin.png").exists())
-    everything = plot_reconstruction.main(base + ["--plots", "metrics_table"])
-    check("all models -> all_models", everything.parent.name == "all_models"
-          and set(json.loads((everything / "manifest.json").read_text())["models"]) >= set(models))
-    check("unknown plot refused", raises(lambda: plot_reconstruction.main(base + ["--plots", "nope"]), SystemExit))
-    check("unknown model refused", raises(lambda: plot_reconstruction.main(base + ["--models", "nope"]), SystemExit))
+    everything = plot_reconstruction.main(base + ["--name", "everything", "--plots", "metrics_table"])
+    check("no --models: every model with results",
+          set(json.loads((everything / "manifest.json").read_text())["models"]) >= set(models))
+
+    # A model whose stored baselines differ (e.g. another vocabulary): flagged, not merged.
+    _fake_run(layout, "cf_shifted", slug, good.assign(gene_mean=good["gene_mean"] + 1), "bins", 51)
+    shifted = plot_reconstruction.main(base + ["--name", "shifted", "--models", "cf_good", "cf_shifted",
+                                               "--baselines", "--plots", "metrics_table"])
+    group = json.loads((shifted / "manifest.json").read_text())["groups"]["bins51"]
+    check("differing baselines are flagged", group["baseline_source"] == "cf_good"
+          and any("cf_shifted" in n and "differ" in n for n in group["notes"]))
+    check("unknown plot refused",
+          raises(lambda: plot_reconstruction.main(base + ["--name", "x", "--plots", "nope"]), SystemExit))
+    check("unknown model refused",
+          raises(lambda: plot_reconstruction.main(base + ["--name", "x", "--models", "nope"]), SystemExit))
 
 
 def _cleanup() -> None:

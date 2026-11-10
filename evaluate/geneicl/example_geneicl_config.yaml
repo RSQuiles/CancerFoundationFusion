@@ -26,7 +26,8 @@ geneicl_compare:          # python -m evaluate.geneicl.compare (anywhere)
   # name: main
 
 geneicl_plot:             # python -m evaluate.geneicl.plot_benchmark (anywhere, matplotlib)
-  # models: [unified_v1, pca]            # default: every model with results -> benchmarks/all_models/
+  name: main                             # required: -> tasks/geneicl_<suite>/_plots/<name>/
+  # models: [unified_v1, pca]            # default: every model with results on the suite
   # plots: [summary_table, heatmap_auroc, heatmap_spearman]   # default: all; "heatmaps" = every heatmap
   # reference: [scfoundation, en]        # GeneICL's own rows, as in geneicl_compare
   formats: [png, pdf]

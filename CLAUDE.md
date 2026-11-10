@@ -46,8 +46,7 @@ embeddings/<model>/{sc,bulk,pseudobulk}_{test,train_subset}.h5ad + embed.json
 embeddings/<model>/geneicl_<suite>/<dataset>.npz + embed.json   GeneICL benchmark inputs
 results/representation/<model>/, results/representation/_alignment/<model>/
 results/tasks/<task>/<model>/, results/assessment/<analysis>/ (+ manifest.json)
-results/tasks/<task>/_plots/{all_models,<m1>_<m2>_...}/<name>/ (+ manifest.json)   task figures
-benchmarks/{all_models,<m1>_<m2>_...}/<benchmark>/ (+ manifest.json)   comparison figures
+results/tasks/<task>/_plots/[<plan>/]<name>/ (+ manifest.json)   named model comparisons (figures)
 ```
 
 A model is identified by its **name alone**; there are no ablation directories. Two rules
@@ -290,8 +289,8 @@ python -m evaluate.reconstruction.run_reconstruction --reconstructor bulkformer 
     --plan bulk:leiden_s0:test:r25 --option repo=/path gene_column=gene_id [--context plan]
 # 3. compare on the entries all of them scored -> results/assessment/reconstruction_<plan>/
 python -m evaluate.reconstruction.compare --models unified_v1 bulkformer --plan bulk:leiden_s0:test:r25
-# 4. figures -> results/tasks/reconstruction/_plots/{all_models,<m1>_<m2>_...}/<plan>/<group>/
-python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test:r25 \
+# 4. figures -> results/tasks/reconstruction/_plots/<plan>/<name>/<group>/
+python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test:r25 --name cf_vs_bf \
     [--models unified_v1 bulkformer] [--plots mae_by_bin metrics_table] [--baselines] [--list]
 ```
 - **The plan fixes the masked entries for every model.** Per sample it draws `seq_len - 1`
@@ -340,8 +339,11 @@ python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test
     AUROC and the global Spearman. Only these are compared across spaces in `compare.py`.
 
   `entries.parquet` keeps every scored entry, so new metrics need no rerun.
-- **Figures** (`plot_reconstruction.py`): no `--models` means every model with results on
-  the plan (`all_models`).
+- **Figures** (`plot_reconstruction.py`): `--name` (required; `name:` in the
+  `reconstruction_plot` block) names the comparison, written to
+  `results/tasks/reconstruction/_plots/<plan>/<name>/`, so one plan can hold several
+  comparisons of different models. No `--models` means every model with results on the
+  plan. Rerunning a name overwrites its figures.
   - **Groups:** models are grouped by space, and bins models also by `n_bins` (`bins51`,
     `ln_tpm1`); each group is compared on the entries all its models scored. With two or
     more models, the group `all` holds every model on their shared entries.
@@ -352,6 +354,11 @@ python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test
   - **Cross-space (`all`):** `space_free_table`, `per_sample_spearman` and
     `rank_mae_by_target` (per-sample percentile ranks, mean rank error by target decile).
     These never show baselines; `--baselines` adds them to the per-space plots only.
+  - **Baselines:** one `baseline: gene mean` and one `baseline: sample mean` row per space
+    group (grey dashed / dotted lines), not one per model: on one plan the models of a group
+    share their targets, so their stored baselines agree. They come from the group's first
+    model; if another model's differ (e.g. another vocabulary), the figures and the manifest
+    (`baseline_source`, `notes`) say so.
   - **Extending:** add a plot with a `compute` and a `draw` function plus a `PlotSpec` in
     `PLOTS`, and give a new space its own columns in `TABLE_COLUMNS` (else `"*"`). Every
     plot also writes its numbers as `<plot>.csv`.
@@ -415,8 +422,8 @@ python -m evaluate.geneicl.embed_suite --embedder pca          # any embed_any e
 python -m evaluate.geneicl.run_probe --model unified_v1 --geneicl-python <env>/bin/python [--resume]
 # 3. compare on the shared tasks -> results/assessment/geneicl_<suite>[_<name>]/
 python -m evaluate.geneicl.compare --models unified_v1 pca --reference scfoundation en --name main
-# 4. figures -> benchmarks/{all_models,<m1>_<m2>_...}/geneicl_<suite>/
-python -m evaluate.geneicl.plot_benchmark [--models unified_v1 pca] [--plots summary_table heatmaps]
+# 4. figures -> results/tasks/geneicl_<suite>/_plots/<name>/
+python -m evaluate.geneicl.plot_benchmark --name main [--models unified_v1 pca] [--plots summary_table heatmaps]
 ```
 - **Embedding.** GeneICL datasets are log1p-CPM over gene symbols and are embedded as
   stored (`--normalize` off): binning is per-row quantiles, so a monotone transform
@@ -447,18 +454,18 @@ python -m evaluate.geneicl.plot_benchmark [--models unified_v1 pca] [--plots sum
   `ref:<tag>` rows, listed in the manifest apart from `"models"`.
 - **Figures** (`plot_benchmark.py`). It recomputes the tables with `compare`'s own
   functions (`available_models`, `load_runs`, `per_task_table`, `summarize`), so it needs
-  no earlier `compare` run and its numbers match `compare` on the same models. `--models`
-  defaults to every model with `probe_*.csv` on the suite; the figures then go to
-  `benchmarks/all_models/geneicl_<suite>/` (also when every model is named), else to
-  `benchmarks/<m1>_<m2>_.../geneicl_<suite>/` in the given order. `--plots` (default all):
+  no earlier `compare` run and its numbers match `compare` on the same models. `--name`
+  (required; `name:` in the `geneicl_plot` block) names the comparison, written to
+  `results/tasks/geneicl_<suite>/_plots/<name>/` next to the per-model probe results, so
+  several comparisons of different models can coexist. `--models` defaults to every model
+  with `probe_*.csv` on the suite, in the given order otherwise. `--plots` (default all):
   `heatmap_<metric>` for auroc, auprc, balanced_accuracy, mcc, f1_macro, spearman, pearson,
   r2, r2_pooled_oof (`heatmaps` = all nine), a task x model grid with the best per task in
   bold and a mean row; `summary_table`, the `compare` summary with the best per column
   shaded and bold (lowest for the ranks). A metric no row has is skipped and recorded in
   the manifest. `--reference` adds GeneICL rows as in `compare`. Each run also writes the
   plotted `per_task.csv` / `summary.csv` and `manifest.json` (`"models"`, so
-  `rename_model` rewrites it). The directory name is fixed when plotting; rerun the plot
-  after a rename.
+  `rename_model` rewrites it). Rerunning a name overwrites its figures.
 - **Environments:** `embed_suite.sh` (container), `run_probe.sh` (conda env from
   GeneICL's `eval/environment.yaml`, default name `geneicl-benchmark`); compare and
   plot_benchmark anywhere. Config blocks: `geneicl_embed`, `geneicl_probe`, `geneicl_compare`,
@@ -835,7 +842,7 @@ evaluate/                     # NEW, works on the experiments root
 │   ├── run_reconstruction.py # one model x one plan -> metrics.json, entries.parquet
 │   ├── metrics.py            # native-space + space-free metrics, baselines
 │   ├── compare.py            # several models on their shared entries -> assessment/
-│   ├── plot_reconstruction.py # MAE by bin/target, metric tables -> tasks/reconstruction/_plots/
+│   ├── plot_reconstruction.py # MAE by bin/target, metric tables -> tasks/reconstruction/_plots/<plan>/<name>/
 │   └── example_reconstruction_config.yaml, run_reconstruction.sh, plot_reconstruction.sh
 ├── alignment/
 │   ├── scib_benchmark.py     # scib_metrics Benchmarker over several models' embeddings
@@ -846,7 +853,7 @@ evaluate/                     # NEW, works on the experiments root
 │   ├── embed_suite.py        # every suite dataset -> embeddings/<model>/geneicl_<suite>/*.npz
 │   ├── run_probe.py          # GeneICL's benchmark.py probe via _probe_shim.py (GeneICL env)
 │   ├── compare.py            # models (+ GeneICL reference rows) on shared tasks -> assessment/
-│   ├── plot_benchmark.py     # task x model heatmaps + summary table -> benchmarks/<selection>/
+│   ├── plot_benchmark.py     # task x model heatmaps + summary table -> tasks/geneicl_<suite>/_plots/<name>/
 │   └── example_geneicl_config.yaml, embed_suite.sh, run_probe.sh
 └── check/                    # check_representation, check_reconstruction, check_alignment, check_geneicl
 

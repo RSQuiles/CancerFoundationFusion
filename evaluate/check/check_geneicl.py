@@ -6,7 +6,7 @@ like the real one, accepts only models in its ``EMB_MODELS`` set and writes
 discovery, gene mapping, ``embed_suite`` (format, resume, refusals), ``run_probe``
 (override quoting, the shim, dataset subsets, ``run.json``), ``compare`` (task
 intersection, pooled out-of-fold R2, references, manifest) and ``plot_benchmark``
-(model discovery, selection directory, plot selection, figures, manifest).
+(model discovery, named comparison directories, plot selection, figures, manifest).
 
     python -m evaluate.check.check_geneicl
 """
@@ -280,10 +280,15 @@ def check_plot(tmp: Path, layout: ExperimentLayout) -> None:
           compare.available_models(layout, "benchmark") == ["fake", "fake2"])
 
     root = ["--root", str(tmp / "root"), "--formats", "png"]
-    out = plot_benchmark.main(root)
-    check("all models -> all_models", out == layout.benchmark_plot_dir("all_models", "geneicl_benchmark"))
+    check("a comparison name is required", raises(lambda: plot_benchmark.main(root), SystemExit))
+    check("a bad comparison name is refused",
+          raises(lambda: plot_benchmark.main(root + ["--name", "../x"]), SystemExit))
+    out = plot_benchmark.main(root + ["--name", "main"])
+    check("written under tasks/geneicl_<suite>/_plots/<name>/",
+          out == layout.tasks_root / "geneicl_benchmark" / "_plots" / "main")
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
-    check("manifest lists the models", manifest["models"] == ["fake", "fake2"])
+    check("manifest lists the models and the name", manifest["models"] == ["fake", "fake2"]
+          and manifest["name"] == "main" and "selection" not in manifest)
     drawn = set(manifest["plots"])
     check("summary table and the AUROC heatmap drawn",
           {"summary_table", "heatmap_auroc", "heatmap_spearman"} <= drawn
@@ -291,24 +296,23 @@ def check_plot(tmp: Path, layout: ExperimentLayout) -> None:
     check("every plot either drawn or skipped with a reason",
           drawn | set(manifest["skipped"]) == set(plot_benchmark.PLOTS))
     check("plotted numbers saved", (out / "summary.csv").exists() and (out / "per_task.csv").exists())
-    check("every model named explicitly is still all_models",
-          plot_benchmark.main(root + ["--models", "fake2", "fake", "--plots", "summary_table"]) == out)
-
-    sub = plot_benchmark.main(root + ["--models", "fake2", "--plots", "heatmaps"])
-    check("subset -> models joined", sub == layout.benchmark_plot_dir("fake2", "geneicl_benchmark"))
+    sub = plot_benchmark.main(root + ["--name", "only_fake2", "--models", "fake2", "--plots", "heatmaps"])
+    check("a second comparison on the suite gets its own folder",
+          sub == layout.task_plot_dir("geneicl_benchmark", "only_fake2") and (out / "manifest.json").exists())
     check("plot group expanded, summary left out",
           (sub / "heatmap_auroc.png").exists() and not (sub / "summary_table.png").exists())
-    check("selection name joins in the given order",
-          plot_benchmark.select_models(["b", "a"], ["a", "b", "c"]) == (["b", "a"], "b_a"))
+    check("models kept in the given order", plot_benchmark.select_models(["b", "a"], ["a", "b", "c"]) == ["b", "a"])
+    check("_plots is not listed as a model", compare.available_models(layout, "benchmark") == ["fake", "fake2"])
     check("best mask keeps ties and ignores NaN", plot_benchmark.is_best(
         np.array([0.5, np.nan, 0.5, 0.2]), "max").tolist() == [True, False, True, False])
     check("best of a rank is the lowest",
           plot_benchmark.is_best(np.array([2.0, 1.5]), "min").tolist() == [False, True])
-    check("unknown plot refused", raises(lambda: plot_benchmark.main(root + ["--plots", "violin"]), SystemExit))
+    check("unknown plot refused",
+          raises(lambda: plot_benchmark.main(root + ["--name", "x", "--plots", "violin"]), SystemExit))
     check("model without results refused",
-          raises(lambda: plot_benchmark.main(root + ["--models", "nobody"]), SystemExit))
-    check("plot manifest is a rename reference file",
-          out / "manifest.json" in layout.model_reference_files())
+          raises(lambda: plot_benchmark.main(root + ["--name", "x", "--models", "nobody"]), SystemExit))
+    check("plot manifests are rename reference files",
+          {out / "manifest.json", sub / "manifest.json"} <= set(layout.model_reference_files()))
 
 
 def main() -> None:

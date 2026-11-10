@@ -1,12 +1,13 @@
 """Figures comparing models on a GeneICL task suite.
 
-    python -m evaluate.geneicl.plot_benchmark [--models unified_v1 pca] [--plots summary_table heatmap_auroc] \\
-        [--suite benchmark] [--reference scfoundation en] [--config cfg.yaml]
+    python -m evaluate.geneicl.plot_benchmark --name main [--models unified_v1 pca] \\
+        [--plots summary_table heatmap_auroc] [--suite benchmark] [--reference scfoundation en] [--config cfg.yaml]
 
 Reads the ``run_probe`` results of the selected models (``--models``; default every model
-with results on the suite) and computes the per-task and summary tables with
-``compare.py``'s own functions, so the numbers are those of ``compare`` run on the same
-models. ``--reference`` adds GeneICL's own result files as ``ref:<tag>`` columns, as in
+with results on the suite). ``--name`` (required) names the comparison, so one suite can
+hold several comparisons of different models. The script computes the per-task and summary
+tables with ``compare.py``'s own functions, so the numbers are those of ``compare`` run on
+the same models. ``--reference`` adds GeneICL's own result files as ``ref:<tag>`` columns, as in
 ``compare``.
 
 Plots (``--plots``; default all):
@@ -18,11 +19,10 @@ Plots (``--plots``; default all):
 - ``summary_table``: the ``compare`` summary table, the best value of each metric shaded
   and in bold (lowest for the mean ranks).
 
-Writes ``benchmarks/<selection>/geneicl_<suite>/`` under the experiments root, where
-``<selection>`` is ``all_models`` when every available model is plotted and the plotted
-models joined by ``_`` otherwise: one ``.png`` / ``.pdf`` per plot, the plotted numbers as
+Writes ``results/tasks/geneicl_<suite>/_plots/<name>/``, next to the per-model
+``run_probe`` results: one ``.png`` / ``.pdf`` per plot, the plotted numbers as
 ``per_task.csv`` and ``summary.csv``, and ``manifest.json`` (``"models"``, references,
-plots).
+plots). Rerunning a name overwrites its figures.
 """
 
 from __future__ import annotations
@@ -48,7 +48,6 @@ from evaluate.geneicl import compare as C  # noqa: E402
 from evaluate.geneicl import suite as S  # noqa: E402
 from evaluate.geneicl.run_probe import task_name  # noqa: E402
 
-ALL_MODELS = "all_models"
 
 # metric -> (task type, display name); every one is higher-is-better.
 HEATMAP_METRICS: dict[str, tuple[str, str]] = {
@@ -92,6 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--geneicl-results", type=Path, default=None,
                         help="Directory of GeneICL's <tag>_<task_type>.csv (default: <geneicl>/eval/benchmark/results)")
     parser.add_argument("--suite", default="benchmark", choices=list(S.SUITES))
+    parser.add_argument("--name", default=None,
+                        help="Name of this comparison (required): tasks/geneicl_<suite>/_plots/<name>/")
     parser.add_argument("--models", nargs="*", default=[],
                         help="Models to plot (default: every model with run_probe results on the suite)")
     parser.add_argument("--reference", nargs="*", default=[],
@@ -105,19 +106,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def select_models(requested: list[str], available: list[str]) -> tuple[list[str], str]:
-    """The models to plot, in order, and the selection directory name."""
+def select_models(requested: list[str], available: list[str]) -> list[str]:
+    """The models to plot, in order (default: every model with results on the suite)."""
     if not available:
         sys.exit("Error: no model has GeneICL results; run evaluate.geneicl.run_probe first")
     if not requested:
-        return list(available), ALL_MODELS
+        return list(available)
     models = list(dict.fromkeys(requested))
     unknown = [m for m in models if m not in available]
     if unknown:
         sys.exit(f"Error: no GeneICL results for {unknown}; available: {available}")
-    if set(models) == set(available):
-        return models, ALL_MODELS
-    return models, "_".join(models)
+    return models
 
 
 def select_plots(requested: list[str]) -> list[str]:
@@ -234,13 +233,19 @@ def main(argv: list[str] | None = None) -> Path | None:
     from experiments.layout import ASSESSMENT_MANIFEST, ExperimentLayout
 
     args = parse_with_config(build_parser(), "geneicl_plot", argv)
+    if not args.name and not args.list:
+        sys.exit("Error: give --name (the comparison's folder under tasks/geneicl_<suite>/_plots/)")
     layout = ExperimentLayout.from_root(args.root)
     available = C.available_models(layout, args.suite)
     if args.list:
         print(f"models with GeneICL {args.suite} results: {available or 'none'}")
         print(f"plots: {PLOTS} (groups: {list(PLOT_GROUPS)})")
         return None
-    models, selection = select_models(args.models, available)
+    try:
+        out_dir = layout.task_plot_dir(task_name(args.suite), args.name)
+    except ValueError as exc:
+        sys.exit(f"Error: --name: {exc}")
+    models = select_models(args.models, available)
     plots = select_plots(args.plots)
 
     runs, references = C.load_runs(layout, args.suite, models, args.reference,
@@ -249,7 +254,8 @@ def main(argv: list[str] | None = None) -> Path | None:
     rows = list(runs)
     summary = C.summarize(table, rows)
 
-    out_dir = layout.benchmark_plot_dir(selection, task_name(args.suite))
+    if (out_dir / ASSESSMENT_MANIFEST).exists():
+        print(f"  [note] comparison '{args.name}' exists; its figures are overwritten")
     out_dir.mkdir(parents=True, exist_ok=True)
     table.to_csv(out_dir / "per_task.csv", index=False)
     summary.to_csv(out_dir / "summary.csv", index=False)
@@ -274,7 +280,7 @@ def main(argv: list[str] | None = None) -> Path | None:
         written[plot] = save(fig, out_dir / plot, args.formats, args.dpi)
 
     (out_dir / ASSESSMENT_MANIFEST).write_text(json.dumps({
-        "analysis": "geneicl_plot", "suite": args.suite, "selection": selection,
+        "analysis": "geneicl_plot", "suite": args.suite, "name": args.name,
         "models": models, "references": references,
         "plots": written, "skipped": skipped, "n_tasks_dropped": dropped,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),

@@ -8,9 +8,10 @@
 
 # Draw the reconstruction comparison figures (MAE by bin / by target, metric tables,
 # space-free comparisons) from the run_reconstruction results into
-# results/tasks/reconstruction/_plots/{all_models,<m1>_<m2>_...}/<plan>/. No GPU needed.
-# Arguments go to plot_reconstruction.py, e.g.:
-#   sbatch plot_reconstruction.sh --plan bulk:leiden_s0:test:r25 [--models unified_v1 bulkformer]
+# results/tasks/reconstruction/_plots/<plan>/<name>/ (--name, or name: in the config's
+# reconstruction_plot block, is required). No GPU needed. Arguments go to
+# plot_reconstruction.py, e.g.:
+#   sbatch plot_reconstruction.sh --plan bulk:leiden_s0:test:r25 --name cf_vs_bf [--models unified_v1 bulkformer]
 # Pass --local to run without singularity (any env with pandas, pyarrow, scipy, matplotlib).
 
 set -euo pipefail
