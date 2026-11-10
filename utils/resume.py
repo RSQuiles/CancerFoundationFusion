@@ -43,6 +43,9 @@ ARCHITECTURE_HPARAMS = (
     "nlayers", "embsize", "nheads", "d_hid", "max_seq_len", "n_bins", "input_style",
     "input_emb_style", "training_tasks", "do_mvc", "mvc_decoder_style", "cell_emb_style",
     "explicit_zero_prob", "esm_emb", "do_dat", "compile_model",
+    # Not architecture, but they change the optimizer's parameter groups, whose saved
+    # state could then not be restored.
+    "freeze_groups", "backbone_lr_scale",
 )
 # A change here is allowed, but it is a different training setup, so it is reported.
 WATCHED_HPARAMS = ("data_path", "lr", "warmup_ratio_or_step", "loss_type", "zero_percentages")
@@ -271,11 +274,18 @@ def append_segment(save_dir: str | Path, record: dict) -> dict:
 
 
 def segment_record(info: ResumeInfo | None, *, epochs: int, lr: float, warmup: float,
-                   seed: int | None, wandb_id: str | None = None) -> dict:
+                   seed: int | None, wandb_id: str | None = None,
+                   init_from: dict | None = None) -> dict:
+    """One ``segments.jsonl`` line. ``init_from`` is a warm start's parent (``utils/warm_start.py``)."""
+    if info:
+        mode = info.mode
+    else:
+        mode = "warm_start" if init_from else "fresh"
     return {
         "started": now_utc(),
-        "mode": info.mode if info else "fresh",
+        "mode": mode,
         "from_checkpoint": info.checkpoint.name if info else None,
+        "init_from": None if info else init_from,
         "start_epoch": info.epochs_completed if info else 0,
         "start_step": info.global_step if info else 0,
         "lr_segment_start": info.segment_start if info else 0,

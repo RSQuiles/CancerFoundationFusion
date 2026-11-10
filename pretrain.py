@@ -18,6 +18,14 @@ from utils.resume import (
     segment_record,
     trim_metrics_csv,
 )
+from utils.warm_start import (
+    WarmStartOptions,
+    compact_record,
+    format_summary,
+    resolve_init_checkpoint,
+    warm_start_model,
+    write_record as write_warm_start_record,
+)
 from cancerfoundation.model.model import CancerFoundation
 from cancerfoundation.data.data_module import BulkSCDataModule
 import pytorch_lightning as pl
@@ -213,6 +221,20 @@ def main(input_args=None):
                 "resumable, so the rest of that epoch is drawn afresh. Prefer an "
                 "end-of-epoch (epoch_XX.ckpt) checkpoint for a new segment."
             )
+
+    # Warm start: a new model initialized from another model's checkpoint. A checkpoint
+    # in this model's own directory wins, so a warm-started model that is relaunched
+    # with resume_from_checkpoint continues instead of being re-initialized.
+    init_path = None
+    if args.init_from:
+        if args.pretrained:
+            raise ValueError("--init-from and --pretrained are exclusive: pick one source of weights.")
+        if resume is not None:
+            print(f"[warm start] --init-from ignored: resuming {resume.checkpoint.name} in "
+                  f"{args.save_dir}.")
+        else:
+            init_path = resolve_init_checkpoint(args.init_from)
+            print(f"[warm start] will initialize from {init_path}")
 
     # The global seed is offset by the restored step so masking and worker RNG do not
     # replay the segment already trained; the training order is seeded separately by
@@ -459,7 +481,19 @@ def main(input_args=None):
         cdd_cluster_source_pb=args.cdd_cluster_source_pb,
         cdd_ramp_steps=args.cdd_ramp_steps,
         cdd_mmd_final_weight=args.cdd_mmd_final_weight,
+        freeze_groups=args.freeze_groups,
+        backbone_lr_scale=args.backbone_lr_scale,
     )
+
+    warm_start = None
+    if init_path is not None:
+        warm_start = warm_start_model(
+            model, init_path, datamodule.dataset.mapping, WarmStartOptions.from_args(args)
+        )
+        model.warm_start_record = compact_record(warm_start)
+        print(format_summary(warm_start))
+        if int(os.environ.get("GLOBAL_RANK", "0")) == 0:
+            write_warm_start_record(args.save_dir, warm_start)
 
     if args.pretrained:
         print(f"Loading pretrained weights from {args.pretrained}.")
@@ -488,7 +522,12 @@ def main(input_args=None):
         if not args.wandb_new_run:
             wandb_run_id = find_wandb_run_id(args.save_dir)
     segment = segment_record(
-        resume, epochs=args.epochs, lr=args.lr, warmup=args.warmup_ratio_or_step, seed=run_seed
+        resume, epochs=args.epochs, lr=args.lr, warmup=args.warmup_ratio_or_step, seed=run_seed,
+        init_from=None if warm_start is None else {
+            "model": warm_start["from"]["model"],
+            "file": warm_start["from"]["file"],
+            "global_step": warm_start["from"]["global_step"],
+        },
     )
 
     trainer = train_model(

@@ -18,15 +18,26 @@ from utils.resume import (
     DRY_RUN_CHECKPOINT,
     RESUME_MODES,
     git_commit,
+    find_last_checkpoint,
     load_wandb_run,
     read_segments,
     resolve_checkpoint,
 )
 
+# trainer.init_from dict keys -> the flat trainer keys utils_config reads.
+INIT_FROM_OPTION_KEYS = {
+    "include": "init_include",
+    "exclude": "init_exclude",
+    "parent_mapping": "init_parent_mapping",
+    "loose_backbone": "init_loose_backbone",
+}
+INIT_FROM_REF_KEYS = {"model", "checkpoint", "path"}
+
 TrainFn = Callable[[Path], Union[str, Path]]
 EvalFn = Callable[[Union[str, Path], Dict[str, Any]], Dict[str, float]]
 
 MODEL_CONFIG_FILE = "model_config.json"
+from utils.warm_start import DEFAULT_INCLUDE as DEFAULT_INIT_GROUPS  # noqa: E402
 
 
 @dataclass
@@ -117,6 +128,9 @@ def resolve_model_config(
     if mode not in RESUME_MODES:
         raise ValueError(f"Model '{model_name}': trainer.resume_mode must be one of {RESUME_MODES}, got {mode!r}")
 
+    if trainer.get("init_from"):
+        trainer["init_from"], cfg["init_from_ref"] = resolve_init_from(layout, model_name, trainer)
+
     data = cfg.setdefault("data", {})
     train_ref = None
     if "train_path" in data:
@@ -124,6 +138,101 @@ def resolve_model_config(
 
     cfg["model_name"] = model_name
     return cfg, train_ref
+
+
+def resolve_init_from(
+    layout: ExperimentLayout, model_name: str, trainer: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    """Turn ``trainer.init_from`` into a checkpoint path plus the reference it came from.
+
+    Accepts a path (a ``.ckpt`` or a checkpoint directory), ``{"path": ...}``, or
+    ``{"model": "<parent>", "checkpoint": "last" | "<file>.ckpt"}``. A dict may also
+    carry ``include``, ``exclude``, ``parent_mapping`` and ``loose_backbone``, which
+    become the flat ``init_*`` trainer keys. The checkpoint is pinned here, so the run
+    card records exactly which file the model starts from.
+    """
+    value = trainer["init_from"]
+    if isinstance(value, dict):
+        unknown = set(value) - INIT_FROM_REF_KEYS - set(INIT_FROM_OPTION_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Model '{model_name}': unknown trainer.init_from key(s) {sorted(unknown)}; "
+                f"expected {sorted(INIT_FROM_REF_KEYS | set(INIT_FROM_OPTION_KEYS))}"
+            )
+        for key, flat in INIT_FROM_OPTION_KEYS.items():
+            if key in value:
+                if flat in trainer and trainer[flat] != value[key]:
+                    raise ValueError(
+                        f"Model '{model_name}': init_from.{key} and trainer.{flat} disagree"
+                    )
+                trainer[flat] = value[key]
+        if "model" in value:
+            if "path" in value:
+                raise ValueError(f"Model '{model_name}': init_from takes 'model' or 'path', not both")
+            parent = str(value["model"])
+            if parent == model_name:
+                raise ValueError(
+                    f"Model '{model_name}': init_from names the model itself; use "
+                    "trainer.resume_from_checkpoint to continue it"
+                )
+            parent_dir = layout.checkpoint_dir(parent)
+            spec = str(value.get("checkpoint", "last"))
+            if spec == "last":
+                ckpt = find_last_checkpoint(parent_dir)
+                if ckpt is None:
+                    raise FileNotFoundError(
+                        f"Model '{model_name}': init_from model '{parent}' has no checkpoint "
+                        f"in {parent_dir} (train it first; a dry run writes none)"
+                    )
+            else:
+                target = Path(spec) if Path(spec).is_absolute() else parent_dir / spec
+                ckpt = resolve_checkpoint(str(target), parent_dir)
+            return str(ckpt), {"model": parent, "checkpoint": ckpt.name}
+        if "path" not in value:
+            raise ValueError(f"Model '{model_name}': init_from needs 'model' or 'path'")
+        value = value["path"]
+    path = Path(str(value))
+    if path.is_dir():
+        ckpt = find_last_checkpoint(path)
+        if ckpt is None:
+            raise FileNotFoundError(f"Model '{model_name}': init_from: no checkpoint in {path}")
+    else:
+        ckpt = resolve_checkpoint(str(path), None)
+    if ckpt.parent.resolve() == layout.checkpoint_dir(model_name).resolve():
+        raise ValueError(
+            f"Model '{model_name}': init_from points into the model's own directory; use "
+            "trainer.resume_from_checkpoint to continue it"
+        )
+    return str(ckpt), {"model": None, "checkpoint": ckpt.name}
+
+
+def describe_warm_start(layout: ExperimentLayout, model_name: str, model_config: dict[str, Any]) -> str | None:
+    """One line saying what a warm-started launch starts from, or None without init_from."""
+    trainer = model_config.get("trainer") or {}
+    path = trainer.get("init_from")
+    if not path:
+        return None
+    spec = trainer.get("resume_from_checkpoint")
+    if spec:
+        try:
+            own = resolve_checkpoint(str(spec), layout.checkpoint_dir(model_name))
+        except (FileNotFoundError, ValueError):
+            own = None
+        if own is not None:
+            return f"warm start: ignored, the run resumes {own.name}"
+    ref = model_config.get("init_from_ref") or {}
+    source = f"{ref['model']}/{ref['checkpoint']}" if ref.get("model") else str(path)
+    excluded = trainer.get("init_exclude") or []
+    groups = [g for g in (trainer.get("init_include") or DEFAULT_INIT_GROUPS) if g not in excluded]
+    return f"warm start from {source}: {', '.join(groups)}; fresh optimizer, schedule and counters"
+
+
+def _init_from_card(model_config: dict[str, Any]) -> dict[str, Any] | None:
+    path = (model_config.get("trainer") or {}).get("init_from")
+    if not path:
+        return None
+    ref = model_config.get("init_from_ref") or {}
+    return {"model": ref.get("model"), "checkpoint": ref.get("checkpoint"), "path": str(path)}
 
 
 def check_checkpoint_dir_free(layout: ExperimentLayout, model_name: str, model_config: dict[str, Any]) -> None:
@@ -203,6 +312,8 @@ def write_run_card(
         "git_commit": git_commit(),
         "train_path": (model_config.get("data") or {}).get("train_path"),
         "train_data": train_ref,
+        # A warm start's parent. "model" is a name field, so rename_model rewrites it.
+        "init_from": _init_from_card(model_config),
         "previous_names": previous.get("previous_names", []),
         "dry_run": dry_run,
         "model_config": model_config,

@@ -151,6 +151,9 @@ class CancerFoundation(pl.LightningModule):
         cdd_cluster_source_pb: int = 8,
         cdd_ramp_steps: int = 1000,
         cdd_mmd_final_weight: float = 0.0,
+        # Training-only parameter groups (see utils/warm_start.py for the groups)
+        freeze_groups: Optional[List[str]] = None,
+        backbone_lr_scale: float = 1.0,
     ):
         """Initializes the CancerFoundation LightningModule.
 
@@ -192,6 +195,9 @@ class CancerFoundation(pl.LightningModule):
             esm_emb (bool, optional): If True, load pretrained ESM gene embeddings instead of a learned lookup table.
             esm_emb_path (Optional[str | os.PathLike], optional): Path to the parquet file containing pretrained gene embeddings.
             esm_emb_finetune (bool, optional): If True, allow the pretrained gene embeddings to be fine-tuned.
+            freeze_groups (Optional[List[str]], optional): Weight groups ("backbone",
+                "decoders", "conditions", "heads") left out of the optimizer and frozen.
+            backbone_lr_scale (float, optional): Learning-rate multiplier for the backbone group.
         """
         # Checks
         if input_style == "binned":
@@ -230,6 +236,10 @@ class CancerFoundation(pl.LightningModule):
         self.reset_lr_schedule = False
         self.expected_lr_segment: dict = {}  # exact resume: the checkpoint's segment
         self._lr_segment_info: dict = {}
+        # Warm start (utils/warm_start.py): set by pretrain.py, kept in every checkpoint.
+        self.warm_start_record: Optional[dict] = None
+        self.freeze_groups = list(freeze_groups or [])
+        self.backbone_lr_scale = float(backbone_lr_scale)
         self.compile_model = compile_model
         self.activation = F.relu if activation == "relu" else F.gelu
         self.norm_scheme = norm_scheme
@@ -894,7 +904,7 @@ class CancerFoundation(pl.LightningModule):
         Returns:
             dict: The optimizer and scheduler configuration for PyTorch Lightning.
         """
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam(self._optimizer_param_groups(), lr=self.lr)
 
         if self.warmup_ratio_or_step > 0:
             # Steps of this LR segment: from lr_segment_start (0 unless resuming) to the
@@ -947,11 +957,61 @@ class CancerFoundation(pl.LightningModule):
                 },
             }
 
+    def _optimizer_param_groups(self):
+        """All parameters, or per-group lists when freezing or scaling the backbone LR."""
+        if not self.freeze_groups and self.backbone_lr_scale == 1.0:
+            return self.model.parameters()
+        # Repo-root helper; only needed when training, where the root is on sys.path.
+        from utils.warm_start import classify, normalize_key
+
+        frozen = set(self.freeze_groups)
+        base, backbone, n_frozen = [], [], 0
+        for name, param in self.model.named_parameters():
+            group = classify(normalize_key(f"model.{name}") or "")
+            if group in frozen:
+                param.requires_grad_(False)
+                n_frozen += param.numel()
+                continue
+            (backbone if group == "backbone" else base).append(param)
+        if frozen:
+            print(f"Frozen groups {sorted(frozen)}: {n_frozen:,} parameters left out of the optimizer.")
+        groups = []
+        if base:
+            groups.append({"params": base, "lr": self.lr})
+        if backbone:
+            groups.append({"params": backbone, "lr": self.lr * self.backbone_lr_scale})
+        if not groups:
+            raise ValueError(f"freeze_groups={sorted(frozen)} leaves nothing to train.")
+        return groups
+
     def on_save_checkpoint(self, checkpoint: dict) -> None:
         # Lets an exact resume rebuild the same schedule (see pretrain.py).
         checkpoint["lr_segment"] = dict(self._lr_segment_info)
+        # Category names of the condition codes, so a warm start from this checkpoint
+        # can remap condition encoders by name (utils/warm_start.py).
+        mapping = self._condition_mapping()
+        if mapping:
+            checkpoint["condition_mapping"] = mapping
+        if self.warm_start_record:
+            checkpoint["warm_start"] = dict(self.warm_start_record)
+
+    def _condition_mapping(self) -> Optional[dict]:
+        try:
+            dm = self.trainer.datamodule
+        except RuntimeError:  # not attached to a trainer
+            return None
+        dataset = getattr(dm, "dataset", None)
+        mapping = getattr(dataset, "mapping", None) or {}
+        return {
+            col: {str(cat): int(code) for cat, code in mapping[col].items()}
+            for col in (self.conditions or [])
+            if col in mapping
+        } or None
 
     def on_load_checkpoint(self, checkpoint: dict) -> None:
+        # A resumed warm-started model keeps its lineage in its later checkpoints.
+        if checkpoint.get("warm_start") and not self.warm_start_record:
+            self.warm_start_record = dict(checkpoint["warm_start"])
         # Called before Lightning restores optimizer and scheduler states. An empty list
         # (not a missing key, which Lightning rejects) restores no scheduler, so the
         # fresh one from configure_optimizers is kept.

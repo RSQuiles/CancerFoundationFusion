@@ -76,6 +76,65 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the pretrained model weights.",
     )
 
+    # Warm start: a NEW model initialized from another model's checkpoint
+    # (utils/warm_start.py). Fresh optimizer, LR schedule, epoch/step counters and W&B run.
+    parser.add_argument(
+        "--init-from",
+        type=str,
+        default=None,
+        help=(
+            "Warm start from a .ckpt (or a model's checkpoint directory: its newest "
+            "checkpoint). Copies the backbone, the decoders where they fit and the "
+            "condition encoders remapped by category name; everything else is built "
+            "fresh. Ignored when --resume-from-checkpoint finds a checkpoint in save-dir."
+        ),
+    )
+    parser.add_argument(
+        "--init-include",
+        type=str,
+        nargs="+",
+        default=None,
+        choices=["backbone", "decoders", "conditions", "heads"],
+        help="Weight groups to take from --init-from (default: backbone decoders conditions).",
+    )
+    parser.add_argument(
+        "--init-exclude",
+        type=str,
+        nargs="+",
+        default=None,
+        choices=["backbone", "decoders", "conditions", "heads"],
+        help="Weight groups NOT to take from --init-from.",
+    )
+    parser.add_argument(
+        "--init-parent-mapping",
+        type=str,
+        default=None,
+        help=(
+            "The parent's mapping.json (or its store directory), for checkpoints whose "
+            "training store has moved. Default: the checkpoint's own condition_mapping, "
+            "else the store in its data_path, else its config.resolved.json train_path."
+        ),
+    )
+    parser.add_argument(
+        "--init-loose-backbone",
+        action="store_true",
+        help="Re-initialize backbone weights that do not match the parent instead of refusing.",
+    )
+    parser.add_argument(
+        "--freeze-groups",
+        type=str,
+        nargs="+",
+        default=None,
+        choices=["backbone", "decoders", "conditions", "heads"],
+        help="Weight groups kept frozen during training (left out of the optimizer).",
+    )
+    parser.add_argument(
+        "--backbone-lr-scale",
+        type=float,
+        default=1.0,
+        help="Learning-rate multiplier for the backbone group (e.g. 0.1 after a warm start).",
+    )
+
     # settings for data
     parser.add_argument(
         "--n-hvg",

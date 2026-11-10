@@ -7,6 +7,9 @@
   ``KeepExistingCheckpoint``. It imports pytorch_lightning.
 - ``utils.resume``: continuing a run in its checkpoint directory (checkpoint lookup,
   W&B run id, segment log). Torch-free at import time.
+- ``utils.warm_start``: a new model initialized from another model's checkpoint
+  (backbone copied, conditions remapped by category name, fresh training state).
+  Torch-free at import time.
 
 The training names are re-exported **lazily**, so ``from utils import get_args``
 keeps working while ``from utils.sampling import ...`` never pulls in lightning or

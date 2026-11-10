@@ -278,6 +278,12 @@ class ExperimentLayout:
         files: list[Path] = []
         if self.launches_dir.is_dir():
             files.extend(sorted(self.launches_dir.glob("*.json")))
+        if self.checkpoints_dir.is_dir():
+            # Other models' cards and configs: a warm-started model names its parent
+            # (run.json "init_from", warm_start.json) and holds paths into its directory.
+            for model_dir in sorted(self.checkpoints_dir.iterdir()):
+                if model_dir.is_dir() and not model_dir.name.startswith("_"):
+                    files.extend(sorted(model_dir.glob("*.json")))
         if self.assessment_root.is_dir():
             files.extend(sorted(self.assessment_root.glob(f"*/{ASSESSMENT_MANIFEST}")))
         if self.tasks_root.is_dir():

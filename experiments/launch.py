@@ -27,6 +27,7 @@ from typing import Any
 from experiments.config import LaunchConfig, load_launch_config
 from experiments.runtime import (
 	describe_resume,
+	describe_warm_start,
 	MODEL_CONFIG_FILE,
 	check_checkpoint_dir_free,
 	deep_merge_dict,
@@ -305,6 +306,9 @@ def launch_models(
 		resume_line = describe_resume(cfg.layout, model_name, run_model_cfg)
 		if resume_line:
 			print(f"  {' ' * len(model_name)}  {resume_line}")
+		warm_line = describe_warm_start(cfg.layout, model_name, run_model_cfg)
+		if warm_line:
+			print(f"  {' ' * len(model_name)}  {warm_line}")
 
 	execution_mode = "slurm" if (force_slurm or cfg.slurm.enabled) else "local"
 	if execution_mode == "slurm":

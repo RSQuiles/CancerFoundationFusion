@@ -175,7 +175,14 @@ def build_plan(
         for path in sorted(src.rglob("*.json")):
             if path.stat().st_size <= MAX_JSON_BYTES:
                 plan.json_files.append(dst / path.relative_to(src))
-    plan.json_files.extend(layout.model_reference_files())
+    # The reference files include every model's top-level JSON files, OLD's among
+    # them at their old paths (already listed above at the new ones). Those no longer
+    # exist after the move and are skipped then; dedupe the rest.
+    seen = set(plan.json_files)
+    for path in layout.model_reference_files():
+        if path not in seen:
+            seen.add(path)
+            plan.json_files.append(path)
 
     for cfg_path in launch_configs or []:
         if cfg_path.suffix.lower() != ".json":

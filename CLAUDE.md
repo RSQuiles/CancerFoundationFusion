@@ -167,6 +167,54 @@ Mechanics (`utils/resume.py`, `pretrain.py`, `CancerFoundation.on_load_checkpoin
 
 `python -m experiments.check.check_resume` self-checks the helpers offline.
 
+### Warm-starting a new model
+A **new** model (its own name, store, conditions, heads, losses, sampler) can start
+from another model's weights. Unlike a resume, nothing of the parent's training state is
+kept: fresh optimizer, LR schedule over the new `epochs`, step and epoch from 0, new W&B
+run. Set `trainer.init_from` in the launch config:
+```json
+"trainer": {"init_from": {"model": "unified_v1", "checkpoint": "last", "include": ["backbone", "decoders", "conditions"]}}
+```
+`init_from` also takes a `.ckpt` or directory path (`{"path": ...}` or a bare string;
+`--init-from` on the CLI). The launcher pins the checkpoint file at launch and refuses a
+parent without one (a dry run writes none). The dry-run output shows a `warm start from`
+line, `run.json` records `init_from` (model, file, path), and the child's directory
+gets `warm_start.json` with a per-key report.
+
+Mechanics (`utils/warm_start.py`, torch-free except `warm_start_model`):
+- **Groups** (`classify`):
+  - `backbone`: gene/value encoders, transformer, generative flag. Must match the parent
+    in name and shape, else refused (`init_loose_backbone` re-initializes instead).
+  - `decoders`: copied when the shape matches and the decoder's input concatenates the
+    same encoded conditions (`decoder_condition_layout`: the MVC decoder whenever
+    conditions are encoded, the expression decoder only with `where_condition="end"`).
+  - `conditions`: `modality` (fixed codes) is copied as is. Other columns are remapped
+    **by category name**, since each store's codes are its own sorted categories; new
+    categories keep their initialization.
+  - `heads` (DAT discriminators): off by default; with `include: [..., "heads"]`, copied
+    only with an identical shape and class mapping (so the old 3-class modality head is
+    never loaded into the 2-class one).
+  - Anything else (e.g. CDD state) is never transferred, only reported.
+- **Parent category names:** `init_parent_mapping` if given, else the checkpoint's
+  `condition_mapping` (written by `on_save_checkpoint` since this feature), else
+  `<hparams.data_path>/mapping.json`, else the `train_path` in the parent directory's
+  `config.resolved.json`. Without one, a non-modality condition is re-initialized and
+  never copied by raw code.
+- **Existing checkpoints work as they are.** The parent is never rebuilt, only its
+  `state_dict` and `hyper_parameters` are read, and `_orig_mod.` keys are stripped. The
+  vocabulary must be identical.
+- **Resume wins:** when `resume_from_checkpoint` finds a checkpoint in the model's own
+  directory, `init_from` is ignored, so relaunching a warm-started model continues it.
+  Its later checkpoints keep the `warm_start` record.
+- **Freezing:** `freeze_groups` (e.g. `["backbone"]`) keeps groups out of the optimizer;
+  `backbone_lr_scale` scales the backbone's LR. Both work with or without a warm start,
+  and changing them on resume is refused, since the optimizer groups would differ.
+- **Renaming a parent** rewrites its children's `run.json` / `warm_start.json`, because
+  `model_reference_files` lists every model's top-level JSON files.
+
+`python -m experiments.check.check_warm_start` self-checks it offline. Its tensor-copy
+part runs only where torch imports.
+
 ### Embeddings (`embed/`)
 Three scripts, one output format: `<dir>/<name>.h5ad` holding obs + `obsm["X_emb"]` (no X),
 plus `<dir>/embed.json` (one entry per file: method, checkpoint or options, `panel_hash`)
@@ -473,7 +521,7 @@ python -m evaluate.geneicl.plot_benchmark --name main [--models unified_v1 pca] 
   (`example_geneicl_config.yaml`).
 
 Offline self-checks: `python -m experiments.check.check_layout`, `check_sampling` and
-`check_rename`, `check_resume` (no torch or anndata), plus `python -m evaluate.check.check_representation`,
+`check_rename`, `check_resume`, `check_warm_start` (no torch or anndata), plus `python -m evaluate.check.check_representation`,
 `check_reconstruction`, `check_alignment` and `check_geneicl` (need anndata/scanpy; the
 Benchmarker itself is skipped without scib_metrics; `check_geneicl` runs against a fake
 GeneICL checkout with a stub `benchmark.py`).
@@ -813,7 +861,8 @@ utils/                        # project-wide helpers (was the top-level utils.py
 ├── __init__.py               # lazily re-exports get_args, save_resolved_config, LossCSVLogger, MyProgressBar
 ├── training.py               # the old utils.py: get_args, resolved-config dump, Lightning callbacks
 ├── sampling.py               # filter_mask / stratified_subsample / stratified_group_split (numpy + pandas)
-└── resume.py                 # continuing a model: checkpoint lookup, LR segments, W&B id, segments.jsonl
+├── resume.py                 # continuing a model: checkpoint lookup, LR segments, W&B id, segments.jsonl
+└── warm_start.py             # a new model from another's checkpoint: groups, remapping by name, report
 
 experiments/                  # was ablate/; torch-free at import time
 ├── layout.py                 # ExperimentLayout: the ONE place experiment paths are composed
@@ -823,7 +872,7 @@ experiments/                  # was ablate/; torch-free at import time
 ├── slurm_worker.py           # runs one model inside a SLURM job
 ├── rename_model.py           # rename a model across every directory and JSON file
 ├── configs/                  # example_unifiedfm.json; legacy/ = old ablation configs
-└── check/                    # check_layout, check_sampling, check_rename, check_resume (offline)
+└── check/                    # check_layout, check_sampling, check_rename, check_resume, check_warm_start (offline)
 
 evaluate/                     # NEW, works on the experiments root
 ├── _cli.py                   # --config YAML sections, KEY=VALUE mappings, title templates
