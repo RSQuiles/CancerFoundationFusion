@@ -19,7 +19,8 @@ Layout::
         ├── representation/_alignment/<model>/
         ├── tasks/<task>/<model>/
         ├── tasks/<task>/_plots/[<plan>/]<name>/  named model comparisons (+ manifest.json)
-        └── assessment/<analysis>/                (+ manifest.json listing its models)
+        ├── assessment/<analysis>/                (+ manifest.json listing its models)
+        └── _eval_runs/<config>_<timestamp>/      evaluate.run_evaluation records (configs, logs)
 
 Rules every writer follows, so ``rename_model.py`` never has to guess:
 per-model output lives under a directory named after the model (never in a
@@ -251,6 +252,13 @@ class ExperimentLayout:
 
     def assessment_dir(self, name: str) -> Path:
         return self.assessment_root / name
+
+    @property
+    def eval_runs_dir(self) -> Path:
+        """``results/_eval_runs/``: one directory per ``evaluate.run_evaluation`` run
+        (resolved step configs, logs, summary). Outside ``tasks/``, so never mistaken
+        for a model's directory."""
+        return self.results_dir / "_eval_runs"
 
     # ---- everything that belongs to / mentions one model -------------------
 

@@ -1,0 +1,186 @@
+# Global evaluation config for evaluate/run_evaluation.py (sbatch evaluate/run_evaluation.sh).
+#
+# Tasks run in the order written, and the steps of a task too. Each step's `args` are the
+# script's own options, passed through unchanged (keys = option names, `-` or `_`), so a
+# new or renamed option only needs a change here; the script rejects unknown keys, and the
+# preflight catches that before anything runs. Per step, the options are merged as
+#   shared (top)  <  tasks.<task>.shared  <  step args  <  foreach values
+# A shared key a step does not accept goes in that step's `drop:`.
+#
+# Step fields: script (alias, default = the step key), module (any python module instead),
+# environment, args, foreach, drop, argv, pass_as (config | cli), enabled, continue_on_error.
+# Aliases: umap pca alignment scib mask_plan reconstruction compare reconstruction_plot
+#          geneicl_embed geneicl_probe geneicl_compare geneicl_plot embed_splits
+#          (and the module names: plot_umap, run_reconstruction, embed_suite, run_probe, ...)
+#
+#   python -m evaluate.run_evaluation --config <this> --list                     # the plan
+#   python -m evaluate.run_evaluation --config <this> --dry-run                  # configs + commands
+#   python -m evaluate.run_evaluation --config <this> --only reconstruction geneicl.geneicl_plot
+#   python -m evaluate.run_evaluation --config <this> --from reconstruction.reconstruction_plot
+
+project_root: /cluster/work/boeva/rquiles/CancerFoundationFusion   # cwd of every step
+
+shared:                     # every step of every task
+  root: /cluster/work/boeva/rquiles/unifiedFM_experiments
+
+# How each step's python is started. `command`: the argv up to python (the coordinator
+# appends `-m <module> --config <file>`). `setup`: shell lines run by bash first, then
+# `exec python -u -m ...` (`python:` changes the interpreter). `env:` adds variables.
+default_environment: container
+environments:
+  container:                # bionemo image: CancerFoundation, GPU
+    command: [singularity, run, --nv,
+              --pwd, /cluster/work/boeva/rquiles/CancerFoundationFusion,
+              --bind, /cluster/work/boeva/rquiles:/cluster/work/boeva/rquiles,
+              /cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif,
+              python, -u]
+  bulkFM:                   # scib_metrics
+    setup: |
+      source ~/.bashrc
+      conda activate bulkFM || exit 1
+  geneicl:                  # GeneICL's eval env; run_probe reads $GENEICL_PYTHON
+    setup: |
+      source ~/.bashrc
+      conda activate geneicl || exit 1
+      export GENEICL_PYTHON="$(command -v python)"
+  bulkformer:               # BulkFormer's own env (torch_geometric, performer_pytorch)
+    setup: |
+      source ~/.bashrc
+      conda activate bulkformer-latest || exit 1
+  host: {}                  # `python` on PATH (the env run_evaluation.sh activated)
+
+tasks:
+  # ---- prerequisite: embeddings/<model>/ read by representation and alignment --------
+  embed:
+    enabled: false          # --only embed runs it anyway
+    shared:
+      split: tissue_s0
+      parts: [test]
+      stratify_by: [tissue_general]
+    steps:
+      embed_splits:
+        foreach: {model: [unified_paired_tissue_s0, unified_paired_dat_tissue_s0]}
+        args:
+          modalities: [sc, bulk, pseudobulk]
+          test_subset: 20000
+      embed_pca:
+        script: embed_splits
+        args:
+          embedder: pca
+          parts: [test, train_subset]
+
+  # ---- representation: UMAP / PCA / modality alignment figures (CPU) -----------------
+  representation:
+    shared:
+      models: [unified_paired_tissue_s0, unified_paired_dat_tissue_s0, pca]
+      part: test
+      filter: ["tissue_general=lung,breast"]
+      stratify_by: [tissue_general]
+      skip_unknown: true
+      labels: {tissue_general: Tissue, assay: Assay, modality: Modality, paired: Pair}
+    steps:
+      umap:
+        args:
+          modality: sc
+          subsample: 20000
+          color: [tissue_general, assay]
+          title: "{model}: {modality_name} ({part})"
+      pca:
+        args:
+          modality: sc
+          subsample: 20000
+          color: [tissue_general, assay]
+          components: [1, 2]
+          already_pca: [pca]
+          title: "{model}: {modality_name} ({part}, {pcs})"
+      alignment:
+        args:
+          per_modality: ["sc=5000", "bulk=all", "pseudobulk=all"]
+          color: [modality, tissue_general, paired]
+          connect_pairs: true
+          title: "{model}: modality alignment ({counts})"
+
+  # ---- alignment: scIB benchmark (bulkFM env) ----------------------------------------
+  alignment:
+    steps:
+      scib:
+        environment: bulkFM
+        args:
+          name: tissue_s0_test
+          models: [unified_paired_tissue_s0, unified_paired_dat_tissue_s0, bulkformer]
+          pre_integrated: pca
+          part: test
+          modalities: [bulk, pseudobulk]
+          per_modality: ["bulk=all", "pseudobulk=all"]
+          batch_key: modality
+          label_key: tissue_general
+          n_jobs: 4
+          # row_labels: {unified_paired_tissue_s0: CF paired, bulkformer: BulkFormer}
+
+  # ---- reconstruction: mask plan -> models -> figures ---------------------------------
+  reconstruction:
+    steps:
+      mask_plan:
+        environment: host
+        args:
+          modality: bulk
+          split: leiden_s0
+          part: test
+          name: r25
+          mask_ratio: 0.25
+          seq_len: 1200
+          n_samples: 2000
+          stratify_by: [tissue_general]
+      cancerfoundation:
+        script: reconstruction
+        foreach: {model: [unified_v1]}
+        args:
+          plan: &plan bulk:leiden_s0:test:r25
+          group_by: [tissue_general]
+          batch_size: 16
+      bulkformer:
+        script: reconstruction
+        environment: bulkformer
+        enabled: false
+        args:
+          plan: *plan
+          reconstructor: bulkformer
+          name: bulkformer
+          option: [repo=/path/to/bulkformer-latest, gene_column=gene_id]
+          context: full
+      reconstruction_plot:
+        environment: host
+        args:
+          plan: *plan
+          name: cf_vs_bf
+          # models: [unified_v1, bulkformer]
+          baselines: true
+
+  # ---- geneicl: embed the suite -> probe -> figures -----------------------------------
+  geneicl:
+    shared:
+      geneicl_repo: /cluster/work/boeva/rquiles/Codebases/GeneICL
+      suite: benchmark
+    steps:
+      geneicl_embed:
+        foreach: {model: [unified_v1]}
+        args:
+          modality: bulk
+          gene_ids: auto
+          batch_size: 64
+      geneicl_embed_pca:
+        script: geneicl_embed
+        args:
+          embedder: pca
+      geneicl_probe:
+        environment: geneicl
+        foreach: {model: [unified_v1, pca]}
+        args:
+          seed: 42
+      geneicl_plot:
+        environment: host
+        args:
+          name: main
+          models: [unified_v1, pca]
+          reference: [scfoundation, bulkformer, en]
+          formats: [png, pdf]

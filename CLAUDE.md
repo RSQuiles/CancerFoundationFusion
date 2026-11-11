@@ -289,6 +289,50 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
   they are.
 - `python -m embed.check_embed` self-checks all three with a fake model (no torch).
 
+### Running all evaluation (`evaluate/run_evaluation.py`)
+```bash
+sbatch evaluate/run_evaluation.sh                                   # CONFIG=... to pick the config
+python -m evaluate.run_evaluation --config evaluate/configs/example_evaluation.yaml --list
+python -m evaluate.run_evaluation --config <cfg> [--dry-run] [--preflight-only] [--no-preflight]     [--only TASK[.STEP] ...] [--skip TASK[.STEP] ...] [--from TASK[.STEP]] [--continue-on-error] [--run-dir DIR]
+```
+One YAML runs any evaluation step of every task, sequentially (tasks in config order,
+then their steps). The per-script configs and `.sh` wrappers stay for standalone runs.
+- **Pass-through.** The coordinator knows no script option. Per step it merges top
+  `shared` < `tasks.<task>.shared` < step `args` < `foreach` values (minus `drop`),
+  writes them to a flat YAML and runs `python -m <module> --config <file>`; the script's
+  own `parse_with_config` validates them. A new or renamed option is a config edit; a
+  new task, step or environment is a new block. Keys that are `_cli.SECTIONS` names are
+  refused (they would be ignored).
+- **Steps:** `script` (alias, default = the step key; the `SCRIPTS` dict holds the
+  section names `umap`, `scib`, `reconstruction`, `geneicl_probe`, ..., the module names,
+  and `embed_splits`), or `module` (any python module, passed as CLI flags unless
+  `pass_as: config`), `environment`, `args`, `foreach` (cartesian product, one run per
+  combination), `drop`, `argv` (raw extra args), `enabled`, `continue_on_error`.
+  `--only` also runs steps with `enabled: false` (e.g. the example's `embed` task).
+- **Environments** (`environments:`, `default_environment`): `command` (argv up to
+  python; the container one is `singularity run ... python -u`) or `setup` (shell
+  lines run by bash, then `exec python -u -m ...`), plus `env`. `host` = `python` on
+  PATH. The `geneicl` env exports `GENEICL_PYTHON`, which `run_probe` reads.
+- **Where it runs.** `run_evaluation.sh` takes ONE allocation (GPU) and starts the
+  coordinator on the host in a light env with pyyaml (`CONDA_ENV`, default `bulkFM`); each
+  step starts its own environment, so singularity is never nested. The coordinator is
+  torch-free.
+- **Preflight** (default; `--preflight-only` stops after it): every run is parsed by its
+  script's `build_parser()` in its own environment (`evaluate/_preflight.py`), so unknown
+  keys, wrong types and bad choices fail before any step runs. Checks a script makes
+  after parsing (e.g. "--model or --embedder") still fail at run time.
+- **Flagging and records:** a numbered plan, a banner per run (`==== [3/9]
+  reconstruction.cancerfoundation (model=x) | env: container` with module, config, log,
+  command, start time), an OK / FAILED footer with the duration, and a final summary.
+  The first failure stops the rest unless `--continue-on-error`; exit code 1 if any
+  failed. Everything goes to `results/_eval_runs/<config stem>_<timestamp>/`
+  (`ExperimentLayout.eval_runs_dir`): `config.yaml`, `steps/NN_<task>.<step>[.<k=v>].yaml`,
+  `logs/*.log`, `summary.json`. `--dry-run` writes the step configs to a temp dir and
+  prints the commands.
+- `embed/embed_splits.py` reads `--config` too (section `embed_splits`), so embeddings
+  can be a step.
+- `python -m evaluate.check.check_run_evaluation` self-checks it offline (fake steps).
+
 ### Representation figures (new `evaluate/`)
 ```bash
 python -m evaluate.representation.plot_umap --models m1 pca --modality sc \
@@ -322,7 +366,7 @@ plus obs. `plot_alignment` fits ONE UMAP over all modalities and refuses files w
 shared, and a block named after the script's section applies to that script only
 (`umap`, `pca`, `alignment`, `mask_plan`, `reconstruction`, `compare`, `reconstruction_plot`,
 `scib`, `geneicl_embed`,
-`geneicl_probe`, `geneicl_compare`, `geneicl_plot`). Unknown keys are
+`geneicl_probe`, `geneicl_compare`, `geneicl_plot`, `embed_splits`). Unknown keys are
 errors, so keep only options every reader has at the top level (usually `root`). Mappings
 (`labels`, `condition`) may be YAML dicts or `KEY=VALUE` lists.
 
@@ -521,7 +565,7 @@ python -m evaluate.geneicl.plot_benchmark --name main [--models unified_v1 pca] 
   (`example_geneicl_config.yaml`).
 
 Offline self-checks: `python -m experiments.check.check_layout`, `check_sampling` and
-`check_rename`, `check_resume`, `check_warm_start` (no torch or anndata), plus `python -m evaluate.check.check_representation`,
+`check_rename`, `check_resume`, `check_warm_start` (no torch or anndata), plus `python -m evaluate.check.check_run_evaluation` (no anndata) and `check_representation`,
 `check_reconstruction`, `check_alignment` and `check_geneicl` (need anndata/scanpy; the
 Benchmarker itself is skipped without scib_metrics; `check_geneicl` runs against a fake
 GeneICL checkout with a stub `benchmark.py`).
@@ -875,6 +919,10 @@ experiments/                  # was ablate/; torch-free at import time
 └── check/                    # check_layout, check_sampling, check_rename, check_resume, check_warm_start (offline)
 
 evaluate/                     # NEW, works on the experiments root
+├── run_evaluation.py         # global coordinator: one config, every task's steps, sequentially
+├── run_evaluation.sh         # its SLURM entry point (one allocation, per-step environments)
+├── _preflight.py            # parses a step's arguments with the script's parser, runs nothing
+├── configs/example_evaluation.yaml  # the global config (sections per task)
 ├── _cli.py                   # --config YAML sections, KEY=VALUE mappings, title templates
 ├── _plot_style.py            # shared palette, figure saving, best-highlighted metric table
 ├── io.py                     # load_embedding, load_external, panel_hashes
@@ -904,7 +952,7 @@ evaluate/                     # NEW, works on the experiments root
 │   ├── compare.py            # models (+ GeneICL reference rows) on shared tasks -> assessment/
 │   ├── plot_benchmark.py     # task x model heatmaps + summary table -> tasks/geneicl_<suite>/_plots/<name>/
 │   └── example_geneicl_config.yaml, embed_suite.sh, run_probe.sh
-└── check/                    # check_representation, check_reconstruction, check_alignment, check_geneicl
+└── check/                    # check_representation, check_reconstruction, check_alignment, check_geneicl, check_run_evaluation
 
 evaluate_old/                 # ARCHIVED: the previous evaluate/ (does not run as is)
 ├── run_analysis.py           # Config-driven orchestrator: UMAPs + metrics + benchmark over N experiments
@@ -1001,6 +1049,7 @@ DATA/{tissue}/processed_data/train/
 - **Training**: `pretrain.py` — main training script
 - **Data Processing**: `data_preprocess/data_processing.ipynb` (interactive) or `scripts/h5ads_to_sc.py` (CLI batch)
 - **Embedding**: `embed/embed_splits.py` (splits into `embeddings/<model>/`), `embed/embed.py` (one h5ad, CancerFoundation), `embed/embed_any.py` (one h5ad, any registered model)
+- **All evaluation (one config)**: `evaluate/run_evaluation.sh` / `python -m evaluate.run_evaluation`
 - **Representation figures**: `evaluate/representation/plot_umap.py`, `plot_pca.py`, `plot_alignment.py`
 - **GeneICL benchmark**: `evaluate/geneicl/embed_suite.py`, `run_probe.py`, `compare.py`, `plot_benchmark.py`
 - **Reconstruction**: `evaluate/reconstruction/mask_plan.py`, `run_reconstruction.py`, `compare.py`, `plot_reconstruction.py`

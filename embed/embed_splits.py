@@ -55,12 +55,14 @@ from utils.sampling import stratified_subsample  # noqa: E402
 PART_COL = "_embed_part"
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Embed the test split and a stratified train subset of each modality.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    backend = parser.add_mutually_exclusive_group(required=True)
+    # Not required=True: a --config default does not satisfy argparse's own check, so
+    # parse_args() checks that one of the two is given.
+    backend = parser.add_mutually_exclusive_group()
     backend.add_argument("--model", default=None, help="CancerFoundation model name (checkpoints/<model>/).")
     backend.add_argument("--embedder", default=None, help="Embedder registered in embed_any.py (e.g. pca).")
     parser.add_argument("--name", default=None,
@@ -70,7 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ckpt", default=None,
                         help="Checkpoint file in checkpoints/<model>/ or a full path (default: newest *.ckpt).")
     parser.add_argument("--root", type=Path, default=None, help="Experiments root.")
-    parser.add_argument("--split", required=True, help="Split name (data/<modality>/splits/<split>/).")
+    parser.add_argument("--split", default=None, help="Required. Split name (data/<modality>/splits/<split>/).")
     parser.add_argument("--modalities", nargs="+", default=["sc", "bulk", "pseudobulk"],
                         help="Modalities to embed.")
     parser.add_argument("--parts", nargs="+", default=["test"], choices=list(EMBEDDING_PARTS),
@@ -84,7 +86,21 @@ def parse_args() -> argparse.Namespace:
                         help="obs columns stratifying both subsets (missing ones are skipped).")
     add_normalization_args(parser)
     add_model_run_args(parser)
-    args = parser.parse_args()
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """CLI flags, with defaults from a ``--config`` YAML (top level + ``embed_splits:`` block)."""
+    from evaluate._cli import parse_with_config
+
+    parser = build_parser()
+    args = parse_with_config(parser, "embed_splits", argv)
+    if not (args.model or args.embedder):
+        parser.error("one of the arguments --model --embedder is required")
+    if args.model and args.embedder:
+        parser.error("--model and --embedder are mutually exclusive")
+    if not args.split:
+        parser.error("--split is required")
     if args.embedder is None and (args.name or args.option):
         parser.error("--name and --option only apply with --embedder")
     return args
@@ -200,8 +216,8 @@ def embed_with_embedder(args, adata):
     return emb, embedder.genes, {**embedder.provenance(), "fitted_on": fitted_on}
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     layout = ExperimentLayout.from_root(args.root)
     model_name = args.model or args.name or args.embedder
     labels = list(dict.fromkeys(canonical_modality(m) for m in args.modalities))
