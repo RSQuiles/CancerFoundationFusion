@@ -89,6 +89,7 @@ class TransformerModule(nn.Module):
         cdd_cluster_min_size: int = 3,
         cdd_relabel_known: bool = False,
         cdd_cluster_source_fallback: bool = True,
+        mask_value: float = -1,
     ):
         """Initializes the TransformerModule.
 
@@ -127,6 +128,10 @@ class TransformerModule(nn.Module):
         self.model_type = "Transformer"
         self.d_model = d_model
         self.conditions = conditions
+        # Expression value of padded positions (and CLS) and of masked positions in
+        # the pcpt input; the pcpt loss is computed on the masked positions only.
+        self.pad_value = pad_value
+        self.mask_value = mask_value
 
         # Which conditions actually get a ConditionEncoder + where_condition injection.
         # The full `conditions` set still drives label provisioning for DAT/CDD and the
@@ -989,9 +994,12 @@ class TransformerModule(nn.Module):
                     device=target_values.device,
                 )
             )
+            # MLM objective: score only the positions the collator masked. Visible
+            # positions would turn most of the loss into copying the input.
             positions_to_match = (
                 ~src_key_padding_mask
-                & (target_values != -2)
+                & input_values.eq(self.mask_value)
+                & (target_values != self.pad_value)
                 & keep_samples.unsqueeze(1)
             )
             loss_expr = self.criterion(
@@ -1925,7 +1933,7 @@ class TransformerModule(nn.Module):
         transformer_output = self.encode(src, values, src_key_padding_mask, conditions)
 
         if self.where_condition == "begin":
-            # RAFA: Get rid of the condition token once the it has been encoded through self-attention
+            # RAFA: Get rid of the condition token once it has been encoded through self-attention
             if self._use_condition_encoders and condition_emb is not None:
                 # num_conditions = condition_emb.shape[1]
                 decoder_input = torch.cat(
@@ -1940,17 +1948,22 @@ class TransformerModule(nn.Module):
 
         elif self.where_condition == "end":
             if self._use_condition_encoders:
+                # [transformer_output, condition], the order generative_forward uses,
+                # so one decoder reads the same features in both training modes.
                 decoder_input = torch.cat(
                     [
+                        transformer_output,
                         condition_emb.view(condition_emb.shape[0], -1)
                         .unsqueeze(1)
                         .repeat(1, transformer_output.shape[1], 1),
-                        transformer_output,
                     ],
                     dim=2,
                 )
             else:
                 decoder_input = transformer_output
+
+        else:  # "none": conditions are not injected anywhere
+            decoder_input = transformer_output
 
         output = {}
         mlm_output = self.decoder(decoder_input)

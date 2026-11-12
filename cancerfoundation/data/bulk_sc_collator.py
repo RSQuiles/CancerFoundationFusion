@@ -441,7 +441,8 @@ class BulkSCCollator(AnnDataCollator):
         Each cell can be rank-normalised to unit sum (via expm1 → proportion) before
         aggregation, so all cells contribute equally regardless of sequencing depth.
         The result is re-normalised to log1p(CPM) when the model expects log1p input.
-        Zero entries are dropped and the CLS token is prepended.
+        Every gene present in the cells is kept, zeros included, and the CLS token
+        is prepended.
         """
         k = self.keep_first_n_tokens
 
@@ -512,9 +513,14 @@ class BulkSCCollator(AnnDataCollator):
                     expr_sum = expr_sum / total * 1e6
                 expr_sum = np.log1p(expr_sum)
 
-            expressed = expr_sum != 0
-            gene_ids  = np.where(expressed)[0].astype(np.int64)
-            expr_vals = expr_sum[expressed].astype(np.float32)
+            # Keep every gene the constituent cells carry, zeros included, as dense
+            # SC, bulk and precomputed PB rows do. Dropping the zeros would leave
+            # zero_percentages nothing to sample here and make "no zero tokens" a
+            # give-away of on-the-fly pseudobulk.
+            present = np.zeros(n_bins, dtype=bool)
+            present[all_genes] = True
+            gene_ids  = np.where(present)[0].astype(np.int64)
+            expr_vals = expr_sum[present].astype(np.float32)
 
         # Prepend CLS token
         cls_id    = int(sc_samples[0]["genes"][0].item())

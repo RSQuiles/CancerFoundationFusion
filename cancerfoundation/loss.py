@@ -105,9 +105,12 @@ class MSE(AbstractGeneExpressionLoss):
     def forward(
         self, logits: torch.Tensor, target: torch.Tensor, mask: torch.LongTensor
     ) -> torch.Tensor:
+        # Mean over the counted positions only. reduction="mean" would divide by every
+        # B x L entry, shrinking the loss by the (batch-dependent) share of positions
+        # that count: padding, unmasked pcpt positions, excluded sc_for_pb rows.
         mask = mask.float()
-        loss = F.mse_loss(logits * mask, target * mask, reduction="mean")
-        return loss
+        loss = F.mse_loss(logits * mask, target * mask, reduction="sum")
+        return loss / mask.sum().clamp_min(1.0)
 
     def get_in_dim(self) -> int:
         return 1

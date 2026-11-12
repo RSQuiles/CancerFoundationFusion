@@ -94,6 +94,15 @@ class AnnDataCollator:
         if self.do_binning != (self.n_bins is not None):
             raise ValueError("`do_binning` and `n_bins` have to be set in tandem.")
 
+        if self.zero_percentages is not None and not self.sampling:
+            # Zero-aware sampling is the only way zero_percentages is applied, so it
+            # takes precedence over truncation for every over-long row.
+            print(
+                "[AnnDataCollator] zero_percentages is set but sampling "
+                "(--trunc-by-sample) is off: over-long rows are sampled with the "
+                "requested zero share instead of being truncated."
+            )
+
     def __call__(
         self, examples: List[Dict[str, torch.Tensor]]
     ) -> Dict[str, torch.Tensor]:
@@ -575,8 +584,11 @@ class AnnDataCollator:
         probability_matrix = torch.full(shape, self.get_mask_ratio())
         # set padded postion probability to 0
         probability_matrix[expressions.eq(self.pad_value)] = 0
-        if self.keep_first_n_tokens > 0:
-            probability_matrix[:, : self.keep_first_n_tokens] = 0
+        # The leading tokens were already cut off by the recursive call above, so the
+        # argument (always 0 here), not self.keep_first_n_tokens, applies: using the
+        # attribute would leave the first real gene permanently unmasked.
+        if keep_first_n_tokens > 0:
+            probability_matrix[:, :keep_first_n_tokens] = 0
 
         mask = torch.bernoulli(probability_matrix).bool()
         mask = mask.to(device)
@@ -593,16 +605,24 @@ class AnnDataCollator:
         zero_percentage: Optional[int] = None,
     ) -> Tuple[torch.LongTensor, torch.Tensor]:
         assert len(genes) == len(expressions)
-        if len(genes) == max_length:
-            return genes, expressions
+        # Only the perception part carries the leading (CLS) tokens; the generative
+        # part is genes only, so nothing in it may be kept fixed.
+        keep_first_n = self.keep_first_n_tokens if pcpt else 0
 
+        # The target length must include the leading tokens before it is compared
+        # with the row, or a row of exactly `max_length` comes back one shorter than
+        # its padded neighbours.
         if pcpt:
             max_length += self.keep_first_n_tokens
 
+        if len(genes) == max_length:
+            return genes, expressions
+
         if len(genes) > max_length:  # sample or truncate
-            if self.sampling:
+            # zero_percentages is applied only by _sample, so it implies sampling.
+            if self.sampling or zero_percentage is not None:
                 genes, expressions = self._sample(
-                    genes, expressions, max_length, zero_percentage
+                    genes, expressions, max_length, zero_percentage, keep_first_n
                 )
                 if (
                     genes.shape[0] == max_length
@@ -618,20 +638,28 @@ class AnnDataCollator:
         expressions: torch.Tensor,
         max_length: int,
         zero_percentage: Optional[float] = None,
+        keep_first_n: Optional[int] = None,
     ) -> Tuple[torch.LongTensor, torch.Tensor]:
+        """Sample ``max_length`` entries, keeping the first ``keep_first_n`` in place.
+
+        ``keep_first_n`` defaults to ``self.keep_first_n_tokens`` (the perception
+        part, which starts with CLS); the generative part passes 0.
+        """
         # NOTE: the fastest way to sample in torch has been benchmarked here
         # https://discuss.pytorch.org/t/torch-equivalent-of-numpy-random-choice/16146/19
         # it shows the randperm on gpu is the fastest.
         # NOTE: also, the current implementation permute the orders of the genes
         # and expressions, although it is probably a nice argmentation.
+        if keep_first_n is None:
+            keep_first_n = self.keep_first_n_tokens
         device = genes.device
         if zero_percentage is not None:
             zero = torch.nonzero(expressions == 0).flatten()
             non_zero = torch.nonzero(expressions).flatten()
             max_length_ = max_length
-            if self.keep_first_n_tokens > 0:
-                non_zero = non_zero[self.keep_first_n_tokens :]
-                max_length_ = max_length - self.keep_first_n_tokens
+            if keep_first_n > 0:
+                non_zero = non_zero[keep_first_n:]
+                max_length_ = max_length - keep_first_n
 
             if zero.shape[0] > 0:
                 percentage_zero_relative = (zero_percentage * max_length_) / zero.shape[
@@ -649,17 +677,17 @@ class AnnDataCollator:
             ]
 
             indices = torch.cat((zero_sel_indices, non_zero_sel_indices), dim=0)
-            if self.keep_first_n_tokens > 0:
-                indices = torch.cat((torch.arange(self.keep_first_n_tokens), indices))
+            if keep_first_n > 0:
+                indices = torch.cat((torch.arange(keep_first_n), indices))
 
             return genes[indices], expressions[indices]
         else:
-            if self.keep_first_n_tokens == 0:
+            if keep_first_n == 0:
                 indices = torch.randperm(len(genes), device=device)[:max_length]
                 return genes[indices], expressions[indices]
 
             # keep the first n tokens unchanged
-            _n = self.keep_first_n_tokens
+            _n = keep_first_n
             indices = torch.randperm(len(genes) - _n, device=device)[: max_length - _n]
             indices = torch.cat([torch.arange(_n), indices + _n], dim=0)
             return genes[indices], expressions[indices]

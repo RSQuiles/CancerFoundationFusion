@@ -1,0 +1,193 @@
+# Evaluation of the bulk_sc_pretrain launch (experiments/configs: bulk_then_sc and
+# bulk_then_sc75_bulk25, both warm-started from bulk_pretrain), against bulk_pretrain,
+# pca and bulkformer.
+#
+#   CONFIG=evaluate/configs/bulk_sc_pretrain_evaluation.yaml sbatch evaluate/run_evaluation.sh
+#   python -m evaluate.run_evaluation --config evaluate/configs/bulk_sc_pretrain_evaluation.yaml --list
+#
+# Reused, not recomputed: the bulk plan bulk:leiden_s0:test:r25, bulk_pretrain's and
+# bulkformer's reconstruction on it (steps present below, enabled: false), and their
+# GeneICL probe results. They must be stored under the names bulk_pretrain / bulkformer
+# (an older config called the bulk model bulk_only: rename it with
+# experiments.rename_model, or put the old name in the model lists below).
+
+project_root: /cluster/work/boeva/rquiles/CancerFoundationFusion
+
+shared:
+  root: /cluster/work/boeva/rquiles/unifiedFM_experiments
+
+default_environment: container
+environments:
+  container:                # bionemo image: CancerFoundation, GPU
+    command: [singularity, run, --nv,
+              --pwd, /cluster/work/boeva/rquiles/CancerFoundationFusion,
+              --bind, "/cluster/work/boeva/rquiles,/cluster/work/boeva/eheiss,/cluster/work/boeva/bulkFM",
+              /cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif,
+              python, -u]
+  geneicl:                  # GeneICL's eval env; run_probe reads $GENEICL_PYTHON
+    setup: |
+      source ~/.bashrc
+      conda activate geneicl || exit 1
+      export GENEICL_PYTHON="$(command -v python)"
+  bulkformer:               # BulkFormer's own env
+    setup: |
+      source ~/.bashrc
+      conda activate bulkformer-latest || exit 1
+  host: {}
+
+tasks:
+  # ---- 1. embeddings/<model>/{sc,bulk}_test.h5ad ----------------------------------------
+  # One call per model embeds sc and bulk together, through ONE gene panel, so the joint
+  # UMAP compares like with like.
+  embed:
+    shared:
+      split: leiden_s0
+      modalities: [sc, bulk]
+      test_subset: 20000          # per modality, stratified; bulk keeps all rows if fewer
+      stratify_by: [tissue_general]
+    steps:
+      cf_models:
+        script: embed_splits
+        foreach: {model: [bulk_then_sc, bulk_then_sc75_bulk25, bulk_pretrain]}
+        args:
+          parts: [test]
+      pca:
+        script: embed_splits
+        args:
+          embedder: pca
+          parts: [test, train_subset]   # fitted on the train subset
+      bulkformer:
+        script: embed_splits
+        environment: bulkformer
+        args:
+          embedder: bulkformer
+          parts: [test]
+          # add gene_column=<var column> if var_names are not Ensembl IDs
+          option: [repo=/cluster/work/boeva/rquiles/Codebases/Bulkformer-latest]
+
+  # ---- 2. UMAPs: sc, bulk, and both jointly ----------------------------------------------
+  representation:
+    shared:
+      models: [bulk_then_sc, bulk_then_sc75_bulk25, bulk_pretrain, pca, bulkformer]
+      part: test
+      stratify_by: [tissue_general]
+      skip_unknown: true
+      labels: {tissue_general: Tissue, modality: Modality}
+    steps:
+      umap_sc:
+        script: umap
+        args:
+          modality: sc
+          subsample: 20000
+          color: [tissue_general]
+          title: "{model}: {modality_name} ({part})"
+      umap_bulk:
+        script: umap
+        args:
+          modality: bulk
+          subsample: 20000
+          color: [tissue_general]
+          title: "{model}: {modality_name} ({part})"
+
+  # ---- 3. reconstruction: new sc plan + the existing bulk r25 plan -----------------------
+  reconstruction:
+    steps:
+      mask_plan_sc:               # -> data/single_cell/splits/leiden_s0/masks/test_r25.npz
+        script: mask_plan
+        args:
+          modality: sc
+          split: leiden_s0
+          part: test
+          name: r25
+          mask_ratio: 0.25
+          seq_len: 1200
+          n_samples: 2000
+          zero_fraction: 0.4      # middle of training's zero_percentages
+          stratify_by: [tissue_general]
+
+      cf_sc:
+        script: reconstruction
+        foreach: {model: [bulk_then_sc, bulk_then_sc75_bulk25, bulk_pretrain]}
+        args: &cf_run
+          plan: &sc_plan sc:leiden_s0:test:r25
+          group_by: [tissue_general]
+          batch_size: 16
+      bulkformer_sc:
+        script: reconstruction
+        environment: bulkformer
+        args:
+          plan: *sc_plan
+          reconstructor: bulkformer
+          name: bulkformer
+          option: [repo=/cluster/work/boeva/rquiles/Codebases/Bulkformer-latest]
+          context: full
+          group_by: [tissue_general]
+
+      cf_bulk:
+        script: reconstruction
+        foreach: {model: [bulk_then_sc, bulk_then_sc75_bulk25]}
+        args:
+          <<: *cf_run
+          plan: &bulk_plan bulk:leiden_s0:test:r25
+      cf_bulk_existing:           # already on disk; --only reconstruction.cf_bulk_existing to rerun
+        script: reconstruction
+        enabled: false
+        foreach: {model: [bulk_pretrain]}
+        args:
+          <<: *cf_run
+          plan: *bulk_plan
+      bulkformer_bulk:            # already on disk
+        script: reconstruction
+        environment: bulkformer
+        enabled: false
+        args:
+          plan: *bulk_plan
+          reconstructor: bulkformer
+          name: bulkformer
+          option: [repo=/cluster/work/boeva/rquiles/Codebases/Bulkformer-latest]
+          context: full
+          group_by: [tissue_general]
+
+      # Both plans, all four models, on the entries all of them scored.
+      compare:                    # -> results/assessment/reconstruction_<plan>_bulk_sc_pretrain/
+        foreach: {plan: [*sc_plan, *bulk_plan]}
+        args:
+          models: &recon_models [bulk_then_sc, bulk_then_sc75_bulk25, bulk_pretrain, bulkformer]
+          name: bulk_sc_pretrain
+          baselines: true
+      plot:                       # -> results/tasks/reconstruction/_plots/<plan>/bulk_sc_pretrain/
+        script: reconstruction_plot
+        foreach: {plan: [*sc_plan, *bulk_plan]}
+        args:
+          models: *recon_models
+          name: bulk_sc_pretrain
+          baselines: true
+
+  # ---- 4. GeneICL benchmark for the single-cell models -----------------------------------
+  geneicl:
+    shared:
+      geneicl_repo: /cluster/work/boeva/rquiles/Codebases/GeneICL
+      suite: benchmark
+    steps:
+      geneicl_embed:
+        foreach: {model: [bulk_then_sc, bulk_then_sc75_bulk25]}
+        args:
+          modality: bulk          # the GeneICL datasets are bulk
+          gene_ids: auto
+          batch_size: 64
+      geneicl_probe:
+        environment: geneicl
+        foreach: {model: [bulk_then_sc, bulk_then_sc75_bulk25]}
+        args:
+          seed: 42
+      geneicl_compare:            # -> results/assessment/geneicl_benchmark_bulk_sc_pretrain/
+        environment: geneicl
+        args:
+          models: &geneicl_models [bulk_then_sc, bulk_then_sc75_bulk25, bulk_pretrain, bulkformer]
+          name: bulk_sc_pretrain
+      geneicl_plot:               # -> results/tasks/geneicl_benchmark/_plots/bulk_sc_pretrain/
+        environment: geneicl
+        args:
+          models: *geneicl_models
+          name: bulk_sc_pretrain
+          formats: [png, pdf]
