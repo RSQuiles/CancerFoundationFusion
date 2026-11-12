@@ -47,6 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--root", type=Path, default=None, help="Experiments root")
     parser.add_argument("--models", nargs="+", required=False, default=None, help="Model names")
     parser.add_argument("--part", default="test", choices=["test", "train_subset"])
+    parser.add_argument("--variant", default=None,
+                        help="Embedding variant: read embeddings/<model>/<variant>/ (e.g. own_panel) "
+                             "and write the figures under <variant>/ (default: the model's own files)")
     parser.add_argument("--modalities", nargs="+", default=list(MODALITIES))
     parser.add_argument("--per-modality", nargs="*", default=["sc=5000"], metavar="MOD=N|all",
                         help="Rows per modality (default: sc=5000, the others all)")
@@ -104,8 +107,8 @@ def collect(layout: ExperimentLayout, model: str, args, filters) -> tuple:
 
     labels = list(dict.fromkeys(canonical_modality(m) for m in args.modalities))
     quotas = parse_quotas(args.per_modality, labels)
-    files = [layout.embedding_file(model, m, args.part) for m in labels]
-    hashes = panel_hashes(layout, model, [f for f in files if f.exists()])
+    files = [layout.embedding_file(model, m, args.part, args.variant) for m in labels]
+    hashes = panel_hashes(layout, model, [f for f in files if f.exists()], args.variant)
     distinct = {h for h in hashes.values() if h is not None}
     if len(distinct) > 1 and not args.allow_mixed_panels:
         raise SystemExit(
@@ -118,7 +121,7 @@ def collect(layout: ExperimentLayout, model: str, args, filters) -> tuple:
     pieces = []
     for label in labels:
         try:
-            adata = load_embedding(layout, model, label, args.part)
+            adata = load_embedding(layout, model, label, args.part, args.variant)
         except FileNotFoundError as exc:
             print(f"  [warn] {exc}")
             continue
@@ -168,11 +171,12 @@ def main(argv: list[str] | None = None) -> None:
         count_text = ", ".join(f"{k}={v}" for k, v in counts.items())
         default = f"{model}: alignment ({args.part}) {count_text}" + (f" [{tag}]" if tag else "")
         title = format_title(args.title, default, model=model, part=args.part, counts=count_text,
-                             modalities=", ".join(str(k) for k in counts), filter=tag)
+                             modalities=", ".join(str(k) for k in counts), filter=tag,
+                             variant=args.variant or "")
         fig = draw_umap_panels(coords, obs, args.color, modality_col=MODALITY_COL,
                                skip_unknown=args.skip_unknown, title=title,
                                segments=segments, highlight=highlight, labels=labels)
-        out_dir = args.out_dir or layout.alignment_dir(model)
+        out_dir = args.out_dir or layout.alignment_dir(model, args.variant)
         stem = out_dir / f"alignment_{args.part}{suffix}"
         save_figure(fig, stem.with_suffix(".png"), dpi=args.dpi)
         save_coords(obs, coords, stem.with_suffix(".parquet"))

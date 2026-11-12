@@ -41,6 +41,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--models", nargs="+", default=None, help="Model names (embeddings/<model>/)")
     parser.add_argument("--modality", default="sc", help="sc | bulk | pseudobulk")
     parser.add_argument("--part", default="test", choices=["test", "train_subset"])
+    parser.add_argument("--variant", default=None,
+                        help="Embedding variant: read embeddings/<model>/<variant>/ (e.g. own_panel) "
+                             "and write the figures under <variant>/ (default: the model's own files)")
     parser.add_argument("--input", type=Path, default=None, help="Any h5ad instead of --models")
     parser.add_argument("--obsm-key", default=EMB_KEY, help="obsm key holding the embedding (with --input)")
     parser.add_argument("--out-dir", type=Path, default=None,
@@ -102,7 +105,8 @@ def main(argv: list[str] | None = None) -> None:
         out_dir = args.out_dir or args.input.parent
         stem = out_dir / f"umap_{args.input.stem}{suffix}"
         title = format_title(args.title, args.input.stem + (f" [{tag}]" if tag else ""),
-                             model=args.input.stem, modality="", modality_name="", part="", filter=tag)
+                             model=args.input.stem, modality="", modality_name="", part="", filter=tag,
+                             variant="")
         plot_one(prepare(adata, filters, args, args.input.name), stem, title, args, labels)
         return
 
@@ -112,12 +116,12 @@ def main(argv: list[str] | None = None) -> None:
     label = canonical_modality(args.modality)
     for model in args.models:
         print(f"[{model}] {label} {args.part}")
-        adata = load_embedding(layout, model, label, args.part)
-        out_dir = args.out_dir or layout.representation_dir(model)
+        adata = load_embedding(layout, model, label, args.part, args.variant)
+        out_dir = args.out_dir or layout.representation_dir(model, args.variant)
         stem = out_dir / f"umap_{label}_{args.part}{suffix}"
         title = format_title(args.title, f"{model}: {label} {args.part}" + (f" [{tag}]" if tag else ""),
                              model=model, modality=label, modality_name=DISPLAY_NAMES.get(label, label),
-                             part=args.part, filter=tag)
+                             part=args.part, filter=tag, variant=args.variant or "")
         plot_one(prepare(adata, filters, args, f"{model}/{label}_{args.part}"), stem, title, args, labels)
 
 

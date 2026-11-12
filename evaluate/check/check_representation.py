@@ -31,7 +31,7 @@ MODEL = "toy_model"
 SIZES = {"sc": 800, "pseudobulk": 60, "bulk": 40}
 
 
-def _write_root(root: Path, mixed_panels: bool = False) -> ExperimentLayout:
+def _write_root(root: Path, mixed_panels: bool = False, variant: str | None = None) -> ExperimentLayout:
     import anndata as ad
 
     layout = ExperimentLayout(root)
@@ -44,11 +44,11 @@ def _write_root(root: Path, mixed_panels: bool = False) -> ExperimentLayout:
         paired = np.where(np.arange(n) < 20, np.arange(n) % 10 + 1, 0)
         obs = pd.DataFrame({"tissue_general": tissue, "paired": paired, "modality": mod},
                            index=[f"{mod}_{j}" for j in range(n)])
-        path = layout.embedding_file(MODEL, mod, "test")
+        path = layout.embedding_file(MODEL, mod, "test", variant)
         path.parent.mkdir(parents=True, exist_ok=True)
         ad.AnnData(obs=obs, obsm={"X_emb": emb}).write_h5ad(path)
         files[path.name] = {"panel_hash": f"p{i}" if mixed_panels else "same", "n_rows": n}
-    layout.embed_card(MODEL).write_text(json.dumps({"model": MODEL, "files": files}), encoding="utf-8")
+    layout.embed_card(MODEL, variant).write_text(json.dumps({"model": MODEL, "files": files}), encoding="utf-8")
     return layout
 
 
@@ -87,6 +87,33 @@ def check_umap() -> None:
         bad = Path(tmp) / "bad.yaml"
         bad.write_text("modalty: sc\n", encoding="utf-8")
         check("unknown config key refused", raises(lambda: plot_umap.main(["--config", str(bad)]), SystemExit))
+
+
+def check_variant() -> None:
+    print("\n-- embedding variants --")
+    with tempfile.TemporaryDirectory() as tmp:
+        layout = _write_root(Path(tmp), variant="own_panel")
+        check("variant files under embeddings/<model>/<variant>/",
+              layout.embedding_file(MODEL, "bulk", "test", "own_panel").exists()
+              and not layout.embedding_file(MODEL, "bulk", "test").exists())
+        check("the default location does not see a variant",
+              raises(lambda: plot_umap.main(["--root", tmp, "--models", MODEL, "--modality", "bulk"]),
+                     FileNotFoundError))
+        plot_umap.main(["--root", tmp, "--models", MODEL, "--modality", "bulk", "--subsample", "0",
+                        "--variant", "own_panel", "--title", "{model} {variant}"])
+        check("plot_umap --variant writes under the variant",
+              (layout.representation_dir(MODEL, "own_panel") / "umap_bulk_test.png").exists())
+        plot_pca.main(["--root", tmp, "--models", MODEL, "--modality", "bulk", "--subsample", "0",
+                       "--variant", "own_panel"])
+        check("plot_pca --variant writes under the variant",
+              any(layout.representation_dir(MODEL, "own_panel").glob("pca_bulk_test*.png")))
+        plot_alignment.main(["--root", tmp, "--models", MODEL, "--variant", "own_panel",
+                             "--per-modality", "sc=100"])
+        check("plot_alignment --variant writes under the variant",
+              (layout.alignment_dir(MODEL, "own_panel") / "alignment_test.png").exists())
+        check("a reserved variant name is refused",
+              raises(lambda: plot_umap.main(["--root", tmp, "--models", MODEL, "--variant", "geneicl_x"]),
+                     ValueError))
 
 
 def check_alignment() -> None:
@@ -239,6 +266,7 @@ def check_pca() -> None:
 def main() -> None:
     check_umap()
     check_pca()
+    check_variant()
     check_alignment()
     check_titles_labels()
     finish()

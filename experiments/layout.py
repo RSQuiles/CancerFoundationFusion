@@ -13,10 +13,11 @@ Layout::
     │   ├── _launches/<launch>_<timestamp>.json   one summary per launcher invocation
     │   └── _renames.jsonl                        log written by rename_model.py
     ├── embeddings/<model>/{modality}_{part}.h5ad (+ embed.json)
+    │   ├── <variant>/{modality}_{part}.h5ad      the same, embedded differently (e.g. own_panel)
     │   └── geneicl_<suite>/<dataset>.npz          GeneICL-suite embeddings (+ embed.json)
     └── results/
-        ├── representation/<model>/
-        ├── representation/_alignment/<model>/
+        ├── representation/<model>/[<variant>/]
+        ├── representation/_alignment/<model>/[<variant>/]
         ├── tasks/<task>/<model>/
         ├── tasks/<task>/_plots/[<plan>/]<name>/  named model comparisons (+ manifest.json)
         ├── assessment/<analysis>/                (+ manifest.json listing its models)
@@ -96,6 +97,27 @@ def validate_model_name(name: str) -> str:
     if name in _RESERVED_NAMES:
         raise ValueError(f"Model name {name!r} is reserved by the layout.")
     return name
+
+
+def validate_variant(name: str) -> str:
+    """Return an embedding variant name unchanged, or raise.
+
+    A variant is a subdirectory of the model's embedding (and figure) directory, so it
+    follows the model-name rules and may not start with ``geneicl_`` (the GeneICL-suite
+    directories live at the same level).
+    """
+    if not isinstance(name, str) or not _MODEL_NAME_RE.match(name):
+        raise ValueError(
+            f"Invalid embedding variant {name!r}: use letters, digits, '_', '.', '-' "
+            "and start with a letter or digit."
+        )
+    if name.startswith("geneicl_") or name in _RESERVED_NAMES:
+        raise ValueError(f"Embedding variant {name!r} is reserved by the layout.")
+    return name
+
+
+def _with_variant(path: Path, variant: str | None) -> Path:
+    return path if variant is None else path / validate_variant(variant)
 
 
 def _validate_part(part: str, allowed: tuple[str, ...]) -> str:
@@ -194,16 +216,20 @@ class ExperimentLayout:
     def embeddings_dir(self) -> Path:
         return self.root / "embeddings"
 
-    def embedding_dir(self, model: str) -> Path:
-        return self.embeddings_dir / validate_model_name(model)
+    def embedding_dir(self, model: str, variant: str | None = None) -> Path:
+        """``embeddings/<model>/``, or ``embeddings/<model>/<variant>/`` for embeddings
+        of the same model made differently (e.g. ``own_panel``: one gene panel per
+        modality instead of the joint one). Inside the model's directory, so a rename
+        moves it."""
+        return _with_variant(self.embeddings_dir / validate_model_name(model), variant)
 
-    def embedding_file(self, model: str, modality: str, part: str) -> Path:
+    def embedding_file(self, model: str, modality: str, part: str, variant: str | None = None) -> Path:
         label = canonical_modality(modality)
         part = _validate_part(part, EMBEDDING_PARTS)
-        return self.embedding_dir(model) / f"{label}_{part}.h5ad"
+        return self.embedding_dir(model, variant) / f"{label}_{part}.h5ad"
 
-    def embed_card(self, model: str) -> Path:
-        return self.embedding_dir(model) / EMBED_CARD
+    def embed_card(self, model: str, variant: str | None = None) -> Path:
+        return self.embedding_dir(model, variant) / EMBED_CARD
 
     def geneicl_embedding_dir(self, model: str, suite: str) -> Path:
         """``embeddings/<model>/geneicl_<suite>/``: one ``<dataset>.npz`` per GeneICL dataset."""
@@ -221,11 +247,11 @@ class ExperimentLayout:
     def representation_root(self) -> Path:
         return self.results_dir / "representation"
 
-    def representation_dir(self, model: str) -> Path:
-        return self.representation_root / validate_model_name(model)
+    def representation_dir(self, model: str, variant: str | None = None) -> Path:
+        return _with_variant(self.representation_root / validate_model_name(model), variant)
 
-    def alignment_dir(self, model: str) -> Path:
-        return self.representation_root / "_alignment" / validate_model_name(model)
+    def alignment_dir(self, model: str, variant: str | None = None) -> Path:
+        return _with_variant(self.representation_root / "_alignment" / validate_model_name(model), variant)
 
     @property
     def tasks_root(self) -> Path:

@@ -36,9 +36,12 @@ environments:
   host: {}
 
 tasks:
-  # ---- 1. embeddings/<model>/{sc,bulk}_test.h5ad ----------------------------------------
-  # One call per model embeds sc and bulk together, through ONE gene panel, so the joint
-  # UMAP compares like with like.
+  # ---- 1. embeddings -------------------------------------------------------------------
+  # Joint panel -> embeddings/<model>/{sc,bulk}_test.h5ad: one call per model embeds sc
+  # and bulk together, through ONE gene panel over their shared genes (for a joint UMAP).
+  # Own panel -> embeddings/<model>/own_panel/{sc,bulk}_test.h5ad: one call per model AND
+  # modality, so each modality keeps all its genes and gets its own panel (sc: seurat HVG,
+  # bulk: MAD). The per-modality UMAPs below read this variant.
   embed:
     shared:
       split: leiden_s0
@@ -63,9 +66,35 @@ tasks:
           embedder: bulkformer
           parts: [test]
           # add gene_column=<var column> if var_names are not Ensembl IDs
-          option: [repo=/cluster/work/boeva/rquiles/Codebases/Bulkformer-latest]
+          option: &bf_option [repo=/cluster/work/boeva/rquiles/Codebases/Bulkformer-latest]
 
-  # ---- 2. UMAPs: sc, bulk, and both jointly ----------------------------------------------
+      # Own panel per modality ([sc] and [bulk] are one-element lists, as --modalities expects).
+      cf_models_own_panel:
+        script: embed_splits
+        foreach:
+          model: [bulk_then_sc, bulk_then_sc75_bulk25, bulk_pretrain]
+          modalities: [[sc], [bulk]]
+        args:
+          variant: own_panel
+          parts: [test]
+      pca_own_panel:
+        script: embed_splits
+        foreach: {modalities: [[sc], [bulk]]}
+        args:
+          variant: own_panel
+          embedder: pca
+          parts: [test, train_subset]   # fitted per modality on its own train subset
+      bulkformer_own_panel:           # BulkFormer reads its own vocabulary, not a panel; per
+        script: embed_splits          # modality, each file can get its own input= scale
+        environment: bulkformer
+        foreach: {modalities: [[sc], [bulk]]}
+        args:
+          variant: own_panel
+          embedder: bulkformer
+          parts: [test]
+          option: *bf_option
+
+  # ---- 2. UMAPs: sc and bulk, each on its own-panel embeddings ---------------------------
   representation:
     shared:
       models: [bulk_then_sc, bulk_then_sc75_bulk25, bulk_pretrain, pca, bulkformer]
@@ -73,6 +102,7 @@ tasks:
       stratify_by: [tissue_general]
       skip_unknown: true
       labels: {tissue_general: Tissue, modality: Modality}
+      variant: own_panel          # -> results/representation/<model>/own_panel/
     steps:
       umap_sc:
         script: umap

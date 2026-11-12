@@ -72,6 +72,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ckpt", default=None,
                         help="Checkpoint file in checkpoints/<model>/ or a full path (default: newest *.ckpt).")
     parser.add_argument("--root", type=Path, default=None, help="Experiments root.")
+    parser.add_argument("--variant", default=None,
+                        help="Write to embeddings/<model>/<variant>/ instead of embeddings/<model>/, "
+                             "e.g. own_panel for one call per modality (each with its own gene panel) "
+                             "next to the joint-panel files.")
     parser.add_argument("--split", default=None, help="Required. Split name (data/<modality>/splits/<split>/).")
     parser.add_argument("--modalities", nargs="+", default=["sc", "bulk", "pseudobulk"],
                         help="Modalities to embed.")
@@ -242,19 +246,20 @@ def main(argv: list[str] | None = None) -> None:
         "test_subset": _size(args.test_subset),
         "train_subset": _size(args.train_subset) if "train_subset" in args.parts else None,
         "stratify_by": args.stratify_by,
+        "variant": args.variant,
     })
 
-    out_dir = layout.embedding_dir(model_name)
+    out_dir = layout.embedding_dir(model_name, args.variant)
     print(f"Writing embeddings for '{model_name}' to {out_dir}")
     keys = adata.obs[MODALITY_COL].astype(str) + "|" + adata.obs[PART_COL].astype(str)
     for key in keys.unique():
         label, part = key.split("|")
         mask = (keys == key).to_numpy()
         obs = adata.obs.loc[mask].drop(columns=[PART_COL])
-        name = layout.embedding_file(model_name, label, part).stem
+        name = layout.embedding_file(model_name, label, part, args.variant).stem
         write_embeddings(out_dir, name, obs, emb[mask], genes,
                          provenance={**provenance, "modality": label, "part": part})
-    set_card_fields(out_dir, model=model_name)
+    set_card_fields(out_dir, model=model_name, variant=args.variant)
     print("Done.")
 
 

@@ -60,6 +60,14 @@ def check_paths() -> None:
     check("_plots is not a model name", raises(lambda: L.task_dir("reconstruction", "_plots")))
     check("unknown modality rejected", raises(lambda: canonical_modality("rna")))
     check("unknown embedding part rejected", raises(lambda: L.embedding_file("m1", "sc", "val")))
+    check("variant embedding file", L.embedding_file("m1", "sc", "test", "own_panel")
+          == ROOT / "embeddings/m1/own_panel/sc_test.h5ad")
+    check("variant embed card", L.embed_card("m1", "own_panel") == ROOT / "embeddings/m1/own_panel/embed.json")
+    check("variant figure dirs", L.representation_dir("m1", "own_panel") == ROOT / "results/representation/m1/own_panel"
+          and L.alignment_dir("m1", "v") == ROOT / "results/representation/_alignment/m1/v")
+    check("no variant = model dir", L.embedding_dir("m1", None) == ROOT / "embeddings/m1")
+    for bad in ("geneicl_benchmark", "../x", "_x", "a/b", ""):
+        check(f"variant {bad!r} rejected", raises(lambda b=bad: L.embedding_dir("m1", b)))
 
 
 def check_names() -> None:

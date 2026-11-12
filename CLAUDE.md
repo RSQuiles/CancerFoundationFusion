@@ -43,8 +43,9 @@ data/pipeline_ready/<mix>/ (+ mix.json)                 multi-modality store for
 checkpoints/<model>/                                    *.ckpt, run.json, model_config.json, wandb/
 checkpoints/_launches/*.json, checkpoints/_renames.jsonl
 embeddings/<model>/{sc,bulk,pseudobulk}_{test,train_subset}.h5ad + embed.json
+embeddings/<model>/<variant>/...                       the same, embedded differently (e.g. own_panel)
 embeddings/<model>/geneicl_<suite>/<dataset>.npz + embed.json   GeneICL benchmark inputs
-results/representation/<model>/, results/representation/_alignment/<model>/
+results/representation/<model>/[<variant>/], results/representation/_alignment/<model>/[<variant>/]
 results/tasks/<task>/<model>/, results/assessment/<analysis>/ (+ manifest.json)
 results/tasks/<task>/_plots/[<plan>/]<name>/ (+ manifest.json)   named model comparisons (figures)
 ```
@@ -239,6 +240,16 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
   test part = all rows). `--max-test` and `--train-stratify-by` are kept as aliases. With
   `--embedder`, the model is fitted on the train-subset rows, so request `train_subset`
   too; with `test` only it is fitted on the test rows, with a warning.
+- **Variants** (`--variant NAME`, config `variant:`): write to `embeddings/<model>/<variant>/`
+  instead, so a second way of embedding the same model sits next to the first. The use
+  case is `own_panel`: one `embed_splits` call per modality (`modalities: [sc]`, then
+  `[bulk]`), so each modality keeps all its genes and gets its own panel, next to the
+  joint-panel files a multi-modality call writes (a joint call pools the modalities on
+  their shared genes and fits ONE panel). `plot_umap`, `plot_pca`, `plot_alignment` and
+  `scib_benchmark` read a variant with `--variant` (figures go to
+  `representation/<model>/<variant>/`, `_alignment/<model>/<variant>/`; titles get
+  `{variant}`). Variant names follow the model-name rules and may not start with
+  `geneicl_`. They live inside the model's directories, so `rename_model` moves them.
 - `embed.py --subsample N` embeds a stratified subsample (`--stratify-by`, `--seed`) of
   the input. The file is opened backed and only those rows are read.
 - `embed_any.py` is the plug-in point for baselines and other foundation models:

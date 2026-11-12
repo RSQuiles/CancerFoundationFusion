@@ -77,6 +77,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pre-integrated", default=None,
                         help="Model used as the non-integrated reference (e.g. pca); enables PCR comparison")
     parser.add_argument("--part", default="test", choices=["test", "train_subset"])
+    parser.add_argument("--variant", default=None,
+                        help="Embedding variant to read: embeddings/<model>/<variant>/ "
+                             "(default: the model's own files)")
     parser.add_argument("--modalities", nargs="+", default=[MOD_BULK, MOD_PB])
     parser.add_argument("--per-modality", nargs="*", default=[], metavar="MOD=N|all",
                         help="Rows per modality, stratified by the label (default: all)")
@@ -131,11 +134,12 @@ def plot_only(layout: ExperimentLayout, args, labels: dict[str, str]) -> Path:
     return out_dir
 
 
-def load_models(layout: ExperimentLayout, models: list[str], modalities: list[str], part: str):
+def load_models(layout: ExperimentLayout, models: list[str], modalities: list[str], part: str,
+                variant: str | None = None):
     """``(obs, {model: embedding})`` on the rows every model has, row names ``<mod>:<obs name>``."""
     obs_parts, embs, hashes = [], {m: [] for m in models}, {}
     for mod in modalities:
-        loaded = {m: load_embedding(layout, m, mod, part) for m in models}
+        loaded = {m: load_embedding(layout, m, mod, part, variant) for m in models}
         names = None
         for m, a in loaded.items():
             names = set(a.obs_names) if names is None else names & set(a.obs_names)
@@ -151,7 +155,8 @@ def load_models(layout: ExperimentLayout, models: list[str], modalities: list[st
         for m, a in loaded.items():
             embs[m].append(np.asarray(a[order].obsm[EMB_KEY], dtype=np.float32))
         for m in models:
-            hashes.setdefault(m, {}).update(panel_hashes(layout, m, [layout.embedding_file(m, mod, part)]))
+            hashes.setdefault(m, {}).update(
+                panel_hashes(layout, m, [layout.embedding_file(m, mod, part, variant)], variant))
     obs = pd.concat(obs_parts)
     return obs, {m: np.concatenate(v) for m, v in embs.items()}, hashes
 
@@ -242,7 +247,7 @@ def main(argv: list[str] | None = None) -> Path:
 
     print(f"scIB '{args.name}': {rows} on {modalities} ({args.part})"
           + (f", reference {args.pre_integrated}" if args.pre_integrated else ""))
-    obs, embs, hashes = load_models(layout, models, modalities, args.part)
+    obs, embs, hashes = load_models(layout, models, modalities, args.part, args.variant)
     for key in (args.batch_key, args.label_key):
         if key not in obs.columns:
             sys.exit(f"Error: obs has no '{key}' column (columns: {list(obs.columns)[:15]})")
@@ -265,6 +270,7 @@ def main(argv: list[str] | None = None) -> Path:
     table.to_csv(out_dir / "label_batch.csv")
     meta = {
         "name": args.name, "models": rows, "pre_integrated": args.pre_integrated, "part": args.part,
+        "variant": args.variant,
         "modalities": modalities, "batch_key": args.batch_key, "label_key": args.label_key,
         "filters": parse_filter_specs(args.filter), "per_modality": args.per_modality, "seed": args.seed,
         "n_rows": int(len(obs)), "kbet": args.kbet, "leiden": args.leiden, "bio_only": args.bio_only,
