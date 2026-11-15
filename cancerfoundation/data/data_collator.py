@@ -3,7 +3,7 @@ from typing import Dict, List, Mapping, Optional, Tuple
 
 import torch
 import numpy as np
-from cancerfoundation.data.preprocess import binning
+from cancerfoundation.data.preprocess import binning, check_binning_method
 
 
 @dataclass
@@ -62,6 +62,10 @@ class AnnDataCollator:
     conditions: List[str] = None
     cls_predictions: List[str] = None
     zero_percentages: Optional[List[float]] = None
+    # How non-zero values are binned: "quantile" (default) or "midrank"
+    # (cancerfoundation.data.preprocess.BINNING_METHODS). Only the binned slice after
+    # keep_first_n_tokens is affected; CLS, mask and pad values are set elsewhere.
+    binning_method: str = "quantile"
 
     def __post_init__(self):
         if self.do_padding:
@@ -90,6 +94,8 @@ class AnnDataCollator:
 
         if self.data_style not in ["pcpt", "gen", "both"]:
             raise ValueError("`data_style` must be one of 'pcpt', 'gen', 'both'.")
+
+        check_binning_method(self.binning_method)
 
         if self.do_binning != (self.n_bins is not None):
             raise ValueError("`do_binning` and `n_bins` have to be set in tandem.")
@@ -181,6 +187,7 @@ class AnnDataCollator:
                         binning(
                             row=expressions[self.keep_first_n_tokens :],
                             n_bins=self.n_bins,
+                            method=self.binning_method,
                         )
                         / self.n_bins
                     )  # scale to 0-1
@@ -188,6 +195,7 @@ class AnnDataCollator:
                     expressions[self.keep_first_n_tokens :] = binning(
                         row=expressions[self.keep_first_n_tokens :],
                         n_bins=self.n_bins,
+                        method=self.binning_method,
                     )
 
             zero_percentage = self._sample_zero_percentage()
@@ -267,6 +275,7 @@ class AnnDataCollator:
                 expressions[self.keep_first_n_tokens :] = binning(
                     row=expressions[self.keep_first_n_tokens :],
                     n_bins=self.n_bins,
+                    method=self.binning_method,
                 )
             genes, expressions = self._sample_or_truncate_plus_pad(
                 genes, expressions, _max_length
@@ -365,6 +374,7 @@ class AnnDataCollator:
                         binning(
                             row=expressions[self.keep_first_n_tokens :],
                             n_bins=self.n_bins,
+                            method=self.binning_method,
                         )
                         / self.n_bins
                     )  # scale to 0-1
@@ -372,6 +382,7 @@ class AnnDataCollator:
                     expressions[self.keep_first_n_tokens :] = binning(
                         row=expressions[self.keep_first_n_tokens :],
                         n_bins=self.n_bins,
+                        method=self.binning_method,
                     )
 
             (

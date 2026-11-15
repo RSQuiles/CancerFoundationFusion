@@ -48,7 +48,8 @@ ARCHITECTURE_HPARAMS = (
     "freeze_groups", "backbone_lr_scale",
 )
 # A change here is allowed, but it is a different training setup, so it is reported.
-WATCHED_HPARAMS = ("data_path", "lr", "warmup_ratio_or_step", "loss_type", "zero_percentages")
+WATCHED_HPARAMS = ("data_path", "lr", "warmup_ratio_or_step", "loss_type", "zero_percentages",
+                   "binning_method")
 WATCHED_DATAMODULE_HPARAMS = ("batch_size",)
 
 

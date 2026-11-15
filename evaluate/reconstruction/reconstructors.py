@@ -91,19 +91,41 @@ def decode_bins(raw: np.ndarray, loss: str, n_bins: int, normalise_bins: bool = 
     raise ValueError(f"Cannot decode loss {loss!r} into bins (zinb predicts counts, not bins)")
 
 
-def bin_tie_range(row: np.ndarray, n_bins: int) -> tuple[np.ndarray, np.ndarray]:
+_PREPROCESS = None
+
+
+def preprocess_module():
+    """``cancerfoundation/data/preprocess.py`` loaded by path, so the numpy binning is
+    usable here without importing the package (whose ``__init__`` loads torch)."""
+    global _PREPROCESS
+    if _PREPROCESS is None:
+        import importlib.util
+
+        path = Path(__file__).resolve().parents[2] / "cancerfoundation" / "data" / "preprocess.py"
+        spec = importlib.util.spec_from_file_location("_cf_preprocess", path)
+        _PREPROCESS = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_PREPROCESS)
+    return _PREPROCESS
+
+
+def bin_tie_range(row: np.ndarray, n_bins: int, method: str = "quantile") -> tuple[np.ndarray, np.ndarray]:
     """``(lo, hi)``: every bin ``preprocess.binning`` may give each value of ``row``.
 
     ``binning`` cuts a row at quantile edges; when several edges are equal, a value on
     them gets a random bin between the two ``np.digitize`` sides (``_digitize``), so
     any bin in ``[lo, hi]`` is an equally correct target. The edges are those of
-    ``binning`` exactly; zeros are bin 0.
+    ``binning`` exactly; zeros are bin 0. With ``method="midrank"`` binning is
+    deterministic, so ``lo == hi`` is the one bin every value gets.
     """
     row = np.asarray(row)  # same dtype as binning's input, so the quantile edges match
     lo = np.zeros(row.shape, dtype=np.int64)
     hi = np.zeros(row.shape, dtype=np.int64)
     if row.size == 0 or row.max() == 0:
         return lo, hi
+    if method == "midrank":
+        b = np.asarray(preprocess_module().binning(row, n_bins, method="midrank")).astype(np.int64)
+        return b, b.copy()
+    preprocess_module().check_binning_method(method)
     ids = row.nonzero()[0] if row.min() <= 0 else np.arange(row.size)
     values = row[ids]
     edges = np.quantile(values, np.linspace(0, 1, n_bins - 1))
@@ -241,7 +263,10 @@ class CancerFoundationReconstructor(Reconstructor):
 
         codes = self._condition_codes(adata.obs)
         device = next(model.parameters()).device
-        np.random.seed(self.seed)  # binning breaks ties with np.random
+        np.random.seed(self.seed)  # quantile binning breaks ties with np.random
+        # Targets are binned the way the model was trained (older checkpoints: quantile).
+        method = getattr(model, "binning_method", "quantile")
+        print(f"  [cf] binning targets with method '{method}'")
         n, n_genes = plan.n_samples, len(plan.genes)
         targets = np.full((n, n_genes), np.nan, dtype=np.float32)
         # Bins a tied target could equally have been given (see bin_tie_range).
@@ -256,8 +281,8 @@ class CancerFoundationReconstructor(Reconstructor):
             for i in batch:
                 row = adata.X[i]
                 row = np.asarray(row.toarray() if sp.issparse(row) else row, dtype=np.float32).ravel()
-                binned = binning(row[vocab_cols], model.n_bins).astype(np.float32)
-                lo, hi = bin_tie_range(row[vocab_cols], model.n_bins)
+                binned = binning(row[vocab_cols], model.n_bins, method=method).astype(np.float32)
+                lo, hi = bin_tie_range(row[vocab_cols], model.n_bins, method)
                 t = np.full(n_genes, np.nan, dtype=np.float32)
                 t[in_vocab] = binned[plan_in_row[in_vocab]]
                 targets[i] = t
@@ -342,6 +367,7 @@ class CancerFoundationReconstructor(Reconstructor):
         out = super().provenance()
         if self.model is not None:
             out.update(loss=self.loss, generative=self.generative, n_bins=int(self.model.n_bins),
+                       binning_method=getattr(self.model, "binning_method", "quantile"),
                        conditions=self.conditions)
         return out
 

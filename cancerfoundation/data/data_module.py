@@ -196,6 +196,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         n_cdd_classes: int = 8,
         cdd_bulk_class_frac: float = 0.6,
         sampler_seed: Optional[int] = None,
+        binning_method: str = "quantile",
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -218,6 +219,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         self.n_bins = n_bins
         self.zero_percentages = zero_percentages
         self.normalise_bins = normalise_bins
+        self.binning_method = binning_method
         self.condition_token = condition_token
         self.num_workers = num_workers
         self.unified_fm = unified_fm
@@ -382,6 +384,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                 do_mlm=True,
                 do_binning=self.input_style == "binned",
                 normalise_bins=self.normalise_bins,
+                binning_method=self.binning_method,
                 mask_ratio=self.mask_ratio,
                 mask_value=self.mask_value,
                 max_length=self.max_seq_len,
@@ -402,6 +405,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                 do_mlm=True,
                 do_binning=self.input_style == "binned",
                 normalise_bins=self.normalise_bins,
+                binning_method=self.binning_method,
                 input_data=self.input_data,
                 mask_ratio=self.mask_ratio,
                 mask_value=self.mask_value,
@@ -465,6 +469,7 @@ class BulkSCDataModule(pl.LightningDataModule):
             do_mlm=False,  # clustering wants deterministic, unmasked embeddings
             do_binning=self.input_style == "binned",
             normalise_bins=self.normalise_bins,
+            binning_method=self.binning_method,
             mask_ratio=self.mask_ratio,
             mask_value=self.mask_value,
             max_length=self.max_seq_len,

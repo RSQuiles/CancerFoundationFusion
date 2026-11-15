@@ -147,8 +147,38 @@ def _digitize(x: np.ndarray, bins: np.ndarray, side="both") -> np.ndarray:
     return digits
 
 
+# How non-zero values are mapped to bins 1..n_bins-1 (zeros are always bin 0).
+#   quantile: cut at n_bins-1 quantile edges of the row's non-zeros; a value on several
+#             equal edges gets a RANDOM bin among them (_digitize), redrawn per call.
+#             The scGPT scheme and the default, so every existing checkpoint keeps it.
+#   midrank:  each value gets the bin of its mid-rank percentile among the row's
+#             non-zeros; tied values share one bin and the result is deterministic.
+#             Identical to quantile (within +/-1 bin) on rows without ties.
+BINNING_METHODS = ("quantile", "midrank")
+
+
+def check_binning_method(method: str) -> str:
+    if method not in BINNING_METHODS:
+        raise ValueError(f"Unknown binning method {method!r}; expected one of {BINNING_METHODS}")
+    return method
+
+
+def midrank_digits(values: np.ndarray, n_bins: int) -> np.ndarray:
+    """Bins ``1..n_bins-1`` of non-zero ``values`` by their mid-rank percentile.
+
+    Tied values share their average rank r, ``q = (r - 0.5) / n`` lies in (0, 1), and the
+    bin is ``1 + floor(q * (n_bins - 1))``. Deterministic and monotone in the value.
+    """
+    values = np.asarray(values)
+    _, inverse, counts = np.unique(values, return_inverse=True, return_counts=True)
+    start = np.cumsum(counts) - counts            # values ranked before each tie group
+    mean_rank = start + (counts + 1) / 2.0        # 1-based average rank of the group
+    q = (mean_rank[inverse.reshape(-1)] - 0.5) / values.size
+    return np.clip(1 + np.floor(q * (n_bins - 1)).astype(np.int64), 1, n_bins - 1)
+
+
 def binning_with_edges(
-    row: np.ndarray, n_bins: int
+    row: np.ndarray, n_bins: int, method: str = "quantile"
 ) -> tuple[np.ndarray, np.ndarray]:
     """Same as binning() but also returns the (n_bins-1,) quantile edge array.
 
@@ -156,8 +186,10 @@ def binning_with_edges(
     ``edges`` is all-zeros when the row is all-zero.  The edges are the
     expression-space quantile breakpoints used to assign bin indices, so two
     bin indices that share the same edge value represent the same expression
-    level (repeated-quantile case).
+    level (repeated-quantile case). With ``method="midrank"`` the edges are the same
+    quantile breakpoints (for reference); the bins come from ``midrank_digits``.
     """
+    check_binning_method(method)
     if row.size == 0 or row.max() == 0:
         return np.zeros_like(row, dtype=np.int64), np.zeros(n_bins - 1, dtype=np.float32)
 
@@ -165,20 +197,27 @@ def binning_with_edges(
         non_zero_ids = row.nonzero()
         non_zero_row = row[non_zero_ids]
         edges = np.quantile(non_zero_row, np.linspace(0, 1, n_bins - 1)).astype(np.float32)
-        non_zero_digits = _digitize(non_zero_row, edges)
+        non_zero_digits = (
+            midrank_digits(non_zero_row, n_bins) if method == "midrank"
+            else _digitize(non_zero_row, edges)
+        )
         binned_row = np.zeros_like(row, dtype=np.int64)
         binned_row[non_zero_ids] = non_zero_digits
     else:
         edges = np.quantile(row, np.linspace(0, 1, n_bins - 1)).astype(np.float32)
-        binned_row = _digitize(row, edges).astype(np.int64)
+        binned_row = (
+            midrank_digits(row, n_bins) if method == "midrank" else _digitize(row, edges)
+        ).astype(np.int64)
 
     return binned_row, edges
 
 
 def binning(
-    row: Union[np.ndarray, "torch.Tensor"], n_bins: int  # noqa: F821
+    row: Union[np.ndarray, "torch.Tensor"], n_bins: int,  # noqa: F821
+    method: str = "quantile",
 ) -> Union[np.ndarray, "torch.Tensor"]:  # noqa: F821
-    """Binning the row into n_bins."""
+    """Binning the row into n_bins: zeros -> 0, non-zeros -> 1..n_bins-1 (see BINNING_METHODS)."""
+    check_binning_method(method)
     dtype = row.dtype
     return_np = not _is_tensor(row)
     if not return_np:
@@ -196,11 +235,17 @@ def binning(
     if row.min() <= 0:
         non_zero_ids = row.nonzero()
         non_zero_row = row[non_zero_ids]
-        bins = np.quantile(non_zero_row, np.linspace(0, 1, n_bins - 1))
-        non_zero_digits = _digitize(non_zero_row, bins)
+        if method == "midrank":
+            non_zero_digits = midrank_digits(non_zero_row, n_bins)
+        else:
+            bins = np.quantile(non_zero_row, np.linspace(0, 1, n_bins - 1))
+            non_zero_digits = _digitize(non_zero_row, bins)
         binned_row = np.zeros_like(row, dtype=np.int64)
         binned_row[non_zero_ids] = non_zero_digits
     else:
-        bins = np.quantile(row, np.linspace(0, 1, n_bins - 1))
-        binned_row = _digitize(row, bins)
+        if method == "midrank":
+            binned_row = midrank_digits(row, n_bins)
+        else:
+            bins = np.quantile(row, np.linspace(0, 1, n_bins - 1))
+            binned_row = _digitize(row, bins)
     return torch.from_numpy(binned_row) if not return_np else binned_row.astype(dtype)

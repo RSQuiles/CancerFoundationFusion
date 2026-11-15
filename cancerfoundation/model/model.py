@@ -154,6 +154,8 @@ class CancerFoundation(pl.LightningModule):
         # Training-only parameter groups (see utils/warm_start.py for the groups)
         freeze_groups: Optional[List[str]] = None,
         backbone_lr_scale: float = 1.0,
+        # Default reproduces every checkpoint saved before the option existed.
+        binning_method: str = "quantile",
     ):
         """Initializes the CancerFoundation LightningModule.
 
@@ -198,6 +200,9 @@ class CancerFoundation(pl.LightningModule):
             freeze_groups (Optional[List[str]], optional): Weight groups ("backbone",
                 "decoders", "conditions", "heads") left out of the optimizer and frozen.
             backbone_lr_scale (float, optional): Learning-rate multiplier for the backbone group.
+            binning_method (str, optional): How non-zero values are binned, "quantile"
+                (default) or "midrank" (see cancerfoundation.data.preprocess). Used by
+                embed() and the evaluation targets; training gets it via the data module.
         """
         # Checks
         if input_style == "binned":
@@ -240,6 +245,8 @@ class CancerFoundation(pl.LightningModule):
         self.warm_start_record: Optional[dict] = None
         self.freeze_groups = list(freeze_groups or [])
         self.backbone_lr_scale = float(backbone_lr_scale)
+        from cancerfoundation.data.preprocess import check_binning_method
+        self.binning_method = check_binning_method(binning_method)
         self.compile_model = compile_model
         self.activation = F.relu if activation == "relu" else F.gelu
         self.norm_scheme = norm_scheme
@@ -1098,7 +1105,7 @@ class CancerFoundation(pl.LightningModule):
         if self.input_style == "binned":
             normalise = self.model.decoder.normalise_bins
             for idx in range(data.n_obs):
-                data.X[idx] = binning(data.X[idx], self.n_bins)
+                data.X[idx] = binning(data.X[idx], self.n_bins, method=self.binning_method)
                 if normalise:
                     data.X[idx] = data.X[idx] / self.n_bins
 
@@ -1502,12 +1509,12 @@ class CancerFoundation(pl.LightningModule):
                 orig_X = X.copy()
                 all_edges = np.zeros((data.n_obs, self.n_bins - 1), dtype=np.float32)
                 for idx in range(data.n_obs):
-                    binned, edges = binning_with_edges(X[idx], self.n_bins)
+                    binned, edges = binning_with_edges(X[idx], self.n_bins, method=self.binning_method)
                     all_edges[idx] = edges
                     X[idx] = binned / self.n_bins if normalise else binned
             else:
                 for idx in range(data.n_obs):
-                    X[idx] = binning(X[idx], self.n_bins)
+                    X[idx] = binning(X[idx], self.n_bins, method=self.binning_method)
                     if normalise:
                         X[idx] = X[idx] / self.n_bins
             data.X = X

@@ -200,6 +200,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="The number of bins to use for the binned input style. Recommended is 51.",
     )
     parser.add_argument(
+        "--binning-method",
+        type=str,
+        choices=["quantile", "midrank"],
+        default="quantile",
+        help="How non-zero values are binned. quantile: per-row quantile edges, tied "
+        "values get a random bin among their equal edges (scGPT, the default). midrank: "
+        "the bin of each value's mid-rank percentile, so ties share one bin and the "
+        "binning is deterministic. Zeros are bin 0 either way.",
+    )
+    parser.add_argument(
         "--max-seq-len",
         type=int,
         default=1200,

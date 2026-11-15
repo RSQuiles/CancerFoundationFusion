@@ -27,6 +27,13 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
 - `--gen-method`: "theirs", "mine", "orig", or "quick" (generative training strategy)
 - `--compile`: Enable `torch.compile` for the model
 - `--unified`: Enable Unified FM mode (adds bulk data, contrastive, and aggregation losses)
+- `--binning-method`: "quantile" (default, scGPT: tied values get a random bin among their
+  equal quantile edges, redrawn per call) or "midrank" (each value gets the bin of its
+  mid-rank percentile among the row's non-zeros: ties share one bin, deterministic).
+  Zeros are bin 0 and CLS/mask/pad values are untouched either way. Stored as a model
+  hparam (old checkpoints = quantile) and used by the collator, `embed()` and the
+  reconstruction targets; a change on resume is reported. `python scripts/check_binning_method.py`
+  self-checks it (the collator part needs torch).
 
 ### Experiments root and layout
 Everything a run produces lives under ONE root: `--root`, else `$UNIFIEDFM_ROOT`, else
@@ -404,6 +411,9 @@ python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test
 - **CancerFoundation (space `bins`).**
   - **Targets:** bins of the full sample. Each row is binned over all its vocabulary genes
     before any gene is chosen, as in training; ties are seeded.
+  - **Binning method:** targets are binned with the model's `binning_method`; with
+    `midrank` there are no ties, so `target_lo == target_hi` and the tie-aware metrics equal
+    the plain ones.
   - **Tied bins:** when quantile edges repeat, `binning` gives a value on them a random
     bin among several equally correct ones. `bin_tie_range` records that range per entry
     (`target_lo`, `target_hi` in `entries.parquet`), and `metrics.native` adds tie-aware

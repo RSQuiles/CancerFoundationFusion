@@ -367,6 +367,7 @@ def main(input_args=None):
         training_tasks=args.training_tasks,
         n_bins=args.n_bins,
         normalise_bins=args.normalise_bins,
+        binning_method=args.binning_method,
         condition_token=args.where_condition == "begin",
         num_workers=args.num_workers,
         unified_fm=args.unified,
@@ -394,6 +395,7 @@ def main(input_args=None):
     resume_from_checkpoint = str(resume.checkpoint) if resume is not None else None
     model = CancerFoundation(
         n_bins=args.n_bins,
+        binning_method=args.binning_method,
         vocab=datamodule.vocab,
         input_emb_style=args.input_emb_style,
         max_seq_len=args.max_seq_len,

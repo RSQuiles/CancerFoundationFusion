@@ -157,6 +157,10 @@ def check_ties() -> None:
     check("repeated edges give a range of bins", tied)
     check("zeros and distinct values have one bin", single)
     check("all-zero row", all((x == 0).all() for x in bin_tie_range(np.zeros(5, np.float32), 11)))
+    tied_row = rng.choice([0, 1, 2, 3], size=300, p=[.4, .4, .1, .1]).astype(np.float32)
+    lo, hi = bin_tie_range(tied_row, 51, "midrank")
+    check("midrank: one bin per value (lo == hi), ties share it",
+          bool((lo == hi).all() and np.unique(lo[tied_row == 1]).size == 1))
 
     frame = pd.DataFrame({"sample": "s", "target": [0., 3., 3., 7.], "target_lo": [0., 2., 2., 7.],
                           "target_hi": [0., 5., 5., 7.], "pred": [0., 4.6, 1., 9.]})

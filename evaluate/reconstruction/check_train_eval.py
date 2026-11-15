@@ -206,7 +206,7 @@ def part2(model, batch, eval_adata) -> dict:
     for j in range(batch["pcpt_gene"].shape[0]):
         row = eval_adata.X[j]
         row = np.asarray(row.toarray() if sp.issparse(row) else row, dtype=np.float32).ravel()[vocab_cols]
-        lo, hi = bin_tie_range(row, model.n_bins)
+        lo, hi = bin_tie_range(row, model.n_bins, getattr(model, "binning_method", "quantile"))
         pk = ~batch["pcpt_key_padding_mask"][j, 1:]
         gk = ~batch["gen_key_padding_mask"][j]
         ids = np.concatenate([batch["pcpt_gene"][j, 1:][pk].numpy(), batch["gen_gene"][j][gk].numpy()])
@@ -232,7 +232,7 @@ def part2(model, batch, eval_adata) -> dict:
     return res
 
 
-def train_gene_means(vocab, adata, n_bins: int) -> pd.Series:
+def train_gene_means(vocab, adata, n_bins: int, method: str = "quantile") -> pd.Series:
     """Each gene's mean bin over ``adata``'s rows, binned as the evaluation bins them."""
     import scipy.sparse as sp
 
@@ -244,7 +244,7 @@ def train_gene_means(vocab, adata, n_bins: int) -> pd.Series:
     for i in range(adata.n_obs):
         row = adata.X[i]
         row = np.asarray(row.toarray() if sp.issparse(row) else row, dtype=np.float32).ravel()[cols]
-        total += np.asarray(binning(row, n_bins), dtype=float)
+        total += np.asarray(binning(row, n_bins, method=method), dtype=float)
     return pd.Series(total / max(adata.n_obs, 1), index=var_names[cols])
 
 
@@ -353,7 +353,8 @@ def main(argv: list[str] | None = None) -> int:
     print("\n== Part 3: metric scale ==")
     gene_ref_pool = np.setdiff1d(np.arange(len(ds)), val_idx)
     ref_names = list(ds.obs.index.astype(str)[np.sort(rng.choice(gene_ref_pool, size=min(args.n_gene_ref, len(gene_ref_pool)), replace=False))])
-    gm_train = train_gene_means(model.vocab, read_rows(train_source, ref_names), model.n_bins)
+    gm_train = train_gene_means(model.vocab, read_rows(train_source, ref_names), model.n_bins,
+                                getattr(model, "binning_method", "quantile"))
     eval_val_idx = np.sort(rng.choice(val_idx, size=min(args.n_eval, len(val_idx)), replace=False))
     sets = {"val": list(ds.obs.index.astype(str)[eval_val_idx]),
             "test": [test_names[i] for i in np.sort(rng.choice(len(test_names), size=min(args.n_eval, len(test_names)), replace=False))]}
