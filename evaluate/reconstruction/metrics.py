@@ -29,6 +29,24 @@ import numpy as np
 import pandas as pd
 
 PREDICTORS = ("pred", "gene_mean", "sample_mean")
+
+
+def space_group(card: dict) -> str:
+    """Which models' native numbers are comparable, from a run's ``metrics.json`` card.
+
+    ``bins<n_bins>`` for bins models (different n_bins are different scales), else the
+    space. Bins models trained with ``binning_method: midrank`` get
+    ``bins<n_bins>_midrank``: their targets are binned differently, so their native
+    numbers and baselines are not those of quantile models (quantile runs, and runs made
+    before the option, keep ``bins<n_bins>``).
+    """
+    space = card["space"]
+    provenance = card.get("provenance") or {}
+    n_bins = provenance.get("n_bins")
+    if space != "bins" or n_bins is None:
+        return str(space)
+    method = provenance.get("binning_method", "quantile")
+    return f"bins{int(n_bins)}" + ("" if method == "quantile" else f"_{method}")
 # Per entry, the bins a tied target could equally have been given (bins space only; see
 # reconstructors.bin_tie_range). Absent in runs made before they were recorded.
 TIE_COLUMNS = ("target_lo", "target_hi")

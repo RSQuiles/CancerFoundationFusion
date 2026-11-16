@@ -6,7 +6,8 @@
 Reads the ``run_reconstruction`` results of the selected models (``--models``; default
 every model with results on the plan). ``--name`` (required) names the comparison, so one
 plan can hold several comparisons of different models. Models are grouped by target space, bins models
-also by ``n_bins`` (``bins51``, ``ln_tpm1``, ...): native-space numbers only compare
+also by ``n_bins`` and binning method (``bins51``, ``bins51_midrank``, ``ln_tpm1``, ...):
+native-space numbers only compare
 within a group, each on the masked entries every model of the group scored. The group
 ``all`` holds every selected model on the entries they all scored, for the space-free
 plots.
@@ -188,10 +189,8 @@ def select_models(requested: list[str], available: list[str], plan_id: str) -> l
 
 
 def space_group(card: dict) -> str:
-    """``bins<n_bins>`` for bins models (different n_bins are different scales), else the space."""
-    space = card["space"]
-    n_bins = (card.get("provenance") or {}).get("n_bins")
-    return f"bins{int(n_bins)}" if space == "bins" and n_bins is not None else str(space)
+    """See ``metrics.space_group``: ``bins51``, ``bins51_midrank``, ``ln_tpm1``, ..."""
+    return M.space_group(card)
 
 
 def baseline_source(frames: dict[str, pd.DataFrame]) -> tuple[str, list[str]]:

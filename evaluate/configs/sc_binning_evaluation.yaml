@@ -1,0 +1,115 @@
+# Evaluation of the sc_binning launch (experiments/configs/sc_binning.json): sc_quantile
+# vs sc_midrank, the same single-cell model trained with the two binning methods.
+#
+#   CONFIG=evaluate/configs/sc_binning_evaluation.yaml sbatch evaluate/run_evaluation.sh
+#   python -m evaluate.run_evaluation --config evaluate/configs/sc_binning_evaluation.yaml --list
+#
+# Each model embeds and reconstructs with the binning it was trained with (stored in the
+# checkpoint as binning_method), so nothing here sets the method.
+#
+# Comparing the two in reconstruction: their targets are binned differently, so their
+# native numbers (MAE in bins, bin accuracy) are NOT on one scale. The reconstruction
+# figures put them in separate groups (bins51 vs bins51_midrank, each with its own
+# baselines) and compare them directly only on the space-free metrics (per-sample
+# Pearson/Spearman, non-zero Spearman, zero AUROC) in the group "all"; compare.py leaves
+# the native columns out for the same reason.
+
+project_root: /cluster/work/boeva/rquiles/CancerFoundationFusion
+
+shared:
+  root: /cluster/work/boeva/rquiles/unifiedFM_experiments
+
+default_environment: container
+environments:
+  container:                # bionemo image: CancerFoundation, GPU
+    command: [singularity, run, --nv,
+              --pwd, /cluster/work/boeva/rquiles/CancerFoundationFusion,
+              --bind, "/cluster/work/boeva/rquiles,/cluster/work/boeva/eheiss,/cluster/work/boeva/bulkFM",
+              /cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif,
+              python, -u]
+  host: {}                  # the env run_evaluation.sh activated (pandas, pyarrow, matplotlib)
+
+tasks:
+  # ---- 1. embeddings/<model>/sc_test.h5ad ---------------------------------------------
+  # Single-cell only, so each model gets the single-cell panel (seurat HVG). The panel is
+  # fitted label-free on the same rows for both models, so both read the same genes.
+  embed:
+    shared:
+      split: leiden_s0
+      modalities: [sc]
+      parts: [test]
+      test_subset: 20000          # stratified on tissue_general
+      stratify_by: [tissue_general]
+    steps:
+      embed_splits:
+        foreach: {model: [sc_quantile, sc_midrank]}
+
+  # ---- 2. UMAP of the single-cell test split ----------------------------------------------
+  representation:
+    shared:
+      models: [sc_quantile, sc_midrank]
+      part: test
+      stratify_by: [tissue_general]
+      skip_unknown: true
+      labels: {tissue_general: Tissue}
+    steps:
+      umap:
+        args:
+          modality: sc
+          subsample: 20000
+          color: [tissue_general]   # add other obs columns of the sc file (e.g. assay)
+          title: "{model}: {modality_name} ({part})"
+
+  # ---- 3. reconstruction on the single-cell r25 plan -------------------------------------
+  reconstruction:
+    steps:
+      # The plan was made for the bulk_sc_pretrain evaluation; run this step only if
+      # data/single_cell/splits/leiden_s0/masks/test_r25.npz does not exist yet
+      # (--only reconstruction.mask_plan_sc).
+      mask_plan_sc:
+        script: mask_plan
+        enabled: false
+        args:
+          modality: sc
+          split: leiden_s0
+          part: test
+          name: r25
+          mask_ratio: 0.25
+          seq_len: 1200
+          n_samples: 2000
+          zero_fraction: 0.4
+          stratify_by: [tissue_general]
+
+      cf_sc:
+        script: reconstruction
+        foreach: {model: [sc_quantile, sc_midrank]}
+        args:
+          plan: &sc_plan sc:leiden_s0:test:r25
+          group_by: [tissue_general]
+          batch_size: 16
+
+      # Optional: the same models on the bulk r25 plan (out of domain for sc-only models).
+      cf_bulk:
+        script: reconstruction
+        enabled: false
+        foreach: {model: [sc_quantile, sc_midrank]}
+        args:
+          plan: &bulk_plan bulk:leiden_s0:test:r25
+          group_by: [tissue_general]
+          batch_size: 16
+
+      compare:                    # -> results/assessment/reconstruction_sc_leiden_s0_test_r25_sc_binning/
+        environment: host
+        args:
+          plan: *sc_plan
+          models: &models [sc_quantile, sc_midrank]
+          name: sc_binning
+          baselines: true
+      plot:                       # -> results/tasks/reconstruction/_plots/<plan>/sc_binning/
+        script: reconstruction_plot
+        environment: host
+        args:
+          plan: *sc_plan
+          models: *models
+          name: sc_binning
+          baselines: true

@@ -96,7 +96,12 @@ def main(argv: list[str] | None = None) -> pd.DataFrame:
           f"(of {', '.join(f'{m}: {len(f)}' for m, f in frames.items())})")
 
     rows, per_sample = [], []
-    shared_space = len(set(spaces.values())) == 1
+    # Native metrics only when every model's targets are on one scale: the same space,
+    # n_bins and binning method (metrics.space_group).
+    groups = {m: M.space_group(card) for m, card in cards.items()}
+    shared_space = len(set(groups.values())) == 1
+    if not shared_space and len(set(spaces.values())) == 1:
+        print(f"  [note] native metrics left out: the models' targets are binned differently {groups}")
     for model, sub in subs.items():
         predictors = M.PREDICTORS if args.baselines else ("pred",)
         for col in predictors:
@@ -117,7 +122,7 @@ def main(argv: list[str] | None = None) -> pd.DataFrame:
     _plot(pd.concat(per_sample), out_dir / "per_sample_spearman.png", plan.plan_id, args.dpi)
     (out_dir / "manifest.json").write_text(json.dumps({
         "analysis": "reconstruction", "plan": plan.plan_id, "models": list(frames),
-        "spaces": spaces, "n_shared_entries": len(keys),
+        "spaces": spaces, "space_groups": groups, "n_shared_entries": len(keys),
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }, indent=2), encoding="utf-8")
     with pd.option_context("display.width", 160, "display.max_columns", 12):

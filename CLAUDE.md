@@ -457,8 +457,9 @@ python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test
   `results/tasks/reconstruction/_plots/<plan>/<name>/`, so one plan can hold several
   comparisons of different models. No `--models` means every model with results on the
   plan. Rerunning a name overwrites its figures.
-  - **Groups:** models are grouped by space, and bins models also by `n_bins` (`bins51`,
-    `ln_tpm1`); each group is compared on the entries all its models scored. With two or
+  - **Groups:** models are grouped by space, and bins models also by `n_bins` and binning
+    method (`bins51`, `bins51_midrank`, `ln_tpm1`; `metrics.space_group`, also used by
+    `compare.py`, which leaves native metrics out across groups); each group is compared on the entries all its models scored. With two or
     more models, the group `all` holds every model on their shared entries.
   - **Per space group:** `mae_by_bin` (bins: MAE by true bin, tie-aware when the runs have
     ranges, `--bin-width`), `mae_by_target` (other spaces: zeros, then quantiles of the
