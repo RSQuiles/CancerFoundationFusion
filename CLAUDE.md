@@ -439,7 +439,7 @@ errors, so keep only options every reader has at the top level (usually `root`).
 python -m evaluate.reconstruction.mask_plan --modality bulk --split leiden_s0 --part test --name r25 \
     --mask-ratio 0.25 --seq-len 1200 --n-samples 2000 [--gene-universe genes.txt] [--zero-fraction 0.4]
 # 2. score models on it -> results/tasks/reconstruction/<name>/<plan>/
-python -m evaluate.reconstruction.run_reconstruction --model unified_v1 --plan bulk:leiden_s0:test:r25 [--head mvc]
+python -m evaluate.reconstruction.run_reconstruction --model unified_v1 --plan bulk:leiden_s0:test:r25 [--head mvc]   # mvc -> row unified_v1@mvc
 python -m evaluate.reconstruction.run_reconstruction --reconstructor bulkformer --name bulkformer \
     --plan bulk:leiden_s0:test:r25 --option repo=/path gene_column=gene_id [--context plan]
 # 3. compare on the entries all of them scored -> results/assessment/reconstruction_<plan>/
@@ -489,6 +489,28 @@ python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test
 - **New models**: subclass `Reconstructor`, `@register("<name>")`, implement `predict`
   returning the full target matrix (NaN = unknown) plus `row`/`gene`/`pred` of the masked
   entries, and name the target `space`.
+- **Heads and rows.** A CancerFoundation model can be scored with either decoder:
+  - `--head gen` (default) is the expression decoder. It predicts a masked gene from its
+    own output token, which sees the context genes, so it does not need CLS.
+  - `--head mvc` is the MVC decoder. It predicts from the CLS cell embedding and the gene
+    identity, so it measures what the embedding itself holds.
+
+  An MVC run is written to `<model>/<plan>_mvc/`, beside the gen run (`run_subdir`), and
+  `metrics.json` records `head`; runs without it count as gen. `compare` and
+  `plot_reconstruction` take a run as a row, `model` or `model@mvc` (`parse_row`,
+  `run_dir`), and check the head the run recorded. Their manifests keep plain model names
+  in `"models"` and the row labels in `"rows"`. `rename_model` rewrites `"rows"` entries
+  by their model part (`OLD@mvc` -> `NEW@mvc`). A row label is never stored anywhere else,
+  since it would not be renamed.
+- **Context gain** (`metrics.context_gain`): `spearman_gain`, `spearman_nonzero_gain` and
+  `auroc_zero_gain` are the row's metric minus that of its own `gene_mean` baseline, on the
+  entries both predicted. They appear in `compare`'s `table.csv` and in the
+  `space_free_table` (n/a for baseline rows). A gain near 0 means the row ranks a sample's
+  masked genes no better than each gene's usual level: it learned gene identity, not the
+  sample.
+- **Line plots take at most 8 rows**, the palette size. To compare more (e.g. 5 models ×
+  2 heads), draw the tables for all rows and the line plots per head; see
+  `evaluate/configs/sc_pretrain_evaluation.yaml`.
 - **Metrics** (`metrics.py`), each also for two baselines on the same entries (`gene_mean`
   over the plan's unmasked samples, `sample_mean` over the sample's context):
   - **native:** mse and mae (also split by zero / non-zero target); for bins, exact and

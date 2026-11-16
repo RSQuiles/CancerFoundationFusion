@@ -9,6 +9,17 @@ comparable across target spaces; for bins runs with tie ranges the correlations 
 tie midpoint as the target (``metrics.correlation_target``, column ``tie_midpoint_target``).
 Native-space metrics are listed only for models that share a space. Writes ``results/assessment/reconstruction_<plan>[_<name>]/``:
 ``table.csv``, ``per_sample_spearman.png`` and ``manifest.json`` listing the models.
+
+**Rows and heads.** A ``--models`` entry is a run: ``model`` (the gen head, or any
+non-CancerFoundation reconstructor) or ``model@mvc`` (the run with ``--head mvc``, read
+from ``<model>/<plan>_mvc/``), so one model's two decoders can be compared side by side.
+The manifest lists plain model names under ``"models"`` (what ``rename_model`` rewrites)
+and the row labels under ``"rows"``.
+
+**Context gain.** Each model row also has ``spearman_gain``, ``spearman_nonzero_gain``
+and ``auroc_zero_gain``: the row's metric minus that of its own gene-mean baseline on the
+same entries (``metrics.context_gain``). Near 0 means the model ranks a sample's masked
+genes no better than each gene's usual level does.
 """
 
 from __future__ import annotations
@@ -28,13 +39,23 @@ if str(PROJECT_ROOT) not in sys.path:
 from evaluate._cli import parse_with_config  # noqa: E402
 from evaluate.reconstruction import metrics as M  # noqa: E402
 from evaluate.reconstruction.mask_plan import load_plan, resolve_plan_path  # noqa: E402
-from evaluate.reconstruction.run_reconstruction import RESULTS_TASK, plan_slug  # noqa: E402
+from evaluate.reconstruction.run_reconstruction import (  # noqa: E402
+    HEADS,
+    RESULTS_TASK,
+    card_head,
+    parse_row,
+    plan_slug,
+    row_label,
+    run_dir,
+    run_subdir,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Compare models' reconstruction of one mask plan.")
     parser.add_argument("--root", type=Path, default=None, help="Experiments root")
-    parser.add_argument("--models", nargs="+", default=None, help="Output names of run_reconstruction")
+    parser.add_argument("--models", nargs="+", default=None,
+                        help="Runs to compare: run_reconstruction output names, model@mvc for a model's MVC head")
     parser.add_argument("--plan", default=None, help="MODALITY:SPLIT:PART:NAME or a .npz path")
     parser.add_argument("--name", default=None, help="Suffix of the assessment directory")
     parser.add_argument("--baselines", action="store_true",
@@ -44,24 +65,52 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def available_models(layout, slug: str) -> list[str]:
-    """Models with ``entries.parquet`` for the plan ``slug``, sorted."""
+    """Runs with ``entries.parquet`` for the plan ``slug``: ``model`` and ``model@mvc`` rows, sorted."""
     root = layout.tasks_root / RESULTS_TASK
     if not root.is_dir():
         return []
-    return sorted(p.name for p in root.iterdir()
-                  if p.is_dir() and not p.name.startswith("_") and (p / slug / "entries.parquet").exists())
+    rows = []
+    for p in sorted(root.iterdir()):
+        if not p.is_dir() or p.name.startswith("_"):
+            continue
+        for head in HEADS:
+            run = p / run_subdir(slug, head)
+            if not (run / "entries.parquet").exists():
+                continue
+            # <slug>_mvc could also be another plan's slug: trust the head the run recorded.
+            card = run / "metrics.json"
+            if card.exists() and card_head(json.loads(card.read_text(encoding="utf-8"))) != head:
+                continue
+            rows.append(row_label(p.name, head))
+    return rows
+
+
+def base_models(rows) -> list[str]:
+    """The plain model names of ``rows`` (``model@mvc`` -> ``model``), in order, once each."""
+    return list(dict.fromkeys(parse_row(r)[0] for r in rows))
 
 
 def load_runs(layout, models: list[str], slug: str) -> tuple[dict[str, pd.DataFrame], dict[str, dict]]:
-    """``(entries per model, metrics.json per model)``; exits when a run is missing."""
+    """``(entries per row, metrics.json per row)`` for ``model`` / ``model@head`` rows.
+
+    Exits when a run is missing or was scored with another head than its row names.
+    """
     frames, cards = {}, {}
-    for model in models:
-        run_dir = layout.task_dir(RESULTS_TASK, model) / slug
-        path = run_dir / "entries.parquet"
+    for row in models:
+        try:
+            directory = run_dir(layout, row, slug)
+        except ValueError as exc:
+            sys.exit(f"Error: {exc}")
+        path = directory / "entries.parquet"
         if not path.exists():
-            sys.exit(f"Error: {path} not found; run run_reconstruction for '{model}' on this plan first")
-        frames[model] = pd.read_parquet(path)
-        cards[model] = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+            _, head = parse_row(row)
+            sys.exit(f"Error: {path} not found; run run_reconstruction for '{parse_row(row)[0]}'"
+                     f"{' --head ' + head if head != HEADS[0] else ''} on this plan first")
+        card = json.loads((directory / "metrics.json").read_text(encoding="utf-8"))
+        if card_head(card) != parse_row(row)[1]:
+            sys.exit(f"Error: {directory} was scored with head '{card_head(card)}', not '{parse_row(row)[1]}'")
+        frames[row] = pd.read_parquet(path)
+        cards[row] = card
     return frames, cards
 
 
@@ -108,6 +157,8 @@ def main(argv: list[str] | None = None) -> pd.DataFrame:
             sub_c = sub[sub[col].notna()]
             row = {"model": model if col == "pred" else f"{model}:{col}", "space": spaces[model],
                    **M.space_free(sub_c, col)}
+            if col == "pred":
+                row.update(M.context_gain(sub))
             if shared_space:
                 row.update(M.native(sub_c, spaces[model], col))
             rows.append(row)
@@ -121,12 +172,15 @@ def main(argv: list[str] | None = None) -> pd.DataFrame:
     table.to_csv(out_dir / "table.csv", index=False)
     _plot(pd.concat(per_sample), out_dir / "per_sample_spearman.png", plan.plan_id, args.dpi)
     (out_dir / "manifest.json").write_text(json.dumps({
-        "analysis": "reconstruction", "plan": plan.plan_id, "models": list(frames),
+        "analysis": "reconstruction", "plan": plan.plan_id, "models": base_models(frames),
+        "rows": list(frames), "gain_reference": M.GAIN_REFERENCE,
         "spaces": spaces, "space_groups": groups, "n_shared_entries": len(keys),
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }, indent=2), encoding="utf-8")
     with pd.option_context("display.width", 160, "display.max_columns", 12):
-        print(table[["model", "space", "n_entries", "spearman_mean", "spearman_nonzero_mean", "auroc_zero"]])
+        shown = ["model", "space", "n_entries", "spearman_mean", "spearman_gain", "spearman_nonzero_mean",
+                 "auroc_zero", "auroc_zero_gain"]
+        print(table[[c for c in shown if c in table.columns]])
     print(f"wrote {out_dir}")
     return table
 

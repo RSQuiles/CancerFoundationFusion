@@ -21,7 +21,12 @@ Plots (``--plots``; default all), each drawn once per group it applies to:
 - ``metrics_table`` (every space group): global native and space-free metrics, the best
   model of each column shaded; the columns per space are in ``TABLE_COLUMNS``;
 - ``space_free_table`` (``all``): per-sample Pearson / Spearman, global Spearman and
-  zero AUROC, which compare across spaces;
+  zero AUROC, which compare across spaces, and each row's context gain over its own
+  gene-mean baseline (``metrics.context_gain``: Spearman, non-zero Spearman, zero AUROC);
+
+A ``--models`` entry is a run: ``model`` (gen head) or ``model@mvc`` (its MVC head, from
+``run_reconstruction --head mvc``). The manifest keeps plain names under ``"models"`` and
+the row labels under ``"rows"``.
 - ``per_sample_spearman`` (``all``): per-sample Spearman distribution per model;
 - ``rank_mae_by_target`` (``all``): the space-free analog of ``mae_by_bin``. Within
   each sample, targets and predictions become percentile ranks over the shared masked
@@ -122,7 +127,14 @@ TABLE_COLUMNS: dict[str, list[Col]] = {
         Col("auroc_zero", "AUROC", "Zeros"),
     ],
 }
-SPACE_FREE_TABLE = [*_SPACE_FREE_COLUMNS, Col("auroc_zero", "AUROC", "Zeros")]
+# Context gain over each row's own gene-mean baseline (metrics.context_gain); n/a for
+# baseline rows. Gains compare across spaces like the metrics they are differences of.
+GAIN_COLUMNS = [
+    Col("spearman_gain", "Spearman", "Gain vs gene mean"),
+    Col("spearman_nonzero_gain", "Non-zero", "Gain vs gene mean"),
+    Col("auroc_zero_gain", "Zero AUROC", "Gain vs gene mean"),
+]
+SPACE_FREE_TABLE = [*_SPACE_FREE_COLUMNS, Col("auroc_zero", "AUROC", "Zeros"), *GAIN_COLUMNS]
 TIE_FALLBACK = {"mae_tie": "mae", "mse_tie": "mse", "mae_nonzero_target_tie": "mae_nonzero_target",
                 "acc_exact_tie": "acc_exact", "acc_within1_tie": "acc_within1"}
 
@@ -160,7 +172,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--name", default=None,
                         help="Name of this comparison (required): _plots/<plan>/<name>/")
     parser.add_argument("--models", nargs="*", default=[],
-                        help="Models to plot (default: every model with results on the plan)")
+                        help="Runs to plot: model, or model@mvc for its MVC head "
+                             "(default: every run with results on the plan)")
     parser.add_argument("--plots", nargs="*", default=[], help="Plots to draw (default: all; see --list)")
     parser.add_argument("--baselines", action="store_true",
                         help="Also show the gene-mean and sample-mean baselines (one row each per space group)")
@@ -304,6 +317,8 @@ def _metric_rows(group: Group, args, columns: list[Col]) -> pd.DataFrame:
     rows = []
     for label, col, frame in predictor_rows(group, args.baselines):
         values = {**M.space_free(frame, col)}
+        if col == "pred":
+            values.update(M.context_gain(frame))
         if group.space is not None:
             values.update(M.native(frame, group.space, col))
         rows.append({"row": label, **values})
@@ -594,8 +609,10 @@ def main(argv: list[str] | None = None) -> Path | None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / ASSESSMENT_MANIFEST).write_text(json.dumps({
-        "analysis": "reconstruction_plot", "plan": plan.plan_id, "name": args.name, "models": models,
-        "groups": {g.name: {"space": g.space, "models": g.models, "n_shared_entries": g.n_shared,
+        "analysis": "reconstruction_plot", "plan": plan.plan_id, "name": args.name,
+        "models": C.base_models(models), "rows": models, "gain_reference": M.GAIN_REFERENCE,
+        "groups": {g.name: {"space": g.space, "models": C.base_models(g.models), "rows": g.models,
+                            "n_shared_entries": g.n_shared,
                             "tie_aware": g.tie_aware, "tie_midpoint_models": g.midpoint_models,
                             "baseline_source": g.baseline_source, "notes": g.notes} for g in groups},
         "baselines": bool(args.baselines), "plots": written, "skipped": skipped,

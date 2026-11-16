@@ -246,12 +246,13 @@ def check_end_to_end(tmp: Path, layout: ExperimentLayout) -> None:
 
 
 def _fake_run(layout: ExperimentLayout, model: str, slug: str, frame: pd.DataFrame, space: str,
-              n_bins: int | None = None) -> None:
-    out = layout.task_dir("reconstruction", model) / slug
+              n_bins: int | None = None, head: str | None = None) -> None:
+    out = layout.task_dir("reconstruction", model) / run_reconstruction.run_subdir(slug, head or "gen")
     out.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(out / "entries.parquet", index=False)
     prov = {"method": model, "space": space, **({"n_bins": n_bins} if n_bins else {})}
-    (out / "metrics.json").write_text(json.dumps({"model": model, "space": space, "provenance": prov}))
+    card = {"model": model, "space": space, "provenance": prov, **({"head": head} if head else {})}
+    (out / "metrics.json").write_text(json.dumps(card))
 
 
 def _bins_frame(rng, noise: float, n_bins: int, ties: bool = True) -> pd.DataFrame:
@@ -370,6 +371,88 @@ def check_plots(tmp: Path, layout: ExperimentLayout) -> None:
           raises(lambda: plot_reconstruction.main(base + ["--name", "x", "--models", "nope"]), SystemExit))
 
 
+def _gain_frame(rng, pred: str) -> pd.DataFrame:
+    """Samples whose targets follow each gene's mean plus a sample-specific part.
+
+    ``pred``: "target" (perfect), "gene_mean" (knows only the gene) or "noisy".
+    """
+    rows = []
+    level = np.linspace(1, 40, 40)                  # each gene's usual level
+    for s in range(30):
+        t = np.clip(np.round(level + rng.normal(0, 8, 40)), 0, 50)
+        f = pd.DataFrame({"row": s, "sample": f"s{s}", "gene": [f"G{g}" for g in range(40)], "target": t,
+                          "gene_mean": level, "sample_mean": np.full(40, t.mean())})
+        f["pred"] = {"target": t, "gene_mean": level, "noisy": t + rng.normal(0, 6, 40)}[pred]
+        rows.append(f)
+    return pd.concat(rows, ignore_index=True)
+
+
+def check_heads(tmp: Path, layout: ExperimentLayout) -> None:
+    print("\n-- heads (model@mvc) and context gain --")
+    R = run_reconstruction
+    check("row parsing", R.parse_row("m") == ("m", "gen") and R.parse_row("m@mvc") == ("m", "mvc")
+          and R.row_label("m", "mvc") == "m@mvc" and R.row_label("m") == "m")
+    check("unknown head refused", raises(lambda: R.parse_row("m@nope"), ValueError))
+    check("mvc runs get their own directory", R.run_subdir("p", "mvc") == "p_mvc" and R.run_subdir("p") == "p")
+    check("old runs without a head count as gen", R.card_head({"model": "m"}) == "gen"
+          and R.card_head({"provenance": {"options": {"head": "mvc"}}}) == "mvc")
+
+    rng = np.random.default_rng(1)
+    perfect, prior = _gain_frame(rng, "target"), _gain_frame(rng, "gene_mean")
+    g_perfect, g_prior = M.context_gain(perfect), M.context_gain(prior)
+    check("a predictor that is the gene mean gains nothing",
+          abs(g_prior["spearman_gain"]) < 1e-9 and abs(g_prior["auroc_zero_gain"]) < 1e-9)
+    check("a perfect predictor gains what the gene mean misses",
+          g_perfect["spearman_gain"] > 0.05 and g_perfect["gain_entries"] == len(perfect))
+    check("no reference column: gains are n/a",
+          np.isnan(M.context_gain(perfect.drop(columns=["gene_mean"]))["spearman_gain"]))
+
+    slug = "bulk_s0_test_r25"
+    _fake_run(layout, "cf_two", slug, perfect, "bins", 51, head="gen")
+    # The same model's two heads: same targets and baselines, a noisier MVC prediction.
+    mvc = perfect.assign(pred=perfect["target"] + rng.normal(0, 6, len(perfect)))
+    _fake_run(layout, "cf_two", slug, mvc, "bins", 51, head="mvc")
+    check("available runs list model@mvc", {"cf_two", "cf_two@mvc"} <= set(compare.available_models(layout, slug)))
+    # A directory named like an mvc run but scored with gen (another plan's slug): not an mvc row.
+    _fake_run(layout, "cf_odd", slug + "_mvc", perfect, "bins", 51, head="gen")
+    check("an mvc-looking directory of another head is not listed",
+          "cf_odd@mvc" not in compare.available_models(layout, slug))
+
+    table = compare.main(["--root", str(tmp), "--plan", "bulk:s0:test:r25", "--models", "cf_two", "cf_two@mvc",
+                          "--name", "heads"]).set_index("model")
+    manifest = json.loads((layout.assessment_dir("reconstruction_bulk_s0_test_r25_heads") / "manifest.json").read_text())
+    check("compare: one row per head", list(table.index) == ["cf_two", "cf_two@mvc"])
+    check("compare: manifest models are plain names, rows the labels",
+          manifest["models"] == ["cf_two"] and manifest["rows"] == ["cf_two", "cf_two@mvc"])
+    check("compare: gain columns, the gen run gaining more here",
+          {"spearman_gain", "spearman_nonzero_gain", "auroc_zero_gain"} <= set(table.columns)
+          and table.loc["cf_two", "spearman_gain"] > table.loc["cf_two@mvc", "spearman_gain"])
+    check("compare: native metrics kept, both heads share a space group", "mae" in table.columns)
+    check("compare: a missing head run is refused",
+          raises(lambda: compare.main(["--root", str(tmp), "--plan", "bulk:s0:test:r25",
+                                       "--models", "cf_good@mvc"]), SystemExit))
+    check("compare: an unknown head is refused",
+          raises(lambda: compare.main(["--root", str(tmp), "--plan", "bulk:s0:test:r25",
+                                       "--models", "cf_two@nope"]), SystemExit))
+
+    out = plot_reconstruction.main(["--root", str(tmp), "--plan", "bulk:s0:test:r25", "--formats", "png",
+                                    "--name", "heads", "--models", "cf_two", "cf_two@mvc", "--baselines"])
+    pm = json.loads((out / "manifest.json").read_text())
+    check("plot: manifest models plain, rows labelled", pm["models"] == ["cf_two"]
+          and pm["rows"] == ["cf_two", "cf_two@mvc"] and pm["groups"]["all"]["models"] == ["cf_two"]
+          and pm["groups"]["all"]["rows"] == ["cf_two", "cf_two@mvc"])
+    free = pd.read_csv(out / "all" / "space_free_table.csv").set_index("row")
+    check("plot: space-free table has both heads and the gains",
+          {"cf_two", "cf_two@mvc"} <= set(free.index) and "spearman_gain" in free.columns
+          and np.isclose(free.loc["cf_two", "spearman_gain"], table.loc["cf_two", "spearman_gain"]))
+
+    report = run_reconstruction.main(["--root", str(tmp), "--plan", "bulk:s0:test:r25",
+                                      "--reconstructor", "_fake_perfect", "--name", "other", "--head", "mvc"])
+    check("--head only applies to CancerFoundation: another reconstructor writes its plain run",
+          report["head"] is None and (layout.task_dir("reconstruction", "other") / slug / "metrics.json").exists()
+          and not (layout.task_dir("reconstruction", "other") / f"{slug}_mvc").exists())
+
+
 def _cleanup() -> None:
     for name in ("_fake_perfect", "_fake_noisy"):
         RECONSTRUCTORS.pop(name, None)
@@ -385,6 +468,7 @@ def main() -> None:
         check_ties()
         check_end_to_end(tmp, layout)
         check_plots(tmp, layout)
+        check_heads(tmp, layout)
     _cleanup()
     finish()
 

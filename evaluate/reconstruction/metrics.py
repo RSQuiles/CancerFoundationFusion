@@ -187,6 +187,32 @@ def space_free(frame: pd.DataFrame, col: str = "pred") -> dict:
     return out
 
 
+# Context gain: how much better a predictor ranks each sample's masked genes than the
+# gene-mean baseline, which knows each gene's usual level but nothing about the sample.
+GAIN_REFERENCE = "gene_mean"
+GAIN_METRICS = {"spearman_mean": "spearman_gain", "spearman_nonzero_mean": "spearman_nonzero_gain",
+                "auroc_zero": "auroc_zero_gain"}
+
+
+def context_gain(frame: pd.DataFrame, col: str = "pred", reference: str = GAIN_REFERENCE) -> dict:
+    """``<metric>_gain`` = ``col`` minus ``reference`` on the entries both predicted.
+
+    The space-free metrics of ``GAIN_METRICS``. A gain near 0 means the predictor ranks
+    the masked genes no better than each gene's mean over other samples: it has learned
+    gene identity, not the sample. ``gain_entries`` is the number of entries compared.
+    """
+    if reference not in frame.columns or col not in frame.columns:
+        return {name: np.nan for name in GAIN_METRICS.values()} | {"gain_entries": 0}
+    ok = np.isfinite(frame[col].to_numpy(dtype=float)) & np.isfinite(frame[reference].to_numpy(dtype=float))
+    sub = frame[ok]
+    if not len(sub):
+        return {name: np.nan for name in GAIN_METRICS.values()} | {"gain_entries": 0}
+    mine, ref = space_free(sub, col), space_free(sub, reference)
+    out = {name: float(mine[key] - ref[key]) for key, name in GAIN_METRICS.items()}
+    out["gain_entries"] = int(len(sub))
+    return out
+
+
 def native(frame: pd.DataFrame, space: str, col: str = "pred") -> dict:
     """Metrics in the model's own target scale."""
     t, p = frame["target"].to_numpy(dtype=float), frame[col].to_numpy(dtype=float)

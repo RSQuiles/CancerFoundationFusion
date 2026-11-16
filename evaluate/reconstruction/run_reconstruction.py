@@ -8,7 +8,9 @@
 
 ``--plan`` is ``MODALITY:SPLIT:PART:NAME`` (``data/<mod>/splits/<split>/masks/``) or a
 path. The rows are read from the h5ad the plan was built on (``--input`` overrides).
-Writes ``results/tasks/reconstruction/<name>/<plan>/``:
+Writes ``results/tasks/reconstruction/<name>/<plan>/``; a CancerFoundation run with
+``--head mvc`` writes ``<name>/<plan>_mvc/`` beside it, so both heads of one model are
+kept. ``compare`` and ``plot_reconstruction`` read the MVC run as the row ``<name>@mvc``:
 
 - ``metrics.json``: model and baselines (native-space and space-free metrics), by group,
   with the plan, the target space and how many masked entries were scored or dropped;
@@ -37,10 +39,50 @@ from evaluate.reconstruction.mask_plan import load_plan, read_rows, resolve_plan
 from evaluate.reconstruction.reconstructors import build_reconstructor  # noqa: E402
 
 RESULTS_TASK = "reconstruction"
+# CancerFoundation decoder heads. gen: the expression decoder, which predicts a masked gene
+# from its own output token (it sees the context genes, CLS is not needed). mvc: the MVC
+# decoder, which predicts it from the CLS cell embedding and the gene's identity, so it
+# measures what the cell embedding itself holds.
+HEADS = ("gen", "mvc")
+DEFAULT_HEAD = "gen"
+ROW_HEAD_SEP = "@"
 
 
 def plan_slug(plan) -> str:
     return plan.plan_id.replace(":", "_").replace("/", "_")
+
+
+def parse_row(row: str) -> tuple[str, str]:
+    """``"model"`` -> ``("model", "gen")``; ``"model@mvc"`` -> ``("model", "mvc")``."""
+    model, sep, head = str(row).partition(ROW_HEAD_SEP)
+    head = head if sep else DEFAULT_HEAD
+    if head not in HEADS:
+        raise ValueError(f"Unknown head {head!r} in {row!r}; expected one of {HEADS}")
+    return model, head
+
+
+def row_label(model: str, head: str = DEFAULT_HEAD) -> str:
+    """The row name of one run: the model for the default head, else ``model@head``."""
+    return model if head == DEFAULT_HEAD else f"{model}{ROW_HEAD_SEP}{head}"
+
+
+def run_subdir(slug: str, head: str = DEFAULT_HEAD) -> str:
+    """The run directory under ``<task>/<model>/``: the plan slug, plus ``_<head>`` for other heads."""
+    return slug if head == DEFAULT_HEAD else f"{slug}_{head}"
+
+
+def run_dir(layout, row: str, slug: str) -> Path:
+    """``results/tasks/reconstruction/<model>/<plan>[_<head>]/`` of a row (``model[@head]``)."""
+    model, head = parse_row(row)
+    return layout.task_dir(RESULTS_TASK, model) / run_subdir(slug, head)
+
+
+def card_head(card: dict) -> str:
+    """The head a ``metrics.json`` was scored with (runs made before heads were recorded: gen)."""
+    head = card.get("head")
+    if head is None:
+        head = ((card.get("provenance") or {}).get("options") or {}).get("head")
+    return head or DEFAULT_HEAD
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,7 +96,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ckpt", default=None, help="Checkpoint in checkpoints/<model>/ or a path (default: newest)")
     parser.add_argument("--option", nargs="*", default=[], metavar="KEY=VALUE",
                         help="Constructor arguments for the reconstructor (values parsed as YAML)")
-    parser.add_argument("--head", default="gen", choices=["gen", "mvc"], help="CancerFoundation decoder head")
+    parser.add_argument("--head", default=DEFAULT_HEAD, choices=list(HEADS),
+                        help="CancerFoundation decoder head: gen (expression decoder) or mvc (from the cell "
+                             "embedding); an mvc run is written to <plan>_mvc/, read as <model>@mvc")
     parser.add_argument("--context", default="full", choices=["full", "plan"],
                         help="bulkformer: all other genes visible (full) or only the plan's context genes")
     parser.add_argument("--condition", nargs="*", default=None, metavar="COL=VALUE",
@@ -138,8 +182,12 @@ def run(args, adata, plan, name: str, reconstructor, out_dir: Path) -> dict:
             by_group[col] = {str(value): {**M.native(g, space), **M.space_free(g)}
                              for value, g in frame.groupby(col) if len(g)}
     n_masked = int(plan.masked_ptr[-1])
+    head = args.head if args.model else None
     report = {
-        "model": name, "plan": plan.plan_id, "space": space,
+        # The row label (model@head) is derived from these two, never stored: rename_model
+        # rewrites "model" but not a free-form label.
+        "model": name, "head": head,
+        "plan": plan.plan_id, "space": space,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "plan_settings": {k: plan.meta.get(k) for k in ("seq_len", "mask_ratio", "zero_fraction", "seed", "n_samples")},
         "n_masked": n_masked, "n_scored": int(len(frame)), "n_dropped": int(result.get("n_dropped", 0)),
@@ -156,7 +204,7 @@ def run(args, adata, plan, name: str, reconstructor, out_dir: Path) -> dict:
     per_sample.to_csv(out_dir / "per_sample.csv", index=False)
     M.mae_by_target(frame, space).to_csv(out_dir / "mae_by_target.csv", index=False)
 
-    print(f"\n{name} on {plan.plan_id} ({space}): {len(frame)} of {n_masked} masked entries scored")
+    print(f"\n{row_label(name, head or DEFAULT_HEAD)} on {plan.plan_id} ({space}): {len(frame)} of {n_masked} masked entries scored")
     keys = ["mae", "acc_within1", "spearman_mean", "spearman_nonzero_mean", "auroc_zero"]
     print(f"  {'predictor':12s}" + "".join(f"{k:>22s}" for k in keys))
     for predictor, values in summary.items():
@@ -178,7 +226,10 @@ def main(argv: list[str] | None = None) -> dict:
     source = resolve_source(plan, args.input)
     print(f"Plan {plan.plan_id}: {plan.n_samples} samples, {len(plan.genes)} genes; rows from {source.name}")
     adata = read_rows(source, plan.obs_names)
-    out_dir = args.out_dir or layout.task_dir(RESULTS_TASK, name) / plan_slug(plan)
+    head = args.head if args.model else DEFAULT_HEAD
+    if args.head != DEFAULT_HEAD and not args.model:
+        print(f"  [note] --head {args.head} applies to CancerFoundation models only; ignored")
+    out_dir = args.out_dir or run_dir(layout, row_label(name, head), plan_slug(plan))
     return run(args, adata, plan, name, reconstructor, out_dir)
 
 

@@ -42,6 +42,15 @@ from experiments.layout import RUN_CARD, ExperimentLayout, validate_model_name
 NAME_KEYS = {"name", "model", "model_name", "wandb_name"}
 # Under these keys a list element (or dict key) equal to OLD is a model name.
 NAME_COLLECTION_KEYS = {"models", "previous_names"}
+# Under these keys a list element (or dict key) is a row label: OLD, or OLD@<qualifier>
+# (e.g. a reconstruction run of OLD's MVC head, "OLD@mvc"). The model part is rewritten.
+ROW_COLLECTION_KEYS = {"rows"}
+ROW_SEP = "@"
+
+
+def _rename_row(item: str, old: str, new: str) -> str:
+    model, sep, rest = item.partition(ROW_SEP)
+    return new + sep + rest if model == old else item
 MAX_JSON_BYTES = 50 * 1024 * 1024
 
 
@@ -88,6 +97,8 @@ def rewrite_json_value(obj: Any, old: str, new: str, rewrite_path: Callable[[str
         for k, v in obj.items():
             if key in NAME_COLLECTION_KEYS and k == old:
                 k = new
+            elif key in ROW_COLLECTION_KEYS and isinstance(k, str):
+                k = _rename_row(k, old, new)
             out[k] = rewrite_json_value(v, old, new, rewrite_path, key=k)
         return out
     if isinstance(obj, list):
@@ -95,6 +106,7 @@ def rewrite_json_value(obj: Any, old: str, new: str, rewrite_path: Callable[[str
             return obj  # history: never rewrite the old names
         return [
             new if (key in NAME_COLLECTION_KEYS and item == old)
+            else _rename_row(item, old, new) if (key in ROW_COLLECTION_KEYS and isinstance(item, str))
             else rewrite_json_value(item, old, new, rewrite_path, key=key)
             for item in obj
         ]

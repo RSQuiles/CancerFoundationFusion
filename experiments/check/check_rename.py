@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from experiments.check._harness import check, finish, raises
 from experiments.layout import ExperimentLayout
-from experiments.rename_model import RenameError, apply_plan, build_plan
+from experiments.rename_model import RenameError, _rename_row, apply_plan, build_plan
 
 OLD, NEW, OTHER = "unified_v1", "unified_paired_dat_s0", "bulk_only"
 
@@ -61,6 +61,14 @@ def _build_root(root: Path) -> tuple[ExperimentLayout, Path]:
     _write(layout.assessment_dir("scib") / "manifest.json", {"models": {OLD: "row1", OTHER: "row2"}})
     _write(layout.task_plot_dir("canc_type", "plan", "cmp") / "manifest.json", {"models": [OLD, OTHER]})
     _write(layout.task_plot_dir("other_task", "cmp") / "manifest.json", {"models": [OLD]})
+    # Reconstruction: a run of OLD's MVC head beside the gen run, and a comparison listing it
+    # as the row OLD@mvc.
+    _write(layout.task_dir("reconstruction", OLD) / "plan_r25" / "metrics.json", {"model": OLD, "head": "gen"})
+    _write(layout.task_dir("reconstruction", OLD) / "plan_r25_mvc" / "metrics.json", {"model": OLD, "head": "mvc"})
+    _write(layout.task_plot_dir("reconstruction", "plan_r25", "cmp") / "manifest.json", {
+        "models": [OLD, OTHER], "rows": [OLD, f"{OLD}@mvc", OTHER],
+        "groups": {"all": {"models": [OLD, OTHER], "rows": [f"{OLD}@mvc", OTHER]}},
+    })
     cfg = root.parent / "launch_cfg.json"
     _write(cfg, {"models": [{"name": OLD, "overrides": {"trainer": {"wandb_name": OLD}}}, {"name": OTHER}]})
     return layout, cfg
@@ -82,7 +90,7 @@ def check_rename() -> None:
         root = Path(tmp) / "root"
         layout, cfg = _build_root(root)
         plan = build_plan(layout, OLD, NEW, [cfg], job_lookup=_no_jobs)
-        check("plans every owned directory", len(plan.moves) == 5)
+        check("plans every owned directory", len(plan.moves) == 6)
         before = _snapshot(root)
         apply_plan(layout, plan)
 
@@ -108,6 +116,14 @@ def check_rename() -> None:
         check("task plot manifest renamed", plots["models"] == [NEW, OTHER])
         flat = json.loads((layout.task_plot_dir("other_task", "cmp") / "manifest.json").read_text())
         check("task plot manifest without a plan level renamed", flat["models"] == [NEW])
+        recon = json.loads((layout.task_plot_dir("reconstruction", "plan_r25", "cmp") / "manifest.json").read_text())
+        check("reconstruction rows renamed, head kept",
+              recon["rows"] == [NEW, f"{NEW}@mvc", OTHER]
+              and recon["groups"]["all"]["rows"] == [f"{NEW}@mvc", OTHER])
+        check("mvc run directory moved with the model",
+              (layout.task_dir("reconstruction", NEW) / "plan_r25_mvc" / "metrics.json").exists())
+        check("a row of a model whose name only starts with OLD is left alone",
+              _rename_row(f"{OLD}x@mvc", OLD, NEW) == f"{OLD}x@mvc" and _rename_row(OTHER, OLD, NEW) == OTHER)
         launch = json.loads((layout.launches_dir / "launch_1.json").read_text())
         check("launch summary list renamed", launch["models"] == [NEW, OTHER])
         raw_cfg = json.loads(cfg.read_text())
