@@ -24,7 +24,11 @@ from evaluate.modalities import DISPLAY_NAMES, MODALITIES
 # Label values treated as "no value" when colouring.
 UNKNOWN_LABELS: frozenset[str] = frozenset({"unknown", "nan", "none", "n/a", ""})
 GREY = (0.75, 0.75, 0.75, 0.15)
-MAX_LEGEND_ENTRIES = 60  # beyond this colours repeat anyway
+LEGEND_ROWS_PER_COLUMN = 30  # a categorical legend wraps into a new column past this
+PANEL_INCHES = 5.0            # width of one scatter panel
+LEGEND_PAD_INCHES = 0.15      # gap between a panel and its legend column
+Y_LABEL_INCHES = 0.4          # room for a panel's y-axis label
+PANEL_HEIGHT_INCHES = 4.6     # height of the scatter axes
 
 # Per-modality marker styling. Colour is used only when a panel is coloured by
 # modality; other panels recolour per point and keep the marker shape.
@@ -58,7 +62,9 @@ def compute_umap(
 def categorical_palette(categories: list[str]) -> dict[str, tuple]:
     """Distinct colours, never grey (grey means unknown/unpaired in these figures).
 
-    tab10 for up to 9 categories, then tab20 -> tab20b -> tab20c, cycling past ~70.
+    tab10 for up to 9 categories, then tab20 -> tab20b -> tab20c (54 colours). Past
+    that, the remaining categories get evenly spaced hues (``gist_ncar``, skipping its
+    near-white and near-black ends), so no two categories of one legend share a colour.
     """
     if len(categories) <= 9:
         colors = [plt.get_cmap("tab10")(i) for i in range(10) if i != 7]
@@ -66,7 +72,11 @@ def categorical_palette(categories: list[str]) -> dict[str, tuple]:
         colors = [plt.get_cmap("tab20")(i) for i in range(20) if i not in (14, 15)]
         colors += [plt.get_cmap(name)(i) for name in ("tab20b", "tab20c") for i in range(20)
                    if not (name == "tab20c" and i >= 16)]
-    return {c: colors[i % len(colors)] for i, c in enumerate(categories)}
+    extra = len(categories) - len(colors)
+    if extra > 0:
+        cmap = plt.get_cmap("gist_ncar")
+        colors += [cmap(x) for x in np.linspace(0.05, 0.9, extra)]
+    return {c: colors[i] for i, c in enumerate(categories)}
 
 
 def assign_colors(
@@ -79,11 +89,9 @@ def assign_colors(
     Returns the colours, the category -> colour mapping and the category order
     (both None for continuous data). ``skip_unknown`` greys out unknown labels.
     """
-    if (
-        pd.api.types.is_numeric_dtype(col)
-        and not pd.api.types.is_bool_dtype(col)
-        and col.nunique() > 20
-    ):
+    if _is_continuous(col):
+        print(f"  [note] {col.name}: numeric with {col.nunique()} values, drawn as a continuous "
+              f"scale (colour bar, no category legend)")
         vals = col.to_numpy(dtype=float)
         vmin, vmax = np.nanmin(vals), np.nanmax(vals)
         norm = plt.Normalize(vmin, vmax) if vmin != vmax else plt.Normalize(0, 1)
@@ -139,19 +147,72 @@ def _modality_handles(modality: np.ndarray, colored: bool) -> list:
     return handles
 
 
-def _category_legend(ax, palette, categories, title, loc="center left") -> None:
-    if len(categories) > MAX_LEGEND_ENTRIES:
-        ax.text(1.01, 0.5, f"{len(categories)} {title} values\n(legend omitted)",
-                transform=ax.transAxes, fontsize=7, va="center")
-        return
-    n = len(categories)
+def legend_categories(values: pd.Series, categories: list[str], max_entries: int | None) -> tuple[list[str], int]:
+    """The categories shown in the legend and how many are left out.
+
+    Every category, unless ``max_entries`` caps it: then the most frequent ones (kept in
+    their natural order) and the count of the rest, shown as one "+K more" line.
+    """
+    if not max_entries or len(categories) <= max_entries:
+        return list(categories), 0
+    counts = values.astype(str).value_counts()
+    top = set(sorted(categories, key=lambda c: -int(counts.get(c, 0)))[:max_entries])
+    return [c for c in categories if c in top], len(categories) - len(top)
+
+
+def legend_columns(n_entries: int) -> int:
+    return max(1, int(np.ceil(n_entries / LEGEND_ROWS_PER_COLUMN)))
+
+
+def _category_legend(ax, palette, categories, title, n_more: int = 0) -> None:
+    """The colour legend, always drawn: wraps into columns and shrinks its font with size.
+
+    ``ax`` is the panel's legend column, so the layout reserves the legend's width.
+    """
+    handles = [mpatches.Patch(color=palette[c], label=c) for c in categories]
+    if n_more:
+        handles.append(mpatches.Patch(color=GREY[:3], label=f"+{n_more} more"))
+    n = len(handles)
     legend = ax.legend(
-        handles=[mpatches.Patch(color=palette[c], label=c) for c in categories],
-        title=title, fontsize=5 if n > 20 else 7, title_fontsize=8, loc=loc,
-        bbox_to_anchor=(1.01, 0.5), frameon=False, ncol=1 if n <= 25 else 2,
-        handlelength=1.0, labelspacing=0.3,
+        handles=handles, title=title, fontsize=7 if n <= 20 else 6 if n <= 60 else 5,
+        title_fontsize=8, loc="center left", bbox_to_anchor=(0.0, 0.5), frameon=False,
+        ncol=legend_columns(n), handlelength=1.0, labelspacing=0.3, columnspacing=0.8,
     )
     ax.add_artist(legend)
+
+
+def _is_continuous(col: pd.Series) -> bool:
+    return (pd.api.types.is_numeric_dtype(col) and not pd.api.types.is_bool_dtype(col)
+            and col.nunique() > 20)
+
+
+COLORBAR_LABEL = "colorbar"  # label of a colour-bar axes, so callers can find it
+
+
+def _colorbar(fig, lax, values: pd.Series, title: str) -> None:
+    """A viridis colour bar in the panel's legend column."""
+    import matplotlib.cm as cm
+
+    vals = values.to_numpy(dtype=float)
+    vmin, vmax = np.nanmin(vals), np.nanmax(vals)
+    norm = plt.Normalize(vmin, vmax) if vmin != vmax else plt.Normalize(0, 1)
+    cax = lax.inset_axes([0.0, 0.1, 0.12, 0.8])
+    cax.set_label(COLORBAR_LABEL)
+    bar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap="viridis"), cax=cax)
+    bar.set_label(title, fontsize=8)
+    bar.ax.tick_params(labelsize=7)
+
+
+def _legend_column_inches(fig, lax, renderer) -> float:
+    """Width the legend column needs: its legend or colour bar as drawn, else nothing."""
+    from matplotlib.legend import Legend
+
+    boxes = [c.get_window_extent(renderer) for c in lax.get_children() if isinstance(c, Legend)]
+    boxes += [c.get_tightbbox(renderer) for c in lax.child_axes]
+    if not boxes:
+        return 0.05
+    left = lax.get_window_extent(renderer).x0
+    return max(b.x1 for b in boxes if b is not None) / fig.dpi - left / fig.dpi + LEGEND_PAD_INCHES
 
 
 def draw_umap_panels(
@@ -165,6 +226,7 @@ def draw_umap_panels(
     highlight: dict[str, np.ndarray] | None = None,
     labels: dict[str, str] | None = None,
     axis_labels: tuple[str, str] = ("UMAP 1", "UMAP 2"),
+    max_legend_entries: int | None = None,
 ) -> plt.Figure:
     """One panel per colour key; marker shape encodes modality when ``modality_col`` is set.
 
@@ -175,6 +237,9 @@ def draw_umap_panels(
     ``labels`` maps an obs column to the name shown in panel and legend titles
     (``{"tissue_general": "Tissue"}``); category values are drawn as they are.
     ``axis_labels`` names the two axes (``plot_pca`` passes ``"PC1 (12.3%)"`` and so on).
+    A categorical panel always gets its legend, wrapped into columns, with the panel
+    widened to fit; ``max_legend_entries`` caps it to the most frequent categories plus a
+    "+K more" line. A numeric column with more than 20 values gets a colour bar instead.
     """
     labels = labels or {}
     modality_label = labels.get(modality_col or "modality", "Modality")
@@ -187,8 +252,18 @@ def draw_umap_panels(
     if missing:
         print(f"  [warn] colour keys not in obs, skipped: {missing}")
 
-    fig, axes = plt.subplots(1, len(keys), figsize=(6.5 * len(keys), 5.5), squeeze=False)
-    for ax, key in zip(axes[0], keys):
+    # Each panel is a scatter axes plus an axis-off legend column, sized after drawing to
+    # the legend it holds: tight_layout does not count a legend placed outside its axes,
+    # which is how a long (single-cell tissue) legend used to run into the next panel.
+    fig = plt.figure(figsize=(len(keys) * (PANEL_INCHES + 2.0), 5.5))
+    grid = fig.add_gridspec(1, 2 * len(keys), width_ratios=[PANEL_INCHES, 2.0] * len(keys), wspace=0.0)
+    axes, legend_axes = [], []
+    for i in range(len(keys)):
+        axes.append(fig.add_subplot(grid[0, 2 * i]))
+        lax = fig.add_subplot(grid[0, 2 * i + 1])
+        lax.set_axis_off()
+        legend_axes.append(lax)
+    for ax, lax, key in zip(axes, legend_axes, keys):
         if segments:
             from matplotlib.collections import LineCollection
 
@@ -199,9 +274,9 @@ def draw_umap_panels(
         elif modality is not None and key == modality_col:
             _scatter(ax, coords, modality)
             _style_axes(ax, modality_label, axis_labels)
-            ax.legend(handles=_modality_handles(modality, colored=True), title=modality_label,
-                      fontsize=8, title_fontsize=8, loc="center left", bbox_to_anchor=(1.01, 0.5),
-                      frameon=False)
+            lax.legend(handles=_modality_handles(modality, colored=True), title=modality_label,
+                       fontsize=8, title_fontsize=8, loc="center left", bbox_to_anchor=(0.0, 0.5),
+                       frameon=False)
         else:
             values = obs[key]
             mask = highlight.get(key) if highlight else None
@@ -213,13 +288,32 @@ def draw_umap_panels(
             _scatter(ax, coords, modality, colors=colors)
             _style_axes(ax, labels.get(key, key), axis_labels)
             if palette is not None:
-                _category_legend(ax, palette, categories, labels.get(key, key))
+                shown, n_more = legend_categories(values, categories, max_legend_entries)
+                _category_legend(lax, palette, shown, labels.get(key, key), n_more)
+            else:
+                _colorbar(fig, lax, values, labels.get(key, key))
             if modality is not None and len(np.unique(modality)) > 1:
                 ax.legend(handles=_modality_handles(modality, colored=False), title=modality_label,
                           fontsize=7, title_fontsize=7, loc="lower left", frameon=True, framealpha=0.85)
     if title:
         fig.suptitle(title, fontsize=12, fontweight="bold")
-    fig.tight_layout()
+    # Lay the columns out in inches (no tight_layout, which would rescale them): each
+    # legend column is as wide as what it holds, plus room for the next panel's y label.
+    renderer = fig.canvas.get_renderer()
+    legend_inches = [_legend_column_inches(fig, lax, renderer) for lax in legend_axes]
+    widths = []
+    for i, li in enumerate(legend_inches):
+        widths += [PANEL_INCHES, li + (Y_LABEL_INCHES if i < len(keys) - 1 else 0.0)]
+    left, right, bottom = Y_LABEL_INCHES, 0.1, 0.35
+    top = 0.75 if title else 0.4
+    width, height = left + sum(widths) + right, PANEL_HEIGHT_INCHES + top + bottom
+    fig.set_size_inches(width, height)
+    grid.set_width_ratios(widths)
+    grid.update(left=left / width, right=1 - right / width, bottom=bottom / height,
+                top=1 - top / height, wspace=0.0)
+    if title:
+        fig._suptitle.set_y(1 - 0.12 / height)
+        fig._suptitle.set_va("top")
     return fig
 
 
@@ -227,8 +321,8 @@ def save_figure(fig: plt.Figure, path: Path, dpi: int = 200) -> None:
     from matplotlib.legend import Legend
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Legends pinned with add_artist sit outside the axes and are not part of the
-    # tight bbox by default; without this the last panel's legend is cut off.
+    # Legends may reach past their axes and are not part of the tight bbox by default;
+    # without this the last panel's legend could be cut off.
     extra = [c for ax in fig.axes for c in ax.get_children() if isinstance(c, Legend)]
     if fig._suptitle is not None:
         extra.append(fig._suptitle)

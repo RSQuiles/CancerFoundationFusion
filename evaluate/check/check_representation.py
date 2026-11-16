@@ -170,13 +170,36 @@ def check_titles_labels() -> None:
     obs = pd.DataFrame({"modality": rng.choice(["sc", "bulk"], 50), "tissue_general": rng.choice(["lung", "colon"], 50)})
     fig = draw_umap_panels(rng.normal(size=(50, 2)), obs, ["modality", "tissue_general"], modality_col="modality",
                            title="T", labels={"tissue_general": "Tissue", "modality": "Data type"})
-    titles = [ax.get_title() for ax in fig.axes]
+    titles = [ax.get_title() for ax in fig.axes if ax.axison]  # legend columns are axis-off
     from matplotlib.legend import Legend
 
     legends = [c.get_title().get_text() for ax in fig.axes for c in ax.get_children() if isinstance(c, Legend)]
     check("panel titles use the labels", titles == ["Data type", "Tissue"])
     check("legend titles use the labels", "Tissue" in legends and "Data type" in legends)
     check("suptitle drawn", fig._suptitle is not None and fig._suptitle.get_text() == "T")
+
+    # Many categories (single-cell tissues): the legend is always drawn, never omitted.
+    many = pd.DataFrame({"tissue_general": [f"tissue_{i % 80}" for i in range(400)],
+                         "score": rng.normal(size=400).round(3)})
+    fig = draw_umap_panels(rng.normal(size=(400, 2)), many, ["tissue_general", "score"])
+    legends = list({id(c): c for ax in fig.axes for c in ax.get_children() if isinstance(c, Legend)}.values())
+    texts = [t.get_text() for ax in fig.axes for t in ax.texts]
+    entries = legends[0].get_texts() if legends else []
+    colours = {tuple(np.round(h.get_facecolor(), 4)) for h in (legends[0].legend_handles if legends else [])}
+    check("80 categories: legend drawn with every entry", len(legends) == 1 and len(entries) == 80)
+    check("80 categories: no 'legend omitted' note", not any("omitted" in t for t in texts))
+    check("80 categories: 80 distinct colours", len(colours) == 80)
+    check("numeric column gets a colour bar",
+          any(c.get_label() == "colorbar" for ax in fig.axes for c in ax.child_axes))
+    w_panel = fig.axes[0].get_window_extent()
+    w_next = fig.axes[2].get_window_extent()
+    check("80-entry legend fits before the next panel",
+          max(lg.get_window_extent().x1 for lg in legends) < w_next.x0 and w_panel.x1 < w_next.x0)
+    fig = draw_umap_panels(rng.normal(size=(400, 2)), many, ["tissue_general"], max_legend_entries=10)
+    legends = list({id(c): c for ax in fig.axes for c in ax.get_children() if isinstance(c, Legend)}.values())
+    labels_shown = [t.get_text() for t in legends[0].get_texts()] if legends else []
+    check("max_legend_entries caps the legend with a '+K more' line",
+          len(labels_shown) == 11 and labels_shown[-1] == "+70 more")
 
     with tempfile.TemporaryDirectory() as tmp:
         layout = _write_root(Path(tmp))

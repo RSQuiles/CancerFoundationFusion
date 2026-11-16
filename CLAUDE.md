@@ -379,6 +379,14 @@ plus obs. `plot_alignment` fits ONE UMAP over all modalities and refuses files w
 - **Labels**: `--labels tissue_general=Tissue ...` (a mapping in YAML, usually top-level so
   both scripts share it) renames obs columns in panel and legend titles, including the
   modality legend. Category values and the saved parquet keep the raw names.
+- **Legends** (`render.draw_umap_panels`, shared by UMAP, PCA and alignment): a categorical
+  panel always gets its legend, however many categories it has (single-cell
+  `tissue_general` has more than 60, which used to drop it). The legend wraps every 30
+  entries and sits in its own column, sized to it, so it never runs into the next panel.
+  Past 54 categories the extra colors are evenly spaced hues, so colors are never reused.
+  `--max-legend-entries N` (`max_legend_entries:`) lists the N most frequent categories
+  plus a "+K more" line. A numeric column with more than 20 values gets a color bar and
+  a `[note]` in the log instead (e.g. tissue stored as codes).
 
 **Config files** (`evaluate/_cli.py`, shared by every evaluate script): top-level keys are
 shared, and a block named after the script's section applies to that script only

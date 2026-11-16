@@ -64,6 +64,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Segments from each bulk point to its pair's pseudobulk / SC centroids")
     parser.add_argument("--color", nargs="+", default=["modality", "tissue_general", PAIRED_COL])
     parser.add_argument("--skip-unknown", action="store_true")
+    parser.add_argument("--max-legend-entries", type=int, default=None,
+                        help="Cap a category legend to its N most frequent values plus a \"+K more\" line "
+                             "(default: every category is listed)")
     parser.add_argument("--title", default=None,
                         help="Figure title; may use {model}, {part}, {modalities}, {counts}, {filter} "
                              "(default: '<model>: alignment (<part>) <counts> [<filter>]')")
@@ -175,7 +178,8 @@ def main(argv: list[str] | None = None) -> None:
                              variant=args.variant or "")
         fig = draw_umap_panels(coords, obs, args.color, modality_col=MODALITY_COL,
                                skip_unknown=args.skip_unknown, title=title,
-                               segments=segments, highlight=highlight, labels=labels)
+                               segments=segments, highlight=highlight, labels=labels,
+                               max_legend_entries=args.max_legend_entries)
         out_dir = args.out_dir or layout.alignment_dir(model, args.variant)
         stem = out_dir / f"alignment_{args.part}{suffix}"
         save_figure(fig, stem.with_suffix(".png"), dpi=args.dpi)

@@ -72,6 +72,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-per-stratum", type=int, default=1)
     parser.add_argument("--color", nargs="+", default=["tissue_general"], help="obs columns to colour by")
     parser.add_argument("--skip-unknown", action="store_true", help="Grey out unknown/NaN labels")
+    parser.add_argument("--max-legend-entries", type=int, default=None,
+                        help="Cap a category legend to its N most frequent values plus a \"+K more\" line "
+                             "(default: every category is listed)")
     parser.add_argument("--title", default=None,
                         help="Figure title; may use {model}, {modality}, {modality_name}, {part}, {filter}, "
                              "{pcs} (default: '<model>: <modality> <part> [<filter>]')")
@@ -166,7 +169,7 @@ def plot_one(adata, out_stem: Path, title: str, args, labels: dict[str, str],
     modality_col = "modality" if "modality" in adata.obs.columns else None
     fig = draw_umap_panels(coords, adata.obs, args.color, modality_col=modality_col,
                            skip_unknown=args.skip_unknown, title=title, labels=labels,
-                           axis_labels=axis_labels)
+                           axis_labels=axis_labels, max_legend_entries=args.max_legend_entries)
     save_figure(fig, out_stem.with_suffix(".png"), dpi=args.dpi)
     save_coords(adata.obs, coords, out_stem.with_suffix(".parquet"),
                 columns=tuple(f"pc{c}" for c in args.components))
