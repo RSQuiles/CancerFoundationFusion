@@ -153,23 +153,21 @@ class OrdinalCrossEntropy(AbstractGeneExpressionLoss):
         # Perform the comparison in a vectorized manner
         cum_targets = (expanded_target >= class_range).float()
 
-        # Apply sigmoid to logits to get probabilities
-        probs = torch.sigmoid(logits)
-
-        # Binary cross-entropy loss across all ordinal binary tasks
-        mask = mask.float().unsqueeze(-1).expand_as(probs)
-        loss = F.binary_cross_entropy(probs, cum_targets, reduction="none")
-
-        loss = F.binary_cross_entropy(
-            probs,
+        # Binary cross-entropy across all ordinal binary tasks, on the logits. Not
+        # F.binary_cross_entropy(sigmoid(logits)): it is refused under autocast (with
+        # bf16/fp16 probabilities, log(p) and log(1 - p) lose all precision near 0 and 1)
+        # and crashed every bf16-mixed run. The with_logits form is the same loss,
+        # computed stably, in float32.
+        mask = mask.float().unsqueeze(-1).expand_as(logits)
+        loss = F.binary_cross_entropy_with_logits(
+            logits.float(),
             cum_targets,
             weight=self.weight.to(logits.device) if self.weight is not None else None,
             reduction="none",
         )
 
-        loss = (loss * mask).sum() / mask.sum()
-
-        return loss
+        # clamp_min: an all-masked batch gives 0, not NaN (as in MSE.forward).
+        return (loss * mask).sum() / mask.sum().clamp_min(1.0)
 
     def get_in_dim(self) -> int:
         return self.num_classes
