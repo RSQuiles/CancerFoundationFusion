@@ -728,65 +728,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--cdd-bulk-class-frac",
         type=float,
         default=0.6,
-        help="Fraction of the bulk slots in a class-aware batch drawn from the batch's chosen tissues (the rest are drawn freely from ALL bulk, so every bulk row still trains and gets clustered). Only used with --cdd-class-aware. Default 0.6.",
-    )
-    # --- Layer B: clustering-based target-label inference (semi-supervised) ---
-    parser.add_argument(
-        "--cdd-infer-labels",
-        action="store_true",
-        help="Enable spherical-K-means inference of the bulk (target) tissue labels. Recovers both 'unknown' bulk and bulk-only tissues that have no single-cell counterpart. Centroids are anchored by the known-labeled bulk structure. Requires --cdd. Default is False.",
+        help="Fraction of the bulk slots in a class-aware batch drawn from the batch's chosen tissues (the rest are drawn freely from ALL bulk, so every bulk row still trains). Only used with --cdd-class-aware. Default 0.6.",
     )
     parser.add_argument(
+        "--cdd-warmup-steps",
         "--cdd-cluster-warmup-steps",
+        dest="cdd_warmup_steps",
         type=int,
         default=2000,
-        help="Global step before which no clustering runs (embeddings must be meaningful first). Default 2000.",
-    )
-    parser.add_argument(
-        "--cdd-cluster-interval",
-        type=int,
-        default=0,
-        help="Re-cluster every N global steps. 0 = re-cluster once per epoch (on_train_epoch_start). Default 0.",
-    )
-    parser.add_argument(
-        "--cdd-cluster-iters",
-        type=int,
-        default=10,
-        help="Max spherical-K-means Lloyd iterations per clustering event. Default 10.",
-    )
-    parser.add_argument(
-        "--cdd-cluster-ambiguity",
-        type=float,
-        default=0.05,
-        help="Ambiguity filter D0: target samples with cosine distance to their centroid > D0 are left unassigned (-1). Default 0.05.",
-    )
-    parser.add_argument(
-        "--cdd-cluster-min-size",
-        type=int,
-        default=3,
-        help="Minimum cluster/anchor size N0: classes with fewer members are invalidated. Default 3.",
-    )
-    parser.add_argument(
-        "--cdd-relabel-known",
-        action="store_true",
-        help="Also re-infer labels for known-labeled bulk (fully unsupervised CAN). Default False (known labels kept fixed).",
-    )
-    parser.add_argument(
-        "--cdd-no-source-fallback",
-        action="store_true",
-        help="Disable source-seeded centroids. By default, classes that have no known bulk anchors (i.e. tissues only the single-cell data knows about) get a centroid from the pseudobulk class mean, translated into the bulk frame; it is the only way such classes can ever be reached. Pass this to restrict CDD classes to tissues the bulk already knows. Default False (fallback enabled).",
-    )
-    parser.add_argument(
-        "--cdd-cluster-source-pb",
-        type=int,
-        default=8,
-        help="Pseudobulks encoded per class at each clustering event to estimate the source class mean used for source-seeded centroids. Default 8.",
+        help="Global step before which the CDD weight is 0 and MMD does the marginal alignment; CDD then ramps in over --cdd-ramp-steps. --cdd-cluster-warmup-steps is the old name. Default 2000.",
     )
     parser.add_argument(
         "--cdd-ramp-steps",
         type=int,
         default=1000,
-        help="Steps over which the CDD weight ramps 0 -> --loss-weight-cdd (and MMD decays to --cdd-mmd-final-weight) once --cdd-cluster-warmup-steps is passed. Default 1000.",
+        help="Steps over which the CDD weight ramps 0 -> --loss-weight-cdd (and MMD decays to --cdd-mmd-final-weight) once --cdd-warmup-steps is passed. Default 1000.",
     )
     parser.add_argument(
         "--cdd-mmd-final-weight",
@@ -963,7 +919,29 @@ def _flatten_sectioned_config(config: dict, ignore_unexpected: bool = False) -> 
 def _parser_dest_names(parser: argparse.ArgumentParser):
     return {action.dest for action in parser._actions if action.dest != "help"}
 
+# Config keys that were renamed: old -> new. The old key is accepted and translated.
+RENAMED_CONFIG_KEYS = {"cdd_cluster_warmup_steps": "cdd_warmup_steps"}
+# Config keys of removed features, refused with the reason.
+REMOVED_CONFIG_KEYS = {
+    key: "CDD target-label inference was removed; CDD now uses the given tissue labels only"
+    for key in ("cdd_infer_labels", "cdd_cluster_interval", "cdd_cluster_iters",
+                "cdd_cluster_ambiguity", "cdd_cluster_min_size", "cdd_relabel_known",
+                "cdd_no_source_fallback", "cdd_cluster_source_pb")
+}
+
+
 def _filter_known_config_keys(parser: argparse.ArgumentParser, config: dict) -> dict:
+    for old, new in RENAMED_CONFIG_KEYS.items():
+        if old in config:
+            if new in config:
+                raise ValueError(f"Config sets both '{old}' (old name) and '{new}'.")
+            config[new] = config.pop(old)
+    removed = sorted(set(config) & set(REMOVED_CONFIG_KEYS))
+    if removed:
+        raise ValueError(
+            f"Config key(s) {removed} no longer exist: "
+            + "; ".join(sorted({REMOVED_CONFIG_KEYS[k] for k in removed}))
+        )
     valid_keys = _parser_dest_names(parser)
     unknown_keys = sorted(set(config) - valid_keys)
     if unknown_keys:

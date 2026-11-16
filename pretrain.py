@@ -320,8 +320,6 @@ def main(input_args=None):
                 f"--condition-encoders {sorted(unknown_enc)} must be a subset of the "
                 f"conditions {effective_conditions}."
             )
-    if args.cdd_infer_labels and not args.cdd:
-        raise ValueError("--cdd-infer-labels requires --cdd.")
     if args.cdd_class_aware and not args.pb_group_column:
         raise ValueError("--cdd-class-aware requires --pb-group-column (the tissue column).")
     if not 0.0 <= args.cdd_bulk_class_frac <= 1.0:
@@ -334,15 +332,13 @@ def main(input_args=None):
     # batches use the paired alignment loss instead.
 
     # CDD's warmup exists so the marginal MMD can pull the bulk and pseudobulk clouds
-    # together before the first clustering runs; without an aligner the warmup does
-    # nothing and the source-seeded centroids have no chance of competing. Enable MMD
-    # for that window if the user did not. It decays to --cdd-mmd-final-weight (0 by
+    # together before CDD ramps in; without an aligner the warmup does nothing. Enable
+    # MMD for that window if the user did not. It decays to --cdd-mmd-final-weight (0 by
     # default) once the ramp completes, so an auto-enabled MMD turns itself back off.
-    cdd_source_fallback = not args.cdd_no_source_fallback
-    if args.cdd and args.cdd_cluster_warmup_steps > 0 and not args.mmd:
+    if args.cdd and args.cdd_warmup_steps > 0 and not args.mmd:
         args.mmd = True
         print(
-            f"[CDD] --mmd auto-enabled for the {args.cdd_cluster_warmup_steps}-step warmup "
+            f"[CDD] --mmd auto-enabled for the {args.cdd_warmup_steps}-step warmup "
             f"(weight {args.loss_weight_mmd}), decaying to {args.cdd_mmd_final_weight} "
             f"over the following {args.cdd_ramp_steps} steps as CDD ramps in."
         )
@@ -472,15 +468,7 @@ def main(input_args=None):
         cdd_min_class_count=args.cdd_min_class_count,
         cdd_exclude_labels=args.cdd_exclude_labels,
         cdd_class_aware=args.cdd_class_aware,
-        cdd_infer_labels=args.cdd_infer_labels,
-        cdd_cluster_warmup_steps=args.cdd_cluster_warmup_steps,
-        cdd_cluster_interval=args.cdd_cluster_interval,
-        cdd_cluster_iters=args.cdd_cluster_iters,
-        cdd_cluster_ambiguity=args.cdd_cluster_ambiguity,
-        cdd_cluster_min_size=args.cdd_cluster_min_size,
-        cdd_relabel_known=args.cdd_relabel_known,
-        cdd_cluster_source_fallback=cdd_source_fallback,
-        cdd_cluster_source_pb=args.cdd_cluster_source_pb,
+        cdd_warmup_steps=args.cdd_warmup_steps,
         cdd_ramp_steps=args.cdd_ramp_steps,
         cdd_mmd_final_weight=args.cdd_mmd_final_weight,
         freeze_groups=args.freeze_groups,

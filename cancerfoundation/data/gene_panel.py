@@ -9,6 +9,11 @@ Two schemes:
     per-modality panel makes the model's input distribution differ *with* modality,
     which no batch-integration metric can distinguish from a real batch effect.
 
+Each also exists as a full *ranking* of the genes (:func:`gene_ranking`,
+:func:`shared_gene_ranking`), most variable first. ``CancerFoundation.embed`` with
+``input_mode="train_matched"`` uses the ranking, not a fixed cut: every cell takes its
+top-ranked zero and non-zero genes, as many as training put in a sequence.
+
 Panel selection is independent of how the model's input is normalized. Each scorer
 gets its own *scoring view* of the data (:func:`scoring_view`), transformed to meet
 that scorer's assumption from whatever the values are:
@@ -164,6 +169,12 @@ def select_panel(data, kind: str, n_top: int, flavor: str = "seurat", verbose: b
     return data.var.index[keep].tolist()
 
 
+def gene_ranking(data, kind: str, flavor: str = "seurat", verbose: bool = True) -> List[str]:
+    """Every gene of ``data``, most variable first (the order :func:`select_panel` cuts)."""
+    scores = _gene_scores(data, kind, flavor=flavor, verbose=verbose)
+    return data.var.index[np.argsort(-scores, kind="stable")].tolist()
+
+
 def _rank_desc(scores: np.ndarray) -> np.ndarray:
     """Ranks of ``scores`` in descending order — rank 0 is the most variable gene."""
     order = np.argsort(-scores, kind="stable")
@@ -206,17 +217,63 @@ def select_shared_panel(
     Groups with fewer than ``min_cells`` cells are skipped, since their scores are
     noise. Returns gene names in ``data.var.index`` order.
     """
+    gene_names = data.var.index.to_numpy()
+    order, info = _shared_order(data, groups, flavor, strategy, reference, min_cells, verbose)
+    keep = order[:n_top]
+    panel_names = gene_names[np.sort(keep)].tolist()
+
+    if verbose:
+        if info["strategy"] == "pooled":
+            print(f"  [panel] pooled fit over {data.n_obs} cells -> {len(keep)} genes")
+        elif info["strategy"] == "reference":
+            print(
+                f"  [panel] reference fit on '{info['reference']}' ({info['n_ref']} cells) "
+                f"-> {len(keep)} genes, applied to all {info['n_groups']} group(s)"
+            )
+        else:
+            skipped = info["skipped"]
+            print(
+                f"  [panel] consensus over {info['n_used']} group(s) -> {len(panel_names)} genes"
+                + (f"; skipped: {', '.join(skipped)}" if skipped else "")
+            )
+            # How much the retired per-modality scheme was diverging: the fraction of
+            # each group's own panel that the shared panel retains.
+            shared = set(panel_names)
+            for g, own_order in info["own_orders"].items():
+                own = set(gene_names[own_order[:n_top]].tolist())
+                overlap = len(shared & own) / max(len(own), 1)
+                print(f"  [panel]   retains {overlap:6.1%} of '{g}' own top-{n_top} panel")
+
+    return sorted(panel_names)
+
+
+def shared_gene_ranking(
+    data,
+    groups: np.ndarray,
+    flavor: str = "seurat",
+    strategy: str = "consensus",
+    reference: Optional[str] = None,
+    min_cells: int = 10,
+    verbose: bool = True,
+) -> List[str]:
+    """Every gene of ``data``, best first, by the order :func:`select_shared_panel` cuts."""
+    order, info = _shared_order(data, groups, flavor, strategy, reference, min_cells, verbose)
+    if verbose:
+        detail = (f"consensus over {info['n_used']} group(s)" if info["strategy"] == "consensus"
+                  else f"{info['strategy']} fit")
+        print(f"  [panel] shared ranking of {len(order)} genes ({detail})")
+    return data.var.index.to_numpy()[order].tolist()
+
+
+def _shared_order(data, groups, flavor, strategy, reference, min_cells, verbose):
+    """Gene indices, best first, for one shared panel strategy, plus what was done."""
     groups = np.asarray(groups).astype(str)
     unique = list(dict.fromkeys(groups.tolist()))  # preserve first-seen order
-    gene_names = data.var.index.to_numpy()
 
     if strategy == "pooled":
         kind = _classify_modality(unique[0]) if len(unique) == 1 else "bulk"
         scores = _gene_scores(data, kind, flavor=flavor, verbose=verbose)
-        keep = np.argsort(-scores, kind="stable")[:n_top]
-        if verbose:
-            print(f"  [panel] pooled fit over {data.n_obs} cells -> {len(keep)} genes")
-        return sorted(gene_names[np.sort(keep)].tolist())
+        return np.argsort(-scores, kind="stable"), {"strategy": "pooled"}
 
     if strategy == "reference":
         ref = reference or unique[0]
@@ -226,13 +283,8 @@ def select_shared_panel(
             )
         sub = data[groups == ref]
         scores = _gene_scores(sub, _classify_modality(ref), flavor=flavor, verbose=verbose)
-        keep = np.argsort(-scores, kind="stable")[:n_top]
-        if verbose:
-            print(
-                f"  [panel] reference fit on '{ref}' ({sub.n_obs} cells) "
-                f"-> {len(keep)} genes, applied to all {len(unique)} group(s)"
-            )
-        return sorted(gene_names[np.sort(keep)].tolist())
+        return np.argsort(-scores, kind="stable"), {
+            "strategy": "reference", "reference": ref, "n_ref": sub.n_obs, "n_groups": len(unique)}
 
     if strategy != "consensus":
         raise ValueError(
@@ -243,7 +295,7 @@ def select_shared_panel(
     # ── consensus: rank within each group, then average ranks ──────────────────
     rank_sum = np.zeros(data.n_vars, dtype=np.float64)
     n_used = 0
-    own_panels: dict[str, set] = {}
+    own_orders: dict[str, np.ndarray] = {}
     skipped: list[str] = []
 
     for g in unique:
@@ -257,9 +309,7 @@ def select_shared_panel(
         scores = _gene_scores(sub, kind, flavor=flavor, verbose=verbose)
         rank_sum += _rank_desc(scores)
         n_used += 1
-        own_panels[g] = set(
-            gene_names[np.argsort(-scores, kind="stable")[:n_top]].tolist()
-        )
+        own_orders[g] = np.argsort(-scores, kind="stable")
         if verbose:
             print(f"  [panel] scored '{g}' ({kind}): {n_cells} cells")
 
@@ -270,23 +320,7 @@ def select_shared_panel(
             print(
                 f"  [panel] no group reached min_cells={min_cells}; falling back to pooled"
             )
-        return select_shared_panel(
-            data, groups, n_top, flavor=flavor, strategy="pooled", verbose=verbose
-        )
+        return _shared_order(data, groups, flavor, "pooled", reference, min_cells, verbose)
 
-    keep = np.argsort(rank_sum / n_used, kind="stable")[:n_top]
-    panel_names = gene_names[np.sort(keep)].tolist()
-
-    if verbose:
-        print(
-            f"  [panel] consensus over {n_used} group(s) -> {len(panel_names)} genes"
-            + (f"; skipped: {', '.join(skipped)}" if skipped else "")
-        )
-        # How much the retired per-modality scheme was diverging: the fraction of
-        # each group's own panel that the shared panel retains.
-        shared = set(panel_names)
-        for g, own in own_panels.items():
-            overlap = len(shared & own) / max(len(own), 1)
-            print(f"  [panel]   retains {overlap:6.1%} of '{g}' own top-{n_top} panel")
-
-    return sorted(panel_names)
+    order = np.argsort(rank_sum / n_used, kind="stable")
+    return order, {"strategy": "consensus", "n_used": n_used, "skipped": skipped, "own_orders": own_orders}

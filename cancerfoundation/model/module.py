@@ -83,12 +83,6 @@ class TransformerModule(nn.Module):
         cdd_class_column: str = "tissue_general",
         cdd_min_class_count: int = 2,
         cdd_exclude_class_codes: Optional[list[int]] = None,
-        cdd_infer_labels: bool = False,
-        cdd_cluster_iters: int = 10,
-        cdd_cluster_ambiguity: float = 0.05,
-        cdd_cluster_min_size: int = 3,
-        cdd_relabel_known: bool = False,
-        cdd_cluster_source_fallback: bool = True,
         mask_value: float = -1,
     ):
         """Initializes the TransformerModule.
@@ -191,15 +185,6 @@ class TransformerModule(nn.Module):
         self.cdd_class_column = cdd_class_column
         self.cdd_min_class_count = cdd_min_class_count
         self.cdd_exclude_class_codes = tuple(cdd_exclude_class_codes or ())
-        self.cdd_infer_labels = cdd_infer_labels
-        self.cdd_cluster_iters = cdd_cluster_iters
-        self.cdd_cluster_ambiguity = cdd_cluster_ambiguity
-        self.cdd_cluster_min_size = cdd_cluster_min_size
-        self.cdd_relabel_known = cdd_relabel_known
-        self.cdd_cluster_source_fallback = cdd_cluster_source_fallback
-        # Target-label bank (allocated lazily via init_target_bank when
-        # cdd_infer_labels is enabled and the datamodule is available).
-        self._target_bank_ready = False
         # Handover schedule, refreshed each step by the LightningModule. Defaults are
         # the post-ramp values so a module driven without the schedule (tests, direct
         # use) behaves as if warmup is already over.
@@ -569,34 +554,6 @@ class TransformerModule(nn.Module):
         )
 
         return output
-
-    def encode_cls(
-        self,
-        src: Tensor,
-        values: Tensor,
-        src_key_padding_mask: Tensor,
-        conditions: Optional[Dict] = None,
-    ) -> Tensor:
-        """CLS embedding for a batch of rows, dispatching on the training mode.
-
-        Returns the same tensor the CDD/MMD blocks read in ``forward``
-        (``embeddings[:, 0, :]``), so embeddings produced here are directly
-        comparable with the ones the losses see. Used by the clustering refresh
-        passes, which need every bulk row encoded under a single model state.
-
-        Unlike ``embed_for_finetune``, conditions are passed through — the modality
-        token is what distinguishes bulk from pseudobulk, so dropping it would make
-        the two domains encode identically.
-        """
-        if self.use_generative_training:
-            output, _ = self.embed(
-                src, values, src_key_padding_mask, conditions=conditions
-            )
-        else:
-            output = self.encode(
-                src, values, src_key_padding_mask, conditions=conditions
-            )
-        return output[:, 0, :]
 
     def transformer_generate(
         self,
@@ -1114,11 +1071,12 @@ class TransformerModule(nn.Module):
         # Contrastive Domain Discrepancy (CAN, Kang et al. CVPR 2019): a
         # class-conditional MMD that pulls same-tissue source(pseudobulk)/target(bulk)
         # embeddings together and pushes different-tissue apart. Unlike the marginal
-        # MMD above, it preserves tissue structure. Supervised on the tissue label;
-        # when label inference is enabled the bulk labels are the K-means pseudo-labels.
+        # MMD above, it preserves tissue structure. Fully supervised on the given tissue
+        # label: only tissues present in both domains count, so "unknown" (excluded) and
+        # bulk-only tissues get no CDD signal.
         # Skipped on paired batches (those use the 1-to-1 paired alignment loss instead)
-        # and during the warmup window, where _cdd_w is 0 and MMD is doing the marginal
-        # alignment that makes the first clustering meaningful.
+        # and during the warmup window, where _cdd_w is 0 and MMD does the marginal
+        # alignment.
         # want_cdd fires either when CDD is actively training (post-warmup) or when it is
         # requested for monitoring only. Monitoring additionally requires the tissue class
         # column to be present in the batch conditions; without it no label is available and
@@ -1133,15 +1091,7 @@ class TransformerModule(nn.Module):
             embeddings = output_dict["embeddings"]
             modalities = tensors["conditions"]["modality"]
             emb = embeddings[:, 0, :]  # CLS token, matches modality_mmd_loss
-
-            # Keep the bank warm between clustering events. The authoritative fill is
-            # refresh_bulk_bank() (one model state, full coverage); this streaming write
-            # is a cheap top-up from embeddings we already have. Only relevant when CDD is
-            # actually enabled — the bank is never allocated in monitor-only mode.
-            if self.cdd and self.cdd_infer_labels and self._target_bank_ready and self.training:
-                self.update_target_bank(emb, modalities, tensors.get("row_index"))
-
-            tissue = self._cdd_target_labels(tensors)
+            tissue = tensors["conditions"][self.cdd_class_column].long().reshape(-1)
             src_m = modalities == 2  # pseudobulk = source
             tgt_m = modalities == 0  # real bulk   = target
             loss_cdd = self._cdd_loss(
@@ -1500,34 +1450,6 @@ class TransformerModule(nn.Module):
     # ------------------------------------------------------------------
     # Contrastive Domain Discrepancy (CAN, Kang et al. CVPR 2019)
     # ------------------------------------------------------------------
-    def _cdd_target_labels(self, tensors) -> torch.Tensor:
-        """Tissue label per batch sample used as the CDD class.
-
-        Normally the raw ``cdd_class_column`` condition. When target-label
-        inference is active, the bulk (target) rows are overridden with the current
-        spherical-K-means pseudo-labels, which recover both the ``"unknown"`` bulk
-        and the bulk-only tissues that have no single-cell counterpart. Rows still
-        unassigned carry ``-1`` and are dropped by ``_cdd_loss``.
-        """
-        labels = tensors["conditions"][self.cdd_class_column].long().reshape(-1)
-        if not (self.cdd_infer_labels and self._target_bank_ready):
-            return labels
-        row_index = tensors.get("row_index")
-        if row_index is None:
-            return labels
-        modalities = tensors["conditions"]["modality"]
-        labels = labels.clone()
-        bulk_pos = (modalities == 0).nonzero(as_tuple=True)[0]
-        if bulk_pos.numel() == 0:
-            return labels
-        rows = row_index[bulk_pos].long()
-        local = self.row_to_bulk_local[rows]
-        pseudo = torch.full_like(rows, -1)
-        valid = local >= 0
-        pseudo[valid] = self.pseudo_label[local[valid]]
-        labels[bulk_pos] = pseudo
-        return labels
-
     def _cdd_loss(
         self,
         source_emb: torch.Tensor,
@@ -1606,188 +1528,6 @@ class TransformerModule(nn.Module):
             inter = (Dmat.sum() - torch.diagonal(Dmat).sum()) / (M * (M - 1))
             return intra - inter
         return intra
-
-    # --- Target-label inference (semi-supervised spherical K-means) ---
-    def init_target_bank(self, n_bulk, known_label, is_unknown, row_to_bulk_local, class_ids):
-        """Allocate the bulk-embedding memory bank and label buffers.
-
-        Indexed by compact bulk-local id (0..n_bulk-1). ``known_label`` holds the
-        ground-truth tissue code (or -1 for ``"unknown"``/excluded); ``pseudo_label``
-        starts equal to it and is refreshed by :meth:`recluster`.
-        """
-        dev = next(self.parameters()).device
-        n_cls = len(list(class_ids))
-        self.register_buffer("bank_emb", torch.zeros(n_bulk, self.d_model, device=dev), persistent=False)
-        self.register_buffer("bank_filled", torch.zeros(n_bulk, dtype=torch.bool, device=dev), persistent=False)
-        self.register_buffer("known_label", torch.as_tensor(known_label, dtype=torch.long, device=dev))
-        self.register_buffer("is_unknown", torch.as_tensor(is_unknown, dtype=torch.bool, device=dev))
-        self.register_buffer("pseudo_label", torch.as_tensor(known_label, dtype=torch.long, device=dev).clone())
-        self.register_buffer("row_to_bulk_local", torch.as_tensor(row_to_bulk_local, dtype=torch.long, device=dev))
-        self.register_buffer("cdd_class_ids", torch.as_tensor(list(class_ids), dtype=torch.long, device=dev))
-        # Source (pseudobulk) class means, indexed like cdd_class_ids. Recomputed from
-        # scratch by refresh_source_means() at each clustering event rather than
-        # accumulated: pseudobulks are re-aggregated from randomly drawn cells every
-        # step, so an EMA would smear over both a changing PB composition and a
-        # changing model state — and the offset correction in recluster() is only
-        # sound if src_mean and bank_emb come from the same model state.
-        self.register_buffer("src_mean", torch.zeros(n_cls, self.d_model, device=dev), persistent=False)
-        self.register_buffer("src_count", torch.zeros(n_cls, dtype=torch.long, device=dev), persistent=False)
-        self._target_bank_ready = True
-
-    @torch.no_grad()
-    def set_source_means(self, means: Tensor, counts: Tensor):
-        """Overwrite the source class means (see :meth:`init_target_bank`).
-
-        ``means``/``counts`` are indexed like ``cdd_class_ids``; a zero count marks a
-        class the source could not supply this event.
-        """
-        if not self._target_bank_ready:
-            return
-        self.src_mean.copy_(means.to(self.src_mean.dtype))
-        self.src_count.copy_(counts.to(self.src_count.dtype))
-
-    @torch.no_grad()
-    def update_target_bank(self, emb, modalities, row_index):
-        """Store the latest (normalized, detached) bulk embeddings in the bank."""
-        if row_index is None or not self._target_bank_ready:
-            return
-        bulk_pos = (modalities == 0).nonzero(as_tuple=True)[0]
-        if bulk_pos.numel() == 0:
-            return
-        rows = row_index[bulk_pos].long()
-        local = self.row_to_bulk_local[rows]
-        valid = local >= 0
-        if not valid.any():
-            return
-        feats = F.normalize(emb[bulk_pos][valid].detach().float(), dim=1)
-        self.bank_emb[local[valid]] = feats.to(self.bank_emb.dtype)
-        self.bank_filled[local[valid]] = True
-
-    @torch.no_grad()
-    def recluster(self) -> dict:
-        """Refresh bulk pseudo-labels via bulk-anchored spherical K-means.
-
-        Centroids are initialized and anchored by the known-labeled bulk (same
-        domain as the points being clustered), then refined over the unknown
-        bulk. Ambiguous (cosine-dist > D0) and small (< N0) clusters are dropped.
-        Known labels are kept fixed unless ``cdd_relabel_known``.
-
-        Classes with no known bulk anchors — tissues only the single-cell data knows
-        about — are unreachable from the bulk alone. When ``cdd_cluster_source_fallback``
-        is set they are seeded from the source (pseudobulk) class mean instead, see
-        below.
-        """
-        if not self._target_bank_ready:
-            return {}
-        filled = self.bank_filled
-        if int(filled.sum()) == 0:
-            return {}
-        N0 = self.cdd_cluster_min_size
-
-        # 1. Init centroids, preferring known-labeled bulk anchors (bulk-structure
-        #    seeding: same domain as the points being clustered, so most reliable).
-        #
-        #    Source-seeded fallback: a class with no bulk anchors can only be reached
-        #    from the pseudobulk side. But assignment below is a single argmax over all
-        #    centroids, and modality dominates tissue — a raw pseudobulk centroid sits
-        #    in the source cloud, so every bulk row would be nearer every bulk-anchored
-        #    centroid and the fallback would win nothing. Translating it by the
-        #    domain-mean offset removes that first-order modality shift, keeping the
-        #    class's tissue structure while placing it where the bulk cloud lives.
-        #    Sound only because refresh_source_means() recomputes src_mean in the same
-        #    pass as bank_emb, so both frames come from one model state.
-        use_fallback = self.cdd_cluster_source_fallback and int(self.src_count.sum()) > 0
-        if use_fallback:
-            src_valid = self.src_count > 0
-            src_global = F.normalize(self.src_mean[src_valid], dim=1).mean(0)
-            bulk_global = self.bank_emb[filled].mean(0)
-
-        centroids, used_classes, n_source_seeded = [], [], 0
-        for k, c in enumerate(self.cdd_class_ids.tolist()):
-            anchor_mask = filled & (self.known_label == c)
-            if int(anchor_mask.sum()) >= N0:
-                centroids.append(F.normalize(self.bank_emb[anchor_mask].mean(0), dim=0))
-                used_classes.append(c)
-            elif use_fallback and int(self.src_count[k]) > 0:
-                shifted = F.normalize(self.src_mean[k], dim=0) - src_global + bulk_global
-                centroids.append(F.normalize(shifted, dim=0))
-                used_classes.append(c)
-                n_source_seeded += 1
-        if len(used_classes) == 0:
-            return {"cdd_classes_used": 0}
-        C = torch.stack(centroids, 0)  # (K, D)
-
-        pool_mask = filled.clone() if self.cdd_relabel_known else (filled & self.is_unknown)
-        pool_idx = pool_mask.nonzero(as_tuple=True)[0]
-
-        # 2. Spherical K-means (cosine), anchored by the known bulk each iter.
-        #    A source-seeded class has no bulk anchors, so its centroid is defined
-        #    purely by whatever it wins; once it wins any bulk rows it becomes
-        #    bulk-anchored and self-corrects. If it wins nothing, its parts are empty
-        #    and the mean would be NaN — hold the previous centroid instead.
-        for _ in range(self.cdd_cluster_iters):
-            assign = None
-            if pool_idx.numel() > 0:
-                pool_feats = F.normalize(self.bank_emb[pool_idx], dim=1)
-                assign = (pool_feats @ C.t()).argmax(1)
-            new_C = []
-            for k, c in enumerate(used_classes):
-                anchor_mask = filled & (self.known_label == c)
-                parts = []
-                if int(anchor_mask.sum()) > 0:
-                    parts.append(F.normalize(self.bank_emb[anchor_mask], dim=1))
-                if assign is not None:
-                    sel = pool_idx[assign == k]
-                    if sel.numel() > 0:
-                        parts.append(F.normalize(self.bank_emb[sel], dim=1))
-                if parts:
-                    new_C.append(F.normalize(torch.cat(parts, 0).mean(0), dim=0))
-                else:
-                    new_C.append(C[k])
-            new_C = torch.stack(new_C, 0)
-            if torch.allclose(new_C, C, atol=1e-4):
-                C = new_C
-                break
-            C = new_C
-
-        # 3. Final assignment of the target rows + purity filters.
-        used_t = torch.tensor(used_classes, device=C.device)
-        target_mask = filled.clone() if self.cdd_relabel_known else (filled & self.is_unknown)
-        new_pseudo = self.pseudo_label.clone()
-        n_assigned = 0
-        n_orphans = 0
-        if target_mask.any():
-            idx = target_mask.nonzero(as_tuple=True)[0]
-            feats = F.normalize(self.bank_emb[idx], dim=1)
-            best_sim, best_k = (feats @ C.t()).max(1)
-            # Orphans: rows too far from EVERY centroid to be claimed. A high count
-            # means the target rows do not sit near any class the source knows about
-            # — typically because the domains have not been pulled together yet.
-            ambiguous = (1.0 - best_sim) > self.cdd_cluster_ambiguity
-            n_orphans = int(ambiguous.sum())
-            assigned = torch.where(
-                ambiguous,
-                torch.full_like(best_k, -1),
-                used_t[best_k],
-            )
-            for c in used_classes:  # min-size filter
-                if int((assigned == c).sum()) < N0:
-                    assigned[assigned == c] = -1
-            new_pseudo[idx] = assigned
-            n_assigned = int((assigned >= 0).sum())
-
-        # Known labels stay fixed unless explicitly relabeling.
-        if not self.cdd_relabel_known:
-            known_mask = self.known_label >= 0
-            new_pseudo[known_mask] = self.known_label[known_mask]
-        self.pseudo_label.copy_(new_pseudo)
-        return {
-            "cdd_classes_used": len(used_classes),
-            "cdd_source_seeded": n_source_seeded,
-            "cdd_unknown_assigned": n_assigned,
-            "cdd_orphans": n_orphans,
-            "cdd_bank_filled": int(filled.sum()),
-        }
 
     def training_step(self, batch, batch_idx):
         """Performs a single training step (for PyTorch Lightning).

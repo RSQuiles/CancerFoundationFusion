@@ -453,34 +453,6 @@ class BulkSCDataModule(pl.LightningDataModule):
                 persistent_workers=self.num_workers > 0,
             )
 
-    def make_cdd_refresh_collator(self):
-        """Plain per-row collator for the CDD clustering refresh passes.
-
-        Matches the training collator's vocab/binning/condition configuration, but
-        collates one row at a time (no bulk/SC assembly — ``BulkSCCollator.__call__``
-        dispatches on exact batch length and cannot take a bulk-only batch), with
-        masking off and the ``pcpt`` layout, so the embeddings are deterministic.
-        Mirrors the unmasked inference path used by ``CancerFoundation.embed``.
-        """
-        return AnnDataCollator(
-            do_padding=self.max_seq_len is not None,
-            pad_token_id=self.pad_token_id,
-            pad_value=self.pad_value,
-            do_mlm=False,  # clustering wants deterministic, unmasked embeddings
-            do_binning=self.input_style == "binned",
-            normalise_bins=self.normalise_bins,
-            binning_method=self.binning_method,
-            mask_ratio=self.mask_ratio,
-            mask_value=self.mask_value,
-            max_length=self.max_seq_len,
-            sampling=self.TRUNC_BY_SAMPLE,
-            data_style="pcpt",  # plain encode, no generative split
-            n_bins=self.n_bins if self.input_style == "binned" else None,
-            conditions=self.conditions,
-            zero_percentages=self.zero_percentages,
-            condition_token=self.condition_token,
-        )
-
     def train_dataloader(self):
         """Create training dataloader"""
         return self._get_dataloader(self.train_dataset, train=True)

@@ -37,6 +37,24 @@ _TRAINING_ONLY_PREFIXES = ("grad_reverse_discriminators.",)
 
 _COMPILE_PREFIX = "_orig_mod."
 
+# Persistent buffers of the removed CDD target-label inference (--cdd-infer-labels),
+# present in checkpoints of runs that used it. Nothing reads them any more.
+REMOVED_CDD_BUFFERS = ("known_label", "is_unknown", "pseudo_label", "row_to_bulk_local", "cdd_class_ids")
+
+
+def drop_removed_cdd_state(state_dict: Dict[str, Any]) -> list:
+    """Remove the old CDD label-inference buffers from ``state_dict`` in place.
+
+    Matches ``model.<name>`` and ``model._orig_mod.<name>`` exactly. Returns the
+    removed keys, so a strict load (resume) does not fail on them.
+    """
+    names = {f"model.{n}" for n in REMOVED_CDD_BUFFERS}
+    names |= {f"model.{_COMPILE_PREFIX}{n}" for n in REMOVED_CDD_BUFFERS}
+    removed = [key for key in state_dict if key in names]
+    for key in removed:
+        del state_dict[key]
+    return removed
+
 
 def read_checkpoint_hparams(
     path: Union[str, Path], map_location: str = "cpu"
@@ -259,6 +277,8 @@ def load_for_inference(
     ckpt = torch.load(str(path), map_location=map_location, weights_only=False)
     hparams = dict(ckpt.get("hyper_parameters", {}))
     state_dict = _strip_compile_prefix(dict(ckpt.get("state_dict", {})))
+    if drop_removed_cdd_state(state_dict):
+        log.info("  dropped the removed CDD label-inference buffers")
 
     # Inference never needs the compiled graph, and skipping it keeps the module
     # tree free of the `_orig_mod` wrapper the keys were just stripped of.

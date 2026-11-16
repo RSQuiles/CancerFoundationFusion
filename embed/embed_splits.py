@@ -42,9 +42,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from embed.embed import (  # noqa: E402
     MODALITY_COL,
+    add_input_mode_args,
     add_model_run_args,
     add_normalization_args,
     embed_adata,
+    input_mode_provenance,
     load_model,
     set_card_fields,
     write_embeddings,
@@ -89,6 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
                         default=["tissue_general"],
                         help="obs columns stratifying both subsets (missing ones are skipped).")
     add_normalization_args(parser)
+    add_input_mode_args(parser)
     add_model_run_args(parser)
     return parser
 
@@ -199,9 +202,10 @@ def embed_with_model(args, layout: ExperimentLayout, adata):
         batch_size=args.batch_size, normalize=args.normalize,
         shared_panel=args.shared_panel, chunk_rows=args.chunk_rows,
         panel_sample=args.panel_sample, seed=args.seed,
+        input_mode=args.input_mode, zero_fraction=args.zero_fraction, panel_size=args.panel_size,
     )
     provenance = {"method": "cancerfoundation", "checkpoint": str(checkpoint),
-                  "normalize": args.normalize}
+                  "normalize": args.normalize, **input_mode_provenance(args)}
     return emb, genes, provenance
 
 

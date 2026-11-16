@@ -9,7 +9,6 @@ import pandas as pd
 from cancerfoundation.model.perturbation_model import PerturbationTransformer
 from cancerfoundation.utils import load_pretrained
 from cancerfoundation.model.module import TransformerModule
-from cancerfoundation.data.bulk_sc_collator import BULK_MODALITY, PB_MODALITY
 from cancerfoundation.data.preprocess import binning
 # Modality-aware gene-panel selection lives in cancerfoundation/data/gene_panel.py,
 # kept free of torch/lightning imports so it can be exercised without a checkpoint.
@@ -17,16 +16,29 @@ from cancerfoundation.data.gene_panel import (  # noqa: F401  (re-exported)
     LIBRARY_SIZE_COL,
     _classify_modality,
     _top_mad_genes,
+    gene_ranking,
     select_panel,
     select_shared_panel,
+    shared_gene_ranking,
 )
 from cancerfoundation.data.preprocess import (
     NORMALIZE_METHODS,
+    cell_seed,
     library_size,
     normalize_expression,
+    train_matched_input,
     value_scale,
 )
 from cancerfoundation.loss import get_loss
+
+# How CancerFoundation.embed builds the model input (see its docstring).
+#   legacy_panel:  one fixed panel of n_top_genes for every cell, binned within the panel,
+#                  every zero kept (the behaviour before input modes existed).
+#   train_matched: as training feeds the model: each row binned over all its vocabulary
+#                  genes first, then its top-ranked zero genes (zero_fraction of the
+#                  sequence budget) and top-ranked non-zero genes, up to max_seq_len.
+#   nonzero:       train_matched without zeros (scGPT-style).
+EMBED_INPUT_MODES = ("legacy_panel", "train_matched", "nonzero")
 from safetensors import safe_open
 from cancerfoundation.loss import LossType
 from pytorch_lightning.utilities.types import OptimizerLRSchedulerConfig
@@ -140,15 +152,7 @@ class CancerFoundation(pl.LightningModule):
         cdd_min_class_count: int = 2,
         cdd_exclude_labels: Optional[List[str]] = None,
         cdd_class_aware: bool = False,
-        cdd_infer_labels: bool = False,
-        cdd_cluster_warmup_steps: int = 2000,
-        cdd_cluster_interval: int = 0,
-        cdd_cluster_iters: int = 10,
-        cdd_cluster_ambiguity: float = 0.05,
-        cdd_cluster_min_size: int = 3,
-        cdd_relabel_known: bool = False,
-        cdd_cluster_source_fallback: bool = True,
-        cdd_cluster_source_pb: int = 8,
+        cdd_warmup_steps: int = 2000,
         cdd_ramp_steps: int = 1000,
         cdd_mmd_final_weight: float = 0.0,
         # Training-only parameter groups (see utils/warm_start.py for the groups)
@@ -286,18 +290,9 @@ class CancerFoundation(pl.LightningModule):
         self.cdd_min_class_count = cdd_min_class_count
         self.cdd_exclude_labels = cdd_exclude_labels or ["unknown"]
         self.cdd_class_aware = cdd_class_aware
-        self.cdd_infer_labels = cdd_infer_labels
-        self.cdd_cluster_warmup_steps = cdd_cluster_warmup_steps
-        self.cdd_cluster_interval = cdd_cluster_interval
-        self.cdd_cluster_iters = cdd_cluster_iters
-        self.cdd_cluster_ambiguity = cdd_cluster_ambiguity
-        self.cdd_cluster_min_size = cdd_cluster_min_size
-        self.cdd_relabel_known = cdd_relabel_known
-        self.cdd_cluster_source_fallback = cdd_cluster_source_fallback
-        self.cdd_cluster_source_pb = cdd_cluster_source_pb
+        self.cdd_warmup_steps = cdd_warmup_steps
         self.cdd_ramp_steps = cdd_ramp_steps
         self.cdd_mmd_final_weight = cdd_mmd_final_weight
-        self._cdd_row_collator = None
 
         # Training configuration
         self.pad_token = "<pad>"
@@ -466,12 +461,6 @@ class CancerFoundation(pl.LightningModule):
                 weight_cdd=self.weight_cdd,
                 cdd_class_column=self.cdd_class_column,
                 cdd_min_class_count=self.cdd_min_class_count,
-                cdd_infer_labels=self.cdd_infer_labels,
-                cdd_cluster_iters=self.cdd_cluster_iters,
-                cdd_cluster_ambiguity=self.cdd_cluster_ambiguity,
-                cdd_cluster_min_size=self.cdd_cluster_min_size,
-                cdd_relabel_known=self.cdd_relabel_known,
-                cdd_cluster_source_fallback=self.cdd_cluster_source_fallback,
             )
         if self.compile_model:
             self.model = torch.compile(self.model)
@@ -512,11 +501,10 @@ class CancerFoundation(pl.LightningModule):
         return loss_dict
 
     # ------------------------------------------------------------------
-    # Contrastive Domain Discrepancy (CAN) — target-label bank setup + clustering
+    # Contrastive Domain Discrepancy (CAN): exclude codes + MMD->CDD schedule
     # ------------------------------------------------------------------
     def setup(self, stage=None):
-        """Resolve CDD exclude-label codes and (if inferring labels) build the
-        bulk target-label bank from the datamodule's dataset."""
+        """Resolve the CDD exclude-label codes from the datamodule's category mapping."""
         if not self.cdd or stage not in (None, "fit"):
             return
         core = getattr(self.model, "_orig_mod", self.model)  # unwrap torch.compile
@@ -529,279 +517,11 @@ class CancerFoundation(pl.LightningModule):
         exclude_codes = [int(code) for name, code in class_map.items() if name in self.cdd_exclude_labels]
         core.cdd_exclude_class_codes = tuple(exclude_codes)
 
-        if not self.cdd_infer_labels:
-            return
-
-        # Build the target-label bank over the FULL dataset index space (Subset
-        # __getitem__ forwards original indices, so _row_index is original-space).
-        bulk_idx = np.asarray(dataset.bulk_indices)
-        n_bulk = int(len(bulk_idx))
-        n_total = len(dataset)
-        tissue_arr = np.asarray(dataset._obs_arrays[self.cdd_class_column]).astype(np.int64)
-        bulk_tissue = tissue_arr[bulk_idx]
-        exclude_set = set(exclude_codes)
-        row_to_bulk_local = np.full(n_total, -1, dtype=np.int64)
-        row_to_bulk_local[bulk_idx] = np.arange(n_bulk, dtype=np.int64)
-
-        # The CDD class space is what the SOURCE can supply: a class the source cannot
-        # produce can never form a D(c,c') pair, whatever the bulk says. The source is the
-        # single cells normally, or the precomputed pseudobulk rows in --precomputed-pb
-        # mode — so the class space must be derived from whichever pool actually feeds the
-        # modality-2 (pseudobulk) half of the batch.
-        precomputed_pb = bool(getattr(dm, "precomputed_pb", False))
-        if precomputed_pb:
-            src_idx = np.asarray(getattr(dataset, "pb_indices", np.array([], dtype=np.int64)))
-        else:
-            src_idx = np.asarray(getattr(dataset, "sc_indices", np.array([], dtype=np.int64)))
-        src_tissue = {int(c) for c in tissue_arr[src_idx]} if src_idx.size else set()
-        class_ids = sorted(src_tissue - exclude_set)
-        class_set = set(class_ids)
-
-        # A bulk label is trusted only if it names a class in that space. Everything
-        # else is handed to the clustering rather than dropped: both the literal
-        # "unknown" bulk and the bulk-only tissues that have no single-cell
-        # counterpart (e.g. "esophagus"), which would otherwise carry a real label
-        # that matches no class and so never train.
-        is_unknown = np.array([int(c) not in class_set for c in bulk_tissue], dtype=bool)
-        known_label = np.where(is_unknown, -1, bulk_tissue).astype(np.int64)
-
-        core.init_target_bank(n_bulk, known_label, is_unknown, row_to_bulk_local, class_ids)
-        if self.verbose:
-            n_excluded = int(sum(int(c) in exclude_set for c in bulk_tissue))
-            n_infer = int(is_unknown.sum())
-            print(
-                f"[CDD] target-label bank: {n_bulk} bulk rows, {n_infer} to infer "
-                f"({n_excluded} explicitly unknown, {n_infer - n_excluded} unmatched "
-                f"tissue), {len(class_ids)} candidate classes."
-            )
-
-    def _cdd_refresh_collator(self):
-        """Lazily build (and cache) the per-row collator used by the refresh passes."""
-        if getattr(self, "_cdd_row_collator", None) is None:
-            dm = getattr(self.trainer, "datamodule", None)
-            if dm is None or not hasattr(dm, "make_cdd_refresh_collator"):
-                return None
-            self._cdd_row_collator = dm.make_cdd_refresh_collator()
-        return self._cdd_row_collator
-
-    @torch.no_grad()
-    def _encode_rows(self, samples, collator, chunk_size: int = 64):
-        """Encode a list of per-row sample dicts into normalized CLS embeddings."""
-        device = self.device
-        out = []
-        for start in range(0, len(samples), chunk_size):
-            batch = collator(samples[start : start + chunk_size])
-            conditions = batch.get("conditions")
-            if conditions is not None:
-                conditions = {k: v.to(device) for k, v in conditions.items()}
-            emb = self.model.encode_cls(
-                batch["gene"].to(device),
-                batch["masked_expr"].to(device),  # do_mlm=False, so unmasked
-                batch["gene_key_padding_mask"].to(device),
-                conditions=conditions,
-            )
-            out.append(F.normalize(emb.float(), dim=1))
-        return torch.cat(out, 0) if out else None
-
-    @torch.no_grad()
-    def _refresh_bulk_bank(self, core, dataset):
-        """Re-encode every bulk row under the CURRENT weights.
-
-        The streamed per-step bank mixes embeddings written by different model states,
-        which the clustering then compares as if they were commensurable. Re-encoding
-        in one pass removes that, and fills the bank for every bulk row regardless of
-        what the sampler happened to draw.
-        """
-        collator = self._cdd_refresh_collator()
-        if collator is None:
-            return False
-        bulk_idx = np.asarray(dataset.bulk_indices)
-        # row_to_bulk_local maps dataset.bulk_indices[k] -> k, so iterating in this
-        # order yields bank-local ids 0..n_bulk-1 and needs no index plumbing.
-        # Stamp the canonical bulk modality (not the raw mapping code): this plain
-        # collator does not apply BulkSCCollator's modality override, so without this
-        # the condition token — and thus the bank embeddings — would disagree with the
-        # training path whenever preprocessing did not encode bulk as code 0.
-        modality_col = dataset.modality_column
-        samples = []
-        for i in bulk_idx:
-            s = dataset[int(i)]
-            s[modality_col] = BULK_MODALITY
-            samples.append(s)
-        feats = self._encode_rows(samples, collator)
-        if feats is None:
-            return False
-        core.bank_emb.copy_(feats.to(core.bank_emb.dtype))
-        core.bank_filled.fill_(True)
-        return True
-
-    @torch.no_grad()
-    def _refresh_source_means(self, core, dataset):
-        """Estimate the source (pseudobulk) class means under the CURRENT weights.
-
-        The source means seed the clustering's fallback centroids for tissues with no bulk
-        anchors, and recluster()'s offset correction is only valid if src_mean and bank_emb
-        come from one model state AND one source construction. So the means must be built
-        from whatever actually feeds the batch's pseudobulk half:
-
-        - default: pseudobulks aggregated on the fly from randomly drawn cells (re-drawn
-          here rather than EMA-tracked, which would smear over a changing composition);
-        - --precomputed-pb: the precomputed pseudobulk rows themselves, encoded directly.
-        """
-        collator = self._cdd_refresh_collator()
-        if collator is None:
-            return
-
-        # --precomputed-pb: encode precomputed PB rows directly (no SC aggregation).
-        # They carry the raw mapping pb_code in obs; stamp the canonical PB modality
-        # below so the condition token matches the training path regardless of how
-        # preprocessing encoded modality.
-        precomputed_pb = bool(
-            getattr(getattr(self.trainer, "datamodule", None), "precomputed_pb", False)
-        )
-        if precomputed_pb:
-            pb_group_to_idx = getattr(dataset, "pb_group_to_indices", None)
-            if pb_group_to_idx is None:
-                return
-            # Seeded on the step alone: every rank shares global_step, so all ranks draw
-            # the same PB rows and derive identical centroids without communicating.
-            rng = np.random.default_rng(1234 + int(self.global_step))
-            cap = max(1, int(self.cdd_cluster_source_pb))
-            class_ids = core.cdd_class_ids.tolist()
-            means = torch.zeros_like(core.src_mean)
-            counts = torch.zeros_like(core.src_count)
-            for k, c in enumerate(class_ids):
-                pool = pb_group_to_idx.get(c)
-                if pool is None or len(pool) == 0:
-                    continue
-                n_take = min(len(pool), cap)
-                pick = rng.choice(len(pool), size=n_take, replace=False)
-                samples = [dataset[int(pool[j])] for j in pick]
-                for s in samples:
-                    s[dataset.modality_column] = PB_MODALITY
-                feats = self._encode_rows(samples, collator)
-                if feats is None:
-                    continue
-                means[k] = F.normalize(feats.mean(0), dim=0).to(means.dtype)
-                counts[k] = len(samples)
-            core.set_source_means(means, counts)
-            return
-
-        group_to_idx = getattr(dataset, "sc_group_to_indices", None)
-        if group_to_idx is None:
-            return
-        train_collator = getattr(self.trainer.train_dataloader, "collate_fn", None)
-        if train_collator is None or not hasattr(train_collator, "_aggregate_sc"):
-            return
-
-        modality_col = getattr(dataset, "modality_column", None)
-        if modality_col is None:
-            return
-        # On-the-fly aggregation needs no precomputed PB rows (no pb_label lookup): the
-        # rows are synthesized here and stamped with the canonical PB modality below.
-
-        n_per_pb = train_collator.n_sc_per_pseudobulk
-        # Seeded on the step alone: every rank shares global_step, so all ranks draw
-        # the same pseudobulks and derive identical centroids without communicating.
-        rng = np.random.default_rng(1234 + int(self.global_step))
-
-        class_ids = core.cdd_class_ids.tolist()
-        means = torch.zeros_like(core.src_mean)
-        counts = torch.zeros_like(core.src_count)
-        for k, c in enumerate(class_ids):
-            pool = group_to_idx.get(c)
-            if pool is None or len(pool) < n_per_pb:
-                continue
-            pb_samples = []
-            for _ in range(self.cdd_cluster_source_pb):
-                pick = rng.choice(len(pool), size=n_per_pb, replace=len(pool) < n_per_pb)
-                chunk = [dataset[int(pool[j])] for j in pick]
-                genes, expr = train_collator._aggregate_sc(
-                    chunk, input_data=train_collator.input_data
-                )
-                pb = {"genes": genes, "expressions": expr}
-                train_collator._fill_missing_conditions(pb, chunk)
-                # _fill_missing_conditions copies conditions from the constituent SC
-                # cells, so modality would come out as "sc". In the training path the
-                # collator assigns modality separately; here it must be set explicitly
-                # to the canonical PB code (matching training), or the condition token
-                # would encode these as single cells.
-                pb[modality_col] = PB_MODALITY
-                pb_samples.append(pb)
-            feats = self._encode_rows(pb_samples, collator)
-            if feats is None:
-                continue
-            means[k] = F.normalize(feats.mean(0), dim=0).to(means.dtype)
-            counts[k] = len(pb_samples)
-        core.set_source_means(means, counts)
-
-    def _run_target_clustering(self):
-        """Re-encode the bulk/source features, then refresh bulk pseudo-labels.
-
-        Everything the clustering compares is produced inside one no_grad/eval block,
-        so bank_emb, src_mean and the domain-mean offset all come from a single model
-        state. Warmup-gated; DDP-safe because every rank encodes the same full bulk set
-        and so clusters identically, with no communication.
-        """
-        if not (self.cdd and self.cdd_infer_labels):
-            return
-        if self.global_step < self.cdd_cluster_warmup_steps:
-            return
-        if getattr(self, "_last_cluster_step", -1) == self.global_step:
-            return
-        self._last_cluster_step = self.global_step
-        core = getattr(self.model, "_orig_mod", self.model)
-        if not getattr(core, "_target_bank_ready", False):
-            return
-        dm = getattr(self.trainer, "datamodule", None)
-        dataset = getattr(dm, "dataset", None) if dm is not None else None
-        if dataset is None:
-            return
-
-        was_training = self.model.training
-        self.model.eval()
-        try:
-            if not self._refresh_bulk_bank(core, dataset):
-                return
-            if self.cdd_cluster_source_fallback:
-                self._refresh_source_means(core, dataset)
-        finally:
-            self.model.train(was_training)
-
-        self._cdd_cluster_stats = core.recluster()
-        self._refresh_sampler_labels(core)
-        if self.verbose and self._cdd_cluster_stats:
-            print(f"[CDD] cluster event @ step {self.global_step}: {self._cdd_cluster_stats}")
-
-    def _refresh_sampler_labels(self, core):
-        """Re-key the sampler's bulk tissue pools on the fresh pseudo-labels.
-
-        Without this, rows recovered by the clustering stay undrawable in the
-        class-aware batch's matched half, because those pools are built from the raw
-        labels that marked them unknown in the first place.
-        """
-        if not (self.cdd_infer_labels and self.cdd_class_aware):
-            return
-        try:
-            dl = self.trainer.train_dataloader
-            bs = getattr(dl, "batch_sampler", None)
-            inner = getattr(bs, "batch_sampler", bs)  # unwrap DistributedBatchSamplerWrapper
-            if inner is None or not hasattr(inner, "refresh_cdd_labels"):
-                return
-            inner.refresh_cdd_labels(
-                core.pseudo_label.detach().cpu().numpy(),
-                core.row_to_bulk_local.detach().cpu().numpy(),
-            )
-        except Exception as e:  # never let a diagnostic path kill training
-            if self.verbose:
-                print(f"[CDD] sampler label refresh skipped: {e}")
-
     def _update_cdd_schedule(self):
         """Linear MMD->CDD handover.
 
-        During warmup the marginal MMD pulls the bulk/pseudobulk clouds together so the
-        first clustering (and its source-seeded centroids) is meaningful; CDD then ramps
-        in as MMD decays out. Stacking both at full weight works against CDD: marginal
+        During warmup (``cdd_warmup_steps``) the marginal MMD pulls the bulk/pseudobulk
+        clouds together; CDD then ramps in over ``cdd_ramp_steps`` as MMD decays out. Stacking both at full weight works against CDD: marginal
         alignment matches P(f(bulk)) to P(f(pseudobulk)) ignoring class, which distorts
         class structure whenever the two domains' tissue proportions differ.
         """
@@ -809,24 +529,12 @@ class CancerFoundation(pl.LightningModule):
         if not self.cdd:
             return
         R = max(1, self.cdd_ramp_steps)
-        t = min(max((self.global_step - self.cdd_cluster_warmup_steps) / R, 0.0), 1.0)
+        t = min(max((self.global_step - self.cdd_warmup_steps) / R, 0.0), 1.0)
         core._cdd_w = self.weight_cdd * t
         core._mmd_w = self.weight_mmd + (self.cdd_mmd_final_weight - self.weight_mmd) * t
 
-    def on_train_epoch_start(self):
-        if self.cdd and self.cdd_infer_labels and self.cdd_cluster_interval == 0:
-            self._run_target_clustering()
-
     def on_train_batch_start(self, batch, batch_idx):
         self._update_cdd_schedule()
-        if (
-            self.cdd
-            and self.cdd_infer_labels
-            and self.cdd_cluster_interval > 0
-            and self.global_step > 0
-            and self.global_step % self.cdd_cluster_interval == 0
-        ):
-            self._run_target_clustering()
 
     def training_step(self, batch, batch_idx):  # batch = data_dict from collator
         """Performs a single training step.
@@ -863,14 +571,6 @@ class CancerFoundation(pl.LightningModule):
         # Log training metrics
         for key, value in loss_dict.items():
             self.log(f"train/{key}", value, on_step=True, on_epoch=False, prog_bar=True)
-
-        # Log CDD clustering stats produced by the last reclustering event (logged
-        # here so they land in a valid on_step logging context).
-        cluster_stats = getattr(self, "_cdd_cluster_stats", None)
-        if cluster_stats:
-            for key, value in cluster_stats.items():
-                self.log(f"train/{key}", float(value), on_step=True, on_epoch=False, prog_bar=False)
-            self._cdd_cluster_stats = None
 
         return loss_dict["total_loss"]
 
@@ -1021,6 +721,12 @@ class CancerFoundation(pl.LightningModule):
         # A resumed warm-started model keeps its lineage in its later checkpoints.
         if checkpoint.get("warm_start") and not self.warm_start_record:
             self.warm_start_record = dict(checkpoint["warm_start"])
+        # Runs trained with the removed --cdd-infer-labels saved its label buffers;
+        # drop them so the strict state_dict load of a resume does not fail.
+        from cancerfoundation.checkpoint import drop_removed_cdd_state
+
+        if drop_removed_cdd_state(checkpoint.get("state_dict", {})) and self.verbose:
+            print("[CDD] dropped the removed label-inference buffers from the checkpoint")
         # Called before Lightning restores optimizer and scheduler states. An empty list
         # (not a missing key, which Lightning rejects) restores no scheduler, so the
         # fresh one from configure_optimizers is kept.
@@ -1136,6 +842,125 @@ class CancerFoundation(pl.LightningModule):
             embeddings.append(transformer_output[:, 0, :].cpu())
 
         return torch.cat(embeddings, dim=0)
+
+    def _embed_train_matched(
+        self, data, groups, modality, hvg_select, gene_subset, shared_panel, panel_strategy,
+        panel_reference, flavor, normalize, batch_size, device, zero_fraction, panel_size,
+    ):
+        """``input_mode="train_matched"`` / ``"nonzero"``: rank genes, then embed per cell.
+
+        ``data`` is vocabulary-intersected and not normalized (with the library size in
+        obs). Returns ``(embeddings, ranking)``, the ranking a list (best first) or, for
+        per-modality rankings, a dict of them.
+        """
+        if not 0.0 <= zero_fraction <= 1.0:
+            raise ValueError(f"zero_fraction must be in [0, 1], got {zero_fraction}")
+        if gene_subset is not None:
+            if isinstance(gene_subset, dict):
+                ranking = {str(k): list(v) for k, v in gene_subset.items()}
+            else:
+                ranking = list(gene_subset)
+            print("[INFO] Gene ranking given; not re-fitted.")
+        elif not hvg_select:
+            ranking = data.var_names.tolist()
+            print("[INFO] hvg_select=False: genes are taken in input order, not ranked.")
+        elif groups is not None and shared_panel:
+            print(f"[INFO] Shared gene ranking across {len(set(groups))} modality groups "
+                  f"(strategy='{panel_strategy}').")
+            ranking = shared_gene_ranking(data, groups, flavor=flavor, strategy=panel_strategy,
+                                          reference=panel_reference)
+        elif groups is not None:
+            print("Ranking genes per data modality!")
+            ranking = {g: gene_ranking(data[groups == g], _classify_modality(g), flavor=flavor)
+                       for g in dict.fromkeys(groups.tolist())}
+        else:
+            kind = _classify_modality(str(modality))
+            print(f"  Ranking genes for modality '{kind}'")
+            ranking = gene_ranking(data, kind, flavor=flavor)
+        if panel_size:
+            ranking = ({k: v[:panel_size] for k, v in ranking.items()} if isinstance(ranking, dict)
+                       else ranking[:panel_size])
+
+        data = self._apply_normalize(data, normalize)
+        if not isinstance(ranking, dict):
+            return self._run_sequence_embed(data, ranking, batch_size, device, zero_fraction), ranking
+        if groups is None:
+            raise ValueError("A per-modality gene ranking (dict) needs modality_col with several values")
+        emb = np.zeros((data.n_obs, self.embsize), dtype=np.float32)
+        for g, genes in ranking.items():
+            mask = groups == g
+            if mask.any():
+                print(f"Modality '{g}': {int(mask.sum())} cells")
+                emb[mask] = self._run_sequence_embed(data[mask], genes, batch_size, device, zero_fraction)
+        missing = sorted(set(groups.tolist()) - set(ranking))
+        if missing:
+            raise ValueError(f"No gene ranking for modality group(s) {missing}")
+        return emb, ranking
+
+    def _run_sequence_embed(self, data, ranking, batch_size: int, device, zero_fraction: float) -> np.ndarray:
+        """CLS embeddings of per-cell sequences built as in training (``train_matched``).
+
+        Each row of ``data`` (every vocabulary gene, values as the model reads them) is
+        binned whole; then its top-ranked zero genes, at most
+        ``round(zero_fraction * (max_seq_len - 1))``, and its top-ranked non-zero genes
+        fill the ``max_seq_len - 1`` slots after CLS. Rows are padded to the longest
+        sequence of their batch.
+        """
+        pos = data.var_names.get_indexer(list(ranking))
+        pos = pos[pos >= 0]
+        if len(pos) == 0:
+            raise ValueError("None of the ranked genes are in the data")
+        budget = self.max_seq_len - 1
+        zero_cap = int(round(zero_fraction * budget))
+        normalise = self.model.decoder.normalise_bins
+        token_ids = np.array([self.vocab[g] for g in data.var_names], dtype=np.int64)
+        X = data.X if isinstance(data.X, np.ndarray) else data.X.toarray()
+        names = data.obs_names
+        n = data.n_obs
+        n_nonzero = np.zeros(n, dtype=np.int64)
+        n_zero = np.zeros(n, dtype=np.int64)
+        embeddings = []
+        print(f"  [train_matched] {len(pos)} ranked genes; per cell up to {zero_cap} zero and "
+              f"{budget} total genes after CLS, binned over all {data.n_vars} vocabulary genes "
+              f"('{self.binning_method}')")
+
+        for start in tqdm(range(0, n, batch_size), total=(n + batch_size - 1) // batch_size,
+                          desc="Embedding cells"):
+            stop = min(start + batch_size, n)
+            seqs = []
+            for i in range(start, stop):
+                # Binned whole, then top-ranked zeros + non-zeros; seeded per cell, so a
+                # cell's input does not depend on which rows were embedded before it.
+                cols, bins, n_nonzero[i], n_zero[i] = train_matched_input(
+                    X[i], pos, self.n_bins, budget, zero_cap,
+                    method=self.binning_method, seed=cell_seed(names[i]))
+                values = bins / self.n_bins if normalise else bins
+                seqs.append((token_ids[cols], values))
+
+            length = 1 + max(len(c) for c, _ in seqs)
+            b = len(seqs)
+            src = torch.full((b, length), self.pad_token_id, dtype=torch.long)
+            vals = torch.full((b, length), float(self.pad_value), dtype=torch.float32)
+            src[:, 0] = self.cls_token_id
+            for j, (ids, values) in enumerate(seqs):
+                src[j, 1:1 + len(ids)] = torch.as_tensor(ids)
+                vals[j, 1:1 + len(values)] = torch.as_tensor(values, dtype=torch.float32)
+            padding_mask = src.eq(self.pad_token_id)
+            src, vals, padding_mask = src.to(device), vals.to(device), padding_mask.to(device)
+            with torch.no_grad():
+                if self.model.use_generative_training:
+                    out = self.model.embed(src=src, values=vals, src_key_padding_mask=padding_mask)[0]
+                else:
+                    out = self.model.encode(src=src, values=vals, src_key_padding_mask=padding_mask,
+                                            check_conditions=False)
+            embeddings.append(out[:, 0, :].float().cpu())
+
+        total = n_nonzero + n_zero
+        print(f"  [train_matched] tokens per cell: mean {total.mean():.0f} "
+              f"(non-zero {n_nonzero.mean():.0f}, zero {n_zero.mean():.0f}, "
+              f"zero share {n_zero.sum() / max(total.sum(), 1):.0%}); "
+              f"min {total.min()}, max {total.max()}")
+        return torch.cat(embeddings, dim=0).numpy()
 
     def _select_genes(self, data, kind: str, seurat_flavor: str = "seurat"):
         """Reduce an AnnData to ``n_top_genes`` using a modality-appropriate scheme.
@@ -1267,8 +1092,35 @@ class CancerFoundation(pl.LightningModule):
         panel_reference: Optional[str] = None,
         return_preprocessed: bool = False,
         normalized: Optional[bool] = None,
-        log1p_only: Optional[bool] = None):
+        log1p_only: Optional[bool] = None,
+        input_mode: str = "legacy_panel",
+        zero_fraction: float = 0.4,
+        panel_size: Optional[int] = None):
         """Embeds an AnnData object into cell embeddings.
+
+        **Input mode.** ``input_mode`` decides how each cell's input sequence is built
+        (``EMBED_INPUT_MODES``):
+
+        - ``"legacy_panel"`` (default here, for existing callers): one fixed panel of
+          ``n_top_genes`` genes for every cell, binned *within the panel*, every zero
+          kept. Unlike training: a single cell's HVG panel is mostly zeros, and its bins
+          depend on which genes the panel kept.
+        - ``"train_matched"``: what the collator does in training. Each row is binned
+          over ALL its vocabulary genes first. The panel becomes a gene *ranking* (the
+          same scorers, joint or per modality, no cut unless ``panel_size``). Each cell
+          then takes its ``min(#zeros, round(zero_fraction * (max_seq_len - 1)))``
+          top-ranked zero genes, as training takes that many zeros (an absolute count,
+          ``zero_percentages`` of the budget), and fills the rest of the
+          ``max_seq_len - 1`` slots with its top-ranked non-zero genes. Deterministic:
+          no sampling, and quantile ties are seeded per cell from its obs name, so a
+          cell's embedding does not depend on the batch or the other rows. Works the
+          same for sc, bulk and pseudobulk; bulk rows have few zeros and get mostly
+          expressed genes.
+        - ``"nonzero"``: ``train_matched`` with ``zero_fraction=0`` (scGPT-style).
+
+        With ``train_matched`` / ``nonzero``, ``gene_set_used`` is the ranking (ordered,
+        best first; a dict per modality without a shared panel), and ``gene_subset``
+        takes such a ranking back, so a chunked caller ranks once.
 
         Handles all preprocessing: gene intersection with vocab, deterministic
         modality-aware gene selection, optional normalization, binning, and batched
@@ -1379,6 +1231,7 @@ class CancerFoundation(pl.LightningModule):
             and hvg_select
             and n_groups > 1
             and not return_preprocessed
+            and input_mode == "legacy_panel"
         ):
             if data.n_vars > self.n_top_genes:
                 print(
@@ -1399,6 +1252,24 @@ class CancerFoundation(pl.LightningModule):
                     f"<= n_top_genes={self.n_top_genes}; keeping all genes."
                 )
                 gene_subset = data.var_names.tolist()
+
+        if input_mode not in EMBED_INPUT_MODES:
+            raise ValueError(f"Unknown input_mode {input_mode!r}; expected one of {EMBED_INPUT_MODES}")
+        if input_mode != "legacy_panel":
+            if return_preprocessed:
+                raise ValueError("return_preprocessed needs input_mode='legacy_panel'")
+            groups = (data.obs[modality_col].astype(str).to_numpy() if n_groups > 1 else None)
+            emb, ranking = self._embed_train_matched(
+                data, groups, modality, hvg_select, gene_subset, shared_panel, panel_strategy,
+                panel_reference, flavor, normalize, batch_size, device,
+                zero_fraction=0.0 if input_mode == "nonzero" else zero_fraction,
+                panel_size=panel_size,
+            )
+            return pd.DataFrame(
+                emb,
+                index=adata.obs_names,
+                columns=[f"dim_{i}" for i in range(emb.shape[1])],
+            ), ranking
 
         if gene_subset is not None:
             if isinstance(gene_subset, dict):

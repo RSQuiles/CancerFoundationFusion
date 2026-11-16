@@ -27,40 +27,118 @@ environments:
               --bind, "/cluster/work/boeva/rquiles,/cluster/work/boeva/eheiss,/cluster/work/boeva/bulkFM",
               /cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif,
               python, -u]
-  host: {}                  # the env run_evaluation.sh activated (pandas, pyarrow, matplotlib)
+  host: {}                  # the env run_evaluation.sh activated (pandas, pyarrow, matplotlib, scib_metrics)
 
+# Colour keys tried on every UMAP; columns the sc file lacks are skipped with a warning.
+# cell_type is the label single-cell embeddings usually separate by first: in atlas data,
+# lung T cells sit next to blood T cells, so tissue is a weaker, secondary signal.
 tasks:
-  # ---- 1. embeddings/<model>/sc_test.h5ad ---------------------------------------------
-  # Single-cell only, so each model gets the single-cell panel (seurat HVG). The panel is
-  # fitted label-free on the same rows for both models, so both read the same genes.
+  # ---- 1. embeddings ------------------------------------------------------------------
+  # embeddings/<model>/sc_test.h5ad: input_mode train_matched (the default): each cell is
+  # binned over all its vocabulary genes, then fed its top-ranked zero genes (40% of the
+  # 1199 slots) and top-ranked expressed genes, as in training. The ranking is the
+  # single-cell HVG score, fitted label-free on these rows.
+  # embeddings/<model>/legacy_panel/sc_test.h5ad: the old fixed 1200-HVG panel (binned
+  # within the panel, every zero kept), for the A/B comparison.
+  # embeddings/pca_sc_leiden_s0/: PCA baseline (CP10K/CPM + log1p HVGs), fitted on a train
+  # subset. Its own name, so it never overwrites embeddings/pca/ of another split.
+  # All three use the same 20k stratified test rows (same subset arguments and seed).
   embed:
     shared:
       split: leiden_s0
       modalities: [sc]
-      parts: [test]
       test_subset: 20000          # stratified on tissue_general
       stratify_by: [tissue_general]
     steps:
       embed_splits:
         foreach: {model: [sc_quantile, sc_midrank]}
+        args:
+          parts: [test]
+          input_mode: train_matched
+          zero_fraction: 0.4
+      embed_legacy:
+        script: embed_splits
+        foreach: {model: [sc_quantile, sc_midrank]}
+        args:
+          parts: [test]
+          input_mode: legacy_panel
+          variant: legacy_panel
+      embed_pca:
+        script: embed_splits
+        args:
+          embedder: pca
+          name: &pca pca_sc_leiden_s0
+          parts: [test, train_subset]
+          train_subset: 5000
 
-  # ---- 2. UMAP of the single-cell test split ----------------------------------------------
+  # ---- 2. UMAPs of the single-cell test split -----------------------------------------
   representation:
     shared:
-      models: [sc_quantile, sc_midrank]
       part: test
       stratify_by: [tissue_general]
       skip_unknown: true
-      labels: {tissue_general: Tissue}
+      labels: {tissue_general: Tissue, cell_type: Cell type, assay: Assay, dataset_id: Dataset}
+      modality: sc
+      subsample: 20000
+      color: [tissue_general, cell_type, assay, dataset_id]
     steps:
-      umap:
+      umap:                       # -> results/representation/<model>/
         args:
-          modality: sc
-          subsample: 20000
-          color: [tissue_general]   # add other obs columns of the sc file (e.g. assay)
+          models: [sc_quantile, sc_midrank, *pca]
           title: "{model}: {modality_name} ({part})"
+      umap_legacy:                # -> results/representation/<model>/legacy_panel/
+        script: umap
+        args:
+          models: [sc_quantile, sc_midrank]
+          variant: legacy_panel
+          title: "{model}: {modality_name} ({part}), legacy panel"
 
-  # ---- 3. reconstruction on the single-cell r25 plan -------------------------------------
+  # ---- 3. scIB bio conservation on the sc test split (bulkFM env: scib_metrics) ------------
+  # One table per input mode and label (a run reads one variant for every model). Raw
+  # scores (scib.csv) compare across tables: same rows, same subsample. The PCA baseline
+  # is a row of the train_matched tables.
+  alignment:
+    shared:
+      part: test
+      modalities: [sc]
+      per_modality: ["sc=all"]
+      bio_only: true
+      n_jobs: 4
+    steps:
+      scib_tissue:
+        environment: host
+        script: scib
+        args:
+          name: sc_binning_tissue
+          models: [sc_quantile, sc_midrank, *pca]
+          label_key: tissue_general
+      scib_tissue_legacy:
+        environment: host
+        script: scib
+        args:
+          name: sc_binning_tissue_legacy
+          models: [sc_quantile, sc_midrank]
+          variant: legacy_panel
+          label_key: tissue_general
+      scib_cell_type:             # needs a cell_type column in the sc obs
+        environment: host
+        script: scib
+        continue_on_error: true
+        args:
+          name: sc_binning_cell_type
+          models: [sc_quantile, sc_midrank, *pca]
+          label_key: cell_type
+      scib_cell_type_legacy:
+        environment: host
+        script: scib
+        continue_on_error: true
+        args:
+          name: sc_binning_cell_type_legacy
+          models: [sc_quantile, sc_midrank]
+          variant: legacy_panel
+          label_key: cell_type
+
+  # ---- 4. reconstruction on the single-cell r25 plan -------------------------------------
   reconstruction:
     steps:
       # The plan was made for the bulk_sc_pretrain evaluation; run this step only if

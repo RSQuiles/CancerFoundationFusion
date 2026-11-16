@@ -22,7 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from embed.embed import EMBED_CARD, embed_adata, write_embeddings  # noqa: E402
+from embed.embed import EMBED_CARD, embed_adata, panel_hash, panel_record, write_embeddings  # noqa: E402
 from embed.embed_any import EMBEDDERS, Embedder, build_embedder, parse_options, register, run_embedder  # noqa: E402
 from experiments.check._harness import check, finish, raises  # noqa: E402
 from experiments.layout import ExperimentLayout  # noqa: E402
@@ -37,7 +37,7 @@ class FakeModel:
     def embed(self, adata, gene_subset=None, modality_col=None, modality="sc", **kwargs):
         genes = list(gene_subset) if gene_subset is not None else list(adata.var_names[: 10 + adata.n_obs % 7])
         self.calls.append({"n": adata.n_obs, "given_panel": gene_subset is not None,
-                           "modality_col": modality_col, "genes": genes})
+                           "modality_col": modality_col, "genes": genes, "kwargs": kwargs})
         X = adata[:, genes].X
         X = X.toarray() if hasattr(X, "toarray") else np.asarray(X)
         df = pd.DataFrame(X[:, :4].astype(np.float32), index=adata.obs_names)
@@ -109,6 +109,95 @@ def check_machinery() -> None:
     rows = np.array([[1, 2, 0], [0, 0, 0], [1, -1, 3], [1.5, 2, 1], [np.nan, 1, 1], [0, 0, 7]])
     check("count-like rows: integral, non-negative, finite, positive total",
           list(_count_like_rows(rows)) == [True, False, False, False, False, True])
+
+
+def _preprocess_module():
+    """``cancerfoundation/data/preprocess.py`` by path: numpy only, no package init (torch)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_check_preprocess", PROJECT_ROOT / "cancerfoundation" / "data" / "preprocess.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def check_input_modes() -> None:
+    print("\n-- input modes (train_matched) --")
+    pp = _preprocess_module()
+    rng = np.random.default_rng(3)
+    n_genes, budget, cap = 200, 40, 16
+    ranked = rng.permutation(n_genes)
+
+    sc_row = np.zeros(n_genes, dtype=np.float32)
+    sc_row[rng.choice(n_genes, 15, replace=False)] = rng.integers(1, 4, 15)
+    cols, bins, n_nz, n_z = pp.train_matched_input(sc_row, ranked, 51, budget, cap, method="quantile", seed=7)
+    order = {g: k for k, g in enumerate(ranked)}
+    check("sc-like row: every expressed gene plus zero_cap zeros", n_nz == 15 and n_z == cap and len(cols) == 31)
+    check("non-zeros first, each block in rank order",
+          (sc_row[cols[:n_nz]] > 0).all() and (sc_row[cols[n_nz:]] == 0).all()
+          and all(order[a] < order[b] for blk in (cols[:n_nz], cols[n_nz:]) for a, b in zip(blk, blk[1:])))
+    top_zeros = [g for g in ranked if sc_row[g] == 0][:cap]
+    check("the zeros are the top-ranked zero genes", list(cols[n_nz:]) == top_zeros)
+    np.random.seed(7)
+    full = pp.binning(sc_row, 51, method="quantile")
+    check("bins come from binning the whole row", np.array_equal(bins, full[cols]))
+    np.random.seed(123)
+    again = pp.train_matched_input(sc_row, ranked, 51, budget, cap, method="quantile", seed=7)
+    check("seeded per cell: same input whatever ran before", np.array_equal(again[1], bins))
+
+    bulk_row = rng.integers(1, 500, n_genes).astype(np.float32)
+    bulk_row[ranked[[3, 50, 120]]] = 0
+    cols, bins, n_nz, n_z = pp.train_matched_input(bulk_row, ranked, 51, budget, cap, method="midrank")
+    check("bulk-like row: its few zeros, the rest expressed, full budget",
+          n_z == 3 and n_nz == budget - 3 and len(cols) == budget)
+    check("midrank bins from the whole row",
+          np.array_equal(bins, pp.binning(bulk_row, 51, method="midrank")[cols]))
+    _, _, n_nz, n_z = pp.train_matched_input(sc_row, ranked, 51, budget, 0)
+    check("zero_cap 0 (nonzero mode): no zeros", n_z == 0 and n_nz == 15)
+    sub = ranked[:50]
+    cols, *_ = pp.train_matched_input(bulk_row, sub, 51, budget, cap)
+    check("a cut ranking (panel_size) is never left", set(cols) <= set(sub))
+    check("cell seed is stable", pp.cell_seed("c1") == pp.cell_seed("c1") != pp.cell_seed("c2"))
+
+    print("\n-- panel records --")
+    genes = ["G3", "G1", "G2"]
+    check("fixed panel: hash of the sorted genes, as before input modes",
+          panel_record(genes)[0] == panel_hash(genes) and panel_record(genes, "legacy_panel")[0] == panel_hash(genes))
+    h1, text, n = panel_record(genes, "train_matched", 0.4)
+    check("ranking file keeps the order and the zero fraction",
+          text.splitlines() == ["# input_mode=train_matched", "# zero_fraction=0.4", "G3", "G1", "G2"] and n == 3)
+    check("ranking hash depends on order and zero fraction",
+          h1 != panel_record(["G1", "G2", "G3"], "train_matched", 0.4)[0]
+          and h1 != panel_record(genes, "train_matched", 0.2)[0])
+    _, text, n = panel_record({"sc": ["G1", "G2"], "bulk": ["G2", "G3"]}, "train_matched", 0.4)
+    check("per-modality rankings: one section each", "## bulk" in text and "## sc" in text and n == 3)
+
+    model = FakeModel()
+    embed_adata(model, _adata(30))
+    kw = model.calls[0]["kwargs"]
+    check("default input mode is train_matched with zero fraction 0.4",
+          kw.get("input_mode") == "train_matched" and kw.get("zero_fraction") == 0.4 and "panel_size" in kw)
+    model = FakeModel()
+    embed_adata(model, _adata(30), input_mode="legacy_panel")
+    kw = model.calls[0]["kwargs"]
+    check("legacy_panel passes no ranking options", kw.get("input_mode") == "legacy_panel" and "zero_fraction" not in kw)
+    model = FakeModel()
+    big = _adata(250, mods=("sc", "bulk"))
+    _, genes = embed_adata(model, big, modality_col="modality", chunk_rows=100, panel_sample=40)
+    check("chunks reuse the ranking in its order", all(c["genes"] == genes for c in model.calls[1:]))
+    args = _splits_args()
+    check("embed_splits defaults: train_matched, 0.4, no panel cut",
+          (args.input_mode, args.zero_fraction, args.panel_size) == ("train_matched", 0.4, None))
+    check("embed_splits takes --input-mode legacy_panel",
+          _splits_args("--input-mode", "legacy_panel").input_mode == "legacy_panel")
+    from embed.embed import input_mode_provenance
+
+    check("provenance: nonzero records zero fraction 0",
+          input_mode_provenance(_splits_args("--input-mode", "nonzero"))["zero_fraction"] == 0.0)
+    check("provenance: legacy_panel records no ranking options",
+          input_mode_provenance(_splits_args("--input-mode", "legacy_panel")) ==
+          {"input_mode": "legacy_panel", "zero_fraction": None, "panel_size": None})
 
 
 def check_any() -> None:
@@ -245,6 +334,7 @@ def check_splits() -> None:
 
 def main() -> None:
     check_machinery()
+    check_input_modes()
     check_any()
     check_selection()
     check_splits()

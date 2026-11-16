@@ -11,6 +11,14 @@ checkpoint, normalization and gene panel, and the panel itself is saved as
     # Normalize the model input first (default: values as stored, as in training)
     python embed.py --checkpoint model.ckpt --input data.h5ad --out-dir out/ --normalize cpm_log1p
 
+**Input mode** (``--input-mode``, default ``train_matched``): each row is binned over all
+its vocabulary genes, as in training, and then gets its top-ranked zero genes (at most
+``--zero-fraction`` of the ``max_seq_len - 1`` budget, 0.4 by default, the middle of
+training's 0.2/0.4/0.6) and its top-ranked expressed genes. The gene panel is a ranking,
+not a cut (``--panel-size`` cuts it). ``nonzero`` drops the zeros; ``legacy_panel`` is the
+old fixed dense panel (binned within the panel, every zero kept), kept to reproduce
+embeddings made before input modes existed. See ``CancerFoundation.embed``.
+
 The obs column ``modality`` (``--modality-col``) decides the gene-selection scheme: a
 single value names the file's modality, several values share one gene panel. Without
 the column, ``--modality`` (default ``sc``) applies to the whole file. Gene selection
@@ -40,6 +48,11 @@ EMB_KEY = "X_emb"
 EMBED_CARD = "embed.json"
 MODALITY_COL = "modality"
 NORMALIZE_CHOICES = ("log1p", "cpm_log1p", "cp10k_log1p")
+# CancerFoundation.embed input modes (cancerfoundation.model.model.EMBED_INPUT_MODES).
+INPUT_MODES = ("train_matched", "nonzero", "legacy_panel")
+RANKED_INPUT_MODES = ("train_matched", "nonzero")
+DEFAULT_INPUT_MODE = "train_matched"
+DEFAULT_ZERO_FRACTION = 0.4
 
 
 # --------------------------------------------------------------------------- #
@@ -75,6 +88,30 @@ def flat_genes(genes) -> list[str]:
     return list(genes)
 
 
+def panel_record(genes, input_mode: str | None = None, zero_fraction: float | None = None) -> tuple[str, str, int]:
+    """``(hash, file text, n genes)`` of the genes an embedding read.
+
+    A fixed panel (``legacy_panel``, or any non-CancerFoundation embedder) is a set: the
+    hash is of the sorted genes, as before input modes existed. A ranking
+    (``train_matched`` / ``nonzero``) is ordered and only means something with its
+    zero fraction, so the file lists the mode, the zero fraction and the genes in rank
+    order (one section per modality for per-modality rankings), and the hash is of that
+    text: two files compare equal only if they ranked the same genes the same way.
+    """
+    if input_mode not in RANKED_INPUT_MODES:
+        flat = flat_genes(genes)
+        return panel_hash(flat), "\n".join(flat) + "\n", len(flat)
+    lines = [f"# input_mode={input_mode}", f"# zero_fraction={zero_fraction}"]
+    sections = sorted(genes.items()) if isinstance(genes, dict) else [(None, genes)]
+    for group, ranked in sections:
+        if group is not None:
+            lines.append(f"## {group}")
+        lines.extend(ranked)
+    text = "\n".join(lines) + "\n"
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+    return digest, text, len(flat_genes(genes))
+
+
 def embed_adata(
     model,
     adata,
@@ -86,8 +123,15 @@ def embed_adata(
     chunk_rows: int = 100_000,
     panel_sample: int = 50_000,
     seed: int = 0,
+    input_mode: str = DEFAULT_INPUT_MODE,
+    zero_fraction: float = DEFAULT_ZERO_FRACTION,
+    panel_size: int | None = None,
 ) -> tuple[np.ndarray, list[str] | dict[str, list[str]]]:
     """Embed every row of ``adata`` through one gene panel, in chunks if it is large.
+
+    ``input_mode``, ``zero_fraction`` and ``panel_size`` are passed to
+    ``CancerFoundation.embed`` (see the module docstring). With a ranked mode the
+    "panel" is the gene ranking; chunks reuse it like a fixed panel.
 
     With ``modality_col`` naming a column with several values, the panel is fitted
     across them (``shared_panel``); a single value names the modality; without the
@@ -104,7 +148,10 @@ def embed_adata(
     if not has_col and modality_col is not None:
         print(f"No obs column '{modality_col}': treating every row as '{modality or 'sc'}'")
     common = dict(batch_size=batch_size, normalize=normalize, modality=modality or "sc",
-                  modality_col=modality_col if has_col else None, shared_panel=shared_panel)
+                  modality_col=modality_col if has_col else None, shared_panel=shared_panel,
+                  input_mode=input_mode)
+    if input_mode in RANKED_INPUT_MODES:
+        common.update(zero_fraction=zero_fraction, panel_size=panel_size)
 
     def run(sub, gene_subset=None):
         kwargs = dict(common)
@@ -176,10 +223,11 @@ def write_embeddings(
         "n_panel_genes": None,
     }
     if genes is not None:
-        genes = flat_genes(genes)
-        entry["panel_hash"] = panel_hash(genes)
-        entry["n_panel_genes"] = len(genes)
-        (out_dir / f"panel_{entry['panel_hash']}.txt").write_text("\n".join(genes) + "\n", encoding="utf-8")
+        prov = provenance or {}
+        digest, text, n_genes = panel_record(genes, prov.get("input_mode"), prov.get("zero_fraction"))
+        entry["panel_hash"] = digest
+        entry["n_panel_genes"] = n_genes
+        (out_dir / f"panel_{digest}.txt").write_text(text, encoding="utf-8")
 
     card_path = out_dir / EMBED_CARD
     card = json.loads(card_path.read_text(encoding="utf-8")) if card_path.exists() else {}
@@ -210,6 +258,36 @@ def add_normalization_args(parser: argparse.ArgumentParser) -> None:
             "normalization either way."
         ),
     )
+
+
+def add_input_mode_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--input-mode", default=DEFAULT_INPUT_MODE, choices=INPUT_MODES,
+        help=("How each row's model input is built. train_matched: bin the row over all its "
+              "vocabulary genes, then take its top-ranked zero genes (--zero-fraction of the "
+              "sequence budget) and top-ranked expressed genes, as in training. nonzero: the "
+              "same without zeros. legacy_panel: one fixed panel, binned within it, every zero "
+              "kept (embeddings made before input modes)."),
+    )
+    parser.add_argument(
+        "--zero-fraction", type=float, default=DEFAULT_ZERO_FRACTION,
+        help=("train_matched: at most this share of the max_seq_len - 1 slots holds zero genes "
+              "(training draws it from zero_percentages, usually 0.2/0.4/0.6)."),
+    )
+    parser.add_argument(
+        "--panel-size", type=int, default=None,
+        help="train_matched / nonzero: only the N top-ranked genes may enter a sequence (default: all).",
+    )
+
+
+def input_mode_provenance(args) -> dict:
+    """The ``embed.json`` fields of the input mode."""
+    ranked = args.input_mode in RANKED_INPUT_MODES
+    return {
+        "input_mode": args.input_mode,
+        "zero_fraction": (0.0 if args.input_mode == "nonzero" else args.zero_fraction) if ranked else None,
+        "panel_size": args.panel_size if ranked else None,
+    }
 
 
 def add_model_run_args(parser: argparse.ArgumentParser) -> None:
@@ -250,6 +328,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stratify-by", nargs="*", default=["tissue_general"],
                         help="obs columns the --subsample is stratified on (missing ones are skipped).")
     add_normalization_args(parser)
+    add_input_mode_args(parser)
     add_model_run_args(parser)
     return parser.parse_args()
 
@@ -300,6 +379,7 @@ def main() -> None:
         batch_size=args.batch_size, normalize=args.normalize,
         shared_panel=args.shared_panel, chunk_rows=args.chunk_rows,
         panel_sample=args.panel_sample, seed=args.seed,
+        input_mode=args.input_mode, zero_fraction=args.zero_fraction, panel_size=args.panel_size,
     )
     write_embeddings(
         Path(args.out_dir), args.name or input_path.stem, adata.obs, emb, genes,
@@ -310,6 +390,7 @@ def main() -> None:
             "modality_col": args.modality_col,
             "shared_panel": args.shared_panel,
             "normalize": args.normalize,
+            **input_mode_provenance(args),
             "subsample": args.subsample if args.subsample and args.subsample > 0 else None,
             "stratify_by": args.stratify_by if args.subsample and args.subsample > 0 else None,
             "seed": args.seed,

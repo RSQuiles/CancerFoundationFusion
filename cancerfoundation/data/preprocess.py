@@ -249,3 +249,45 @@ def binning(
             bins = np.quantile(row, np.linspace(0, 1, n_bins - 1))
             binned_row = _digitize(row, bins)
     return torch.from_numpy(binned_row) if not return_np else binned_row.astype(dtype)
+
+
+def train_matched_input(
+    row: np.ndarray,
+    ranked_pos: np.ndarray,
+    n_bins: int,
+    budget: int,
+    zero_cap: int,
+    method: str = "quantile",
+    seed: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, int, int]:
+    """One cell's model input as training builds it (``embed(input_mode="train_matched")``).
+
+    ``row`` holds every vocabulary gene of the cell. It is binned whole, as the collator
+    bins the stored row before sampling a sequence. Then the cell takes its top-ranked
+    zero genes, at most ``zero_cap`` (training: ``round(zero_percentage * budget)``, an
+    absolute count capped by the zeros the row has), and fills the rest of the
+    ``budget`` slots with its top-ranked non-zero genes. ``ranked_pos`` are column
+    indices into ``row``, best first.
+
+    ``seed`` seeds ``np.random`` before binning (quantile binning breaks ties with it),
+    so a cell's input does not depend on the cells binned before it.
+
+    Returns ``(columns, bins, n_nonzero, n_zero)``, the non-zero columns first.
+    """
+    row = np.asarray(row, dtype=np.float32)
+    ranked_pos = np.asarray(ranked_pos, dtype=np.int64)
+    if seed is not None:
+        np.random.seed(seed)
+    binned = np.asarray(binning(row, n_bins, method=method), dtype=np.float32)
+    is_zero = row[ranked_pos] == 0
+    zero_cols = ranked_pos[is_zero][: max(0, min(zero_cap, budget))]
+    nonzero_cols = ranked_pos[~is_zero][: budget - len(zero_cols)]
+    cols = np.concatenate([nonzero_cols, zero_cols])
+    return cols, binned[cols], len(nonzero_cols), len(zero_cols)
+
+
+def cell_seed(name) -> int:
+    """A stable per-cell seed from its obs name (tie-breaking in quantile binning)."""
+    import zlib
+
+    return zlib.crc32(str(name).encode("utf-8"))

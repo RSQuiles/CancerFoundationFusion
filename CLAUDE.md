@@ -34,6 +34,17 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
   hparam (old checkpoints = quantile) and used by the collator, `embed()` and the
   reconstruction targets; a change on resume is reported. `python scripts/check_binning_method.py`
   self-checks it (the collator part needs torch).
+- `--cdd`: Contrastive Domain Discrepancy (class-conditional MMD between pseudobulk and
+  bulk, keyed on `--cdd-class-column`), **fully supervised on the given labels**: a tissue
+  counts only when it is in both domains of a batch (≥ `--cdd-min-class-count`), so
+  `--cdd-exclude-labels` (default `unknown`) and bulk-only tissues get no CDD signal.
+  `--cdd-warmup-steps` (old name `--cdd-cluster-warmup-steps`, also accepted as a config
+  key) keeps CDD at 0 while MMD aligns, then `--cdd-ramp-steps` hands MMD over to CDD.
+  The former target-label inference (`--cdd-infer-labels` and the `--cdd-cluster-*`
+  flags) is removed; its config keys are refused with a message. Checkpoints trained
+  with it hold its label buffers (`known_label`, `pseudo_label`, ...), which
+  `on_load_checkpoint` and `load_for_inference` drop
+  (`checkpoint.drop_removed_cdd_state`), so they still resume and embed.
 
 ### Experiments root and layout
 Everything a run produces lives under ONE root: `--root`, else `$UNIFIEDFM_ROOT`, else
@@ -240,6 +251,32 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
 - `embed.py` holds the machinery the other two use: `load_model`, `embed_adata` and
   `write_embeddings`. `embed_adata` chunks large inputs. It fits the panel once on
   `--panel-sample` rows and passes it as `gene_subset` to every chunk.
+- **Input mode** (`--input-mode`, config `input_mode:`; `embed.py`, `embed_splits.py`,
+  `geneicl/embed_suite.py`), the same for sc, bulk and pseudobulk:
+  - `train_matched` (the scripts' default): each row is binned over ALL its vocabulary
+    genes first, as the collator does. The panel scorers then give a gene *ranking*
+    (`gene_panel.gene_ranking` / `shared_gene_ranking`, joint or per modality as before),
+    not a cut. Each cell takes its top-ranked zero genes, at most
+    `round(--zero-fraction * (max_seq_len - 1))` (default 0.4, the middle of training's
+    0.2/0.4/0.6; like training's `_sample`, an absolute count capped by the zeros the row
+    has), then fills the remaining slots with its top-ranked expressed genes.
+    `preprocess.train_matched_input` builds one cell's sequence. Sequences are padded per
+    batch.
+  - Results are deterministic: quantile ties are seeded per cell from its obs name, so an
+    embedding does not depend on the batch or the subsample. `--panel-size N` restricts
+    the ranking to its top N.
+  - Single-cell rows get about 480 zeros plus up to about 720 expressed genes, as in
+    training. Bulk rows have few zeros, so almost all of their slots are expressed genes.
+  - `nonzero` is `train_matched` without zeros.
+  - `legacy_panel` (and `CancerFoundation.embed`'s own default, for other callers) is the
+    old input: one fixed `n_top_genes` panel, binned *within the panel*, every zero kept.
+    For a single cell that input is mostly zeros, which no training sequence was. Keep it
+    only to reproduce older embeddings, e.g. `--input-mode legacy_panel --variant legacy_panel`.
+  - `embed.json` records `input_mode`, `zero_fraction` and `panel_size`. A ranking's
+    `panel_<hash>.txt` lists the mode, the zero fraction and the genes in rank order, and
+    the hash covers all three; fixed panels keep the old sorted-set hash. A GeneICL
+    directory embedded before input modes is refused until `--overwrite` (or
+    `--input-mode legacy_panel`).
 - `embed_splits.py` embeds every requested modality and part **in one call, through one
   shared gene panel**, so alignment plots compare like with like. `--parts` picks `test`,
   `train_subset` or both, and defaults to `test` only. `--test-subset` and
@@ -1049,6 +1086,9 @@ Top-level scripts and config:
 - **TransformerModule** (`module.py`): Gene encoder + value encoder → TransformerEncoder → decoder
 - **CancerFoundation** (`model.py`): Lightning wrapper handling training loop, loss, optimization
   - `embed(adata)` method: produces cell embeddings directly from an AnnData object (handles gene intersection, HVG selection, binning, batched inference)
+  - `embed(..., input_mode="train_matched")` builds each cell's input as training does
+    (bin the whole row, then top-ranked zeros + expressed genes up to `max_seq_len`); the
+    default `legacy_panel` keeps the old fixed dense panel. See "Embeddings".
   - `embed(..., modality_col=...)` on multi-modality data uses ONE shared gene panel across modalities by default (`shared_panel=True`, consensus rank aggregation). Per-modality panels make the model's input distribution differ *with* modality, which is indistinguishable from a batch effect — never compare bulk to pseudobulk embeddings fitted on different panels. Pass `shared_panel=False` only to reproduce that older behaviour.
 - Optional features: MVC decoder, DAT (Domain Adversarial Training), explicit zero probability modeling, contrastive loss (pseudobulk vs bulk), aggregation consistency loss, denoising, ESM/RNABert gene embeddings
 

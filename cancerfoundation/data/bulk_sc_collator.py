@@ -11,7 +11,7 @@ from cancerfoundation.data.preprocess import looks_like_counts
 # in ``conditions["modality"]`` and compared against by every modality-aware loss —
 # they are deliberately decoupled from the stored ``mapping.json`` codes (which only
 # select row pools). Any code path that hands rows to the model outside this collator
-# (e.g. the CDD clustering refresh) must stamp these, not the raw stored codes, or the
+# (e.g. CancerFoundation.embed) must stamp these, not the raw stored codes, or the
 # modality condition token — and thus the embeddings — will disagree with training.
 BULK_MODALITY = 0
 SC_MODALITY = 1
@@ -342,11 +342,6 @@ class BulkSCCollator(AnnDataCollator):
         # sampled cells has no fixed relationship to a pseudobulk built from all N.
         data_dict["is_precomputed_pb_batch"] = torch.tensor(
             bool(is_precomputed_batch), dtype=torch.bool
-        )
-        # Original dataset row index per sample (-1 for aggregated pseudobulk). Used
-        # by the CDD target-label bank to map bulk rows to their pseudo-labels.
-        data_dict["row_index"] = torch.LongTensor(
-            [int(s.get("_row_index", -1)) for s in unified_samples]
         )
 
         return data_dict

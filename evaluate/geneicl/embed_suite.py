@@ -40,16 +40,18 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from embed.embed import (  # noqa: E402
     EMBED_CARD,
+    add_input_mode_args,
     add_model_run_args,
     add_normalization_args,
-    flat_genes,
-    panel_hash,
+    input_mode_provenance,
+    panel_record,
 )
 from evaluate._cli import parse_with_config  # noqa: E402
 from evaluate.geneicl import suite as S  # noqa: E402
 
 # Card fields that must agree before existing files are reused.
-IDENTITY_FIELDS = ("method", "checkpoint", "options", "suite", "gene_ids", "normalize", "modality")
+IDENTITY_FIELDS = ("method", "checkpoint", "options", "suite", "gene_ids", "normalize", "modality",
+                   "input_mode", "zero_fraction", "panel_size")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Output directory (default: embeddings/<model>/geneicl_<suite>/)")
     parser.add_argument("--overwrite", action="store_true", help="Re-embed datasets that already have a file")
     add_normalization_args(parser)
+    add_input_mode_args(parser)
     add_model_run_args(parser)
     return parser
 
@@ -107,7 +110,15 @@ def check_identity(card: dict, identity: dict, overwrite: bool) -> None:
     """Refuse to mix files from different checkpoints / embedders in one directory."""
     if not card.get("files") or overwrite:
         return
-    differ = {k: (card.get(k), identity.get(k)) for k in IDENTITY_FIELDS if card.get(k) != identity.get(k)}
+    def _with_mode(fields: dict) -> dict:
+        # A CancerFoundation run that records no input mode predates them: legacy_panel.
+        fields = dict(fields)
+        if fields.get("method") == "cancerfoundation" and fields.get("input_mode") is None:
+            fields["input_mode"] = "legacy_panel"
+        return fields
+
+    on_disk, now = _with_mode(card), _with_mode(identity)
+    differ = {k: (on_disk.get(k), now.get(k)) for k in IDENTITY_FIELDS if on_disk.get(k) != now.get(k)}
     if differ:
         details = "; ".join(f"{k}: on disk {a!r}, now {b!r}" for k, (a, b) in differ.items())
         raise SystemExit(f"Error: the existing GeneICL embeddings were made differently ({details}). "
@@ -163,10 +174,10 @@ def embed_suite(
                  "n_rows": int(emb.shape[0]), "dim": int(emb.shape[1]),
                  "panel_hash": None, "n_panel_genes": None}
         if genes is not None:
-            genes = flat_genes(genes)
-            entry["panel_hash"] = panel_hash(genes)
-            entry["n_panel_genes"] = len(genes)
-            (out_dir / f"panel_{entry['panel_hash']}.txt").write_text("\n".join(genes) + "\n", encoding="utf-8")
+            digest, text, n_genes = panel_record(genes, identity.get("input_mode"), identity.get("zero_fraction"))
+            entry["panel_hash"] = digest
+            entry["n_panel_genes"] = n_genes
+            (out_dir / f"panel_{digest}.txt").write_text(text, encoding="utf-8")
         card["files"][path.name] = entry
         card["updated"] = entry["created"]
         (out_dir / EMBED_CARD).write_text(json.dumps(card, indent=2), encoding="utf-8")
@@ -193,9 +204,12 @@ def model_backend(args, layout):
         return embed_adata(model, adata, modality_col=None, modality=args.modality,
                            batch_size=args.batch_size, normalize=args.normalize,
                            shared_panel=args.shared_panel, chunk_rows=args.chunk_rows,
-                           panel_sample=args.panel_sample, seed=args.seed)
+                           panel_sample=args.panel_sample, seed=args.seed,
+                           input_mode=args.input_mode, zero_fraction=args.zero_fraction,
+                           panel_size=args.panel_size)
 
-    identity = {"method": "cancerfoundation", "checkpoint": str(checkpoint), "options": None}
+    identity = {"method": "cancerfoundation", "checkpoint": str(checkpoint), "options": None,
+                **input_mode_provenance(args)}
     return name, embed_fn, model.vocab, identity
 
 
