@@ -25,7 +25,7 @@ reconstruction:       # python -m evaluate.reconstruction.run_reconstruction
 
 reconstruction_plot:  # python -m evaluate.reconstruction.plot_reconstruction (anywhere, CPU)
   plan: bulk:leiden_s0:test:r25
-  name: bulk_vs_bulkformer             # required: -> tasks/reconstruction/_plots/<plan>/<name>/
+  name: bulk_vs_bulkformer             # required: -> results/reconstruction/_plots/<plan>/<name>/
   # models: [unified_v1, bulkformer]   # default: every model with results on the plan
   # plots: [mae_by_bin, metrics_table] # default: all (see --list)
   # baselines: true                    # one gene-mean and one sample-mean row per space group

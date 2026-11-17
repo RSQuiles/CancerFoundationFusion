@@ -235,7 +235,7 @@ def check_end_to_end(tmp: Path, layout: ExperimentLayout) -> None:
 
     run_reconstruction.main(base + ["--reconstructor", "_fake_noisy", "--name", "noisy"])
     table = compare.main(["--root", str(tmp), "--plan", "bulk:s0:test:r25", "--models", "perfect", "noisy"])
-    assess = layout.assessment_dir("reconstruction_bulk_s0_test_r25")
+    assess = layout.task_compare_dir("reconstruction", "bulk_s0_test_r25", "default")
     check("comparison written with a manifest",
           json.loads((assess / "manifest.json").read_text())["models"] == ["perfect", "noisy"])
     check("perfect beats noisy on shared entries",
@@ -295,7 +295,7 @@ def check_plots(tmp: Path, layout: ExperimentLayout) -> None:
           raises(lambda: plot_reconstruction.main(base + ["--name", "a/b"]), SystemExit))
     out = plot_reconstruction.main(base + ["--name", "cmp", "--models", *models, "--baselines"])
     check("written under results/tasks/reconstruction/_plots/<plan>/<name>/",
-          out == layout.tasks_root / "reconstruction" / "_plots" / slug / "cmp")
+          out == layout.results_dir / "reconstruction" / "_plots" / slug / "cmp")
     manifest = json.loads((out / "manifest.json").read_text())
     check("manifest records the name", manifest["name"] == "cmp" and "selection" not in manifest)
     check("one group per space and n_bins, plus all",
@@ -420,7 +420,7 @@ def check_heads(tmp: Path, layout: ExperimentLayout) -> None:
 
     table = compare.main(["--root", str(tmp), "--plan", "bulk:s0:test:r25", "--models", "cf_two", "cf_two@mvc",
                           "--name", "heads"]).set_index("model")
-    manifest = json.loads((layout.assessment_dir("reconstruction_bulk_s0_test_r25_heads") / "manifest.json").read_text())
+    manifest = json.loads((layout.task_compare_dir("reconstruction", "bulk_s0_test_r25", "heads") / "manifest.json").read_text())
     check("compare: one row per head", list(table.index) == ["cf_two", "cf_two@mvc"])
     check("compare: manifest models are plain names, rows the labels",
           manifest["models"] == ["cf_two"] and manifest["rows"] == ["cf_two", "cf_two@mvc"])

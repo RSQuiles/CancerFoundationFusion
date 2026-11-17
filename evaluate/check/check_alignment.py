@@ -79,7 +79,7 @@ def main() -> None:
         print("\n-- dry run --")
         out = scib_benchmark.main(["--root", tmp, "--name", "t", "--models", "m1", "m2", "pca",
                                    "--pre-integrated", "pca", "--dry-run"])
-        check("written under results/assessment/scib_<name>/", out == layout.assessment_dir("scib_t"))
+        check("written under results/scib_benchmark/<name>/", out == layout.scib_dir("t"))
         manifest = json.loads((out / "manifest.json").read_text())
         check("manifest lists every model; the reference is not a row",
               manifest["models"] == ["m1", "m2", "pca"] and manifest["rows"] == ["m1", "m2"])
@@ -154,6 +154,20 @@ def main() -> None:
             results = pd.read_csv(out / "scib.csv", index_col=0)
             check("--bio-only: no batch metrics, no Total",
                   "Total" not in results.columns and "Batch correction" not in results.columns)
+
+    print("\n-- XLA autotuning (JAX compile stalls) --")
+    env: dict[str, str] = {}
+    check("no XLA_FLAGS: autotuning turned off",
+          scib_benchmark.configure_xla(False, env) == "--xla_gpu_autotune_level=0" and env["XLA_FLAGS"] == "--xla_gpu_autotune_level=0")
+    env = {"XLA_FLAGS": "--xla_force_host_platform_device_count=2"}
+    check("other flags kept, level appended",
+          scib_benchmark.configure_xla(False, env) == "--xla_force_host_platform_device_count=2 --xla_gpu_autotune_level=0")
+    env = {"XLA_FLAGS": "--xla_gpu_autotune_level=4"}
+    check("a level the user set is respected",
+          scib_benchmark.configure_xla(False, env) == "--xla_gpu_autotune_level=4" and env["XLA_FLAGS"].endswith("=4"))
+    env = {}
+    check("--xla-autotune leaves XLA_FLAGS alone", scib_benchmark.configure_xla(True, env) == "" and "XLA_FLAGS" not in env)
+    check("--xla-autotune parses", scib_benchmark.build_parser().parse_args(["--xla-autotune"]).xla_autotune)
     finish()
 
 

@@ -241,7 +241,7 @@ def check_compare(tmp: Path, repo: Path, suite: Path, layout: ExperimentLayout) 
                   for f in range(2)]).to_csv(results / "scfoundation_classification.csv", index=False)
     summary = compare.main(["--root", str(tmp / "root"), "--geneicl-repo", str(repo), "--models", "fake",
                             "--reference", "scfoundation", "missing_tag", "--name", "t"])
-    out = layout.assessment_dir("geneicl_benchmark_t")
+    out = layout.task_compare_dir("geneicl_benchmark", "t")
     per_task = pd.read_csv(out / "per_task.csv")
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
     check("rows: the model and the found reference", summary["row"].tolist() == ["fake", "ref:scfoundation"])
@@ -275,7 +275,7 @@ def check_plot(tmp: Path, layout: ExperimentLayout) -> None:
     df = pd.read_csv(csv)
     df["auroc"] = 0.95
     df.to_csv(csv, index=False)
-    (layout.tasks_root / run_probe.task_name("benchmark") / "_scratch").mkdir()
+    (layout.task_root(run_probe.task_name("benchmark")) / "_scratch").mkdir()
     check("available models: those with probe CSVs",
           compare.available_models(layout, "benchmark") == ["fake", "fake2"])
 
@@ -285,7 +285,7 @@ def check_plot(tmp: Path, layout: ExperimentLayout) -> None:
           raises(lambda: plot_benchmark.main(root + ["--name", "../x"]), SystemExit))
     out = plot_benchmark.main(root + ["--name", "main"])
     check("written under tasks/geneicl_<suite>/_plots/<name>/",
-          out == layout.tasks_root / "geneicl_benchmark" / "_plots" / "main")
+          out == layout.results_dir / "geneicl_benchmark" / "_plots" / "main")
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
     check("manifest lists the models and the name", manifest["models"] == ["fake", "fake2"]
           and manifest["name"] == "main" and "selection" not in manifest)

@@ -8,7 +8,7 @@ What changes:
   1. every directory in ``ExperimentLayout.model_owned_dirs`` (checkpoints, embeddings,
      representation, alignment and per-task results) is moved to the new name;
   2. JSON files inside those directories, plus ``ExperimentLayout.model_reference_files``
-     (launch summaries, assessment manifests), are rewritten key by key: name fields
+     (launch summaries, comparison and scIB manifests), are rewritten key by key: name fields
      equal to OLD, ``models`` lists and paths under a moved directory;
   3. launch configs passed with ``--config`` get the model's entry renamed, so a
      relaunch or resume targets the new directory;

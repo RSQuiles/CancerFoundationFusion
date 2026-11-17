@@ -17,7 +17,7 @@
     python -m evaluate.reconstruction.check_train_eval --model bulk_only --modality bulk --split leiden_s0
 
 Runs in the container (torch, bionemo SCDL; GPU if available). Writes
-``results/tasks/reconstruction/<model>/_checks/train_eval_<split>/report.json`` and exits 1
+``results/reconstruction/<model>/_checks/train_eval_<split>/report.json`` and exits 1
 when part 1 or part 2 fails. Only generative (``both``) models without conditions are
 supported.
 """

@@ -176,14 +176,14 @@ tasks:
           group_by: [tissue_general]
           batch_size: 16
 
-      compare:                    # -> results/assessment/reconstruction_sc_leiden_s0_test_r25_sc_binning/
+      compare:                    # -> results/reconstruction/_compare/sc_leiden_s0_test_r25/sc_binning/
         environment: host
         args:
           plan: *sc_plan
           models: &models [sc_quantile, sc_midrank]
           name: sc_binning
           baselines: true
-      plot:                       # -> results/tasks/reconstruction/_plots/<plan>/sc_binning/
+      plot:                       # -> results/reconstruction/_plots/<plan>/sc_binning/
         script: reconstruction_plot
         environment: host
         args:

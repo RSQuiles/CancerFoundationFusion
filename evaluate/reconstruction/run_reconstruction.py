@@ -8,7 +8,7 @@
 
 ``--plan`` is ``MODALITY:SPLIT:PART:NAME`` (``data/<mod>/splits/<split>/masks/``) or a
 path. The rows are read from the h5ad the plan was built on (``--input`` overrides).
-Writes ``results/tasks/reconstruction/<name>/<plan>/``; a CancerFoundation run with
+Writes ``results/reconstruction/<name>/<plan>/``; a CancerFoundation run with
 ``--head mvc`` writes ``<name>/<plan>_mvc/`` beside it, so both heads of one model are
 kept. ``compare`` and ``plot_reconstruction`` read the MVC run as the row ``<name>@mvc``:
 
@@ -72,7 +72,7 @@ def run_subdir(slug: str, head: str = DEFAULT_HEAD) -> str:
 
 
 def run_dir(layout, row: str, slug: str) -> Path:
-    """``results/tasks/reconstruction/<model>/<plan>[_<head>]/`` of a row (``model[@head]``)."""
+    """``results/reconstruction/<model>/<plan>[_<head>]/`` of a row (``model[@head]``)."""
     model, head = parse_row(row)
     return layout.task_dir(RESULTS_TASK, model) / run_subdir(slug, head)
 
@@ -111,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="obs columns to break metrics down by (modality always)")
     parser.add_argument("--input", type=Path, default=None, help="h5ad holding the plan's rows (default: the plan's source)")
     parser.add_argument("--out-dir", type=Path, default=None,
-                        help="Output directory (default: results/tasks/reconstruction/<name>/<plan>/)")
+                        help="Output directory (default: results/reconstruction/<name>/<plan>/)")
     parser.add_argument("--seed", type=int, default=0)
     return parser
 

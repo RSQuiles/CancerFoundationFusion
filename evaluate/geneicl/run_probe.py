@@ -9,7 +9,7 @@ GeneICL eval environment (``--geneicl-python``, else ``$GENEICL_PYTHON``, else t
 python). Every scored task gets 5-fold CV (patient-grouped when the task has a group,
 ``seed`` 42), PCA keeping 95% of the variance and an untuned elastic net (regression) or
 elastic-net logistic regression (classification), fitted per fold: the protocol of the
-FM rows of the GeneICL paper. Writes ``results/tasks/geneicl_<suite>/<model>/``:
+FM rows of the GeneICL paper. Writes ``results/geneicl_<suite>/<model>/``:
 
 - ``probe_{classification,regression}.csv``: per-fold metrics (benchmark.py columns);
 - ``probe_regression.oof.csv`` and ``probe_classification.clfoof.npz``: per-sample
@@ -48,7 +48,7 @@ _SAFE = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./"
 
 
 def task_name(suite: str) -> str:
-    """The results/tasks/ directory of a suite."""
+    """The results/ task directory of a suite (geneicl_<suite>)."""
     return f"geneicl_{suite}"
 
 

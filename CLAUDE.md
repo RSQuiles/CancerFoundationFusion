@@ -64,9 +64,30 @@ embeddings/<model>/{sc,bulk,pseudobulk}_{test,train_subset}.h5ad + embed.json
 embeddings/<model>/<variant>/...                       the same, embedded differently (e.g. own_panel)
 embeddings/<model>/geneicl_<suite>/<dataset>.npz + embed.json   GeneICL benchmark inputs
 results/representation/<model>/[<variant>/], results/representation/_alignment/<model>/[<variant>/]
-results/tasks/<task>/<model>/, results/assessment/<analysis>/ (+ manifest.json)
-results/tasks/<task>/_plots/[<plan>/]<name>/ (+ manifest.json)   named model comparisons (figures)
+results/reconstruction/<model>/<plan>[_mvc]/                     one model's run on a mask plan
+results/reconstruction/_compare/<plan>/<name>/, _plots/<plan>/<name>/   comparison tables / figures (+ manifest.json)
+results/geneicl_<suite>/<model>/, _compare/<name>/, _plots/<name>/      (e.g. geneicl_benchmark/)
+results/scib_benchmark/<name>/ (+ manifest.json)                 one scIB analysis over several models
+results/_checks/<check>/, results/_eval_runs/<config>_<timestamp>/
 ```
+
+`results/` holds **one directory per evaluation task** (`representation`, `reconstruction`,
+`geneicl_benchmark`, `scib_benchmark`); there is no `tasks/` or `assessment/` level. Inside a
+task: one directory per model, plus the reserved `_compare/` (tables, `compare.py`) and
+`_plots/` (figures) of named comparisons (default name `default`). `scib_benchmark/`
+holds analyses only, never model directories (`ExperimentLayout.model_task_roots`).
+Results from the old layout move with `python -m experiments.migrate_results_layout`
+(dry run; `--apply` moves, rewrites paths in the JSON files, removes the emptied
+`tasks/` and `assessment/`; see "Migrating results" below).
+
+**Migrating results** (`experiments/migrate_results_layout.py`):
+`results/tasks/<task>/...` -> `results/<task>/...`, `assessment/reconstruction_<plan>[_<name>]` ->
+`reconstruction/_compare/<plan>/<name|default>`, `assessment/geneicl_<suite>[_<name>]` ->
+`geneicl_<suite>/_compare/<name|default>` (plan and suite read from the manifest),
+`assessment/scib_<name>` -> `scib_benchmark/<name>`, `assessment/store_check_<mod>_<split>` ->
+`_checks/store_<mod>_<split>`. Anything else stays and is listed; an existing destination
+stops the run before any move; a failure moves everything back.
+`python -m experiments.check.check_migrate_results` self-checks it.
 
 A model is identified by its **name alone**; there are no ablation directories. Two rules
 keep `rename_model.py` exact, so every new writer must follow them: per-model output goes
@@ -442,13 +463,13 @@ errors, so keep only options every reader has at the top level (usually `root`).
 # 1. a model-independent mask plan -> data/<mod>/splits/<split>/masks/<part>_<name>.npz
 python -m evaluate.reconstruction.mask_plan --modality bulk --split leiden_s0 --part test --name r25 \
     --mask-ratio 0.25 --seq-len 1200 --n-samples 2000 [--gene-universe genes.txt] [--zero-fraction 0.4]
-# 2. score models on it -> results/tasks/reconstruction/<name>/<plan>/
+# 2. score models on it -> results/reconstruction/<name>/<plan>/
 python -m evaluate.reconstruction.run_reconstruction --model unified_v1 --plan bulk:leiden_s0:test:r25 [--head mvc]   # mvc -> row unified_v1@mvc
 python -m evaluate.reconstruction.run_reconstruction --reconstructor bulkformer --name bulkformer \
     --plan bulk:leiden_s0:test:r25 --option repo=/path gene_column=gene_id [--context plan]
-# 3. compare on the entries all of them scored -> results/assessment/reconstruction_<plan>/
+# 3. compare on the entries all of them scored -> results/reconstruction/_compare/<plan>/<name>/
 python -m evaluate.reconstruction.compare --models unified_v1 bulkformer --plan bulk:leiden_s0:test:r25
-# 4. figures -> results/tasks/reconstruction/_plots/<plan>/<name>/<group>/
+# 4. figures -> results/reconstruction/_plots/<plan>/<name>/<group>/
 python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test:r25 --name cf_vs_bf \
     [--models unified_v1 bulkformer] [--plots mae_by_bin metrics_table] [--baselines] [--list]
 ```
@@ -525,7 +546,7 @@ python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test
   `entries.parquet` keeps every scored entry, so new metrics need no rerun.
 - **Figures** (`plot_reconstruction.py`): `--name` (required; `name:` in the
   `reconstruction_plot` block) names the comparison, written to
-  `results/tasks/reconstruction/_plots/<plan>/<name>/`, so one plan can hold several
+  `results/reconstruction/_plots/<plan>/<name>/`, so one plan can hold several
   comparisons of different models. No `--models` means every model with results on the
   plan. Rerunning a name overwrites its figures.
   - **Groups:** models are grouped by space, and bins models also by `n_bins` and binning
@@ -581,7 +602,11 @@ python -m evaluate.alignment.scib_benchmark --name tissue_s0_test --plot-only --
   (several are pooled); without the flag one modality is refused. The table has a "Bio
   conservation" score and no "Total". `--kbet` and `--pre-integrated` are refused with
   it; list `pca` under `--models` to show it as a baseline row.
-- **Outputs** in `results/assessment/scib_<name>/`: `scib.csv`
+- **XLA autotuning off by default.** scib_metrics' JAX stalled for minutes per metric on the
+  GPU nodes while XLA autotuned kernels ("Very slow compile?"). `--xla_gpu_autotune_level=0`
+  is added to `XLA_FLAGS` unless a level is set there or `--xla-autotune` is given; the
+  effective flags are in `meta.json` (`xla_flags`).
+- **Outputs** in `results/scib_benchmark/<name>/`: `scib.csv`
   (`get_results(min_max_scale=False, clean_names=True)`, with the Metric Type row),
   `scib_minmax.csv`, `label_batch.csv`, `meta.json` (keys, counts, panel hashes) and
   `manifest.json` with `"models"`, `"row_labels"` and `"figures"`.
@@ -603,11 +628,11 @@ runs on Linux. `git lfs pull` fetches the data.
 # 1. embed every dataset (bionemo container, GPU) -> embeddings/<model>/geneicl_<suite>/<dataset>.npz
 python -m evaluate.geneicl.embed_suite --model unified_v1 [--datasets GSE107422 ...]
 python -m evaluate.geneicl.embed_suite --embedder pca          # any embed_any embedder
-# 2. GeneICL's probe (GeneICL eval env) -> results/tasks/geneicl_<suite>/<model>/probe_*
+# 2. GeneICL's probe (GeneICL eval env) -> results/geneicl_<suite>/<model>/probe_*
 python -m evaluate.geneicl.run_probe --model unified_v1 --geneicl-python <env>/bin/python [--resume]
-# 3. compare on the shared tasks -> results/assessment/geneicl_<suite>[_<name>]/
+# 3. compare on the shared tasks -> results/geneicl_<suite>/_compare/<name>/
 python -m evaluate.geneicl.compare --models unified_v1 pca --reference scfoundation en --name main
-# 4. figures -> results/tasks/geneicl_<suite>/_plots/<name>/
+# 4. figures -> results/geneicl_<suite>/_plots/<name>/
 python -m evaluate.geneicl.plot_benchmark --name main [--models unified_v1 pca] [--plots summary_table heatmaps]
 ```
 - **Embedding.** GeneICL datasets are log1p-CPM over gene symbols and are embedded as
@@ -641,7 +666,7 @@ python -m evaluate.geneicl.plot_benchmark --name main [--models unified_v1 pca] 
   functions (`available_models`, `load_runs`, `per_task_table`, `summarize`), so it needs
   no earlier `compare` run and its numbers match `compare` on the same models. `--name`
   (required; `name:` in the `geneicl_plot` block) names the comparison, written to
-  `results/tasks/geneicl_<suite>/_plots/<name>/` next to the per-model probe results, so
+  `results/geneicl_<suite>/_plots/<name>/` next to the per-model probe results, so
   several comparisons of different models can coexist. `--models` defaults to every model
   with `probe_*.csv` on the suite, in the given order otherwise. `--plots` (default all):
   `heatmap_<metric>` for auroc, auprc, balanced_accuracy, mcc, f1_macro, spearman, pearson,
@@ -658,7 +683,7 @@ python -m evaluate.geneicl.plot_benchmark --name main [--models unified_v1 pca] 
   (`example_geneicl_config.yaml`).
 
 Offline self-checks: `python -m experiments.check.check_layout`, `check_sampling` and
-`check_rename`, `check_resume`, `check_warm_start` (no torch or anndata), plus `python -m evaluate.check.check_run_evaluation` (no anndata) and `check_representation`,
+`check_rename`, `check_resume`, `check_warm_start`, `check_migrate_results` (no torch or anndata), plus `python -m evaluate.check.check_run_evaluation` (no anndata) and `check_representation`,
 `check_reconstruction`, `check_alignment` and `check_geneicl` (need anndata/scanpy; the
 Benchmarker itself is skipped without scib_metrics; `check_geneicl` runs against a fake
 GeneICL checkout with a stub `benchmark.py`).
@@ -1008,6 +1033,7 @@ experiments/                  # was ablate/; torch-free at import time
 ├── runtime.py                # config resolution, run card, training call
 ├── slurm_worker.py           # runs one model inside a SLURM job
 ├── rename_model.py           # rename a model across every directory and JSON file
+├── migrate_results_layout.py # move results/tasks/ + results/assessment/ to one dir per task
 ├── configs/                  # example_unifiedfm.json; legacy/ = old ablation configs
 └── check/                    # check_layout, check_sampling, check_rename, check_resume, check_warm_start (offline)
 
@@ -1031,8 +1057,8 @@ evaluate/                     # NEW, works on the experiments root
 │   ├── reconstructors.py     # Reconstructor registry: cancerfoundation (bins), bulkformer (ln TPM+1)
 │   ├── run_reconstruction.py # one model x one plan -> metrics.json, entries.parquet
 │   ├── metrics.py            # native-space + space-free metrics, baselines
-│   ├── compare.py            # several models on their shared entries -> assessment/
-│   ├── plot_reconstruction.py # MAE by bin/target, metric tables -> tasks/reconstruction/_plots/<plan>/<name>/
+│   ├── compare.py            # several models on their shared entries -> reconstruction/_compare/<plan>/<name>/
+│   ├── plot_reconstruction.py # MAE by bin/target, metric tables -> reconstruction/_plots/<plan>/<name>/
 │   └── example_reconstruction_config.yaml, run_reconstruction.sh, plot_reconstruction.sh
 ├── alignment/
 │   ├── scib_benchmark.py     # scib_metrics Benchmarker over several models' embeddings
@@ -1042,8 +1068,8 @@ evaluate/                     # NEW, works on the experiments root
 │   ├── suite.py              # GeneICL checkout, suites, datasets, symbol -> Ensembl mapping
 │   ├── embed_suite.py        # every suite dataset -> embeddings/<model>/geneicl_<suite>/*.npz
 │   ├── run_probe.py          # GeneICL's benchmark.py probe via _probe_shim.py (GeneICL env)
-│   ├── compare.py            # models (+ GeneICL reference rows) on shared tasks -> assessment/
-│   ├── plot_benchmark.py     # task x model heatmaps + summary table -> tasks/geneicl_<suite>/_plots/<name>/
+│   ├── compare.py            # models (+ GeneICL reference rows) on shared tasks -> geneicl_<suite>/_compare/<name>/
+│   ├── plot_benchmark.py     # task x model heatmaps + summary table -> geneicl_<suite>/_plots/<name>/
 │   └── example_geneicl_config.yaml, embed_suite.sh, run_probe.sh
 └── check/                    # check_representation, check_reconstruction, check_alignment, check_geneicl, check_run_evaluation
 

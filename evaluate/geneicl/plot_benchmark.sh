@@ -7,7 +7,7 @@
 #SBATCH --mem-per-cpu=8G
 
 # Draw the GeneICL comparison figures (task x model heatmaps, summary table) from the
-# run_probe results into results/tasks/geneicl_<suite>/_plots/<name>/ (--name, or name:
+# run_probe results into results/geneicl_<suite>/_plots/<name>/ (--name, or name:
 # in the config's geneicl_plot block, is required). No GPU and no earlier compare.py run
 # needed. Arguments go to plot_benchmark.py, e.g.:
 #   sbatch plot_benchmark.sh --name main [--models unified_v1 pca] [--plots summary_table heatmaps]

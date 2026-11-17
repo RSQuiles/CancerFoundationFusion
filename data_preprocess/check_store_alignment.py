@@ -28,7 +28,7 @@ Read-only diagnostic for a store built by ``build_pipeline_ready`` (or
         --eval-source b.h5ad --test-names test.txt --out-dir out/
 
 Needs bionemo SCDL (the container). Writes ``report.json`` to
-``results/assessment/store_check_<modality>_<split>/`` (or ``--out-dir``) and exits 1 on
+``results/_checks/store_<modality>_<split>/`` (or ``--out-dir``) and exits 1 on
 any FAIL.
 """
 
@@ -736,7 +736,7 @@ def resolve_inputs(args):
 
     test_file = args.test_names or (layout.split_index_file(args.modality, args.split, "test") if layout else None)
     test_names = test_file.read_text(encoding="utf-8").split() if test_file and test_file.exists() else []
-    out_dir = args.out_dir or (layout.assessment_dir(f"store_check_{args.modality}_{args.split}") if layout else None)
+    out_dir = args.out_dir or (layout.check_dir(f"store_{args.modality}_{args.split}") if layout else None)
     if out_dir is None:
         sys.exit("Error: give --out-dir")
     return Path(store), Path(source), Path(eval_source), plan_path, test_names, Path(out_dir)

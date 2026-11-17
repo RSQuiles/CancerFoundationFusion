@@ -9,7 +9,7 @@ modality as batch and a biological label (e.g. tissue) as label.
         --models unified_v1 bulkformer --pre-integrated pca \\
         --modalities bulk pseudobulk --per-modality bulk=all pseudobulk=all --label-key tissue_general
 
-Writes ``results/assessment/scib_<name>/``: ``scib.csv`` (``get_results(min_max_scale=False,
+Writes ``results/scib_benchmark/<name>/``: ``scib.csv`` (``get_results(min_max_scale=False,
 clean_names=True)``, the trailing ``Metric Type`` row included), ``scib_minmax.csv``,
 ``label_batch.csv`` (the pre-flight crosstab), ``meta.json``, ``manifest.json`` listing the
 models, and the classical scIB results table (``scib_plot.py``) as
@@ -21,6 +21,12 @@ labels later without rerunning the benchmark:
 
     python -m evaluate.alignment.scib_benchmark --name tissue_s0_test --plot-only \
         --row-labels unified_v1="CF unified" bulkformer=BulkFormer
+
+**XLA autotuning is off by default.** scib_metrics runs on JAX; on the GPU nodes XLA's
+kernel autotuning made each metric stall for minutes while compiling (the "Very slow
+compile?" alarm). ``--xla_gpu_autotune_level=0`` is added to ``XLA_FLAGS`` before JAX
+starts, unless ``XLA_FLAGS`` already sets a level or ``--xla-autotune`` is given. The
+effective flags are recorded in ``meta.json`` (``xla_flags``).
 
 Reading the numbers:
 
@@ -49,6 +55,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,7 +79,7 @@ UNKNOWN_LABEL = "unknown"
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="scIB integration benchmark across modalities.")
     parser.add_argument("--root", type=Path, default=None, help="Experiments root")
-    parser.add_argument("--name", default=None, help="Analysis name -> results/assessment/scib_<name>/")
+    parser.add_argument("--name", default=None, help="Analysis name -> results/scib_benchmark/<name>/")
     parser.add_argument("--models", nargs="+", default=None, help="Models to benchmark (embeddings/<model>/)")
     parser.add_argument("--pre-integrated", default=None,
                         help="Model used as the non-integrated reference (e.g. pca); enables PCR comparison")
@@ -101,7 +108,31 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Redraw the results table from an earlier run's CSVs (needs only plottable)")
     parser.add_argument("--plot-formats", nargs="+", default=["png", "pdf", "svg"],
                         help="File formats of the results table figure")
+    parser.add_argument("--xla-autotune", action="store_true",
+                        help="Keep XLA's GPU kernel autotuning (default: off, it stalled JAX compiles "
+                             "for minutes per metric)")
     return parser
+
+
+XLA_AUTOTUNE_FLAG = "--xla_gpu_autotune_level"
+
+
+def configure_xla(keep_autotune: bool = False, environ=None) -> str:
+    """Turn XLA's GPU autotuning off for scib_metrics' JAX, unless asked not to.
+
+    Adds ``--xla_gpu_autotune_level=0`` to ``XLA_FLAGS``, keeping any other flags, unless
+    a level is already set there or ``keep_autotune``. Must run before JAX initializes
+    its backend (scib_metrics is imported later, in ``run_benchmark``). Returns the
+    effective ``XLA_FLAGS``.
+    """
+    environ = os.environ if environ is None else environ
+    flags = environ.get("XLA_FLAGS", "")
+    if keep_autotune or XLA_AUTOTUNE_FLAG in flags:
+        return flags
+    flags = f"{flags} {XLA_AUTOTUNE_FLAG}=0".strip()
+    environ["XLA_FLAGS"] = flags
+    print(f"[xla] GPU autotuning off ({XLA_AUTOTUNE_FLAG}=0); pass --xla-autotune to keep it")
+    return flags
 
 
 def draw_figures(out_dir: Path, args, labels: dict[str, str]) -> list[str]:
@@ -125,7 +156,7 @@ def update_manifest(out_dir: Path, **fields) -> None:
 
 
 def plot_only(layout: ExperimentLayout, args, labels: dict[str, str]) -> Path:
-    out_dir = layout.assessment_dir(f"scib_{args.name}")
+    out_dir = layout.scib_dir(args.name)
     if not (out_dir / "scib.csv").exists():
         sys.exit(f"Error: {out_dir / 'scib.csv'} not found; run the benchmark first")
     figures = draw_figures(out_dir, args, labels)
@@ -229,6 +260,7 @@ def main(argv: list[str] | None = None) -> Path:
         return plot_only(layout, args, labels)
     if not (args.models and args.name):
         sys.exit("Error: give --models and --name")
+    xla_flags = None if (args.dry_run or args.plot_only) else configure_xla(args.xla_autotune)
     if args.bio_only and args.kbet:
         sys.exit("Error: --kbet is a batch-correction metric; drop it with --bio-only")
     if args.bio_only and args.pre_integrated:
@@ -263,7 +295,7 @@ def main(argv: list[str] | None = None) -> Path:
     if len(distinct) > 1:
         print("  [note] the models used different gene panels (expected across models)")
 
-    out_dir = layout.assessment_dir(f"scib_{args.name}")
+    out_dir = layout.scib_dir(args.name)
     out_dir.mkdir(parents=True, exist_ok=True)
     table, summary = label_batch_report(obs, args.batch_key, args.label_key, args.min_label_cells,
                                         args.bio_only)
@@ -274,7 +306,7 @@ def main(argv: list[str] | None = None) -> Path:
         "modalities": modalities, "batch_key": args.batch_key, "label_key": args.label_key,
         "filters": parse_filter_specs(args.filter), "per_modality": args.per_modality, "seed": args.seed,
         "n_rows": int(len(obs)), "kbet": args.kbet, "leiden": args.leiden, "bio_only": args.bio_only,
-        "panel_hashes": hashes,
+        "panel_hashes": hashes, "xla_flags": xla_flags,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"), **summary,
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")

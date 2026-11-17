@@ -3,7 +3,7 @@
     python -m evaluate.geneicl.compare --models unified_v1 pca [--suite benchmark] [--name main] \\
         [--reference scfoundation bulkformer en geneicl_trm_s0]
 
-Reads ``results/tasks/geneicl_<suite>/<model>/probe_*.csv`` (``run_probe.py``) per model and,
+Reads ``results/geneicl_<suite>/<model>/probe_*.csv`` (``run_probe.py``) per model and,
 for every ``--reference`` tag, ``<tag>_{classification,regression}.csv`` from GeneICL's
 results directory (``--geneicl-results``, default ``<geneicl>/eval/benchmark/results``);
 a missing reference is reported and skipped. Rows are compared on the tasks every row
@@ -14,7 +14,7 @@ scored. Per task the fold metrics are averaged, then the tasks:
   predictions of a task pooled, the GeneICL paper's protocol; needs ``*.oof.csv``);
 - the mean rank over tasks of AUROC / Spearman (1 = best).
 
-Writes ``results/assessment/geneicl_<suite>[_<name>]/``: ``summary.csv`` (one row per
+Writes ``results/geneicl_<suite>/_compare/<name>/`` (``--name``, default ``default``): ``summary.csv`` (one row per
 model or reference), ``per_task.csv`` and ``manifest.json`` (``"models"`` = the models of
 this repository; the references are listed apart, since they are GeneICL's files).
 """
@@ -58,7 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--models", nargs="*", default=[], help="Models scored by run_probe")
     parser.add_argument("--reference", nargs="*", default=[],
                         help="GeneICL result tags shown alongside (e.g. scfoundation en geneicl_trm_s0)")
-    parser.add_argument("--name", default=None, help="Suffix of the assessment directory")
+    parser.add_argument("--name", default=None,
+                        help="Name of this comparison: results/geneicl_<suite>/_compare/<name>/ (default: default)")
     return parser
 
 
@@ -138,7 +139,7 @@ def available_models(layout, suite: str) -> list[str]:
     """Models with ``run_probe`` results on ``suite`` (a ``probe_*.csv`` in their task directory)."""
     from experiments.layout import validate_model_name
 
-    root = layout.tasks_root / task_name(suite)
+    root = layout.task_root(task_name(suite))
     if not root.is_dir():
         return []
     out = []
@@ -193,7 +194,12 @@ def main(argv: list[str] | None = None) -> pd.DataFrame:
 
     table, dropped = per_task_table(runs)
     summary = summarize(table, list(runs))
-    out_dir = layout.assessment_dir(task_name(args.suite) + (f"_{args.name}" if args.name else ""))
+    from experiments.layout import DEFAULT_COMPARISON
+
+    try:
+        out_dir = layout.task_compare_dir(task_name(args.suite), args.name or DEFAULT_COMPARISON)
+    except ValueError as exc:
+        sys.exit(f"Error: --name: {exc}")
     out_dir.mkdir(parents=True, exist_ok=True)
     table.to_csv(out_dir / "per_task.csv", index=False)
     summary.to_csv(out_dir / "summary.csv", index=False)

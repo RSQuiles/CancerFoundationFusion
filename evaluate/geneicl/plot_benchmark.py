@@ -19,7 +19,7 @@ Plots (``--plots``; default all):
 - ``summary_table``: the ``compare`` summary table, the best value of each metric shaded
   and in bold (lowest for the mean ranks).
 
-Writes ``results/tasks/geneicl_<suite>/_plots/<name>/``, next to the per-model
+Writes ``results/geneicl_<suite>/_plots/<name>/``, next to the per-model
 ``run_probe`` results: one ``.png`` / ``.pdf`` per plot, the plotted numbers as
 ``per_task.csv`` and ``summary.csv``, and ``manifest.json`` (``"models"``, references,
 plots). Rerunning a name overwrites its figures.
@@ -92,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Directory of GeneICL's <tag>_<task_type>.csv (default: <geneicl>/eval/benchmark/results)")
     parser.add_argument("--suite", default="benchmark", choices=list(S.SUITES))
     parser.add_argument("--name", default=None,
-                        help="Name of this comparison (required): tasks/geneicl_<suite>/_plots/<name>/")
+                        help="Name of this comparison (required): results/geneicl_<suite>/_plots/<name>/")
     parser.add_argument("--models", nargs="*", default=[],
                         help="Models to plot (default: every model with run_probe results on the suite)")
     parser.add_argument("--reference", nargs="*", default=[],
@@ -234,7 +234,7 @@ def main(argv: list[str] | None = None) -> Path | None:
 
     args = parse_with_config(build_parser(), "geneicl_plot", argv)
     if not args.name and not args.list:
-        sys.exit("Error: give --name (the comparison's folder under tasks/geneicl_<suite>/_plots/)")
+        sys.exit("Error: give --name (the comparison's folder under results/geneicl_<suite>/_plots/)")
     layout = ExperimentLayout.from_root(args.root)
     available = C.available_models(layout, args.suite)
     if args.list:

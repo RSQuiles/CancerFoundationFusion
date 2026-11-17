@@ -53,7 +53,7 @@ Add a plot by writing a ``compute`` (the plotted numbers, saved as ``<plot>.csv`
 a ``draw`` function and one ``PlotSpec`` in ``PLOTS``; give a new space its table
 columns in ``TABLE_COLUMNS`` (otherwise ``"*"`` applies).
 
-Writes ``results/tasks/reconstruction/_plots/<plan>/<name>/<group>/``: one ``.png`` /
+Writes ``results/reconstruction/_plots/<plan>/<name>/<group>/``: one ``.png`` /
 ``.pdf`` and ``.csv`` per plot, and ``manifest.json`` (``"models"``, groups, plots) in
 ``<name>/``. Rerunning a name overwrites its figures; a group no longer plotted keeps its
 old files, so use a new name for a different set of models.

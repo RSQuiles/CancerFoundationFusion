@@ -2,12 +2,12 @@
 
     python -m evaluate.reconstruction.compare --models unified_v1 bulkformer --plan bulk:leiden_s0:test:r25
 
-Reads ``results/tasks/reconstruction/<model>/<plan>/entries.parquet`` per model, keeps
+Reads ``results/reconstruction/<model>/<plan>/entries.parquet`` per model, keeps
 the masked (sample, gene) entries every model scored, and recomputes the space-free
 metrics there (per-sample Pearson / Spearman, zero AUROC, global Spearman), which are
 comparable across target spaces; for bins runs with tie ranges the correlations use the
 tie midpoint as the target (``metrics.correlation_target``, column ``tie_midpoint_target``).
-Native-space metrics are listed only for models that share a space. Writes ``results/assessment/reconstruction_<plan>[_<name>]/``:
+Native-space metrics are listed only for models that share a space. Writes ``results/reconstruction/_compare/<plan>/<name>/`` (``--name``, default ``default``):
 ``table.csv``, ``per_sample_spearman.png`` and ``manifest.json`` listing the models.
 
 **Rows and heads.** A ``--models`` entry is a run: ``model`` (the gen head, or any
@@ -57,7 +57,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--models", nargs="+", default=None,
                         help="Runs to compare: run_reconstruction output names, model@mvc for a model's MVC head")
     parser.add_argument("--plan", default=None, help="MODALITY:SPLIT:PART:NAME or a .npz path")
-    parser.add_argument("--name", default=None, help="Suffix of the assessment directory")
+    parser.add_argument("--name", default=None,
+                        help="Name of this comparison: results/reconstruction/_compare/<plan>/<name>/ "
+                             "(default: default)")
     parser.add_argument("--baselines", action="store_true",
                         help="Also list each model's two baselines (computed in that model's space)")
     parser.add_argument("--dpi", type=int, default=200)
@@ -66,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def available_models(layout, slug: str) -> list[str]:
     """Runs with ``entries.parquet`` for the plan ``slug``: ``model`` and ``model@mvc`` rows, sorted."""
-    root = layout.tasks_root / RESULTS_TASK
+    root = layout.task_root(RESULTS_TASK)
     if not root.is_dir():
         return []
     rows = []
@@ -167,7 +169,12 @@ def main(argv: list[str] | None = None) -> pd.DataFrame:
             per_sample.append(ps)
     table = pd.DataFrame(rows)
 
-    out_dir = layout.assessment_dir(f"reconstruction_{slug}" + (f"_{args.name}" if args.name else ""))
+    from experiments.layout import DEFAULT_COMPARISON
+
+    try:
+        out_dir = layout.task_compare_dir(RESULTS_TASK, slug, args.name or DEFAULT_COMPARISON)
+    except ValueError as exc:
+        sys.exit(f"Error: --name: {exc}")
     out_dir.mkdir(parents=True, exist_ok=True)
     table.to_csv(out_dir / "table.csv", index=False)
     _plot(pd.concat(per_sample), out_dir / "per_sample_spearman.png", plan.plan_id, args.dpi)

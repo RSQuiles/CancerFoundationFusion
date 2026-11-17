@@ -179,13 +179,13 @@ tasks:
           group_by: [tissue_general]
 
       # Both plans, all four models, on the entries all of them scored.
-      compare:                    # -> results/assessment/reconstruction_<plan>_bulk_sc_pretrain/
+      compare:                    # -> results/reconstruction/_compare/<plan>/bulk_sc_pretrain/
         foreach: {plan: [*sc_plan, *bulk_plan]}
         args:
           models: &recon_models [bulk_then_sc, bulk_then_sc75_bulk25, bulk_pretrain, bulkformer]
           name: bulk_sc_pretrain
           baselines: true
-      plot:                       # -> results/tasks/reconstruction/_plots/<plan>/bulk_sc_pretrain/
+      plot:                       # -> results/reconstruction/_plots/<plan>/bulk_sc_pretrain/
         script: reconstruction_plot
         foreach: {plan: [*sc_plan, *bulk_plan]}
         args:
@@ -210,12 +210,12 @@ tasks:
         foreach: {model: [bulk_then_sc, bulk_then_sc75_bulk25]}
         args:
           seed: 42
-      geneicl_compare:            # -> results/assessment/geneicl_benchmark_bulk_sc_pretrain/
+      geneicl_compare:            # -> results/geneicl_benchmark/_compare/bulk_sc_pretrain/
         environment: geneicl
         args:
           models: &geneicl_models [bulk_then_sc, bulk_then_sc75_bulk25, bulk_pretrain, bulkformer]
           name: bulk_sc_pretrain
-      geneicl_plot:               # -> results/tasks/geneicl_benchmark/_plots/bulk_sc_pretrain/
+      geneicl_plot:               # -> results/geneicl_benchmark/_plots/bulk_sc_pretrain/
         environment: geneicl
         args:
           models: *geneicl_models

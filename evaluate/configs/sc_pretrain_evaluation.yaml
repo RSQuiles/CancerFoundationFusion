@@ -96,14 +96,14 @@ tasks:
           head: gen
           group_by: [tissue_general]
           batch_size: 16
-      cf_mvc:                     # -> results/tasks/reconstruction/<model>/<plan>_mvc/, row <model>@mvc
+      cf_mvc:                     # -> results/reconstruction/<model>/<plan>_mvc/, row <model>@mvc
         script: reconstruction
         foreach: {model: [sc_midrank, sc_mr_corn, sc_mr_mvc5]}
         args:
           <<: *sc_run
           head: mvc
 
-      compare:                    # -> results/assessment/reconstruction_sc_leiden_s0_test_r25_sc_pretrain/
+      compare:                    # -> results/reconstruction/_compare/sc_leiden_s0_test_r25/sc_pretrain/
         environment: host
         args:
           plan: *sc_plan
@@ -112,7 +112,7 @@ tasks:
                              ]
           name: sc_pretrain
           baselines: true
-      # Figures -> results/tasks/reconstruction/_plots/<plan>/<name>/. Line plots take at most
+      # Figures -> results/reconstruction/_plots/<plan>/<name>/. Line plots take at most
       # 8 rows, so all ten rows get the tables and the Spearman boxes, and each head gets
       # every plot on its own.
       plot:
@@ -151,7 +151,7 @@ tasks:
       n_jobs: 1
       models: [sc_midrank, sc_mr_corn, sc_mr_mvc5, pca_sc_leiden_s0]
     steps:
-      scib_tissue:                # -> results/assessment/scib_sc_pretrain_tissue/
+      scib_tissue:                # -> results/scib_benchmark/sc_pretrain_tissue/
         script: scib
         environment: host
         args:

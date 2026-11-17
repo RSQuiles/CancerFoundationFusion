@@ -15,18 +15,24 @@ Layout::
     ├── embeddings/<model>/{modality}_{part}.h5ad (+ embed.json)
     │   ├── <variant>/{modality}_{part}.h5ad      the same, embedded differently (e.g. own_panel)
     │   └── geneicl_<suite>/<dataset>.npz          GeneICL-suite embeddings (+ embed.json)
-    └── results/
+    └── results/                                  one directory per evaluation task
         ├── representation/<model>/[<variant>/]
         ├── representation/_alignment/<model>/[<variant>/]
-        ├── tasks/<task>/<model>/
-        ├── tasks/<task>/_plots/[<plan>/]<name>/  named model comparisons (+ manifest.json)
-        ├── assessment/<analysis>/                (+ manifest.json listing its models)
-        └── _eval_runs/<config>_<timestamp>/      evaluate.run_evaluation records (configs, logs)
+        ├── reconstruction/<model>/<plan>[_<head>]/
+        ├── reconstruction/_compare/<plan>/<name>/  model comparison tables (+ manifest.json)
+        ├── reconstruction/_plots/<plan>/<name>/    model comparison figures (+ manifest.json)
+        ├── geneicl_<suite>/<model>/                 e.g. geneicl_benchmark/
+        ├── geneicl_<suite>/_compare/<name>/, _plots/<name>/
+        ├── scib_benchmark/<name>/                   one scIB analysis (+ manifest.json)
+        ├── _checks/<check>/                         data checks (e.g. store_<modality>_<split>)
+        └── _eval_runs/<config>_<timestamp>/         evaluate.run_evaluation records (configs, logs)
 
 Rules every writer follows, so ``rename_model.py`` never has to guess:
 per-model output lives under a directory named after the model (never in a
 filename), and an analysis spanning several models lists them in its
-``manifest.json`` under ``"models"``.
+``manifest.json`` under ``"models"``. A task directory holds model directories and
+``_``-prefixed ones only (``_compare``, ``_plots``, ``_checks``), except
+``scib_benchmark``, whose subdirectories are analyses, never models.
 
 """
 
@@ -58,10 +64,16 @@ SPLIT_PARTS = ("train", "test")
 EMBEDDING_PARTS = ("test", "train_subset")
 
 PCA_MODEL = "pca"
-_RESERVED_NAMES = {"_launches", "_alignment", "_renames.jsonl", "_plots"}
+_RESERVED_NAMES = {"_launches", "_alignment", "_renames.jsonl", "_plots", "_compare", "_checks"}
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 RUN_CARD = "run.json"
+# Result tasks that are not "one directory per model": representation has its own
+# layout, and scib_benchmark/<name>/ are analyses spanning models.
+REPRESENTATION_TASK = "representation"
+SCIB_TASK = "scib_benchmark"
+_NON_MODEL_TASKS = {REPRESENTATION_TASK, SCIB_TASK}
+DEFAULT_COMPARISON = "default"
 EMBED_CARD = "embed.json"
 ASSESSMENT_MANIFEST = "manifest.json"
 RENAME_LOG = "_renames.jsonl"
@@ -253,37 +265,65 @@ class ExperimentLayout:
     def alignment_dir(self, model: str, variant: str | None = None) -> Path:
         return _with_variant(self.representation_root / "_alignment" / validate_model_name(model), variant)
 
-    @property
-    def tasks_root(self) -> Path:
-        return self.results_dir / "tasks"
+    def task_root(self, task: str) -> Path:
+        """``results/<task>/`` (e.g. ``reconstruction``, ``geneicl_benchmark``, ``scib_benchmark``)."""
+        if not _MODEL_NAME_RE.match(str(task)):
+            raise ValueError(f"Invalid task name {task!r}")
+        return self.results_dir / task
 
     def task_dir(self, task: str, model: str) -> Path:
-        return self.tasks_root / task / validate_model_name(model)
+        """``results/<task>/<model>/``: one model's results on a task."""
+        return self.task_root(task) / validate_model_name(model)
+
+    def _task_sub(self, task: str, kind: str, parts: tuple[str, ...]) -> Path:
+        if not parts:
+            raise ValueError(f"{kind} needs at least the comparison name")
+        for part in parts:
+            if not _MODEL_NAME_RE.match(str(part)):
+                raise ValueError(f"Invalid {kind} directory name {part!r}")
+        return self.task_root(task).joinpath(kind, *parts)
 
     def task_plot_dir(self, task: str, *parts: str) -> Path:
-        """``tasks/<task>/_plots/<part>/...``: figures of one named model comparison on a
+        """``results/<task>/_plots/<part>/...``: figures of one named model comparison on a
         task, e.g. ``(reconstruction, <plan>, <name>)`` or ``(geneicl_<suite>, <name>)``.
         The manifest there lists the models under ``"models"``. ``_plots`` is reserved, so
         it never collides with a model directory."""
-        if not parts:
-            raise ValueError("task_plot_dir needs at least the comparison name")
-        for part in (task, *parts):
-            if not _MODEL_NAME_RE.match(str(part)):
-                raise ValueError(f"Invalid task plot directory name {part!r}")
-        return self.tasks_root.joinpath(task, "_plots", *parts)
+        return self._task_sub(task, "_plots", parts)
+
+    def task_compare_dir(self, task: str, *parts: str) -> Path:
+        """``results/<task>/_compare/<part>/...``: the tables of one named model comparison
+        (``compare.py``), laid out like ``task_plot_dir``. The manifest lists the models."""
+        return self._task_sub(task, "_compare", parts)
+
+    def scib_dir(self, name: str) -> Path:
+        """``results/scib_benchmark/<name>/``: one scIB analysis over several models."""
+        if not _MODEL_NAME_RE.match(str(name)):
+            raise ValueError(f"Invalid scIB analysis name {name!r}")
+        return self.task_root(SCIB_TASK) / name
 
     @property
-    def assessment_root(self) -> Path:
-        return self.results_dir / "assessment"
+    def checks_dir(self) -> Path:
+        """``results/_checks/``: data checks that belong to no evaluation task (store checks)."""
+        return self.results_dir / "_checks"
 
-    def assessment_dir(self, name: str) -> Path:
-        return self.assessment_root / name
+    def check_dir(self, name: str) -> Path:
+        if not _MODEL_NAME_RE.match(str(name)):
+            raise ValueError(f"Invalid check name {name!r}")
+        return self.checks_dir / name
+
+    def model_task_roots(self) -> list[Path]:
+        """Task directories that hold one directory per model (not representation, scIB,
+        nor the ``_``-prefixed infrastructure directories)."""
+        if not self.results_dir.is_dir():
+            return []
+        return [d for d in sorted(self.results_dir.iterdir())
+                if d.is_dir() and not d.name.startswith(("_", ".")) and d.name not in _NON_MODEL_TASKS]
 
     @property
     def eval_runs_dir(self) -> Path:
         """``results/_eval_runs/``: one directory per ``evaluate.run_evaluation`` run
-        (resolved step configs, logs, summary). Outside ``tasks/``, so never mistaken
-        for a model's directory."""
+        (resolved step configs, logs, summary). ``_``-prefixed, so never mistaken for a
+        task or a model."""
         return self.results_dir / "_eval_runs"
 
     # ---- everything that belongs to / mentions one model -------------------
@@ -301,10 +341,7 @@ class ExperimentLayout:
             self.representation_dir(model),
             self.alignment_dir(model),
         ]
-        if self.tasks_root.is_dir():
-            dirs.extend(
-                task / model for task in sorted(self.tasks_root.iterdir()) if task.is_dir()
-            )
+        dirs.extend(task / model for task in self.model_task_roots())
         return dirs
 
     def model_reference_files(self) -> list[Path]:
@@ -318,9 +355,10 @@ class ExperimentLayout:
             for model_dir in sorted(self.checkpoints_dir.iterdir()):
                 if model_dir.is_dir() and not model_dir.name.startswith("_"):
                     files.extend(sorted(model_dir.glob("*.json")))
-        if self.assessment_root.is_dir():
-            files.extend(sorted(self.assessment_root.glob(f"*/{ASSESSMENT_MANIFEST}")))
-        if self.tasks_root.is_dir():
-            # Comparison manifests sit at any depth under _plots (with or without a plan level).
-            files.extend(sorted(self.tasks_root.glob(f"*/_plots/**/{ASSESSMENT_MANIFEST}")))
+        if self.results_dir.is_dir():
+            # Comparison manifests sit at any depth under _compare / _plots (with or without
+            # a plan level); scIB analyses directly under scib_benchmark/.
+            for kind in ("_compare", "_plots"):
+                files.extend(sorted(self.results_dir.glob(f"*/{kind}/**/{ASSESSMENT_MANIFEST}")))
+            files.extend(sorted(self.task_root(SCIB_TASK).glob(f"*/{ASSESSMENT_MANIFEST}")))
         return files

@@ -50,14 +50,26 @@ def check_paths() -> None:
           L.geneicl_embedding_dir("m1", "benchmark") == ROOT / "embeddings/m1/geneicl_benchmark")
     check("bad geneicl suite rejected", raises(lambda: L.geneicl_embedding_dir("m1", "../x")))
     check("alignment dir", L.alignment_dir("m1") == ROOT / "results/representation/_alignment/m1")
-    check("task dir", L.task_dir("canc", "m1") == ROOT / "results/tasks/canc/m1")
+    check("task dir directly under results/", L.task_dir("canc", "m1") == ROOT / "results/canc/m1")
     check("task plot dir with a plan level", L.task_plot_dir("reconstruction", "bulk_s0_test_r25", "cmp")
-          == ROOT / "results/tasks/reconstruction/_plots/bulk_s0_test_r25/cmp")
+          == ROOT / "results/reconstruction/_plots/bulk_s0_test_r25/cmp")
     check("task plot dir with the name only", L.task_plot_dir("geneicl_benchmark", "cmp")
-          == ROOT / "results/tasks/geneicl_benchmark/_plots/cmp")
+          == ROOT / "results/geneicl_benchmark/_plots/cmp")
+    check("comparison tables beside the figures",
+          L.task_compare_dir("reconstruction", "bulk_s0_test_r25", "cmp")
+          == ROOT / "results/reconstruction/_compare/bulk_s0_test_r25/cmp"
+          and L.task_compare_dir("geneicl_benchmark", "cmp") == ROOT / "results/geneicl_benchmark/_compare/cmp")
+    check("scIB analyses in their own task directory", L.scib_dir("t") == ROOT / "results/scib_benchmark/t")
+    check("data checks under results/_checks/", L.check_dir("store_sc_s0") == ROOT / "results/_checks/store_sc_s0")
+    check("bad scIB / check / task names rejected",
+          raises(lambda: L.scib_dir("../x")) and raises(lambda: L.check_dir("a/b"))
+          and raises(lambda: L.task_root("_x")) and raises(lambda: L.task_compare_dir("reconstruction")))
+    check("no assessment or tasks directory any more",
+          not hasattr(L, "assessment_dir") and not hasattr(L, "tasks_root"))
     check("bad task plot part rejected", raises(lambda: L.task_plot_dir("reconstruction", "p", "../x")))
     check("task plot dir needs a name", raises(lambda: L.task_plot_dir("reconstruction")))
-    check("_plots is not a model name", raises(lambda: L.task_dir("reconstruction", "_plots")))
+    check("_plots / _compare / _checks are not model names",
+          all(raises(lambda n=n: L.task_dir("reconstruction", n)) for n in ("_plots", "_compare", "_checks")))
     check("unknown modality rejected", raises(lambda: canonical_modality("rna")))
     check("unknown embedding part rejected", raises(lambda: L.embedding_file("m1", "sc", "val")))
     check("variant embedding file", L.embedding_file("m1", "sc", "test", "own_panel")

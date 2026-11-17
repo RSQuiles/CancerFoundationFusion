@@ -58,7 +58,9 @@ def _build_root(root: Path) -> tuple[ExperimentLayout, Path]:
         "models": [OLD, OTHER],
         "runs": [{"model_name": OLD, "checkpoint_dir": save_dir}, {"model_name": OTHER}],
     })
-    _write(layout.assessment_dir("scib") / "manifest.json", {"models": {OLD: "row1", OTHER: "row2"}})
+    _write(layout.scib_dir("scib") / "manifest.json", {"models": {OLD: "row1", OTHER: "row2"}})
+    _write(layout.task_compare_dir("reconstruction", "plan_r25", "cmp") / "manifest.json",
+           {"models": [OLD, OTHER], "rows": [f"{OLD}@mvc", OTHER]})
     _write(layout.task_plot_dir("canc_type", "plan", "cmp") / "manifest.json", {"models": [OLD, OTHER]})
     _write(layout.task_plot_dir("other_task", "cmp") / "manifest.json", {"models": [OLD]})
     # Reconstruction: a run of OLD's MVC head beside the gen run, and a comparison listing it
@@ -110,7 +112,12 @@ def check_rename() -> None:
         check("non-path field left alone",
               json.loads((layout.checkpoint_dir(NEW) / "config.resolved.json").read_text())["train_path"] == "/data/x")
         check("binary checkpoint carried over", (layout.checkpoint_dir(NEW) / "epoch_00.ckpt").read_bytes() == b"binary")
-        manifest = json.loads((layout.assessment_dir("scib") / "manifest.json").read_text())
+        compared = json.loads((layout.task_compare_dir("reconstruction", "plan_r25", "cmp") / "manifest.json").read_text())
+        check("comparison table manifest renamed",
+              compared["models"] == [NEW, OTHER] and compared["rows"] == [f"{NEW}@mvc", OTHER])
+        check("scIB analyses are never moved as a model directory",
+              (layout.scib_dir("scib") / "manifest.json").exists())
+        manifest = json.loads((layout.scib_dir("scib") / "manifest.json").read_text())
         check("manifest dict key renamed", set(manifest["models"]) == {NEW, OTHER})
         plots = json.loads((layout.task_plot_dir("canc_type", "plan", "cmp") / "manifest.json").read_text())
         check("task plot manifest renamed", plots["models"] == [NEW, OTHER])
