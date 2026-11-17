@@ -8,9 +8,7 @@ from pathlib import Path
 from torch.utils.data import Dataset, Sampler, Subset
 from typing import Union, List, Dict
 
-from bionemo.scdl.io.single_cell_memmap_dataset import SingleCellMemMapDataset
-
-from .dataset import DatasetDir
+from .dataset import DatasetDir, open_store_memmap
 from .utils import concat_categorical_codes
 
 
@@ -74,7 +72,7 @@ class BulkSCDataset(Dataset):
         self.data_dir = DatasetDir(data_dir)
         self.vocab = self._load_vocab()
         self.pad_value = pad_value
-        self.memmap = SingleCellMemMapDataset(str(self.data_dir.memmap_path))
+        self.memmap = open_store_memmap(self.data_dir.memmap_path)  # read-only, see open_store_memmap
         self.obs = pd.read_parquet(self.data_dir.obs_path)
         self.mapping = self._load_mapping()
         self.obs_columns = obs_columns

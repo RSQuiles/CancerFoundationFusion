@@ -110,6 +110,10 @@ python bulk_sc_data_preprocessing.py --h5ad-path a.h5ad b.h5ad --data-path out/ 
   records `verified` and `transient_dtypes`. Stores built before this fix are corrupt if
   their source had more than 2^31 entries: check them with
   `data_preprocess/check_store_alignment.py` (`--only-diagnose` for the mechanism check).
+- **Training opens stores read-only** (`dataset.open_store_memmap`, SCDL `Mode.READ`).
+  SCDL's default `r+` maps the arrays shared and writable, and several jobs on one large
+  store then stalled in `datamodule.setup()` right after `Seed set to 0`. `pretrain.py`
+  prints `[startup] opening the training store ...` / `store ready` around that step.
 - **Store contract**: `modality` is always stored (the file's own column, else the
   source's label, else `--default-modality`). An absent obs column is filled with `0`, and
   category `"0"` means "none" to the loaders (unpaired, no pseudobulk). The

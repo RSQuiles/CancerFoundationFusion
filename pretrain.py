@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import time
 from typing import Optional
 from pathlib import Path
 
@@ -384,7 +385,13 @@ def main(input_args=None):
         cdd_bulk_class_frac=args.cdd_bulk_class_frac,
         sampler_seed=args.seed,
     )
+    # Flushed, so a stall while opening the store names itself in the log instead of the
+    # job going silent after "Seed set to 0".
+    started = time.perf_counter()
+    print(f"[startup] opening the training store {args.train_path} ...", flush=True)
     datamodule.setup(stage="fit")
+    print(f"[startup] store ready: {len(datamodule.dataset)} rows "
+          f"({time.perf_counter() - started:.1f} s)", flush=True)
 
     # The model is always built from the config; trainer.fit(ckpt_path=...) then loads
     # the checkpoint's weights, optimizer and loop state into it.

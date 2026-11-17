@@ -1,4 +1,5 @@
 from typing import Optional
+from bionemo.scdl.io import single_cell_memmap_dataset as _scdl
 from bionemo.scdl.io.single_cell_memmap_dataset import SingleCellMemMapDataset
 from torch.utils.data import Dataset
 import torch
@@ -54,6 +55,24 @@ class DatasetDir:
         return self.data_dir / self.OBS_PATH
 
 
+def open_store_memmap(path) -> SingleCellMemMapDataset:
+    """A training store's SCDL arrays, mapped read-only.
+
+    SCDL's default mode, READ_APPEND ("r+"), maps every array (data, row and column
+    pointers: tens of GB for a single-cell store) shared and writable. With several jobs
+    on one store, the cluster filesystem has to coordinate those writable mappings, and a
+    job that opens the store while others hold it can wait indefinitely (it stalled in
+    datamodule.setup, right after "Seed set to 0"). Training never writes the store, so
+    read-only is correct, and read-only mappings can be shared by any number of jobs.
+    Store builders open their stores themselves and keep writing.
+    """
+    mode = getattr(getattr(_scdl, "Mode", None), "READ", None)
+    if mode is None:  # an SCDL without Mode.READ: keep the old behaviour, but say so
+        print("[store] this SCDL has no Mode.READ; opening the store read-write (r+)", flush=True)
+        return SingleCellMemMapDataset(str(path))
+    return SingleCellMemMapDataset(str(path), mode=mode)
+
+
 class SingleCellDataset(Dataset):
     GENE_ID = "_cf_gene_id"  # column in the obs dataframe that contains the gene ids corresponding to the expression values
     CLS_TOKEN = "<cls>"
@@ -69,7 +88,7 @@ class SingleCellDataset(Dataset):
         self.data_dir = DatasetDir(data_dir)
         self.vocab = self._load_vocab()
         self.pad_value = pad_value
-        self.memmap = SingleCellMemMapDataset(self.data_dir.memmap_path)
+        self.memmap = open_store_memmap(self.data_dir.memmap_path)
         self.obs = pd.read_parquet(self.data_dir.obs_path)
         self.mapping = self._load_mapping()
         self.obs_columns = obs_columns
