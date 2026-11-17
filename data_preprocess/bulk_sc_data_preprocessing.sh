@@ -26,9 +26,10 @@ SPLIT_NAME=leiden_s0
 # from one part of a split instead, use split_train_test.py --build-store or build_mix.py.
 SCRIPT_ARGS=(
     --h5ad-path $DATA_DIR/bulk/BULK_pretraining.h5ad
-    --data-path $DATA_DIR/bulk/pipeline_ready
+    --data-path $DATA_DIR/bulk/pipeline_ready/$SPLIT_NAME
     --obs-columns tissue_general
     --rows $DATA_DIR/bulk/splits/$SPLIT_NAME/train.txt
+    --overwrite
 )
 
 # --rows train.txt           keep only these obs names
@@ -40,7 +41,7 @@ if [[ "$USE_LOCAL" -eq 1 ]]; then
     python -u bulk_sc_data_preprocessing.py "${SCRIPT_ARGS[@]}"
 else
     echo "Running with singularity"
-    srun singularity run \
+    singularity run \
         --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess \
         --bind /cluster/work/boeva/rquiles:/cluster/work/boeva/rquiles \
         /cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif \

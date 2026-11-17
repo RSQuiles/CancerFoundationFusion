@@ -16,7 +16,7 @@
       "wandb_entity": "rquiles",
       "wandb": "unifiedFM",
       "compile": true,
-      "ckpt_every_n_steps": 10000,
+      "ckpt_every_n_steps": 50000,
       "save_every": true,
       "resume_from_checkpoint": "last",
       "resume_mode": "continue"
@@ -46,7 +46,7 @@
   "base_overrides": {},
   "models": [
     {
-      "name": "bulk_only",
+      "name": "bulk_pretrain",
       "overrides": {
         "data": {
           "train_path": {"pipeline_ready": "bulk:leiden_s0"}

@@ -3,4 +3,4 @@
 cd "$(dirname "$0")/.." || exit 1
 
 python -u -m experiments.launch \
-	--config ./experiments/configs/bulk_pretrain.json \
+	--config ./experiments/configs/sc_pretrain_continue.json

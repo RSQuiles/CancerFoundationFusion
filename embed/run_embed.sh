@@ -36,14 +36,15 @@ IMAGE="/cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif"
 # Everything the job reads or writes (code, experiments root, symlink targets) must be under a bind.
 BINDS="/cluster/work/boeva/rquiles:/cluster/work/boeva/rquiles"
 
-MODEL="bulk_only"
+MODEL="bulk_pretrain"
 SPLIT="leiden_s0"
 
 SCRIPT_ARGS=(
-    # --model "$MODEL"
-    --embedder pca
+    --model "$MODEL"
+    --batch-size 16
+    # --embedder pca
     # --embedder bulkformer
-    --option n_pcs=50
+    # --option n_pcs=50
     # --option repo=/cluster/work/boeva/rquiles/Codebases/Bulkformer-latest
     --split "$SPLIT"
     --modalities bulk

@@ -15,8 +15,15 @@
 
 set -euo pipefail
 
+EXTRA_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        *) EXTRA_ARGS+=("$1"); shift ;;
+    esac
+done
+
 PROJECT_ROOT="/cluster/work/boeva/rquiles/CancerFoundationFusion"
-CONFIG="${CONFIG:-$PROJECT_ROOT/evaluate/geneicl/example_geneicl_config.yaml}"
+CONFIG="${CONFIG:-$PROJECT_ROOT/evaluate/geneicl/configs/bulk_only_config.yaml}"
 CONDA_ENV="${CONDA_ENV:-geneicl}"
 CONDA_STATUS=$?
 set -eu
@@ -27,4 +34,4 @@ if [[ "$CONDA_STATUS" -ne 0 ]]; then
 fi
 
 cd "$PROJECT_ROOT"
-python -u -m evaluate.geneicl.plot_benchmark --config "$CONFIG"
+python -u -m evaluate.geneicl.plot_benchmark --config "$CONFIG" "${EXTRA_ARGS[@]}"

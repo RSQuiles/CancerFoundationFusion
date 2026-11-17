@@ -31,7 +31,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 PROJECT_ROOT="/cluster/work/boeva/rquiles/CancerFoundationFusion"
-CONFIG="${CONFIG:-$PROJECT_ROOT/evaluate/geneicl/configs/bulkformer_config.yaml}"
+CONFIG="${CONFIG:-$PROJECT_ROOT/evaluate/geneicl/configs/bulk_only_config.yaml}"
 
 SCRIPT_ARGS=(
     --config "$CONFIG"

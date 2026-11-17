@@ -15,7 +15,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="/cluster/work/boeva/rquiles/CancerFoundationFusion"
-CONFIG="${CONFIG:-$PROJECT_ROOT/evaluate/geneicl/configs/bulkformer_config.yaml}"
+CONFIG="${CONFIG:-$PROJECT_ROOT/evaluate/geneicl/configs/bulk_only_config.yaml}"
 CONDA_ENV="${CONDA_ENV:-geneicl}"
 
 # Environment setup runs WITHOUT -e and -u: /etc/profile.d scripts read unset

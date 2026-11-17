@@ -1,0 +1,29 @@
+# Defaults for the reconstruction scripts (--config). Keys are option names; the CLI
+# overrides them. Top-level keys are shared, so keep only options every script has
+# there (root); each block applies to one script.
+# root: /cluster/work/boeva/rquiles/unifiedFM_experiments
+
+mask_plan:            # python -m evaluate.reconstruction.mask_plan
+  input: /cluster/work/boeva/rquiles/unifiedFM_experiments/data/bulk/debug/overfit512.h5ad
+  out: /cluster/work/boeva/rquiles/unifiedFM_experiments/data/bulk/debug/mask_plan.npz
+  name: r25
+  mask_ratio: 0.25     # training draws 0.25 / 0.50 / 0.75
+  seq_len: 1200        # the model's max_seq_len (CLS included)
+  n_samples: 200      # stratified subsample of the test rows; 0 = all of them
+  # stratify_by: [tissue_general]
+  # gene_universe: genes.txt   # restrict the genes that can be masked
+
+reconstruction:       # python -m evaluate.reconstruction.run_reconstruction
+  plan: /cluster/work/boeva/rquiles/unifiedFM_experiments/data/bulk/debug/mask_plan.npz
+  batch_size: 16
+  model: bulk_overfit                  # a CancerFoundation model, or:
+  # reconstructor: bulkformer
+  # option: [repo=/path/to/bulkformer-latest, gene_column=gene_id]
+  # context: full
+
+reconstruction_plot:  # python -m evaluate.reconstruction.plot_reconstruction (anywhere, CPU)
+  plan: /cluster/work/boeva/rquiles/unifiedFM_experiments/data/bulk/debug/mask_plan.npz
+  models: [bulk_overfit]   # default: every model with results on the plan
+  # plots: [mae_by_bin, metrics_table] # default: all (see --list)
+  baselines: true                    # gene-mean and sample-mean baselines
+  # bin_width: 1

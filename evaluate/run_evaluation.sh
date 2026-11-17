@@ -1,12 +1,12 @@
 #!/bin/bash -l
-#SBATCH --time=24:00:00
+#SBATCH --time=3:00:00
 #SBATCH --job-name=evaluation
+#SBATCH --partition=gpu
 #SBATCH --output=./slurm_outputs/%x_%j.out
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem-per-cpu=16G
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=32G
 #SBATCH --gres=gpu:rtx4090:1
-#SBATCH --exclude=gpu-biomed-05,gpu-biomed-25
 
 # Every evaluation step of one global config, sequentially, in ONE allocation (hence the
 # GPU: embedding and CancerFoundation reconstruction need it). The coordinator runs on
@@ -21,7 +21,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-/cluster/work/boeva/rquiles/CancerFoundationFusion}"
-CONFIG="${CONFIG:-$PROJECT_ROOT/evaluate/configs/example_evaluation.yaml}"
+CONFIG="${CONFIG:-$PROJECT_ROOT/evaluate/configs/sc_pretrain_evaluation.yaml}"
 CONDA_ENV="${CONDA_ENV:-bulkFM}"
 
 # Environment setup runs WITHOUT -e and -u: /etc/profile.d scripts read unset

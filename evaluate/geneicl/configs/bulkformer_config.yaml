@@ -11,7 +11,7 @@ geneicl_embed:            # python -m evaluate.geneicl.embed_suite (bionemo cont
   batch_size: 64
   embedder: bulkformer
   option: [input=log1p_cpm, repo=/cluster/work/boeva/rquiles/Codebases/Bulkformer-latest]
-  datasets: [GTEx, TARGET]   # a subset; default: every dataset of the suite
+  # datasets: [GTEx, TARGET]   # a subset; default: every dataset of the suite
 
 geneicl_probe:            # python -m evaluate.geneicl.run_probe (GeneICL eval env, CPU)
   # geneicl_python: /path/to/envs/geneicl-benchmark/bin/python   # run_probe.sh passes its env's python

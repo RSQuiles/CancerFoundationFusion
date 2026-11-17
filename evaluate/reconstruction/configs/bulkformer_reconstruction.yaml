@@ -17,8 +17,8 @@ mask_plan:            # python -m evaluate.reconstruction.mask_plan
 reconstruction:       # python -m evaluate.reconstruction.run_reconstruction
   plan: bulk:leiden_s0:test:r25
   group_by: [tissue_general]
-  batch_size: 16
-  model: bulk_only                  # a CancerFoundation model, or:
-  # reconstructor: bulkformer
-  # option: [repo=/path/to/bulkformer-latest, gene_column=gene_id]
-  # context: full
+  batch_size: 64
+  # model: bulk_only                  # a CancerFoundation model, or:
+  reconstructor: bulkformer
+  option: [repo=/cluster/work/boeva/rquiles/Codebases/Bulkformer-latest]
+  context: full

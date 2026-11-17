@@ -1,0 +1,166 @@
+# Evaluation of the sc_pretrain launch (experiments/configs/sc_pretrain.json): the training
+# objective of the single-cell model, all midrank 51-bin, same store, epochs and seed as
+# sc_midrank (the baseline, reused from sc_binning: MSE, MVC weight 1).
+#
+#   model                loss                    loss_weight_mvc
+#   sc_midrank           mse                     1      (baseline)
+#   sc_mr_ordinal        ordinal_cross_entropy   1
+#   sc_mr_corn           corn                    1
+#   sc_mr_mvc5           mse                     5
+#   sc_mr_ordinal_mvc5   ordinal_cross_entropy   5      (2x2 with the three above)
+#
+#   CONFIG=evaluate/configs/sc_pretrain_evaluation.yaml sbatch evaluate/run_evaluation.sh
+#   python -m evaluate.run_evaluation --config evaluate/configs/sc_pretrain_evaluation.yaml --list
+#
+# Three readings per model:
+#   1. gen-head context gain   reconstruction, row <model>: spearman_gain etc. = the model's
+#                              per-sample Spearman (zero AUROC) minus its gene-mean
+#                              baseline's on the same entries. Near 0 = it predicts each
+#                              gene's usual level, not this cell.
+#   2. MVC-head context gain   row <model>@mvc: the same from the MVC decoder, which sees
+#                              only the CLS cell embedding. How much of the cell the
+#                              embedding itself holds.
+#   3. scIB bio conservation   on tissue_general and on cell_type, PCA as a reference row.
+# Reconstruction is the gate (1 must clearly exceed 0, and zero / common-bin MAE must drop
+# below the baselines); 2 and 3 decide which objective gives better cell embeddings. All
+# five are midrank 51-bin, so their native metrics (MAE by bin, zero MAE) compare directly.
+#
+# Bulk check (block 5): the MVC head of bulk_pretrain on the bulk plan, next to its gen
+# head and BulkFormer. Bulk samples are dense, so if MVC works anywhere it is there; if it
+# is weak even on bulk, the MVC decoder or its weight is the problem, not sc sparsity. It
+# needs no new training and can run before the sc models exist:
+#   --only reconstruction.bulk_mvc reconstruction.compare_bulk reconstruction.plot_bulk
+#
+# Reused, not recomputed: pca_sc_leiden_s0 (sc_binning evaluation), sc_midrank's gen run on
+# the sc plan, bulk_pretrain's and bulkformer's runs on the bulk plan (bulk_sc_pretrain
+# evaluation), and both mask plans.
+
+project_root: /cluster/work/boeva/rquiles/CancerFoundationFusion
+
+shared:
+  root: /cluster/work/boeva/rquiles/unifiedFM_experiments
+
+default_environment: container
+environments:
+  container:                # bionemo image: CancerFoundation, GPU
+    command: [singularity, run, --nv,
+              --pwd, /cluster/work/boeva/rquiles/CancerFoundationFusion,
+              --bind, "/cluster/work/boeva/rquiles,/cluster/work/boeva/eheiss,/cluster/work/boeva/bulkFM",
+              /cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif,
+              python, -u]
+  host: {}                  # the env run_evaluation.sh activated (pandas, pyarrow, matplotlib, scib_metrics)
+
+tasks:
+  # ---- 1. embeddings/<model>/sc_test.h5ad ----------------------------------------------
+  # input_mode train_matched (bin the whole cell, then its top-ranked zeros and expressed
+  # genes, as in training). Same 20k stratified test rows as the sc_binning evaluation, so
+  # pca_sc_leiden_s0 from there is a valid reference and is not re-embedded.
+  embed:
+    shared:
+      split: leiden_s0
+      modalities: [sc]
+      parts: [test]
+      test_subset: 20000
+      stratify_by: [tissue_general]
+      input_mode: train_matched
+      zero_fraction: 0.4
+    steps:
+      embed_splits:
+        foreach: {model: [sc_midrank, sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5]}
+
+  # ---- 2. UMAPs of the single-cell test split -------------------------------------------
+  representation:
+    shared:
+      part: test
+      stratify_by: [tissue_general]
+      skip_unknown: true
+      labels: {tissue_general: Tissue, cell_type: Cell type, assay: Assay, dataset_id: Dataset}
+    steps:
+      umap:                       # -> results/representation/<model>/
+        args:
+          models: [sc_midrank, sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5, pca_sc_leiden_s0]
+          modality: sc
+          subsample: 20000
+          color: [tissue_general, cell_type, assay, dataset_id]
+          title: "{model}: {modality_name} ({part})"
+
+
+  # ---- 4. reconstruction on the single-cell plan, both heads ----------------------------
+  reconstruction:
+    steps:
+      cf_gen:                     # sc_midrank's gen run exists (sc_binning evaluation)
+        script: reconstruction
+        foreach: {model: [sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5]}
+        args: &sc_run
+          plan: &sc_plan sc:leiden_s0:test:r25
+          head: gen
+          group_by: [tissue_general]
+          batch_size: 16
+      cf_mvc:                     # -> results/tasks/reconstruction/<model>/<plan>_mvc/, row <model>@mvc
+        script: reconstruction
+        foreach: {model: [sc_midrank, sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5]}
+        args:
+          <<: *sc_run
+          head: mvc
+
+      compare:                    # -> results/assessment/reconstruction_sc_leiden_s0_test_r25_sc_pretrain/
+        environment: host
+        args:
+          plan: *sc_plan
+          models: &all_rows [sc_midrank, sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5,
+                             sc_midrank@mvc, sc_mr_ordinal@mvc, sc_mr_corn@mvc, sc_mr_mvc5@mvc,
+                             sc_mr_ordinal_mvc5@mvc]
+          name: sc_pretrain
+          baselines: true
+      # Figures -> results/tasks/reconstruction/_plots/<plan>/<name>/. Line plots take at most
+      # 8 rows, so all ten rows get the tables and the Spearman boxes, and each head gets
+      # every plot on its own.
+      plot:
+        script: reconstruction_plot
+        environment: host
+        args:
+          plan: *sc_plan
+          models: *all_rows
+          name: sc_pretrain
+          plots: [metrics_table, space_free_table, per_sample_spearman]
+          baselines: true
+      plot_gen:
+        script: reconstruction_plot
+        environment: host
+        args:
+          plan: *sc_plan
+          models: [sc_midrank, sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5]
+          name: sc_pretrain_gen
+          baselines: true
+      plot_mvc:
+        script: reconstruction_plot
+        environment: host
+        args:
+          plan: *sc_plan
+          models: [sc_midrank@mvc, sc_mr_ordinal@mvc, sc_mr_corn@mvc, sc_mr_mvc5@mvc, sc_mr_ordinal_mvc5@mvc]
+          name: sc_pretrain_mvc
+          baselines: true
+
+  # ---- 3. scIB bio conservation (bulkFM env: scib_metrics) ------------------------------
+  alignment:
+    shared:
+      part: test
+      modalities: [sc]
+      per_modality: ["sc=all"]
+      bio_only: true
+      n_jobs: 4
+      models: [sc_midrank, sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5, pca_sc_leiden_s0]
+    steps:
+      scib_tissue:                # -> results/assessment/scib_sc_pretrain_tissue/
+        script: scib
+        environment: host
+        args:
+          name: sc_pretrain_tissue
+          label_key: tissue_general
+      scib_cell_type:             # needs a cell_type column in the sc obs
+        script: scib
+        environment: host
+        continue_on_error: true
+        args:
+          name: sc_pretrain_cell_type
+          label_key: cell_type

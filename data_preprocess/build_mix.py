@@ -10,8 +10,8 @@ Sources, repeatable, in either form:
 - ``MODALITY:SPLIT[:PART]`` under the experiments layout (part defaults to ``train``);
 - ``PATH.h5ad=SPLIT_DIR[:PART]`` for any h5ad and split directory.
 
-    python build_mix.py --name sc_bulk_pb_tissue_s0 \\
-        --source single_cell:tissue_s0 bulk:tissue_s0 pseudobulk:tissue_s0 \\
+    python build_mix.py --name sc_bulk_pb_tissue_s0 \
+        --source single_cell:tissue_s0 bulk:tissue_s0 pseudobulk:tissue_s0 \
         --obs-columns tissue_general assay paired --pb-id-column pseudobulk_id
 
 The store goes to ``data/pipeline_ready/<name>/`` (or ``--out-dir``); a launch config

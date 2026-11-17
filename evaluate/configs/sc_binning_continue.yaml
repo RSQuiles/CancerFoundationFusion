@@ -1,0 +1,79 @@
+# Evaluation of the sc_binning launch (experiments/configs/sc_binning.json): sc_quantile
+# vs sc_midrank, the same single-cell model trained with the two binning methods.
+#
+#   CONFIG=evaluate/configs/sc_binning_evaluation.yaml sbatch evaluate/run_evaluation.sh
+#   python -m evaluate.run_evaluation --config evaluate/configs/sc_binning_evaluation.yaml --list
+#
+# Each model embeds and reconstructs with the binning it was trained with (stored in the
+# checkpoint as binning_method), so nothing here sets the method.
+#
+# Comparing the two in reconstruction: their targets are binned differently, so their
+# native numbers (MAE in bins, bin accuracy) are NOT on one scale. The reconstruction
+# figures put them in separate groups (bins51 vs bins51_midrank, each with its own
+# baselines) and compare them directly only on the space-free metrics (per-sample
+# Pearson/Spearman, non-zero Spearman, zero AUROC) in the group "all"; compare.py leaves
+# the native columns out for the same reason.
+
+project_root: /cluster/work/boeva/rquiles/CancerFoundationFusion
+
+shared:
+  root: /cluster/work/boeva/rquiles/unifiedFM_experiments
+
+default_environment: container
+environments:
+  container:                # bionemo image: CancerFoundation, GPU
+    command: [singularity, run, --nv,
+              --pwd, /cluster/work/boeva/rquiles/CancerFoundationFusion,
+              --bind, "/cluster/work/boeva/rquiles,/cluster/work/boeva/eheiss,/cluster/work/boeva/bulkFM",
+              /cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif,
+              python, -u]
+  host: {}                  # the env run_evaluation.sh activated (pandas, pyarrow, matplotlib, scib_metrics)
+
+# Colour keys tried on every UMAP; columns the sc file lacks are skipped with a warning.
+# cell_type is the label single-cell embeddings usually separate by first: in atlas data,
+# lung T cells sit next to blood T cells, so tissue is a weaker, secondary signal.
+tasks:
+  # ---- 3. scIB bio conservation on the sc test split (bulkFM env: scib_metrics) ------------
+  # One table per input mode and label (a run reads one variant for every model). Raw
+  # scores (scib.csv) compare across tables: same rows, same subsample. The PCA baseline
+  # is a row of the train_matched tables.
+  alignment:
+    shared:
+      part: test
+      modalities: [sc]
+      per_modality: ["sc=all"]
+      bio_only: true
+      n_jobs: 1
+    steps:
+      scib_tissue:
+        environment: host
+        script: scib
+        args:
+          name: sc_binning_tissue
+          models: [sc_quantile, sc_midrank, pca_sc_leiden_s0]
+          label_key: tissue_general
+      scib_tissue_legacy:
+        environment: host
+        script: scib
+        args:
+          name: sc_binning_tissue_legacy
+          models: [sc_quantile, sc_midrank]
+          variant: legacy_panel
+          label_key: tissue_general
+      scib_cell_type:             # needs a cell_type column in the sc obs
+        environment: host
+        script: scib
+        continue_on_error: true
+        args:
+          name: sc_binning_cell_type
+          models: [sc_quantile, sc_midrank, pca_sc_leiden_s0]
+          label_key: cell_type
+      scib_cell_type_legacy:
+        environment: host
+        script: scib
+        continue_on_error: true
+        args:
+          name: sc_binning_cell_type_legacy
+          models: [sc_quantile, sc_midrank]
+          variant: legacy_panel
+          label_key: cell_type

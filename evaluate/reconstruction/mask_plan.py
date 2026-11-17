@@ -11,7 +11,7 @@ share of zeros as ``zero_percentages`` does, and ``int((seq_len - 1) * mask_rati
 of them are masked; the rest are the context. Zeros can be masked too, as in training.
 
     # a split part under the experiments layout -> data/<mod>/splits/<split>/masks/<part>_<name>.npz
-    python -m evaluate.reconstruction.mask_plan --modality bulk --split leiden_s0 --part test \\
+    python -m evaluate.reconstruction.mask_plan --modality bulk --split leiden_s0 --part test \
         --name r25 --mask-ratio 0.25 --n-samples 2000 --stratify-by tissue_general
     # any h5ad
     python -m evaluate.reconstruction.mask_plan --input data.h5ad --out plan.npz --name r25

@@ -1,7 +1,7 @@
 #!/bin/bash -l
 #SBATCH --job-name=split
 #SBATCH --output=slurm_outputs/split_%j.out
-#SBATCH --time=16:00:00
+#SBATCH --time=8:00:00
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem-per-cpu=64G
@@ -27,13 +27,13 @@ SPLIT_NAME=leiden_s0
 SCRIPT_ARGS=(
     --input $DATA_DIR/bulk/BULK_pretraining.h5ad
     --out-dir $DATA_DIR/bulk/splits/$SPLIT_NAME
-    --fractions train=0.8 test=0.2
+    --fractions train=0.9 test=0.1
     --cluster leiden
     --group-by paired:0
     --seed 0
     --overwrite
-    # --build-store
-    # --store-dir $DATA_DIR/bulk/pipeline_ready/$SPLIT_NAME
+    --build-store
+    --store-dir $DATA_DIR/bulk/pipeline_ready/$SPLIT_NAME
 )
 
 # --stratify-by tissue_general   stratifies by fields in obs DataFrame
@@ -59,7 +59,7 @@ if [[ "$USE_LOCAL" -eq 1 ]]; then
     python -u split_train_test.py "${SCRIPT_ARGS[@]}"
 else
     echo "Running with singularity"
-    srun singularity run \
+    singularity run \
         --pwd /cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess \
         --bind /cluster/work/boeva/rquiles:/cluster/work/boeva/rquiles \
         /cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif \

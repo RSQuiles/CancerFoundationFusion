@@ -13,7 +13,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="/cluster/work/boeva/rquiles/CancerFoundationFusion"
-CONFIG="${CONFIG:-$PROJECT_ROOT/evaluate/alignment/example_scib_config.yaml}"
+CONFIG="${CONFIG:-$PROJECT_ROOT/evaluate/alignment/configs/bulk_only_scib_config.yaml}"
 CONDA_ENV="${CONDA_ENV:-bulkFM}"
 
 # Environment setup runs WITHOUT -e and -u: /etc/profile.d scripts read unset

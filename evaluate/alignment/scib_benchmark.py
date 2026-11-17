@@ -199,7 +199,7 @@ def run_benchmark(adata, args, row_keys: list[str], pre_key: str | None):
     bm = Benchmarker(
         adata, batch_key=args.batch_key, label_key=args.label_key, embedding_obsm_keys=row_keys,
         bio_conservation_metrics=BioConservation(
-            isolated_labels=True, silhouette_label=True, clisi_knn=True,
+            isolated_labels=not args.bio_only, silhouette_label=True, clisi_knn=True,
             nmi_ari_cluster_labels_kmeans=True, nmi_ari_cluster_labels_leiden=args.leiden),
         batch_correction_metrics=None if args.bio_only else BatchCorrection(
             bras=True, ilisi_knn=True, graph_connectivity=True, kbet_per_label=args.kbet,

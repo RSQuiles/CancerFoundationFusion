@@ -66,7 +66,7 @@ tasks:
       zero_fraction: 0.4
     steps:
       embed_splits:
-        foreach: {model: [sc_midrank, sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5]}
+        foreach: {model: [sc_midrank , sc_mr_corn, sc_mr_mvc5]}
 
   # ---- 2. UMAPs of the single-cell test split -------------------------------------------
   representation:
@@ -78,42 +78,19 @@ tasks:
     steps:
       umap:                       # -> results/representation/<model>/
         args:
-          models: [sc_midrank, sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5, pca_sc_leiden_s0]
+          models: [sc_midrank, sc_mr_corn, sc_mr_mvc5, pca_sc_leiden_s0]
           modality: sc
           subsample: 20000
-          color: [tissue_general, cell_type, assay, dataset_id]
+          color: [tissue_genera]
           title: "{model}: {modality_name} ({part})"
 
-  # ---- 3. scIB bio conservation (bulkFM env: scib_metrics) ------------------------------
-  alignment:
-    shared:
-      part: test
-      modalities: [sc]
-      per_modality: ["sc=all"]
-      bio_only: true
-      n_jobs: 4
-      models: [sc_midrank, sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5, pca_sc_leiden_s0]
-    steps:
-      scib_tissue:                # -> results/assessment/scib_sc_pretrain_tissue/
-        script: scib
-        environment: host
-        args:
-          name: sc_pretrain_tissue
-          label_key: tissue_general
-      scib_cell_type:             # needs a cell_type column in the sc obs
-        script: scib
-        environment: host
-        continue_on_error: true
-        args:
-          name: sc_pretrain_cell_type
-          label_key: cell_type
 
   # ---- 4. reconstruction on the single-cell plan, both heads ----------------------------
   reconstruction:
     steps:
       cf_gen:                     # sc_midrank's gen run exists (sc_binning evaluation)
         script: reconstruction
-        foreach: {model: [sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5]}
+        foreach: {model: [sc_mr_corn, sc_mr_mvc5]}
         args: &sc_run
           plan: &sc_plan sc:leiden_s0:test:r25
           head: gen
@@ -121,7 +98,7 @@ tasks:
           batch_size: 16
       cf_mvc:                     # -> results/tasks/reconstruction/<model>/<plan>_mvc/, row <model>@mvc
         script: reconstruction
-        foreach: {model: [sc_midrank, sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5]}
+        foreach: {model: [sc_midrank, sc_mr_corn, sc_mr_mvc5]}
         args:
           <<: *sc_run
           head: mvc
@@ -130,9 +107,9 @@ tasks:
         environment: host
         args:
           plan: *sc_plan
-          models: &all_rows [sc_midrank, sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5,
-                             sc_midrank@mvc, sc_mr_ordinal@mvc, sc_mr_corn@mvc, sc_mr_mvc5@mvc,
-                             sc_mr_ordinal_mvc5@mvc]
+          models: &all_rows [sc_midrank, sc_mr_corn, sc_mr_mvc5,
+                             sc_midrank@mvc, sc_mr_corn@mvc, sc_mr_mvc5@mvc
+                             ]
           name: sc_pretrain
           baselines: true
       # Figures -> results/tasks/reconstruction/_plots/<plan>/<name>/. Line plots take at most
@@ -152,7 +129,7 @@ tasks:
         environment: host
         args:
           plan: *sc_plan
-          models: [sc_midrank, sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5]
+          models: [sc_midrank, sc_mr_corn, sc_mr_mvc5]
           name: sc_pretrain_gen
           baselines: true
       plot_mvc:
@@ -160,34 +137,31 @@ tasks:
         environment: host
         args:
           plan: *sc_plan
-          models: [sc_midrank@mvc, sc_mr_ordinal@mvc, sc_mr_corn@mvc, sc_mr_mvc5@mvc, sc_mr_ordinal_mvc5@mvc]
+          models: [sc_midrank@mvc, sc_mr_corn@mvc, sc_mr_mvc5@mvc]
           name: sc_pretrain_mvc
           baselines: true
 
-      # ---- 5. bulk check: the MVC head of bulk_pretrain on the bulk plan ---------------
-      # Its gen run and bulkformer's are on disk (bulk_sc_pretrain evaluation); only the
-      # MVC run is new. Separate from the sc comparison: another plan, a quantile model.
-      bulk_mvc:
-        script: reconstruction
-        args:
-          model: bulk_pretrain
-          plan: &bulk_plan bulk:leiden_s0:test:r25
-          head: mvc
-          group_by: [tissue_general]
-          batch_size: 16
-      compare_bulk:               # -> results/assessment/reconstruction_bulk_leiden_s0_test_r25_bulk_mvc/
-        script: compare
+  # ---- 3. scIB bio conservation (bulkFM env: scib_metrics) ------------------------------
+  alignment:
+    shared:
+      part: test
+      modalities: [sc]
+      per_modality: ["sc=all"]
+      bio_only: true
+      n_jobs: 1
+      models: [sc_midrank, sc_mr_corn, sc_mr_mvc5, pca_sc_leiden_s0]
+    steps:
+      scib_tissue:                # -> results/assessment/scib_sc_pretrain_tissue/
+        script: scib
         environment: host
         args:
-          plan: *bulk_plan
-          models: &bulk_rows [bulk_pretrain, bulk_pretrain@mvc, bulkformer]
-          name: bulk_mvc
-          baselines: true
-      plot_bulk:                  # -> results/tasks/reconstruction/_plots/<bulk plan>/bulk_mvc/
-        script: reconstruction_plot
+          name: sc_pretrain_tissue
+          bio_only: true
+          label_key: tissue_general
+      scib_cell_type:             # needs a cell_type column in the sc obs
+        script: scib
         environment: host
+        continue_on_error: true
         args:
-          plan: *bulk_plan
-          models: *bulk_rows
-          name: bulk_mvc
-          baselines: true
+          name: sc_pretrain_cell_type
+          label_key: cell_type

@@ -10,7 +10,7 @@
     "log_interval": 3,
     "save_dir": "${work}/outputs/save_CFF/tests/bulk_only",
     "wandb_entity": "rquiles",
-    "wandb": "tests",
+    "wandb": "unifiedFM",
     "compile": false,
     "ckpt_every_n_steps": 50,
     "save_every": true

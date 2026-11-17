@@ -3,7 +3,7 @@
 # keys apply to both scripts, the umap: / alignment: blocks to one of them.
 # root: /cluster/work/boeva/rquiles/unifiedFM_experiments
 root: /cluster/work/boeva/rquiles/unifiedFM_experiments
-models: [bulk_only]
+models: [bulk_pretrain]
 part: test
 stratify_by: [tissue_general]
 skip_unknown: true
