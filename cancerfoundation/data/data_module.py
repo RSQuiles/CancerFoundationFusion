@@ -190,11 +190,11 @@ class BulkSCDataModule(pl.LightningDataModule):
         paired_column: Optional[str] = "paired",
         pb_id_column: Optional[str] = None,
         verbose: bool = False,
-        class_aware_cdd: bool = False,
-        cdd_exclude_labels: Optional[List[str]] = None,
-        cdd_min_class_count: int = 2,
-        n_cdd_classes: int = 8,
-        cdd_bulk_class_frac: float = 0.6,
+        class_aware: bool = False,
+        class_exclude_labels: Optional[List[str]] = None,
+        class_min_count: int = 2,
+        class_aware_n_classes: int = 8,
+        class_aware_bulk_frac: float = 0.6,
         sampler_seed: Optional[int] = None,
         binning_method: str = "quantile",
     ):
@@ -237,11 +237,11 @@ class BulkSCDataModule(pl.LightningDataModule):
         self.paired_column = paired_column
         self.pb_id_column = pb_id_column
         self.verbose = verbose
-        self.class_aware_cdd = class_aware_cdd
-        self.cdd_exclude_labels = cdd_exclude_labels or ["unknown"]
-        self.cdd_min_class_count = cdd_min_class_count
-        self.n_cdd_classes = n_cdd_classes
-        self.cdd_bulk_class_frac = cdd_bulk_class_frac
+        self.class_aware = class_aware
+        self.class_exclude_labels = class_exclude_labels or ["unknown"]
+        self.class_min_count = class_min_count
+        self.class_aware_n_classes = class_aware_n_classes
+        self.class_aware_bulk_frac = class_aware_bulk_frac
 
         # Setup token values based on embedding style
         if self.input_style == "category":
@@ -320,11 +320,11 @@ class BulkSCDataModule(pl.LightningDataModule):
             if train:
                 # Resolve CDD exclude labels (e.g. "unknown") to group codes in the
                 # pb_group_column (tissue) space, for class-aware sampling.
-                cdd_exclude_group_codes = []
-                if self.class_aware_cdd and self.pb_group_column:
+                class_aware_exclude_group_codes = []
+                if self.class_aware and self.pb_group_column:
                     gmap = self.dataset.mapping.get(self.pb_group_column, {})
-                    cdd_exclude_group_codes = [
-                        gmap[lbl] for lbl in self.cdd_exclude_labels if lbl in gmap
+                    class_aware_exclude_group_codes = [
+                        gmap[lbl] for lbl in self.class_exclude_labels if lbl in gmap
                     ]
                 sampler = BulkSCSampler(
                     dataset=dataset,
@@ -342,11 +342,11 @@ class BulkSCDataModule(pl.LightningDataModule):
                     verbose=self.verbose,
                     seed=0,
                     world_size=self.trainer.world_size,
-                    class_aware_cdd=self.class_aware_cdd,
-                    cdd_exclude_group_codes=cdd_exclude_group_codes,
-                    cdd_min_class_count=self.cdd_min_class_count,
-                    n_cdd_classes=self.n_cdd_classes,
-                    cdd_bulk_class_frac=self.cdd_bulk_class_frac,
+                    class_aware=self.class_aware,
+                    class_aware_exclude_group_codes=class_aware_exclude_group_codes,
+                    class_min_count=self.class_min_count,
+                    class_aware_n_classes=self.class_aware_n_classes,
+                    class_aware_bulk_frac=self.class_aware_bulk_frac,
                 )
             else:
                 # Val: deterministic sequential batches so all ranks see

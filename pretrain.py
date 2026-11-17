@@ -298,17 +298,26 @@ def main(input_args=None):
             "--monitor-losses is only supported with --unified: the monitored auxiliary "
             "losses operate on the bulk/pseudobulk embeddings injected only in unified mode."
         )
-    if "cdd" in args.monitor_losses and args.cdd_class_column not in args.conditions:
-        print(
-            f"[monitor] 'cdd' requested for monitoring but --cdd-class-column "
-            f"'{args.cdd_class_column}' is not in --conditions {args.conditions}; "
-            f"loss_cdd_monitor will not be logged."
-        )
+    conditions = args.conditions or []
+    for name in ("cdd", "contrastive"):
+        if name in args.monitor_losses and args.class_column not in conditions:
+            print(
+                f"[monitor] '{name}' requested for monitoring but --class-column "
+                f"'{args.class_column}' is not in --conditions {conditions}; "
+                f"loss_{name}_monitor will not be logged."
+            )
     if args.cdd and not args.unified:
         raise ValueError("The CDD loss (--cdd) is only supported with unified_fm=True.")
-    if args.cdd and args.cdd_class_column not in args.conditions:
-        raise ValueError(
-            f"--cdd-class-column '{args.cdd_class_column}' must be one of --conditions {args.conditions}."
+    for flag, on in (("--cdd", args.cdd), ("--contrastive-training", args.contrastive_training)):
+        if on and args.class_column not in conditions:
+            raise ValueError(
+                f"{flag} needs --class-column '{args.class_column}' in --conditions {conditions} "
+                f"(the class label). Leave it out of --condition-encoders to keep it label-only."
+            )
+    if args.contrastive_training and not args.class_aware:
+        print(
+            "[contrastive] --class-aware is off: batches draw bulk and pseudobulk tissues "
+            "independently, so few rows have a same-tissue partner in the other domain."
         )
     if args.condition_encoders is not None:
         # Effective condition set includes the auto-added "modality" under --unified.
@@ -321,16 +330,16 @@ def main(input_args=None):
                 f"--condition-encoders {sorted(unknown_enc)} must be a subset of the "
                 f"conditions {effective_conditions}."
             )
-    if args.cdd_class_aware and not args.pb_group_column:
-        raise ValueError("--cdd-class-aware requires --pb-group-column (the tissue column).")
-    if not 0.0 <= args.cdd_bulk_class_frac <= 1.0:
+    if args.class_aware and not args.pb_group_column:
+        raise ValueError("--class-aware requires --pb-group-column (the tissue column).")
+    if not 0.0 <= args.class_aware_bulk_frac <= 1.0:
         raise ValueError(
-            f"--cdd-bulk-class-frac must be in [0, 1], got {args.cdd_bulk_class_frac}."
+            f"--class-aware-bulk-frac must be in [0, 1], got {args.class_aware_bulk_frac}."
         )
-    # --cdd-class-aware composes with --paired-sampling: the sampler still yields a
+    # --class-aware composes with --paired-sampling: the sampler still yields a
     # paired batch every paired_every_n steps and a class-aware batch otherwise.
-    # The CDD loss is computed only on the (class-aware) non-paired batches; paired
-    # batches use the paired alignment loss instead.
+    # CDD and contrastive are computed only on the (class-aware) non-paired batches;
+    # paired batches use the paired alignment loss instead.
 
     # CDD's warmup exists so the marginal MMD can pull the bulk and pseudobulk clouds
     # together before CDD ramps in; without an aligner the warmup does nothing. Enable
@@ -379,10 +388,11 @@ def main(input_args=None):
         paired_column=args.paired_column,
         pb_id_column=args.pb_id_column,
         verbose=args.verbose,
-        class_aware_cdd=args.cdd_class_aware,
-        cdd_exclude_labels=args.cdd_exclude_labels,
-        cdd_min_class_count=args.cdd_min_class_count,
-        cdd_bulk_class_frac=args.cdd_bulk_class_frac,
+        class_aware=args.class_aware,
+        class_exclude_labels=args.class_exclude_labels,
+        class_min_count=args.class_min_count,
+        class_aware_bulk_frac=args.class_aware_bulk_frac,
+        class_aware_n_classes=args.class_aware_n_classes,
         sampler_seed=args.seed,
     )
     # Flushed, so a stall while opening the store names itself in the log instead of the
@@ -450,6 +460,7 @@ def main(input_args=None):
         their_init_weights=args.their_init_weights,
         # Unified FM parameters
         contrastive=args.contrastive_training,
+        contrastive_temperature=args.contrastive_temperature,
         mmd=args.mmd,
         aggregation=args.agg_consistency,
         agg_fn=args.agg_fn,
@@ -471,10 +482,10 @@ def main(input_args=None):
         # Contrastive Domain Discrepancy (CAN)
         cdd=args.cdd,
         weight_cdd=args.loss_weight_cdd,
-        cdd_class_column=args.cdd_class_column,
-        cdd_min_class_count=args.cdd_min_class_count,
-        cdd_exclude_labels=args.cdd_exclude_labels,
-        cdd_class_aware=args.cdd_class_aware,
+        class_column=args.class_column,
+        class_min_count=args.class_min_count,
+        class_exclude_labels=args.class_exclude_labels,
+        class_aware=args.class_aware,
         cdd_warmup_steps=args.cdd_warmup_steps,
         cdd_ramp_steps=args.cdd_ramp_steps,
         cdd_mmd_final_weight=args.cdd_mmd_final_weight,

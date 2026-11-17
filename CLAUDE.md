@@ -34,10 +34,26 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
   hparam (old checkpoints = quantile) and used by the collator, `embed()` and the
   reconstruction targets; a change on resume is reported. `python scripts/check_binning_method.py`
   self-checks it (the collator part needs torch).
+- **Class labels and class-aware sampling** (shared by `--cdd` and `--contrastive-training`):
+  `--class-column` (default `tissue_general`, must be in `--conditions`; keep it out of
+  `--condition-encoders` to make it label-only), `--class-exclude-labels` (default
+  `unknown`), `--class-min-count` (rows a class needs in BOTH domains of a batch, default
+  2). `--class-aware` (needs `--pb-group-column`) draws the pseudobulk and
+  `--class-aware-bulk-frac` (0.6) of the bulk of each non-paired batch from the same
+  `--class-aware-n-classes` (8) tissues. The old names `--cdd-class-column`,
+  `--cdd-exclude-labels`, `--cdd-min-class-count`, `--cdd-class-aware` and
+  `--cdd-bulk-class-frac` are accepted as flags, config keys and model hparams.
+- `--contrastive-training`: tissue-aware cross-modal InfoNCE (supervised-contrastive
+  "L_out" form). A bulk row's positives are the pseudobulks of its class, its candidates
+  all valid pseudobulks, and the reverse; the loss averages both directions. Same-modality
+  rows and single cells take no part, and there is no VICReg term (the other-tissue
+  negatives keep the embedding from collapsing). Temperature `--contrastive-temperature`
+  (0.1). Skipped on paired batches; use `--class-aware` so batches hold matching tissues.
+  `python scripts/check_contrastive_loss.py` self-checks it (part 2 needs torch).
 - `--cdd`: Contrastive Domain Discrepancy (class-conditional MMD between pseudobulk and
-  bulk, keyed on `--cdd-class-column`), **fully supervised on the given labels**: a tissue
-  counts only when it is in both domains of a batch (≥ `--cdd-min-class-count`), so
-  `--cdd-exclude-labels` (default `unknown`) and bulk-only tissues get no CDD signal.
+  bulk, keyed on `--class-column`), **fully supervised on the given labels**: a tissue
+  counts only when it is in both domains of a batch (≥ `--class-min-count`), so
+  `--class-exclude-labels` (default `unknown`) and bulk-only tissues get no CDD signal.
   `--cdd-warmup-steps` (old name `--cdd-cluster-warmup-steps`, also accepted as a config
   key) keeps CDD at 0 while MMD aligns, then `--cdd-ramp-steps` hands MMD over to CDD.
   The former target-label inference (`--cdd-infer-labels` and the `--cdd-cluster-*`
@@ -131,6 +147,18 @@ python bulk_sc_data_preprocessing.py --h5ad-path a.h5ad b.h5ad --data-path out/ 
   records `verified` and `transient_dtypes`. Stores built before this fix are corrupt if
   their source had more than 2^31 entries: check them with
   `data_preprocess/check_store_alignment.py` (`--only-diagnose` for the mechanism check).
+- **Which losses a store supports**: `python data_preprocess/check_store_losses.py
+  --store DIR | --mix NAME | --pipeline-ready MOD:SPLIT [--losses ...] [--pb-source
+  both|on-the-fly|precomputed]` reads only obs/mapping/vocab/store.json (no torch) and
+  checks, per loss (all by default: reconstruction, mmd, dat, contrastive, cdd,
+  class_aware, aggregation, paired) and per pseudobulk source, what the loaders and
+  sampler will need: modality labels `bulk`/`sc`/`--pb-label`, the class and group
+  columns, classes shared by bulk and source (with the share of bulk rows they cover),
+  rows per tissue in a class-aware batch, `--pb-id-column` links of precomputed
+  pseudobulks to cells, and pair ids shared by pseudobulk and bulk (code 0 = unpaired).
+  Training options it depends on take the training defaults (`--class-min-count`,
+  `--batch-size`, `--bulk-ratio`, ...). Exit code 1 when a requested loss is not ready in
+  any source mode.
 - **Training opens stores read-only** (`dataset.open_store_memmap`, SCDL `Mode.READ`).
   SCDL's default `r+` maps the arrays shared and writable, and several jobs on one large
   store then stalled in `datamodule.setup()` right after `Seed set to 0`. `pretrain.py`

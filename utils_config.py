@@ -638,7 +638,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--precomputed-pb",
         action="store_true",
-        help="Draw precomputed pseudobulk rows (modality --pb-label) directly for standard and class-aware CDD batches instead of aggregating single cells on the fly. Requires --unified and --pb-label. Combining with --agg-consistency additionally requires --pb-id-column, which is how the constituent single cells of each precomputed pseudobulk are found. Default is False.",
+        help="Draw precomputed pseudobulk rows (modality --pb-label) directly for standard and class-aware batches instead of aggregating single cells on the fly. Requires --unified and --pb-label. Combining with --agg-consistency additionally requires --pb-id-column, which is how the constituent single cells of each precomputed pseudobulk are found. Default is False.",
     )
 
     parser.add_argument(
@@ -680,7 +680,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--contrastive-training",
         action="store_true",
-        help="Whether to include a contrastive loss that brings the pseudobulk and real bulk samples closer together in the embedding space. Default is False.",
+        help="Tissue-aware cross-modal InfoNCE between real bulk and pseudobulk: a bulk row's positives are the pseudobulks of its tissue (--class-column), its negatives the pseudobulks of other tissues, and the reverse. Single cells take no part; excluded labels (--class-exclude-labels) never count. Requires --unified and --class-column in --conditions; --class-aware sampling is recommended so batches hold matching tissues. Default is False.",
+    )
+    parser.add_argument(
+        "--contrastive-temperature",
+        type=float,
+        default=0.1,
+        help="Temperature of the contrastive InfoNCE (cosine similarities divided by it). Default 0.1.",
     )
 
     parser.add_argument(
@@ -700,35 +706,53 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable the Contrastive Domain Discrepancy (CDD) loss: class-conditional MMD across pseudobulk (source) and real bulk (target), keyed on the tissue label. Requires --unified. Default is False.",
     )
+    # --- Class labels and class-aware sampling, shared by --cdd and --contrastive-training ---
     parser.add_argument(
+        "--class-column",
         "--cdd-class-column",
+        dest="class_column",
         type=str,
         default="tissue_general",
-        help="Condition column used as the CDD class label (tissue). Must be one of --conditions. Default 'tissue_general'.",
+        help="Condition column holding the class (tissue) label used by --cdd and --contrastive-training. Must be one of --conditions. --cdd-class-column is the old name. Default 'tissue_general'.",
     )
     parser.add_argument(
+        "--class-min-count",
         "--cdd-min-class-count",
+        dest="class_min_count",
         type=int,
         default=2,
-        help="Minimum samples a class needs in BOTH domains within a batch to contribute to CDD. Default 2.",
+        help="Minimum rows a class needs in BOTH domains within a batch to count in --cdd / --contrastive-training, and in the class-aware sampler's pools. --cdd-min-class-count is the old name. Default 2.",
     )
     parser.add_argument(
+        "--class-exclude-labels",
         "--cdd-exclude-labels",
+        dest="class_exclude_labels",
         type=str,
         nargs="+",
         default=["unknown"],
-        help="Tissue label names to exclude from CDD (not real classes, e.g. inferred 'unknown' bulk). Default ['unknown'].",
+        help="Class label names that are not real classes (e.g. 'unknown'): never used by --cdd / --contrastive-training nor drawn as a class-aware tissue. --cdd-exclude-labels is the old name. Default ['unknown'].",
     )
     parser.add_argument(
+        "--class-aware",
         "--cdd-class-aware",
+        dest="class_aware",
         action="store_true",
-        help="Use class-aware sampling so each batch contains the same tissues in both bulk and pseudobulk (needed for CDD to be non-trivial). Composable with --paired-sampling (CDD is skipped on paired batches). Default is False.",
+        help="Class-aware sampling: each non-paired batch draws its pseudobulk and part of its bulk from the same K tissues, so --cdd and --contrastive-training see matching classes in both domains. Requires --pb-group-column. Composable with --paired-sampling. --cdd-class-aware is the old name. Default is False.",
     )
     parser.add_argument(
+        "--class-aware-bulk-frac",
         "--cdd-bulk-class-frac",
+        dest="class_aware_bulk_frac",
         type=float,
         default=0.6,
-        help="Fraction of the bulk slots in a class-aware batch drawn from the batch's chosen tissues (the rest are drawn freely from ALL bulk, so every bulk row still trains). Only used with --cdd-class-aware. Default 0.6.",
+        help="Fraction of the bulk slots in a class-aware batch drawn from the batch's chosen tissues (the rest are drawn freely from ALL bulk, so every bulk row still trains). --cdd-bulk-class-frac is the old name. Default 0.6.",
+    )
+    parser.add_argument(
+        "--class-aware-n-classes",
+        dest="class_aware_n_classes",
+        type=int,
+        default=8,
+        help="Number of tissues K a class-aware batch is spread over. Default 8.",
     )
     parser.add_argument(
         "--cdd-warmup-steps",
@@ -869,7 +893,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Compute and log these auxiliary losses for monitoring WITHOUT adding them to "
              "the training gradient (logged as train/loss_<name>_monitor). Lets you gauge "
              "whether a disabled loss carries a meaningful signal. Requires --unified (and, "
-             "for 'cdd', --cdd-class-column present in --conditions).",
+             "for 'cdd' and 'contrastive', --class-column present in --conditions).",
     )
 
     return parser
@@ -920,7 +944,14 @@ def _parser_dest_names(parser: argparse.ArgumentParser):
     return {action.dest for action in parser._actions if action.dest != "help"}
 
 # Config keys that were renamed: old -> new. The old key is accepted and translated.
-RENAMED_CONFIG_KEYS = {"cdd_cluster_warmup_steps": "cdd_warmup_steps"}
+RENAMED_CONFIG_KEYS = {
+    "cdd_cluster_warmup_steps": "cdd_warmup_steps",
+    "cdd_class_column": "class_column",
+    "cdd_min_class_count": "class_min_count",
+    "cdd_exclude_labels": "class_exclude_labels",
+    "cdd_class_aware": "class_aware",
+    "cdd_bulk_class_frac": "class_aware_bulk_frac",
+}
 # Config keys of removed features, refused with the reason.
 REMOVED_CONFIG_KEYS = {
     key: "CDD target-label inference was removed; CDD now uses the given tissue labels only"

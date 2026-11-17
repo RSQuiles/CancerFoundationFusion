@@ -59,6 +59,7 @@ class TransformerModule(nn.Module):
         attn_impl: str = "mha",
         # Unified FM parameters
         contrastive: bool = False,
+        contrastive_temperature: float = 0.1,
         mmd: bool = False,
         aggregation: bool = False,
         agg_fn: Optional[str] = None,
@@ -80,9 +81,9 @@ class TransformerModule(nn.Module):
         # Contrastive Domain Discrepancy (CAN) parameters
         cdd: bool = False,
         weight_cdd: float = 0.3,
-        cdd_class_column: str = "tissue_general",
-        cdd_min_class_count: int = 2,
-        cdd_exclude_class_codes: Optional[list[int]] = None,
+        class_column: str = "tissue_general",
+        class_min_count: int = 2,
+        class_exclude_codes: Optional[list[int]] = None,
         mask_value: float = -1,
     ):
         """Initializes the TransformerModule.
@@ -114,7 +115,8 @@ class TransformerModule(nn.Module):
             weight_conditionloss (float): Weight for the condition prediction loss in DAT.
             dat_scale (float): Scale factor for the gradient reversal layer in DAT.
             normalise_bins (bool): Whether to apply a sigmoid to the output of the decoders.
-            contrastive (bool): If True, enable contrastive learning. It brings the pseudobulk and real bulk samples closer together in the embedding space. Defaults to False.
+            contrastive (bool): If True, enable the tissue-aware cross-modal InfoNCE between bulk and pseudobulk (see modality_contrastive_loss). Defaults to False.
+            contrastive_temperature (float): Its temperature. Defaults to 0.1.
             aggregation (bool): If True, enable aggregation consistency losses. Defaults to False.
             agg_fn (Optional[str]): The function to use for aggregating single-cell embeddings into pseudobulk embeddings. Defaults to "mean".
         """
@@ -158,6 +160,7 @@ class TransformerModule(nn.Module):
         self.grad_checkpoint = grad_checkpoint
         self.attn_impl = attn_impl
         self.contrastive = contrastive
+        self.contrastive_temperature = contrastive_temperature
         self.mmd = mmd
         self.aggregation = aggregation
         self.agg_fn = agg_fn
@@ -179,12 +182,13 @@ class TransformerModule(nn.Module):
         # under train/loss_<name>_monitor when the corresponding loss is disabled.
         self.monitor_losses = set(monitor_losses or ())
 
-        # Contrastive Domain Discrepancy (CAN) configuration
+        # Contrastive Domain Discrepancy (CAN) configuration; the class label settings
+        # are shared with the contrastive loss.
         self.cdd = cdd
         self.weight_cdd = weight_cdd
-        self.cdd_class_column = cdd_class_column
-        self.cdd_min_class_count = cdd_min_class_count
-        self.cdd_exclude_class_codes = tuple(cdd_exclude_class_codes or ())
+        self.class_column = class_column
+        self.class_min_count = class_min_count
+        self.class_exclude_codes = tuple(class_exclude_codes or ())
         # Handover schedule, refreshed each step by the LightningModule. Defaults are
         # the post-ramp values so a module driven without the schedule (tests, direct
         # use) behaves as if warmup is already over.
@@ -1014,28 +1018,27 @@ class TransformerModule(nn.Module):
                     loss += self.weight_dat * condition_loss / len(self.grad_reverse_discriminators)
                     loss_dict["condition_" + condition] = condition_loss.detach() / len(self.grad_reverse_discriminators) * self.weight_dat
 
-        # Contrastive loss: if enabled, it brings the pseudobulk and real bulk samples closer together in the embedding space.
-        # Skipped for paired batches: the all-positive InfoNCE treats every (bulk[i], pb[j])
-        # pair as a positive, which contradicts the 1-to-1 pairing enforced by the paired
-        # alignment loss. VICReg collapse-prevention is still applied via modality_contrastive_loss
-        # in non-paired batches; paired batches rely solely on the paired alignment loss for signal.
+        # Contrastive loss: tissue-aware cross-modal InfoNCE. Bulk and pseudobulk of the
+        # same class (class_column) are positives, other classes negatives; single cells
+        # take no part. Skipped on paired batches, which use the 1-to-1 paired alignment
+        # loss, and when the class label is not in the batch conditions.
         want_contrastive = self.contrastive or "contrastive" in self.monitor_losses
-        if want_contrastive and not is_paired_batch and not skip_unified_losses:
+        if (
+            want_contrastive
+            and not is_paired_batch
+            and not skip_unified_losses
+            and self.class_column in tensors["conditions"]
+        ):
             embeddings = output_dict["embeddings"]
             modalities = tensors["conditions"]["modality"]
-            assert len(embeddings) == len(
-                modalities
-            ), "Embeddings and modalities tensors must have the same batch size"
-
-            # sc_for_pb cells have modality=1 but are pseudobulk constituents, not free
-            # SC cells. Including them as hard negatives opposes the aggregation consistency
-            # loss, which pulls pseudobulk toward their mean. Mask them out with sentinel -1
-            # so they fall outside every == k selector inside modality_contrastive_loss.
-            if "is_sc_for_pb" in tensors and tensors["is_sc_for_pb"].any():
-                modalities = modalities.clone()
-                modalities[tensors["is_sc_for_pb"] == 1] = -1
-
-            loss_contrastive = self.modality_contrastive_loss(embeddings, modalities)
+            loss_contrastive = self.modality_contrastive_loss(
+                embeddings,
+                modalities,
+                tensors["conditions"][self.class_column],
+                temperature=self.contrastive_temperature,
+                exclude_class_codes=self.class_exclude_codes,
+                min_class_count=self.class_min_count,
+            )
             if self.contrastive:
                 loss = loss + self.weight_contrastive * loss_contrastive
                 loss_dict["loss_contrastive"] = loss_contrastive.detach() * self.weight_contrastive
@@ -1086,18 +1089,18 @@ class TransformerModule(nn.Module):
             want_cdd
             and not is_paired_batch
             and not skip_unified_losses
-            and self.cdd_class_column in tensors["conditions"]
+            and self.class_column in tensors["conditions"]
         ):
             embeddings = output_dict["embeddings"]
             modalities = tensors["conditions"]["modality"]
             emb = embeddings[:, 0, :]  # CLS token, matches modality_mmd_loss
-            tissue = tensors["conditions"][self.cdd_class_column].long().reshape(-1)
+            tissue = tensors["conditions"][self.class_column].long().reshape(-1)
             src_m = modalities == 2  # pseudobulk = source
             tgt_m = modalities == 0  # real bulk   = target
             loss_cdd = self._cdd_loss(
                 emb[src_m], tissue[src_m], emb[tgt_m], tissue[tgt_m],
-                min_class_count=self.cdd_min_class_count,
-                exclude_class_codes=self.cdd_exclude_class_codes,
+                min_class_count=self.class_min_count,
+                exclude_class_codes=self.class_exclude_codes,
             )
             if self.cdd and self._cdd_w > 0:
                 loss = loss + self._cdd_w * loss_cdd
@@ -1222,124 +1225,76 @@ class TransformerModule(nn.Module):
         self,
         embeddings: torch.Tensor,
         modalities: torch.Tensor,
+        labels: torch.Tensor,
         temperature: float = 0.1,
+        exclude_class_codes: tuple = (),
+        min_class_count: int = 1,
         use_cls_token: bool = True,
-        lambda_: float = 25.0, # invariance
-        mu: float = 25.0, # variance
-        nu: float = 1.0, # covariance
-        eps: float = 1e-4,
     ) -> torch.Tensor:
-        """
-        Wrapper for bulk-pseudobulk alignment.
+        """Tissue-aware cross-modal InfoNCE between real bulk and pseudobulk.
 
-        Modality convention (from BulkSCCollator):
-            0 = real bulk      → anchors in fwd, positives in bwd
-            1 = single-cell    → hard negatives in both directions
-            2 = pseudobulk     → positives in fwd, anchors in bwd
+        Supervised-contrastive ("L_out" form, Khosla et al. 2020) across the two
+        domains only. A bulk anchor's positives are the pseudobulks of its class, its
+        candidates every valid pseudobulk; the pseudobulk -> bulk direction mirrors it,
+        and the loss is the mean of both directions::
+
+            L_i = -1/|P(i)| * sum_{j in P(i)} log( exp(s_ij/t) / sum_{k in A} exp(s_ik/t) )
+
+        with ``s`` the cosine similarity of CLS embeddings. Same-modality rows are
+        neither positives nor candidates, and single cells take no part. A row counts
+        only with a label >= 0 that is not in ``exclude_class_codes``; it is an anchor
+        only when its class has >= ``min_class_count`` valid rows in BOTH domains of
+        the batch (rows of other classes still serve as negatives). Without an anchor
+        the loss is 0.
+
+        Modality convention (BulkSCCollator): 0 = real bulk, 1 = single cell,
+        2 = pseudobulk.
 
         embeddings : (B, L, D) or (B, D)
-        modalities  : (B,)
+        modalities, labels : (B,)
         """
-        # print("Performing VICReg with Symmetric Multi-Positive InfoNCE")
-        assert embeddings.size(0) == modalities.size(0), \
-            "Embeddings and modalities tensors must have the same batch size"
-
-        # Reduce sequence dim → (B, D)
         if embeddings.dim() == 3:
             embeddings = embeddings[:, 0, :] if use_cls_token else embeddings.mean(dim=1)
-
         assert embeddings.dim() == 2, f"Expected (B, D), got {embeddings.shape}"
-        assert modalities.dim() == 1, f"Expected (B,), got {modalities.shape}"
+        assert embeddings.size(0) == modalities.size(0) == labels.numel(), \
+            "Embeddings, modalities and labels must have the same batch size"
+        zero = embeddings.new_zeros(())
 
-        # Split by modality
-        bulk_emb = embeddings[modalities == 0]   # (N0, D)
-        sc_emb   = embeddings[modalities == 1]   # (N1, D)
-        pb_emb   = embeddings[modalities == 2]   # (N2, D)
+        labels = labels.long().reshape(-1)
+        valid = labels >= 0
+        if exclude_class_codes:
+            excluded = torch.as_tensor(list(exclude_class_codes), dtype=labels.dtype, device=labels.device)
+            valid = valid & ~torch.isin(labels, excluded)
+        b_sel = valid & (modalities == 0)
+        p_sel = valid & (modalities == 2)
+        if not b_sel.any() or not p_sel.any():
+            return zero
 
-        if bulk_emb.size(0) == 0:
-            raise ValueError("No modality-0 (bulk) samples in batch.")
-        if pb_emb.size(0) == 0:
-            raise ValueError("No modality-2 (pseudobulk) samples in batch.")
+        # float32 for the similarities and the log-sum-exp (bf16 is too coarse at t=0.1).
+        b = F.normalize(embeddings[b_sel].float(), dim=1)
+        p = F.normalize(embeddings[p_sel].float(), dim=1)
+        b_lab, p_lab = labels[b_sel], labels[p_sel]
+        sim = (b @ p.t()) / temperature                      # (Nb, Np)
+        pos = b_lab.unsqueeze(1) == p_lab.unsqueeze(0)       # (Nb, Np)
 
-        sc_emb = sc_emb if sc_emb.size(0) > 0 else None
+        # Anchor iff its class has >= m rows in both domains (same rule both ways).
+        m = max(1, int(min_class_count))
+        b_same = (b_lab.unsqueeze(1) == b_lab.unsqueeze(0)).sum(1)
+        p_same = (p_lab.unsqueeze(1) == p_lab.unsqueeze(0)).sum(1)
+        b_anchor = (pos.sum(1) >= m) & (b_same >= m)
+        p_anchor = (pos.sum(0) >= m) & (p_same >= m)
+        if not b_anchor.any():
+            return zero
 
-        inv_loss = self.symmetric_multipositive_infonce(
-            bulk_emb, pb_emb, sc_emb, temperature=temperature
-        )
-        var_loss, cov_loss = self.vicreg_loss(bulk_emb, pb_emb, eps=eps)
+        def _direction(s: torch.Tensor, positives: torch.Tensor, anchors: torch.Tensor) -> torch.Tensor:
+            log_prob = s - torch.logsumexp(s, dim=1, keepdim=True)
+            mean_pos = (log_prob * positives).sum(1) / positives.sum(1).clamp_min(1)
+            return -mean_pos[anchors].mean()
 
-        return lambda_ * inv_loss + mu * var_loss + nu * cov_loss
-
-
-    def symmetric_multipositive_infonce(
-        self,
-        bulk_emb: torch.Tensor,
-        pb_emb: torch.Tensor,
-        sc_emb: torch.Tensor | None = None,
-        temperature: float = 0.1,
-    ) -> torch.Tensor:
-
-        has_sc = sc_emb is not None and sc_emb.size(0) > 0
-        if not has_sc:
-            raise ValueError(
-                "SC samples are required as hard negatives for the symmetric "
-                "multi-positive InfoNCE loss. Ensure sc_ratio > 0 in your sampler."
-            )
-
-        bulk_norm = F.normalize(bulk_emb, dim=1)
-        pb_norm   = F.normalize(pb_emb,   dim=1)
-        sc_norm   = F.normalize(sc_emb,   dim=1)
-
-        def _infonce(anchors, positives, negatives):
-            pos_sim   = (anchors @ positives.T) / temperature # (Na, Np)
-            neg_sim   = (anchors @ negatives.T) / temperature # (Na, Nn)
-            log_denom = torch.logsumexp(
-                torch.cat([pos_sim, neg_sim], dim=1), dim=1 # (Na,)
-            )
-            log_prob_pos = pos_sim - log_denom.unsqueeze(1) # (Na, Np)
-            return -log_prob_pos.mean()
-
-        loss_fwd = _infonce(bulk_norm, pb_norm,   sc_norm)   # bulk → pb, SC as neg
-        loss_bwd = _infonce(pb_norm,   bulk_norm, sc_norm)   # pb   → bulk, SC as neg
-
-        return (loss_fwd + loss_bwd) / 2
-
-
-    def vicreg_loss(
-        self,
-        bulk_emb: torch.Tensor,
-        pb_emb: torch.Tensor,
-        eps: float = 1e-4,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        VICReg variance and covariance terms for collapse prevention.
-        Operates on unnormalized embeddings independently per modality.
-
-        Returns
-        -------
-        var_loss : variance term (scalar)
-        cov_loss : covariance term (scalar)
-        """
-        # Hinge function on the standard deviation of the embeddings along the batch dimension
-        def _variance(z: torch.Tensor) -> torch.Tensor:
-            std = torch.sqrt(z.var(dim=0) + eps)
-            return torch.mean(F.relu(1 - std))
-
-        # Covariance to enforce decorrelation between embedidng positions
-        def _covariance(z: torch.Tensor) -> torch.Tensor:
-            n, d = z.shape
-            if n < 2:
-                return torch.tensor(0.0, device=z.device)
-            z = z - z.mean(dim=0)
-            cov = (z.T @ z) / (n - 1)
-            off_diag = cov ** 2
-            off_diag.fill_diagonal_(0)
-            return off_diag.sum() / d
-
-        var_loss = _variance(bulk_emb) + _variance(pb_emb)
-        cov_loss = _covariance(bulk_emb) + _covariance(pb_emb)
-
-        return var_loss, cov_loss
+        pos_f = pos.float()
+        loss_fwd = _direction(sim, pos_f, b_anchor)          # bulk -> pseudobulk
+        loss_bwd = _direction(sim.t(), pos_f.t(), p_anchor)  # pseudobulk -> bulk
+        return ((loss_fwd + loss_bwd) / 2).to(embeddings.dtype)
 
     def _paired_alignment_loss(
         self,

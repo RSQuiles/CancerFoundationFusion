@@ -472,11 +472,11 @@ class BulkSCSampler(Sampler[list[int]]):
         verbose: bool = False,
         seed: Optional[int] = None,
         world_size: int = 1,
-        class_aware_cdd: bool = False,
-        cdd_exclude_group_codes: Optional[list] = None,
-        cdd_min_class_count: int = 2,
-        n_cdd_classes: int = 8,
-        cdd_bulk_class_frac: float = 0.6,
+        class_aware: bool = False,
+        class_aware_exclude_group_codes: Optional[list] = None,
+        class_min_count: int = 2,
+        class_aware_n_classes: int = 8,
+        class_aware_bulk_frac: float = 0.6,
     ):
         # Account for the Subset resulting from random_split.
         # SubsetReindexer builds a LUT once; each remap() call also returns a
@@ -564,11 +564,11 @@ class BulkSCSampler(Sampler[list[int]]):
         if self.precomputed_agg:
             self._build_agg_pb_pools()
 
-        self.class_aware_cdd = class_aware_cdd
-        self.n_cdd_classes = n_cdd_classes
-        self.cdd_bulk_class_frac = min(max(cdd_bulk_class_frac, 0.0), 1.0)
-        self.cdd_min_class_count = cdd_min_class_count
-        self.cdd_exclude_group_codes = set(cdd_exclude_group_codes or ())
+        self.class_aware = class_aware
+        self.class_aware_n_classes = class_aware_n_classes
+        self.class_aware_bulk_frac = min(max(class_aware_bulk_frac, 0.0), 1.0)
+        self.class_min_count = class_min_count
+        self.class_aware_exclude_group_codes = set(class_aware_exclude_group_codes or ())
         self._build_source_pools()
 
         self.world_size = max(1, world_size)
@@ -808,26 +808,26 @@ class BulkSCSampler(Sampler[list[int]]):
         # samples, excluding non-tissue codes (e.g. "unknown"). When enabled, batches draw
         # the same tissues in both domains so the CDD loss is non-trivial.
         self.shared_groups = None
-        if not self.class_aware_cdd:
+        if not self.class_aware:
             return
 
         if self.source_group_to_indices is None or self.bulk_group_to_indices is None:
             raise ValueError(
-                "class_aware_cdd requires pb_group_column (tissue) so both the source "
+                "class_aware requires pb_group_column (tissue) so both the source "
                 "and bulk group pools exist"
                 + (" (precomputed_pb: check that precomputed PB rows exist)."
                    if self.precomputed_pb else ".")
             )
-        min_c = max(1, self.cdd_min_class_count)
+        min_c = max(1, self.class_min_count)
         self.shared_groups = sorted(
             g for g in self.source_groups
-            if g not in self.cdd_exclude_group_codes
+            if g not in self.class_aware_exclude_group_codes
             and len(self.source_group_to_indices.get(g, [])) >= min_c
             and len(self.bulk_group_to_indices.get(g, [])) >= min_c
         )
         if len(self.shared_groups) == 0:
             raise ValueError(
-                "class_aware_cdd: no tissue is present in both bulk and source "
+                "class_aware: no tissue is present in both bulk and source "
                 f"({'precomputed PB' if self.precomputed_pb else 'SC'}) pools with "
                 "enough samples."
                 + (" Aggregation consistency restricts the source to pseudobulks with "
@@ -1036,7 +1036,7 @@ class BulkSCSampler(Sampler[list[int]]):
                 if self.verbose:
                     print("Sampling paired batch!")
                 yield self.sample_paired_batch()
-            elif self.class_aware_cdd:
+            elif self.class_aware:
                 yield self.sample_class_aware_batch()
             else:
                 yield self.sample_standard_batch()
@@ -1184,7 +1184,7 @@ class BulkSCSampler(Sampler[list[int]]):
         MMD has matched classes in both domains. Batch structure/order matches
         sample_standard_batch: [sc..., sc_for_pb..., (agg_sc...,) bulk...].
 
-        Only a fraction (cdd_bulk_class_frac) of the bulk slots is reserved for the
+        Only a fraction (class_aware_bulk_frac) of the bulk slots is reserved for the
         chosen tissues; the rest are drawn freely from ALL bulk. Reserving every slot
         would mean bulk rows outside the shared tissues — "unknown" rows above all —
         never appear in any batch, so they would receive no gradient from any loss.
@@ -1197,7 +1197,7 @@ class BulkSCSampler(Sampler[list[int]]):
         )
 
         # Pick K shared tissues for this batch and spread PBs/bulk across them.
-        K = min(self.n_cdd_classes, len(self.shared_groups))
+        K = min(self.class_aware_n_classes, len(self.shared_groups))
         chosen = self.rng.choice(self.shared_groups, size=K, replace=False)
 
         # Pseudobulks: n_pb tissue-pure PBs distributed round-robin over the K tissues.
@@ -1223,7 +1223,7 @@ class BulkSCSampler(Sampler[list[int]]):
 
         # Bulk: a matched part over the SAME K tissues (so CDD sees paired classes),
         # plus a free part over all bulk (so every bulk row still trains).
-        n_matched = int(round(self.n_bulk * self.cdd_bulk_class_frac))
+        n_matched = int(round(self.n_bulk * self.class_aware_bulk_frac))
         n_free = self.n_bulk - n_matched
         bulk_sel: list[int] = []
         if n_matched > 0:

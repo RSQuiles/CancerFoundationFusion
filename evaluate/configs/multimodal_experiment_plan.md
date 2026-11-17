@@ -20,8 +20,8 @@ All of them act on the CLS embedding. Modality is a label-only condition
 |---|---|---|---|---|
 | Reconstruction (expr + MVC + gen) | always | masked bins | per sample | Is the data useful by itself (shared weights, no explicit alignment)? |
 | MMD | `--mmd` | multi-RBF MMD, bulk vs pb | marginal, no tissue | Is closing the global domain gap enough? Can blur tissue structure if tissue mixes differ |
-| CDD | `--cdd [--cdd-class-aware]` | intra minus inter tissue MMD (pb vs bulk); MMD warmup, then ramp | class-conditional (given tissue labels) | Does tissue-matched alignment transfer sc semantics to bulk? |
-| Contrastive | `--contrastive-training` | InfoNCE (every bulk is a positive for every pb; sc are negatives) + VICReg | marginal, no tissue | Same question as MMD, plus pushing sc away; watch for loss of tissue structure |
+| CDD | `--cdd [--class-aware]` | intra minus inter tissue MMD (pb vs bulk); MMD warmup, then ramp | class-conditional (given tissue labels) | Does tissue-matched alignment transfer sc semantics to bulk? |
+| Contrastive | `--contrastive-training [--class-aware]` | cross-modal InfoNCE: same-tissue pb are a bulk's positives, other tissues its negatives (and the reverse); no sc, no VICReg | class-conditional, sample-wise (given tissue labels) | The sample-wise counterpart of CDD: does tissue-matched alignment transfer sc semantics to bulk? |
 | DAT | `--do-dat --dat-columns modality` | gradient-reversal modality discriminator | marginal, adversarial | Domain invariance by adversary |
 | Aggregation consistency | `--agg-consistency` | pb embedding ≈ mean of its cells' embeddings | sc ↔ pb (structural) | Does the bridge sc→pb make embeddings compositional, which is what lets sc information reach bulk through pb? |
 | Paired alignment | `--paired-sampling` + paired loss | MSE bulk ↔ its own pb (↔ mean of its cells) | sample-level | The strongest bridge: the same biological sample in two modalities |
@@ -127,7 +127,7 @@ justifies G2: alignment is the mechanism that could make sc information usable f
 - (b) **sc carries no bulk-relevant signal:** S* GeneICL vs `pca`; CKA.
 - (c) **The modalities stay separate:** domain probe and iLISI in G1.
 - (d) **Alignment overlaps the clouds without matching tissues:** the domain probe falls
-  but cross-modal transfer does not rise (expected for MMD and contrastive, less so for
+  but cross-modal transfer does not rise (expected for MMD, less so for contrastive,
   CDD and paired).
 - (e) **Alignment erases tissue structure:** silhouette and isolated labels drop,
   effective rank drops.

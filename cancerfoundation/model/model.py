@@ -125,6 +125,7 @@ class CancerFoundation(pl.LightningModule):
         n_top_genes: int = 1200,
         # Unified FM parameters
         contrastive: bool = False,
+        contrastive_temperature: float = 0.1,
         mmd: bool = False,
         aggregation: bool = False,
         agg_fn: Optional[str] = None,
@@ -148,10 +149,11 @@ class CancerFoundation(pl.LightningModule):
         # Contrastive Domain Discrepancy (CAN) parameters
         cdd: bool = False,
         weight_cdd: float = 0.3,
-        cdd_class_column: str = "tissue_general",
-        cdd_min_class_count: int = 2,
-        cdd_exclude_labels: Optional[List[str]] = None,
-        cdd_class_aware: bool = False,
+        # Class labels and class-aware sampling, shared by CDD and contrastive
+        class_column: str = "tissue_general",
+        class_min_count: int = 2,
+        class_exclude_labels: Optional[List[str]] = None,
+        class_aware: bool = False,
         cdd_warmup_steps: int = 2000,
         cdd_ramp_steps: int = 1000,
         cdd_mmd_final_weight: float = 0.0,
@@ -160,6 +162,12 @@ class CancerFoundation(pl.LightningModule):
         backbone_lr_scale: float = 1.0,
         # Default reproduces every checkpoint saved before the option existed.
         binning_method: str = "quantile",
+        # Deprecated names of class_column, class_min_count, class_exclude_labels and
+        # class_aware, kept so checkpoints saved under them still load. None = unset.
+        cdd_class_column: Optional[str] = None,
+        cdd_min_class_count: Optional[int] = None,
+        cdd_exclude_labels: Optional[List[str]] = None,
+        cdd_class_aware: Optional[bool] = None,
     ):
         """Initializes the CancerFoundation LightningModule.
 
@@ -194,7 +202,8 @@ class CancerFoundation(pl.LightningModule):
             balance_primary (Optional[str], optional): The primary variable for balanced sampling. Defaults to None.
             balance_secondary (Optional[str], optional): The secondary variable for balanced sampling. Defaults to None.
             zero_percentages (Optional[List[float]], optional): Percentages for balancing zero expression. Defaults to None.
-            contrastive (bool, optional): If True, enable contrastive learning. It brings the pseudobulk and real bulk samples closer together in the embedding space. Defaults to False.
+            contrastive (bool, optional): If True, enable the tissue-aware cross-modal InfoNCE: bulk and pseudobulk of the same class (class_column) are positives, other classes negatives. Defaults to False.
+            contrastive_temperature (float, optional): InfoNCE temperature. Defaults to 0.1.
             aggregation (bool, optional): If True, enable aggregation consistency losses. Defaults to False.
             agg_fn (Optional[str], optional): The function to use for aggregating single-cell embeddings into pseudobulk embeddings. Defaults to "mean".
             noise (Optional[List[int]], optional): If present, enable denoising task. For it, binning must have been disabled
@@ -263,6 +272,7 @@ class CancerFoundation(pl.LightningModule):
 
         # Unified FM parameters
         self.contrastive = contrastive
+        self.contrastive_temperature = contrastive_temperature
         self.mmd = mmd
         self.aggregation = aggregation
         self.agg_fn = agg_fn
@@ -286,10 +296,19 @@ class CancerFoundation(pl.LightningModule):
         # Contrastive Domain Discrepancy (CAN) parameters
         self.cdd = cdd
         self.weight_cdd = weight_cdd
-        self.cdd_class_column = cdd_class_column
-        self.cdd_min_class_count = cdd_min_class_count
-        self.cdd_exclude_labels = cdd_exclude_labels or ["unknown"]
-        self.cdd_class_aware = cdd_class_aware
+        # A checkpoint saved under the old cdd_* names passes them instead.
+        if cdd_class_column is not None:
+            class_column = cdd_class_column
+        if cdd_min_class_count is not None:
+            class_min_count = cdd_min_class_count
+        if cdd_exclude_labels is not None:
+            class_exclude_labels = cdd_exclude_labels
+        if cdd_class_aware is not None:
+            class_aware = cdd_class_aware
+        self.class_column = class_column
+        self.class_min_count = class_min_count
+        self.class_exclude_labels = class_exclude_labels or ["unknown"]
+        self.class_aware = class_aware
         self.cdd_warmup_steps = cdd_warmup_steps
         self.cdd_ramp_steps = cdd_ramp_steps
         self.cdd_mmd_final_weight = cdd_mmd_final_weight
@@ -439,6 +458,7 @@ class CancerFoundation(pl.LightningModule):
                 their_init_weights=self.their_init_weights,
                 # Unified FM parameters
                 contrastive=self.contrastive,
+                contrastive_temperature=self.contrastive_temperature,
                 mmd=self.mmd,
                 aggregation=self.aggregation,
                 agg_fn=self.agg_fn,
@@ -455,12 +475,13 @@ class CancerFoundation(pl.LightningModule):
                 weight_dat=self.weight_dat,
                 weight_reconstruction=self.weight_reconstruction,
                 monitor_losses=self.monitor_losses,
-                # Contrastive Domain Discrepancy (CAN). Exclude-label codes are
-                # resolved from the category mapping in setup() (needs the datamodule).
+                # Contrastive Domain Discrepancy (CAN) and the class labels it shares
+                # with contrastive. Exclude-label codes are resolved from the category
+                # mapping in setup() (needs the datamodule).
                 cdd=self.cdd,
                 weight_cdd=self.weight_cdd,
-                cdd_class_column=self.cdd_class_column,
-                cdd_min_class_count=self.cdd_min_class_count,
+                class_column=self.class_column,
+                class_min_count=self.class_min_count,
             )
         if self.compile_model:
             self.model = torch.compile(self.model)
@@ -504,8 +525,8 @@ class CancerFoundation(pl.LightningModule):
     # Contrastive Domain Discrepancy (CAN): exclude codes + MMD->CDD schedule
     # ------------------------------------------------------------------
     def setup(self, stage=None):
-        """Resolve the CDD exclude-label codes from the datamodule's category mapping."""
-        if not self.cdd or stage not in (None, "fit"):
+        """Resolve the excluded class codes (CDD, contrastive) from the category mapping."""
+        if not (self.cdd or self.contrastive) or stage not in (None, "fit"):
             return
         core = getattr(self.model, "_orig_mod", self.model)  # unwrap torch.compile
         dm = getattr(self.trainer, "datamodule", None)
@@ -513,9 +534,9 @@ class CancerFoundation(pl.LightningModule):
         if dataset is None:
             return
 
-        class_map = (getattr(dataset, "mapping", {}) or {}).get(self.cdd_class_column, {})
-        exclude_codes = [int(code) for name, code in class_map.items() if name in self.cdd_exclude_labels]
-        core.cdd_exclude_class_codes = tuple(exclude_codes)
+        class_map = (getattr(dataset, "mapping", {}) or {}).get(self.class_column, {})
+        exclude_codes = [int(code) for name, code in class_map.items() if name in self.class_exclude_labels]
+        core.class_exclude_codes = tuple(exclude_codes)
 
     def _update_cdd_schedule(self):
         """Linear MMD->CDD handover.
