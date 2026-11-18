@@ -8,7 +8,12 @@
 #
 # Linked train/test splits + every training store for leiden_s1, in one allocation.
 #
-#   cd data_preprocess && sbatch rebuild_leiden_s1.sbatch
+#   sbatch data_preprocess/scripts/rebuild_leiden_s1.sbatch                  # bionemo container
+#   sbatch data_preprocess/scripts/rebuild_leiden_s1.sbatch --conda [ENV]    # conda env (default bulkFM)
+#   CONDA_ENV=myenv sbatch data_preprocess/scripts/rebuild_leiden_s1.sbatch --conda
+#
+# The conda env needs what the container has: scanpy + igraph/leidenalg (Leiden),
+# anndata, h5py, pandas/pyarrow, and bionemo-scdl with torch (the store builds).
 #
 # Single cells are the root of every link (pseudobulk_id: cells <-> Census pseudobulk;
 # paired: cell-line cells <-> paired pseudobulk <-> paired bulk), so they are split
@@ -50,12 +55,37 @@ IMAGE=/cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif
 export TMPDIR=/cluster/work/boeva/rquiles/tmp
 mkdir -p "$TMPDIR"
 
-py() {   # python inside the bionemo container (scanpy, SCDL), from data_preprocess/
-    singularity run \
-        --pwd "$PROJECT/data_preprocess" \
-        --bind /cluster/work/boeva/rquiles:/cluster/work/boeva/rquiles \
-        "$IMAGE" python -u "$@"
-}
+# --conda [ENV]: run every step in a conda env instead of the container.
+USE_CONDA=0
+CONDA_ENV=${CONDA_ENV:-bulkFM}
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --conda)
+            USE_CONDA=1
+            if [[ $# -gt 1 && "$2" != --* ]]; then CONDA_ENV=$2; shift; fi ;;
+        *) echo "unknown option: $1 (use --conda [ENV])"; exit 1 ;;
+    esac
+    shift
+done
+
+if [[ "$USE_CONDA" -eq 1 ]]; then
+    set +u   # conda's activation scripts read unset variables
+    source ~/.bashrc
+    conda activate "$CONDA_ENV"
+    set -u
+    echo "Environment: conda '$CONDA_ENV' ($(command -v python))"
+    py() {   # python in the conda env, from data_preprocess/
+        (cd "$PROJECT/data_preprocess" && python -u "$@")
+    }
+else
+    echo "Environment: container $IMAGE"
+    py() {   # python inside the bionemo container (scanpy, SCDL), from data_preprocess/
+        singularity run \
+            --pwd "$PROJECT/data_preprocess" \
+            --bind /cluster/work/boeva/rquiles:/cluster/work/boeva/rquiles \
+            "$IMAGE" python -u "$@"
+    }
+fi
 
 STEP=0
 banner() {

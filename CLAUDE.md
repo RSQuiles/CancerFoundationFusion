@@ -190,7 +190,7 @@ python bulk_sc_data_preprocessing.py --h5ad-path a.h5ad b.h5ad --data-path out/ 
     `--group-by` on the same column, whole pairs / pseudobulks land in test in proportion,
     so test holds links unseen in training (`linked_keys_per_part` in `split.json`).
   - `--filter` restricts which rows are split at all. An empty part is refused.
-- **Linked splits** (single cell, bulk, pseudobulk; `data_preprocess/rebuild_leiden_s1.sbatch`):
+- **Linked splits** (single cell, bulk, pseudobulk; `data_preprocess/scripts/rebuild_leiden_s1.sbatch`, bionemo container by default, `--conda [ENV]` for a conda env):
   - **Order:** single cells first (`--group-by pseudobulk_id:0,-1 paired:0
     --stratify-links ...`), then bulk inheriting through `paired`, then pseudobulk
     inheriting through `pseudobulk_id` from the cells and through `paired` from bulk.

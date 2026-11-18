@@ -1,7 +1,7 @@
 {
   "launch_name": "leiden_s1_baselines",
   "_comment": [
-    "Four baselines on the linked leiden_s1 stores (data_preprocess/rebuild_leiden_s1.sbatch):",
+    "Four baselines on the linked leiden_s1 stores (data_preprocess/scripts/rebuild_leiden_s1.sbatch):",
     "sc only, bulk only, sc + bulk, and sc + bulk + precomputed pseudobulk without alignment losses.",
     "Same architecture as bulk_pretrain / sc_pretrain, midrank binning, and a MATCHED step budget:",
     "every model runs epoch_size x epochs = 10000 x 40 = 400k optimizer steps (epoch_size also sets the",
