@@ -197,6 +197,61 @@ def check_split(root: Path, paths: dict[str, Path]) -> None:
     check("sources untouched by splitting", before == {k: _sha(p) for k, p in paths.items()})
 
 
+def check_linked_split(root: Path, paths: dict[str, Path]) -> None:
+    print("\n-- linked splits (several parents, --stratify-links, check_split_links) --")
+    import shutil
+
+    import check_split_links
+
+    R = ["--root", str(root), "--fractions", "train=0.8", "test=0.2", "--seed", "1"]
+    run_split([*R, "--modality", "sc", "--split-name", "s1", "--group-by", "pseudobulk_id:0,-1", "paired:0",
+               "--stratify-links", "pseudobulk_id:0,-1", "paired:0"])
+    card = json.loads((root / "data/single_cell/splits/s1/split.json").read_text())
+    per_part = card["linked_keys_per_part"]
+    check("--stratify-links puts whole pairs and pseudobulks in test",
+          per_part["paired"].get("test", 0) > 0 and per_part["pseudobulk_id"].get("test", 0) > 0)
+    run_split([*R, "--modality", "bulk", "--split-name", "s1", "--group-by", "paired:0",
+               "--stratify-links", "paired:0", "--inherit-from", "sc:s1", "--link-col", "paired"])
+    # the pseudobulk file has no 'paired': bulk:s1 matches nothing and is reported, not fatal
+    run_split([*R, "--modality", "pb", "--split-name", "s1", "--group-by", "pseudobulk_id:0,-1",
+               "--inherit-from", "sc:s1", "bulk:s1", "--link-col", "pseudobulk_id", "paired"])
+    card = json.loads((root / "data/pseudobulk/splits/s1/split.json").read_text())
+    check("several parents recorded", [r["parent"] for r in card["inherited_from"]] == ["sc:s1", "bulk:s1"]
+          and card["inherited_from"][0]["link_cols"] == ["pseudobulk_id"] and card["inherited_from"][1]["link_cols"] == [])
+    check("parent h5ad read from its split.json", card["inherited_from"][0]["n_inherited"] > 0)
+
+    argv = ["--root", str(root), "--split", "s1", "--modalities", "sc", "bulk", "pb"]
+    check("linked split passes check_split_links", check_split_links.main(argv) == 0)
+
+    # move one linked cell of a pseudobulk to the other part -> a leak
+    leak = root / "data/single_cell/splits/leak"
+    shutil.copytree(root / "data/single_cell/splits/s1", leak)
+    shutil.copytree(root / "data/bulk/splits/s1", root / "data/bulk/splits/leak")
+    shutil.copytree(root / "data/pseudobulk/splits/s1", root / "data/pseudobulk/splits/leak")
+    train = (leak / "train.txt").read_text().split()
+    test = (leak / "test.txt").read_text().split()
+    import anndata as ad
+
+    sc_obs = ad.read_h5ad(paths["sc"], backed="r").obs
+    moved = next(n for n in train if sc_obs.loc[n, "pseudobulk_id"] not in ("0",))
+    (leak / "train.txt").write_text("\n".join(n for n in train if n != moved) + "\n")
+    (leak / "test.txt").write_text("\n".join(test + [moved]) + "\n")
+    argv = ["--root", str(root), "--split", "leak", "--modalities", "sc", "bulk", "pb"]
+    check("a leaking pseudobulk is reported (exit 1)", check_split_links.main(argv) == 1)
+    check("--max-leak tolerates it", check_split_links.main(argv + ["--max-leak", "5"]) == 0)
+
+
+def check_store_link_values() -> None:
+    print("\n-- store: no-link values --")
+    obs = pd.DataFrame({"pseudobulk_id": ["0", "-1", np.nan, "5", 7.0],
+                        "paired": [0, np.nan, 3, -1, "12"]})
+    out = pre._store_obs(obs, ["pseudobulk_id", "paired", "modality"], "sc", "pseudobulk_id")
+    check("unlinked pseudobulk ids become the fill, real ones pb:<id>",
+          out["pseudobulk_id"].tolist() == ["0", "0", "0", "pb:5", "pb:7"])
+    check("unpaired values become 0 (never a 'nan' pair)",
+          out["paired"].tolist() == ["0", "0", "3", "0", "12"])
+
+
 def check_store(root: Path, paths: dict[str, Path]) -> None:
     print("\n-- build store from a split --")
     before = _sha(paths["sc"])
@@ -315,7 +370,9 @@ def main() -> None:
         root = Path(tmp)
         paths = build_root(root)
         check_split(root, paths)
+        check_linked_split(root, paths)
         check_store(root, paths)
+        check_store_link_values()
         check_mix(root, paths)
         check_cli(root, paths)
         check_transient_chunks(root)

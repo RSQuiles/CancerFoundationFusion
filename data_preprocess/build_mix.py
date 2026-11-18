@@ -34,7 +34,7 @@ from argparse import ArgumentParser
 from datetime import datetime, timezone
 
 from experiments.layout import ExperimentLayout, canonical_modality
-from split_train_test import read_parts
+from split_train_test import _card_source, read_parts
 
 
 def resolve_source(spec: str, layout: ExperimentLayout) -> dict:
@@ -47,7 +47,11 @@ def resolve_source(spec: str, layout: ExperimentLayout) -> dict:
     if len(fields) not in (2, 3):
         raise ValueError(f"--source {spec!r} must be MODALITY:SPLIT[:PART] or PATH.h5ad=SPLIT_DIR[:PART]")
     label = canonical_modality(fields[0])
-    return {"path": layout.raw_h5ad(label), "split_dir": layout.split_dir(label, fields[1]),
+    split_dir = layout.split_dir(label, fields[1])
+    # The h5ad the split was made from (split.json), so a source outside the layout's
+    # data/<modality>/<modality>.h5ad (e.g. BULK_pretraining.h5ad) is found as well.
+    path = _card_source(split_dir) or layout.raw_h5ad(label)
+    return {"path": path, "split_dir": split_dir,
             "part": fields[2] if len(fields) == 3 else "train", "modality": label}
 
 

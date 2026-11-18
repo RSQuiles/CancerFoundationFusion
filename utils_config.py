@@ -602,8 +602,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--epoch-size",
         type=int,
         help=(
-            "Absolute number of batches per epoch. Overrides --epoch-coverage. "
-            "Leave unset to derive the epoch length from bulk coverage."
+            "Absolute number of batches per epoch. Unified: overrides --epoch-coverage. "
+            "Single-modality: replaces one pass over the store (rows are drawn from seeded "
+            "permutations), so models trained on different stores can get the same step "
+            "budget. Leave unset for the default (bulk coverage / one pass)."
         ),
     )
 

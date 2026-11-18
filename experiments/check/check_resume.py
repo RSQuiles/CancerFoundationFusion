@@ -206,6 +206,17 @@ def check_sampler() -> None:
     check("epochs differ", order(0, 0) != order(0, 1))
     check("seeds differ", order(0, 3) != order(1, 3))
 
+    def fixed(seed: int, epoch: int, n: int) -> list[int]:
+        sampler = EpochRandomSampler(data, seed=seed, num_samples=n)
+        sampler.set_epoch(epoch)
+        return list(sampler)
+
+    long = fixed(0, 2, 120)
+    check("num_samples sets the epoch length (also above one pass)",
+          len(long) == 120 and len(EpochRandomSampler(data, num_samples=120)) == 120)
+    check("num_samples: each pass is a permutation", sorted(long[:50]) == data and sorted(long[50:100]) == data)
+    check("num_samples: same (seed, epoch) -> same order", fixed(0, 2, 120) == long and fixed(0, 2, 20) == long[:20])
+
 
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp_str:

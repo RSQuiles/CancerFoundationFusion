@@ -68,12 +68,17 @@ class EpochRandomSampler(Sampler[int]):
     Lightning calls ``set_epoch`` before every epoch, so a run resumed at epoch k
     draws the same order an uninterrupted run would have, instead of replaying the
     order of epoch 0 (which a plain RandomSampler does after a reseed).
+
+    ``num_samples`` (``--epoch-size`` x batch size) fixes the epoch length instead of
+    one pass over the data: the epoch is the first ``num_samples`` indices of as many
+    seeded permutations as needed, so it still depends only on ``(seed, epoch)``.
     """
 
-    def __init__(self, data_source, seed: int = 0):
+    def __init__(self, data_source, seed: int = 0, num_samples: Optional[int] = None):
         self.data_source = data_source
         self.seed = int(seed)
         self.epoch = 0
+        self.num_samples = int(num_samples) if num_samples else None
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
@@ -81,10 +86,17 @@ class EpochRandomSampler(Sampler[int]):
     def __iter__(self) -> Iterator[int]:
         generator = torch.Generator()
         generator.manual_seed(self.seed + self.epoch)
-        return iter(torch.randperm(len(self.data_source), generator=generator).tolist())
+        n = len(self.data_source)
+        if self.num_samples is None:
+            return iter(torch.randperm(n, generator=generator).tolist())
+        chunks, drawn = [], 0
+        while drawn < self.num_samples:
+            chunks.append(torch.randperm(n, generator=generator))
+            drawn += n
+        return iter(torch.cat(chunks)[: self.num_samples].tolist())
 
     def __len__(self) -> int:
-        return len(self.data_source)
+        return self.num_samples if self.num_samples is not None else len(self.data_source)
 
 
 class DistributedBatchSamplerWrapper(Sampler[list[int]]):
@@ -309,8 +321,11 @@ class BulkSCDataModule(pl.LightningDataModule):
                     oversample=True,
                 )
             else:
+                # --epoch-size sets the epoch length here too (in batches), so a
+                # single-modality run can match a unified run's step budget.
+                num_samples = self.epoch_size * self.batch_size if self.epoch_size else None
                 sampler = (
-                    EpochRandomSampler(dataset, seed=self.sampler_seed)
+                    EpochRandomSampler(dataset, seed=self.sampler_seed, num_samples=num_samples)
                     if train
                     else SequentialSampler(dataset)
                 )

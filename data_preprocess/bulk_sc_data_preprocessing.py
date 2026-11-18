@@ -26,8 +26,10 @@ Store contract the loaders rely on (``cancerfoundation/data/bulk_sc_data.py``):
   label (``Source.modality``), else ``--default-modality``.
 - an obs column a source does not have is filled with ``0``, and category ``"0"``
   means "none": an unpaired row for ``paired``, a row with no pseudobulk for the
-  ``--pb-id-column``. The pseudobulk id is stored as ``"pb:<id>"`` so that a genuine
-  id 0 cannot collide with that fill.
+  ``--pb-id-column``. The pseudobulk id is stored as ``"pb:<id>"``, and a value that
+  links to nothing (empty, NaN, 0, -1: ``utils.sampling.link_keys``) as that fill, so
+  unlinked rows never share a fake pseudobulk. The pair column (``paired``) follows the
+  same rule: unlinked values become ``0``, which the sampler reads as unpaired.
 """
 
 from __future__ import annotations
@@ -50,12 +52,14 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from cancerfoundation.data.dataset import DatasetDir  # noqa: E402
 from h5ad_io import SourceReader, expand_h5ad_paths  # noqa: E402
+from utils.sampling import link_keys  # noqa: E402
 
 GENE_ID = "_cf_gene_id"
 CLS_TOKEN = "<cls>"
 PAD_TOKEN = "<pad>"
 MODALITY_COL = "modality"
 PB_ID_PREFIX = "pb:"
+PAIRED_COL = "paired"          # BulkSCDataset's default pair column (category "0" = unpaired)
 TRANSIENT_DIR = "_transient"
 
 
@@ -121,8 +125,15 @@ def _store_obs(obs: pd.DataFrame, columns: list[str], modality: str,
         out[MODALITY_COL] = modality
     if pb_id_column and pb_id_column in out.columns:
         # Every column becomes a category code and missing values are filled with 0,
-        # so a bare id 0 would read as "no pseudobulk" and bind every unrelated cell.
-        out[pb_id_column] = PB_ID_PREFIX + out[pb_id_column].astype(str)
+        # so real ids get a prefix, and values that link to nothing (0, -1, NaN) become
+        # that fill instead of one shared fake pseudobulk ("pb:0") holding every
+        # unlinked row.
+        keys = link_keys(out[pb_id_column])
+        out[pb_id_column] = (PB_ID_PREFIX + keys).where(keys.notna(), "0")
+    if PAIRED_COL in out.columns:
+        # NaN would become a category "nan" with a non-zero code, i.e. one giant pair.
+        keys = link_keys(out[PAIRED_COL])
+        out[PAIRED_COL] = keys.where(keys.notna(), "0")
     # reindex: a column this source lacks (e.g. "paired" in a non-paired file) is 0.
     return out.reindex(columns=columns, fill_value=0)
 

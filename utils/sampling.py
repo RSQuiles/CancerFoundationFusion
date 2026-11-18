@@ -220,6 +220,26 @@ def parse_group_specs(specs: Iterable[str] | None) -> dict[str, frozenset[str]]:
     return out
 
 
+# Values of a link column (pseudobulk_id, paired) that mean "linked to nothing". 0 and -1
+# are the fills the producers write for unlinked rows; a genuine id 0 is therefore lost
+# (the Census pseudobulk ``pseudo_bulk:000000``), which is accepted.
+NO_LINK_VALUES: frozenset[str] = frozenset({"", "0", "-1", "nan", "none", "na", "<na>", "unknown"})
+
+
+def link_keys(series: pd.Series, extra_no_link: Iterable[str] = ()) -> pd.Series:
+    """Link key per row as a string, NaN where the row is linked to nothing.
+
+    Shared by the splits (inheritance, ``--stratify-links``) and the stores
+    (``--pb-id-column``), so both agree on which rows carry a link. Numeric ids lose a
+    trailing ``.0`` (an int column read back as float).
+    """
+    # Plain lower-casing, not fold_label: fold_label maps "-" to "_", so "-1" would never match.
+    no_link = NO_LINK_VALUES | {str(v).strip().lower() for v in extra_no_link}
+    values = series.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    is_null = series.isna().to_numpy() | values.str.lower().isin(no_link).to_numpy()
+    return values.where(~is_null)
+
+
 def _group_keys(series: pd.Series, col: str, no_group: frozenset[str]) -> pd.Series:
     """``'col=value'`` per row, NaN where the value means 'no group'."""
     values = series.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)

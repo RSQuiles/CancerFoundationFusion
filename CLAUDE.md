@@ -27,6 +27,10 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
 - `--gen-method`: "theirs", "mine", "orig", or "quick" (generative training strategy)
 - `--compile`: Enable `torch.compile` for the model
 - `--unified`: Enable Unified FM mode (adds bulk data, contrastive, and aggregation losses)
+- `--epoch-size N`: batches per epoch. Unified: overrides `--epoch-coverage`.
+  Single-modality: `EpochRandomSampler(num_samples=N x batch_size)` draws that many rows
+  from seeded permutations instead of one pass, so models on different stores can get the
+  same step budget (`experiments/configs/leiden_s1_baselines.json`). Unset = one pass.
 - `--binning-method`: "quantile" (default, scGPT: tied values get a random bin among their
   equal quantile edges, redrawn per call) or "midrank" (each value gets the bin of its
   mid-rank percentile among the row's non-zeros: ties share one bin, deterministic).
@@ -166,14 +170,37 @@ python bulk_sc_data_preprocessing.py --h5ad-path a.h5ad b.h5ad --data-path out/ 
 - **Store contract**: `modality` is always stored (the file's own column, else the
   source's label, else `--default-modality`). An absent obs column is filled with `0`, and
   category `"0"` means "none" to the loaders (unpaired, no pseudobulk). The
-  `--pb-id-column` is stored as `pb:<id>` so a real id 0 cannot collide with that fill.
-  `paired` is kept only if listed in `--obs-columns`.
+  `--pb-id-column` is stored as `pb:<id>`, and `paired` as its id. A value that links to
+  nothing (empty, NaN, 0, -1: `utils.sampling.link_keys`, shared with the splits) is
+  stored as that fill `0`. Unlinked rows therefore never form one shared fake
+  pseudobulk (`pb:0`) or one giant pair (`nan`). Census pseudobulk 0 (`pseudo_bulk:000000`)
+  loses its link by this rule. `paired` is kept only if listed in `--obs-columns`.
 - **Splits**: `--fractions` names any parts; `--test-size` is the train/test shorthand.
   `--group-by COL[:NOGROUP,...]` takes several columns, and units linked through any of
   them are merged, so a pair spanning two donors keeps both donors together. `paired:0`
-  says 0 means "unpaired"; without it, every 0 row would be one group. `--inherit-from`
-  takes `MODALITY:SPLIT` or a split directory plus `--parent-input`. `--filter` restricts
-  which rows are split at all. An empty part is refused.
+  says 0 means "unpaired"; without it, every 0 row would be one group.
+  - **Inheritance:** `--inherit-from` takes one or more `MODALITY:SPLIT` or split
+    directories, and `--link-col` one or more columns. A row takes its part from the
+    first parent whose link matches (parents in order, then columns); disagreeing
+    matches are counted (`n_inherit_conflicts`). A parent's h5ad is the source in its
+    `split.json` (so `BULK_pretraining.h5ad` works), else `--parent-input` (one parent
+    only), else the layout's file. `build_mix.py` also reads each `MODALITY:SPLIT`
+    source from `split.json`.
+  - **`--stratify-links COL[:NOLINK,...]`** adds a `linked_<COL>` yes/no stratum. With
+    `--group-by` on the same column, whole pairs / pseudobulks land in test in proportion,
+    so test holds links unseen in training (`linked_keys_per_part` in `split.json`).
+  - `--filter` restricts which rows are split at all. An empty part is refused.
+- **Linked splits** (single cell, bulk, pseudobulk; `data_preprocess/rebuild_leiden_s1.sbatch`):
+  - **Order:** single cells first (`--group-by pseudobulk_id:0,-1 paired:0
+    --stratify-links ...`), then bulk inheriting through `paired`, then pseudobulk
+    inheriting through `pseudobulk_id` from the cells and through `paired` from bulk.
+  - **Then:** `check_split_links.py`, the joint store, and the single-modality stores with
+    the joint store's `vocab.json` (all models share the genes). `check_store_losses.py`
+    reports the result.
+  - `python data_preprocess/check_split_links.py --split S --modalities single_cell bulk
+    pseudobulk --links pseudobulk_id:0,-1 paired:0 [--max-leak N]` reports link keys per
+    part and modality, keys spanning parts (exit 1 above `--max-leak`), and keys carried
+    by one modality only.
 - `utils/sampling.py` holds the filtering, stratified subsampling and group split used here,
   by embed and by the figures.
 - `python data_preprocess/check_preprocessing.py` self-checks all of this, with SCDL and

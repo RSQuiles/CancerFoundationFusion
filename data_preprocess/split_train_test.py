@@ -7,7 +7,9 @@ The source file is only read. Rows are assigned so that:
   Leiden clusters with ``--cluster leiden``);
 - no group straddles parts (``--group-by``; columns linked through shared rows, e.g.
   a pair spanning two donors, are merged into one unit);
-- rows linked to an existing split (``--inherit-from``) land in their parent's part.
+- rows linked to an existing split (``--inherit-from``) land in their parent's part;
+- linked groups are spread over the parts by the fractions (``--stratify-links``), so a
+  test part holds whole pairs / pseudobulks that no training row is linked to.
 
 Any h5ad, explicit paths:
 
@@ -23,8 +25,18 @@ Experiments layout shorthand (input ``data/<modality>/<modality>.h5ad``, output
     python split_train_test.py --modality pseudobulk --split-name tissue_s0 \\
         --inherit-from single_cell:tissue_s0 --link-col pseudobulk_id --build-store
 
+Several parents and link columns: a row takes its part from the first parent whose link
+matches (parents in order, then link columns); a parent's h5ad is read from its
+``split.json`` unless ``--parent-input`` says otherwise:
+
+    python split_train_test.py --modality pseudobulk --split-name leiden_s1 \
+        --inherit-from single_cell:leiden_s1 bulk:leiden_s1 --link-col pseudobulk_id paired \
+        --group-by paired:0 pseudobulk_id:0,-1 --stratify-links paired:0 pseudobulk_id:0,-1
+
 ``--group-by COL:V1,V2`` names the values of COL that mean "no group" besides
-empty/NaN, e.g. ``paired:0`` where 0 is "unpaired". ``--build-store`` converts one
+empty/NaN, e.g. ``paired:0`` where 0 is "unpaired". Link columns (``--link-col``,
+``--stratify-links``) always treat empty, NaN, 0 and -1 as "no link"
+(``utils.sampling.link_keys``). ``--build-store`` converts one
 part (default ``train``) straight from the source into a training store, see
 ``bulk_sc_data_preprocessing.build_pipeline_ready``. Expression values are never
 normalized; ``--cluster-transform`` only shapes the features Leiden clusters on.
@@ -53,6 +65,7 @@ import pandas as pd
 from h5ad_io import SourceReader
 from utils.sampling import (
     filter_mask,
+    link_keys,
     parse_filter_specs,
     parse_fractions,
     parse_group_specs,
@@ -62,7 +75,6 @@ from utils.sampling import (
 )
 
 CLUSTER_COL = "leiden"
-NO_LINK = {"", "0", "nan", "none", "unknown"}
 SPLIT_CARD = "split.json"
 
 
@@ -214,15 +226,6 @@ def cluster_rows(reader: SourceReader, positions: np.ndarray, args) -> tuple[np.
 # --------------------------------------------------------------------------- #
 
 
-def _link_values(series: pd.Series) -> pd.Series:
-    """Link keys as strings, with 'no link' values (0, NaN, '') as NaN."""
-    values = series.astype(str).str.strip()
-    numeric = pd.to_numeric(series, errors="coerce")
-    values = values.where(~(numeric == 0), "")
-    values = values.str.replace(r"\.0$", "", regex=True)
-    return values.where(~values.str.lower().isin(NO_LINK))
-
-
 def inherit_split(child_obs: pd.DataFrame, parent_obs: pd.DataFrame, parent_parts: dict[str, list[str]],
                   link_col: str, parent_link_col: str) -> pd.Series:
     """Part per child row from the parent's split; NaN when the row is not linked."""
@@ -233,12 +236,84 @@ def inherit_split(child_obs: pd.DataFrame, parent_obs: pd.DataFrame, parent_part
     side = pd.Series(np.nan, index=parent_obs.index, dtype=object)
     for part, names in parent_parts.items():
         side[side.index.isin(names)] = part
-    parent = pd.DataFrame({"key": _link_values(parent_obs[parent_link_col]), "side": side}).dropna()
+    parent = pd.DataFrame({"key": link_keys(parent_obs[parent_link_col]), "side": side}).dropna()
     per_key = parent.groupby("key")["side"].agg(lambda s: s.value_counts().index[0])
     n_mixed = int((parent.groupby("key")["side"].nunique() > 1).sum())
     if n_mixed:
-        print(f"  [warn] {n_mixed} link keys sit in several parts of the parent split; using the majority part")
-    return _link_values(child_obs[link_col]).map(per_key)
+        print(f"  [warn] {n_mixed} '{parent_link_col}' keys sit in several parts of the parent split; "
+              f"using the majority part")
+    return link_keys(child_obs[link_col]).map(per_key)
+
+
+def inherit_from_parents(obs: pd.DataFrame, parents: list[tuple[str, pd.DataFrame, dict]],
+                         link_cols: list[str], parent_link_cols: list[str]) -> tuple[pd.Series, list[dict], int]:
+    """Part per row from several parents and link columns; the first match wins.
+
+    ``parents`` holds ``(label, parent obs, parent parts)``. Each parent is tried with
+    every link column present in both files, parents in order, then columns. Returns the
+    parts, one record per parent (for ``split.json``) and the number of rows two matches
+    put in different parts.
+    """
+    assignment = pd.Series(np.nan, index=obs.index, dtype=object)
+    conflicts = pd.Series(False, index=obs.index)
+    records = []
+    for label, parent_obs, parent_parts in parents:
+        used, n_parent = [], 0
+        for col, parent_col in zip(link_cols, parent_link_cols):
+            if col not in obs.columns or parent_col not in parent_obs.columns:
+                continue
+            side = inherit_split(obs, parent_obs, parent_parts, col, parent_col)
+            hit = side.notna()
+            conflicts |= hit & assignment.notna() & (assignment != side)
+            new = hit & assignment.isna()
+            assignment[new] = side[new]
+            used.append(col)
+            n_parent += int(new.sum())
+            print(f"  {int(new.sum())} rows inherit their part from {label} via '{col}' "
+                  f"({int(hit.sum())} linked)")
+        if not used:
+            print(f"  [warn] no link column of {link_cols} is in both this file and {label}")
+        records.append({"parent": label, "link_cols": used, "n_inherited": n_parent})
+    n_conflicts = int(conflicts.sum())
+    if n_conflicts:
+        print(f"  [warn] {n_conflicts} rows are linked to different parts by different parents/columns; "
+              f"the first match was kept")
+    return assignment, records, n_conflicts
+
+
+def parse_link_specs(specs) -> dict[str, list[str]]:
+    """``["paired:0", "pseudobulk_id:0,-1"]`` -> ``{column: extra no-link values}``."""
+    out = {}
+    for spec in specs or []:
+        col, _, extra = spec.partition(":")
+        out[col.strip()] = [v for v in extra.split(",") if v.strip()]
+    return out
+
+
+def add_link_strata(obs: pd.DataFrame, specs: dict[str, list[str]]) -> list[str]:
+    """``linked_<col>`` = yes/no columns for ``--stratify-links``; returns their names."""
+    names = []
+    for col, extra in specs.items():
+        if col not in obs.columns:
+            raise SystemExit(f"Error: --stratify-links column {col!r} not in obs")
+        name = f"linked_{col}"
+        linked = link_keys(obs[col], extra).notna()
+        obs[name] = np.where(linked, "yes", "no")
+        n_keys = int(link_keys(obs[col], extra).nunique())
+        print(f"  [{name}] {int(linked.sum())} linked rows, {n_keys} keys")
+        names.append(name)
+    return names
+
+
+def linked_keys_per_part(obs: pd.DataFrame, assignment: pd.Series, specs: dict[str, list[str]]) -> dict:
+    """``{col: {part: number of distinct link keys}}`` for the split report."""
+    out = {}
+    for col, extra in specs.items():
+        keys = link_keys(obs[col], extra)
+        frame = pd.DataFrame({"key": keys, "part": assignment}).dropna()
+        out[col] = {str(p): int(n) for p, n in frame.groupby("part")["key"].nunique().items()}
+        print(f"  '{col}' keys per part: {out[col]}")
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -263,13 +338,27 @@ def resolve_paths(args):
     return Path(source), Path(out_dir), layout, modality
 
 
-def resolve_parent(args, layout):
-    """``(parent h5ad, parent split dir)`` for ``--inherit-from``."""
-    spec = args.inherit_from
+def _card_source(split_dir: Path) -> Path | None:
+    """The source h5ad a split was made from, as recorded in its ``split.json``."""
+    card = split_dir / SPLIT_CARD
+    if not card.exists():
+        return None
+    path = (json.loads(card.read_text(encoding="utf-8")).get("source") or {}).get("path")
+    return Path(path) if path else None
+
+
+def resolve_parent(spec: str, args, layout) -> tuple[Path, Path]:
+    """``(parent h5ad, parent split dir)`` for one ``--inherit-from`` entry.
+
+    The h5ad is ``--parent-input`` (single parent only), else the source recorded in the
+    parent's ``split.json``, else the layout's ``data/<modality>/<modality>.h5ad``.
+    """
     if Path(spec).is_dir():
-        if not args.parent_input:
-            raise SystemExit("Error: --inherit-from DIR needs --parent-input (the parent's h5ad)")
-        return Path(args.parent_input), Path(spec)
+        split_dir = Path(spec)
+        source = args.parent_input or _card_source(split_dir)
+        if source is None:
+            raise SystemExit(f"Error: --inherit-from {spec} has no split.json source; give --parent-input")
+        return Path(source), split_dir
     mod, sep, split = spec.partition(":")
     if not sep or not split:
         raise SystemExit("Error: --inherit-from must be a split directory or <modality>:<split>")
@@ -277,7 +366,9 @@ def resolve_parent(args, layout):
         from experiments.layout import ExperimentLayout
 
         layout = ExperimentLayout.from_root(args.root)
-    return Path(args.parent_input or layout.raw_h5ad(mod)), layout.split_dir(mod, split)
+    split_dir = layout.split_dir(mod, split)
+    source = args.parent_input or _card_source(split_dir) or layout.raw_h5ad(mod)
+    return Path(source), split_dir
 
 
 def main(args):
@@ -303,6 +394,8 @@ def main(args):
         obs = obs.iloc[positions]
 
         strata = list(args.stratify_by or [])
+        link_specs = parse_link_specs(args.stratify_links)
+        strata += add_link_strata(obs, link_specs)
         cluster_info: dict = {}
         if args.cluster == "leiden":
             labels, cluster_info = cluster_rows(reader, positions, args)
@@ -311,22 +404,30 @@ def main(args):
 
     group_specs = parse_group_specs(args.group_by)
     assignment = pd.Series(np.nan, index=obs.index, dtype=object)
-    inherited = 0
+    inherited, inherit_records, n_conflicts = 0, [], 0
     if args.inherit_from:
-        parent_input, parent_dir = resolve_parent(args, layout)
-        link_col = args.link_col
-        if not link_col:
+        if not args.link_col:
             raise SystemExit("Error: --inherit-from needs --link-col")
-        with SourceReader(parent_input) as parent:
-            parent_obs = parent.obs
-        parent_parts = read_parts(parent_dir)
-        unknown = sorted(set(parent_parts) - set(parts))
-        if unknown:
-            raise SystemExit(f"Error: the parent split has parts {unknown} that this split does not ({parts})")
-        side = inherit_split(obs, parent_obs, parent_parts, link_col, args.parent_link_col or link_col)
+        if args.parent_input and len(args.inherit_from) > 1:
+            raise SystemExit("Error: --parent-input works with one --inherit-from only "
+                             "(several parents take their h5ad from their split.json)")
+        parent_link_cols = args.parent_link_col or args.link_col
+        if len(parent_link_cols) != len(args.link_col):
+            raise SystemExit("Error: --parent-link-col needs one entry per --link-col")
+        parents = []
+        for spec in args.inherit_from:
+            parent_input, parent_dir = resolve_parent(spec, args, layout)
+            parent_parts = read_parts(parent_dir)
+            unknown = sorted(set(parent_parts) - set(parts))
+            if unknown:
+                raise SystemExit(f"Error: {spec} has parts {unknown} that this split does not ({parts})")
+            with SourceReader(parent_input) as parent:
+                parents.append((spec, parent.obs, parent_parts))
+        side, inherit_records, n_conflicts = inherit_from_parents(
+            obs, parents, args.link_col, parent_link_cols)
         assignment[side.notna()] = side[side.notna()]
         inherited = int(side.notna().sum())
-        print(f"  {inherited} rows inherit their part from {parent_dir} via '{link_col}'")
+        print(f"  {inherited} rows inherit their part in total")
 
     todo = assignment.isna()
     if todo.any():
@@ -341,6 +442,7 @@ def main(args):
     print(table.to_string())
     counts = {part: int((assignment == part).sum()) for part in parts}
     print("  " + "  ".join(f"{p}={c}" for p, c in counts.items()))
+    linked_per_part = linked_keys_per_part(obs, assignment, link_specs) if link_specs else {}
     empty = [p for p, c in counts.items() if not c]
     if empty:
         raise SystemExit(
@@ -368,9 +470,12 @@ def main(args):
         "stratify_by": strata,
         "group_by": list(args.group_by or []),
         "cluster": cluster_info or None,
-        "inherited_from": args.inherit_from,
+        "inherited_from": inherit_records or None,
         "link_col": args.link_col if args.inherit_from else None,
         "n_inherited": inherited,
+        "n_inherit_conflicts": n_conflicts,
+        "stratify_links": list(args.stratify_links or []),
+        "linked_keys_per_part": linked_per_part,
         "seed": args.seed,
         "per_stratum": table.reset_index().to_dict(orient="records"),
     }
@@ -442,6 +547,10 @@ def get_args():
     strata.add_argument("--stratify-by", nargs="*", default=[], help="obs columns to stratify on")
     strata.add_argument("--group-by", nargs="*", default=[], metavar="COL[:NOGROUP,...]",
                         help="obs columns whose groups never straddle parts; COL:0 marks 0 as 'no group'")
+    strata.add_argument("--stratify-links", nargs="*", default=[], metavar="COL[:NOLINK,...]",
+                        help="Also stratify on whether a row carries a link in COL (e.g. paired:0 "
+                             "pseudobulk_id:0,-1); with --group-by COL, whole linked groups are spread "
+                             "over the parts, so test holds links unseen in training")
     strata.add_argument("--cluster", choices=["none", "leiden"], default="none",
                         help="Also stratify on Leiden clusters")
     strata.add_argument("--cluster-rep", default=None,
@@ -456,11 +565,14 @@ def get_args():
                         help="Fit clusters on at most this many rows; assign the rest by nearest centroid")
 
     inherit = parser.add_argument_group("inheriting another split")
-    inherit.add_argument("--inherit-from", default=None, metavar="DIR|MODALITY:SPLIT",
-                         help="Existing split whose parts linked rows inherit")
-    inherit.add_argument("--parent-input", type=Path, default=None, help="The parent split's h5ad")
-    inherit.add_argument("--link-col", default=None, help="obs column linking rows to the parent's rows")
-    inherit.add_argument("--parent-link-col", default=None, help="Link column in the parent, if named differently")
+    inherit.add_argument("--inherit-from", nargs="+", default=None, metavar="DIR|MODALITY:SPLIT",
+                         help="Existing split(s) whose parts linked rows inherit; the first match wins")
+    inherit.add_argument("--parent-input", type=Path, default=None,
+                         help="The parent split's h5ad (one parent only; default: its split.json source)")
+    inherit.add_argument("--link-col", nargs="+", default=None,
+                         help="obs column(s) linking rows to the parents' rows, tried in order")
+    inherit.add_argument("--parent-link-col", nargs="+", default=None,
+                         help="Link columns in the parents, if named differently (one per --link-col)")
 
     out = parser.add_argument_group("extra outputs")
     out.add_argument("--write-h5ad", action="store_true", help="Also write <part>.h5ad for every part")
