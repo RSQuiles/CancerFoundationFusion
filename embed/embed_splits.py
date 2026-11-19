@@ -136,7 +136,7 @@ def collect_rows(layout: ExperimentLayout, args, label: str):
     """The rows of one modality to embed, in memory, tagged with modality and part."""
     import anndata as ad
 
-    raw = layout.raw_h5ad(label)
+    raw = layout.split_source(label, args.split)
     if not raw.exists():
         sys.exit(f"Error: {raw} not found")
     lists = {}

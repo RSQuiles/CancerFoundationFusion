@@ -184,8 +184,9 @@ python bulk_sc_data_preprocessing.py --h5ad-path a.h5ad b.h5ad --data-path out/ 
     first parent whose link matches (parents in order, then columns); disagreeing
     matches are counted (`n_inherit_conflicts`). A parent's h5ad is the source in its
     `split.json` (so `BULK_pretraining.h5ad` works), else `--parent-input` (one parent
-    only), else the layout's file. `build_mix.py` also reads each `MODALITY:SPLIT`
-    source from `split.json`.
+    only), else the layout's file. `build_mix.py`, `embed_splits.py` and `mask_plan.py`
+    also read a split's rows from the h5ad in its `split.json`
+    (`ExperimentLayout.split_source`), never from another file with the same names.
   - **`--stratify-links COL[:NOLINK,...]`** adds a `linked_<COL>` yes/no stratum. With
     `--group-by` on the same column, whole pairs / pseudobulks land in test in proportion,
     so test holds links unseen in training (`linked_keys_per_part` in `split.json`).

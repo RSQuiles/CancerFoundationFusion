@@ -1,0 +1,355 @@
+# Evaluation of the leiden_s1 baselines (experiments/configs/leiden_s1_baselines.json):
+#   sc_baseline       single cells only
+#   bulk_baseline     bulk only
+#   bulk_sc_pretrain  sc + bulk (unified, pb_ratio 0)
+#   unified_baseline  sc + bulk + precomputed pseudobulk, no alignment loss
+# against PCA and BulkFormer, all on the leiden_s1 test parts (linked split: pairs and
+# pseudobulks in test were never seen in training).
+#
+#   CONFIG=evaluate/configs/leiden_s1_baselines_evaluation.yaml sbatch evaluate/run_evaluation.sh
+#   python -m evaluate.run_evaluation --config evaluate/configs/leiden_s1_baselines_evaluation.yaml --list
+#
+# What each task answers:
+#   1. embed           inputs for 2 and 3 (joint panel + own panel per modality)
+#   2. representation  does each modality keep its biology (UMAPs), and where do bulk and
+#                      pseudobulk land relative to each other (joint alignment UMAP)?
+#   3. alignment       scIB: bulk vs pseudobulk integration (the question the alignment
+#                      losses will be judged on later), and bio conservation per modality
+#   4. reconstruction  masked-value prediction on sc, bulk and pseudobulk test plans, with
+#                      the expression decoder (gen) and the CLS-only MVC decoder
+#   5. geneicl         frozen bulk downstream benchmark (52 tasks)
+#
+# All four models are midrank, so their reconstruction numbers share one space group
+# (bins51_midrank) and their native metrics are directly comparable.
+#
+# Names: the baselines embedded on this split are pca_leiden_s1 and bulkformer_leiden_s1,
+# so they never overwrite embeddings/pca/ or embeddings/bulkformer/ of leiden_s0.
+# Reconstruction and GeneICL results are keyed by plan / suite, so BulkFormer keeps its
+# plain name there (its GeneICL results are reused, not recomputed).
+#
+# Every split reader takes the rows from the h5ad recorded in the split's split.json
+# (ExperimentLayout.split_source), so the bulk rows come from BULK_pretraining.h5ad.
+
+project_root: /cluster/work/boeva/rquiles/CancerFoundationFusion
+
+shared:
+  root: /cluster/work/boeva/rquiles/unifiedFM_experiments
+
+default_environment: container
+environments:
+  container:                # bionemo image: CancerFoundation, GPU
+    command: [singularity, run, --nv,
+              --pwd, /cluster/work/boeva/rquiles/CancerFoundationFusion,
+              --bind, "/cluster/work/boeva/rquiles,/cluster/work/boeva/eheiss,/cluster/work/boeva/bulkFM",
+              /cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif,
+              python, -u]
+  geneicl:                  # GeneICL's eval env; run_probe reads $GENEICL_PYTHON
+    setup: |
+      source ~/.bashrc
+      conda activate geneicl || exit 1
+      export GENEICL_PYTHON="$(command -v python)"
+  bulkformer:               # BulkFormer's own env
+    setup: |
+      source ~/.bashrc
+      conda activate bulkformer-latest || exit 1
+  host: {}                  # the env run_evaluation.sh activated (bulkFM: scib_metrics, matplotlib)
+
+tasks:
+  # ---- 1. embeddings ------------------------------------------------------------------
+  # Joint panel -> embeddings/<model>/{sc,bulk,pseudobulk}_test.h5ad: one call per model,
+  # ONE gene panel over the shared genes of the three modalities (for the alignment UMAP
+  # and the bulk vs pseudobulk scIB table).
+  # Own panel -> embeddings/<model>/own_panel/<mod>_test.h5ad: one call per model AND
+  # modality, each with its own panel (sc: seurat HVG ranking, bulk/pb: MAD), for the
+  # per-modality UMAPs and bio-conservation tables.
+  # Every model is embedded on every modality, also out of domain (sc_baseline on bulk,
+  # bulk_baseline on cells): that is the reference the multimodal models must beat.
+  embed:
+    shared:
+      split: leiden_s1
+      test_subset: 20000          # per modality, stratified; bulk / pb keep all rows if fewer
+      stratify_by: [tissue_general]
+    steps:
+      cf_joint:
+        script: embed_splits
+        foreach: {model: &models [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline]}
+        args:
+          modalities: [sc, bulk, pseudobulk]
+          parts: [test]
+      pca_joint:
+        script: embed_splits
+        args:
+          embedder: pca
+          name: &pca pca_leiden_s1
+          modalities: [sc, bulk, pseudobulk]
+          parts: [test, train_subset]   # fitted on the train subset
+      bulkformer_joint:
+        script: embed_splits
+        environment: bulkformer
+        args:
+          embedder: bulkformer
+          name: &bf_emb bulkformer_leiden_s1
+          modalities: [bulk, pseudobulk]   # BulkFormer reads its own vocabulary, no panel
+          parts: [test]
+          option: &bf_option [repo=/cluster/work/boeva/rquiles/Codebases/Bulkformer-latest]
+
+      cf_own_panel:
+        script: embed_splits
+        foreach:
+          model: *models
+          modalities: [[sc], [bulk], [pseudobulk]]
+        args:
+          variant: own_panel
+          parts: [test]
+      pca_own_panel:
+        script: embed_splits
+        foreach: {modalities: [[sc], [bulk], [pseudobulk]]}
+        args:
+          variant: own_panel
+          embedder: pca
+          name: *pca
+          parts: [test, train_subset]   # fitted per modality on its own train subset
+      bulkformer_own_panel:
+        script: embed_splits
+        environment: bulkformer
+        foreach: {modalities: [[bulk], [pseudobulk]]}
+        args:
+          variant: own_panel
+          embedder: bulkformer
+          name: *bf_emb
+          parts: [test]
+          option: *bf_option
+
+  # ---- 2. representation figures (CPU) -------------------------------------------------
+  representation:
+    shared:
+      part: test
+      stratify_by: [tissue_general]
+      skip_unknown: true
+      labels: {tissue_general: Tissue, cell_type: Cell type, assay: Assay, dataset_id: Dataset,
+               modality: Modality, paired: Pair}
+    steps:
+      # Each modality on its own-panel embeddings -> results/representation/<model>/own_panel/
+      umap_sc:
+        script: umap
+        args:
+          models: [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, *pca]
+          variant: own_panel
+          modality: sc
+          subsample: 20000
+          color: [tissue_general, cell_type, assay]
+          title: "{model}: {modality_name} ({part})"
+      umap_bulk_pb:
+        script: umap
+        foreach: {modality: [bulk, pseudobulk]}
+        args:
+          models: [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, *pca, *bf_emb]
+          variant: own_panel
+          subsample: 20000
+          color: [tissue_general]
+          title: "{model}: {modality_name} ({part})"
+      # One UMAP over the three modalities, joint panel -> results/representation/_alignment/<model>/
+      # Lines join the rows of a test pair (unseen in training).
+      alignment:
+        args:
+          models: [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, *pca]
+          per_modality: ["sc=5000", "bulk=all", "pseudobulk=all"]
+          color: [modality, tissue_general, paired]
+          connect_pairs: true
+          title: "{model}: modality alignment ({counts})"
+
+  # ---- 3. scIB (bulkFM env: scib_metrics) ----------------------------------------------
+  alignment:
+    shared:
+      part: test
+      label_key: tissue_general
+      n_jobs: 4
+      row_labels: &row_labels
+        sc_baseline: "sc only"
+        bulk_baseline: "bulk only"
+        bulk_sc_pretrain: "sc + bulk"
+        unified_baseline: "sc + bulk + pb"
+        pca_leiden_s1: "PCA"
+        bulkformer_leiden_s1: "BulkFormer"
+    steps:
+      # Bulk vs pseudobulk on one joint panel: batch = modality, label = tissue. This is
+      # the reference table for the later alignment-loss experiments. PCA is the
+      # pre-integrated reference (PCR comparison), not a row.
+      scib_bulk_pb:
+        environment: host
+        script: scib
+        args:
+          name: leiden_s1_bulk_pb
+          models: [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, *bf_emb]
+          pre_integrated: *pca
+          modalities: [bulk, pseudobulk]
+          per_modality: ["bulk=all", "pseudobulk=all"]
+          batch_key: modality
+      # Bio conservation per modality, own panels (one modality -> bio_only). PCA is a row.
+      scib_sc_tissue:
+        environment: host
+        script: scib
+        args: &bio
+          name: leiden_s1_sc_tissue
+          models: [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, *pca]
+          variant: own_panel
+          bio_only: true
+          modalities: [sc]
+          per_modality: ["sc=all"]
+      scib_sc_cell_type:          # needs a cell_type column in the sc obs
+        environment: host
+        script: scib
+        continue_on_error: true
+        args:
+          <<: *bio
+          name: leiden_s1_sc_cell_type
+          label_key: cell_type
+      scib_bulk_tissue:
+        environment: host
+        script: scib
+        args:
+          <<: *bio
+          name: leiden_s1_bulk_tissue
+          modalities: [bulk]
+          per_modality: ["bulk=all"]
+      scib_pb_tissue:
+        environment: host
+        script: scib
+        args:
+          <<: *bio
+          name: leiden_s1_pb_tissue
+          modalities: [pseudobulk]
+          per_modality: ["pseudobulk=all"]
+
+  # ---- 4. reconstruction: r25 plans on the three leiden_s1 test parts --------------------
+  reconstruction:
+    steps:
+      # -> data/<modality>/splits/leiden_s1/masks/test_r25.npz. Single cells get 40% zero
+      # genes (the middle of training's zero_percentages); bulk and pseudobulk draw genes
+      # uniformly, as they have few zeros.
+      mask_plan_sc:
+        script: mask_plan
+        environment: host
+        args:
+          modality: sc
+          split: leiden_s1
+          part: test
+          name: r25
+          mask_ratio: 0.25
+          seq_len: 1200
+          n_samples: 2000
+          zero_fraction: 0.4
+          stratify_by: [tissue_general]
+      mask_plan_bulk_pb:
+        script: mask_plan
+        environment: host
+        foreach: {modality: [bulk, pseudobulk]}
+        args:
+          split: leiden_s1
+          part: test
+          name: r25
+          mask_ratio: 0.25
+          seq_len: 1200
+          n_samples: 2000
+          stratify_by: [tissue_general]
+
+      # Expression decoder (default head) -> results/reconstruction/<model>/<plan>/
+      cf_gen:
+        script: reconstruction
+        foreach:
+          model: *models
+          plan: &plans [sc:leiden_s1:test:r25, bulk:leiden_s1:test:r25, pseudobulk:leiden_s1:test:r25]
+        args: &cf_run
+          group_by: [tissue_general]
+          batch_size: 16
+      # MVC decoder: predicts from the CLS embedding alone -> <model>/<plan>_mvc/
+      cf_mvc:
+        script: reconstruction
+        foreach:
+          model: *models
+          plan: *plans
+        args:
+          <<: *cf_run
+          head: mvc
+      bulkformer:
+        script: reconstruction
+        environment: bulkformer
+        foreach: {plan: *plans}
+        args:
+          reconstructor: bulkformer
+          name: bulkformer
+          option: *bf_option
+          context: full
+          group_by: [tissue_general]
+
+      # Per plan: the four models (gen) + BulkFormer, and the four models (mvc), each on
+      # the entries all of its rows scored. Line plots take at most 8 rows, hence two names.
+      compare:                    # -> results/reconstruction/_compare/<plan>/leiden_s1_baselines/
+        environment: host
+        foreach: {plan: *plans}
+        args:
+          models: &recon_gen [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, bulkformer]
+          name: leiden_s1_baselines
+          baselines: true
+      compare_mvc:
+        script: compare
+        environment: host
+        foreach: {plan: *plans}
+        args:
+          models: &recon_mvc [sc_baseline@mvc, bulk_baseline@mvc, bulk_sc_pretrain@mvc, unified_baseline@mvc]
+          name: leiden_s1_baselines_mvc
+          baselines: true
+      plot:                       # -> results/reconstruction/_plots/<plan>/leiden_s1_baselines/
+        script: reconstruction_plot
+        environment: host
+        foreach: {plan: *plans}
+        args:
+          models: *recon_gen
+          name: leiden_s1_baselines
+          baselines: true
+      plot_mvc:
+        script: reconstruction_plot
+        environment: host
+        foreach: {plan: *plans}
+        args:
+          models: *recon_mvc
+          name: leiden_s1_baselines_mvc
+          baselines: true
+
+  # ---- 5. GeneICL benchmark (bulk downstream tasks) --------------------------------------
+  # Final checkpoints. bulkformer's probe results are reused from earlier evaluations;
+  # pca is (re)run with skips: embed_suite skips existing files, run_probe --resume.
+  geneicl:
+    shared:
+      geneicl_repo: /cluster/work/boeva/rquiles/Codebases/GeneICL
+      suite: benchmark
+    steps:
+      geneicl_embed:
+        foreach: {model: *models}
+        args:
+          modality: bulk          # the GeneICL datasets are bulk
+          gene_ids: auto
+          batch_size: 64
+      geneicl_embed_pca:
+        script: geneicl_embed
+        args:
+          embedder: pca
+      geneicl_probe:
+        environment: geneicl
+        foreach: {model: [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, pca]}
+        args:
+          seed: 42
+          resume: true
+      geneicl_compare:            # -> results/geneicl_benchmark/_compare/leiden_s1_baselines/
+        environment: geneicl
+        args:
+          models: &geneicl_models [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, pca, bulkformer]
+          reference: [scfoundation, en]
+          name: leiden_s1_baselines
+      geneicl_plot:               # -> results/geneicl_benchmark/_plots/leiden_s1_baselines/
+        environment: geneicl
+        args:
+          models: *geneicl_models
+          reference: [scfoundation, en]
+          name: leiden_s1_baselines
+          formats: [png, pdf]

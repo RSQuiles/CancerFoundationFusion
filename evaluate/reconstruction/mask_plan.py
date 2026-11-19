@@ -231,7 +231,7 @@ def main(argv: list[str] | None = None) -> Path:
 
         layout = ExperimentLayout.from_root(args.root)
         label = canonical_modality(args.modality)
-        source = layout.raw_h5ad(label)
+        source = layout.split_source(label, args.split)
         part_file = layout.split_dir(label, args.split) / f"{args.part}.txt"
         if not part_file.exists():
             sys.exit(f"Error: {part_file} not found")

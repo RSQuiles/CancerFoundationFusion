@@ -38,6 +38,7 @@ filename), and an analysis spanning several models lists them in its
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -170,6 +171,20 @@ class ExperimentLayout:
 
     def split_card(self, modality: str, split: str) -> Path:
         return self.split_dir(modality, split) / "split.json"
+
+    def split_source(self, modality: str, split: str) -> Path:
+        """The h5ad a split's row names refer to.
+
+        The source recorded in its ``split.json`` (a split made with ``--input``, e.g. from
+        ``BULK_pretraining.h5ad``), else ``raw_h5ad``. Readers of a split's rows use this,
+        so they never look the names up in another file.
+        """
+        card = self.split_card(modality, split)
+        if card.exists():
+            path = (json.loads(card.read_text(encoding="utf-8")).get("source") or {}).get("path")
+            if path:
+                return Path(path)
+        return self.raw_h5ad(modality)
 
     def mask_plan(self, modality: str, split: str, part: str, name: str) -> Path:
         """Reconstruction mask plan for one split part (``evaluate/reconstruction/mask_plan.py``).
