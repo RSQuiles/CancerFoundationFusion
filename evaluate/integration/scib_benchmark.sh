@@ -13,7 +13,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="/cluster/work/boeva/rquiles/CancerFoundationFusion"
-CONFIG="${CONFIG:-$PROJECT_ROOT/evaluate/alignment/configs/bulk_only_scib_config.yaml}"
+CONFIG="${CONFIG:-$PROJECT_ROOT/evaluate/integration/configs/bulk_only_scib_config.yaml}"
 CONDA_ENV="${CONDA_ENV:-bulkFM}"
 
 # Environment setup runs WITHOUT -e and -u: /etc/profile.d scripts read unset
@@ -32,4 +32,4 @@ if [[ "$CONDA_STATUS" -ne 0 ]]; then
 fi
 
 cd "$PROJECT_ROOT"
-python -u -m evaluate.alignment.scib_benchmark --config "$CONFIG" "$@"
+python -u -m evaluate.integration.scib_benchmark --config "$CONFIG" "$@"

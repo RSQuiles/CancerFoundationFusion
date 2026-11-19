@@ -1,20 +1,29 @@
 # Evaluation of the leiden_s1 baselines (experiments/configs/leiden_s1_baselines.json):
 #   sc_baseline       single cells only
 #   bulk_baseline     bulk only
-#   bulk_sc_pretrain  sc + bulk (unified, pb_ratio 0)
+#   bulk_sc_baseline  sc + bulk (unified, pb_ratio 0)
 #   unified_baseline  sc + bulk + precomputed pseudobulk, no alignment loss
 # against PCA and BulkFormer, all on the leiden_s1 test parts (linked split: pairs and
 # pseudobulks in test were never seen in training).
 #
 #   CONFIG=evaluate/configs/leiden_s1_baselines_evaluation.yaml sbatch evaluate/run_evaluation.sh
+#
+# Prerequisite: curated tissue labels. Run data_preprocess/map_archs4_tissue.sh --curate-only
+# first, then the embed task: embedding files keep the obs of embed time, and the
+# integration task needs tissue_label_source in them.
 #   python -m evaluate.run_evaluation --config evaluate/configs/leiden_s1_baselines_evaluation.yaml --list
 #
 # What each task answers:
 #   1. embed           inputs for 2 and 3 (joint panel + own panel per modality)
-#   2. representation  does each modality keep its biology (UMAPs), and where do bulk and
-#                      pseudobulk land relative to each other (joint alignment UMAP)?
-#   3. alignment       scIB: bulk vs pseudobulk integration (the question the alignment
-#                      losses will be judged on later), and bio conservation per modality
+#   2. representation  does each modality keep its biology (UMAPs), where do the three
+#                      modalities land relative to each other (joint alignment UMAP, with the
+#                      mean of each pseudobulk's cells as a star joined to its pseudobulk), and
+#                      do paired rows meet (pair UMAP: cells mean -> pseudobulk -> bulk)?
+#   3. integration     scIB (label level): bulk vs pseudobulk, single cells vs each of them
+#                      and all three together, plus bio conservation per modality. Then
+#                      the link metrics (sample level: is each pseudobulk nearest to the
+#                      mean of its own cells, each pair's levels nearest to each other?)
+#                      and ONE summary table with both -> results/integration/leiden_s1_baselines/
 #   4. reconstruction  masked-value prediction on sc, bulk and pseudobulk test plans, with
 #                      the expression decoder (gen) and the CLS-only MVC decoder
 #   5. geneicl         frozen bulk downstream benchmark (52 tasks)
@@ -72,7 +81,7 @@ tasks:
     steps:
       cf_joint:
         script: embed_splits
-        foreach: {model: &models [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline]}
+        foreach: {model: &models [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline]}
         args:
           modalities: [sc, bulk, pseudobulk]
           parts: [test]
@@ -133,7 +142,7 @@ tasks:
       umap_sc:
         script: umap
         args:
-          models: [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, *pca]
+          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca]
           variant: own_panel
           modality: sc
           subsample: 20000
@@ -143,31 +152,53 @@ tasks:
         script: umap
         foreach: {modality: [bulk, pseudobulk]}
         args:
-          models: [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, *pca, *bf_emb]
+          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca, *bf_emb]
           variant: own_panel
           subsample: 20000
           color: [tissue_general]
           title: "{model}: {modality_name} ({part})"
       # One UMAP over the three modalities, joint panel -> results/representation/_alignment/<model>/
-      # Lines join the rows of a test pair (unseen in training).
+      # Stars: the mean embedding of each test pseudobulk's cells (all cells of the file, not
+      # only the 5000 drawn), joined to its pseudobulk. Lines also join each bulk point to its
+      # pair's pseudobulk (test pairs are unseen in training).
       alignment:
         args:
-          models: [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, *pca]
+          models: &align_models [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca]
           per_modality: ["sc=5000", "bulk=all", "pseudobulk=all"]
           color: [modality, tissue_general, paired]
           connect_pairs: true
+          cell_means: true
+          link_col: pseudobulk_id
           title: "{model}: modality alignment ({counts})"
+      # Paired rows only, every one of them: per pair the mean of its cells (star) ->
+      # pseudobulk -> bulk -> alignment_test_paired.png
+      alignment_pairs:
+        script: alignment
+        args:
+          models: *align_models
+          paired_only: true
+          per_modality: ["sc=all", "bulk=all", "pseudobulk=all"]
+          color: [modality, tissue_general]
+          connect_pairs: true
+          cell_means: true
+          link_col: paired
+          title: "{model}: test pairs, cells mean -> pseudobulk -> bulk ({counts})"
 
-  # ---- 3. scIB (bulkFM env: scib_metrics) ----------------------------------------------
-  alignment:
+  # ---- 3. integration: scIB (bulkFM env: scib_metrics) + link metrics ------------------
+  # scIB -> results/scib_benchmark/<name>/; the summary -> results/integration/<name>/.
+  integration:
     shared:
       part: test
       label_key: tissue_general
+      # Curated labels only (map_archs4_tissue.py curate): CellxGene (sc, pseudobulk) and
+      # ARCHS4-mapped bulk tissues. Leaves out "unknown" and the culture categories
+      # (cell line, in vitro, xenograft), which are not tissues to conserve or align.
+      filter: ["tissue_label_source=cellxgene,archs4"]
       n_jobs: 4
       row_labels: &row_labels
         sc_baseline: "sc only"
         bulk_baseline: "bulk only"
-        bulk_sc_pretrain: "sc + bulk"
+        bulk_sc_baseline: "sc + bulk"
         unified_baseline: "sc + bulk + pb"
         pca_leiden_s1: "PCA"
         bulkformer_leiden_s1: "BulkFormer"
@@ -180,18 +211,47 @@ tasks:
         script: scib
         args:
           name: leiden_s1_bulk_pb
-          models: [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, *bf_emb]
+          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *bf_emb]
           pre_integrated: *pca
           modalities: [bulk, pseudobulk]
           per_modality: ["bulk=all", "pseudobulk=all"]
           batch_key: modality
+      # Single cells vs each other modality, and all three. Same keys as above; 5000 cells
+      # (label-stratified) so the cells do not swamp the batch metrics. BulkFormer is left
+      # out: it has no cells, and scIB keeps only the rows every model embedded.
+      scib_sc_pb:
+        environment: host
+        script: scib
+        args: &scib_sc
+          name: leiden_s1_sc_pb
+          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline]
+          pre_integrated: *pca
+          modalities: [sc, pseudobulk]
+          per_modality: ["sc=5000", "pseudobulk=all"]
+          batch_key: modality
+      scib_sc_bulk:
+        environment: host
+        script: scib
+        args:
+          <<: *scib_sc
+          name: leiden_s1_sc_bulk
+          modalities: [sc, bulk]
+          per_modality: ["sc=5000", "bulk=all"]
+      scib_all:
+        environment: host
+        script: scib
+        args:
+          <<: *scib_sc
+          name: leiden_s1_all
+          modalities: [sc, pseudobulk, bulk]
+          per_modality: ["sc=5000", "pseudobulk=all", "bulk=all"]
       # Bio conservation per modality, own panels (one modality -> bio_only). PCA is a row.
       scib_sc_tissue:
         environment: host
         script: scib
         args: &bio
           name: leiden_s1_sc_tissue
-          models: [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, *pca]
+          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca]
           variant: own_panel
           bio_only: true
           modalities: [sc]
@@ -220,6 +280,20 @@ tasks:
           name: leiden_s1_pb_tissue
           modalities: [pseudobulk]
           per_modality: ["pseudobulk=all"]
+      # Link metrics + ONE summary table with the scIB runs above -> results/integration/
+      # leiden_s1_baselines/integration.png. No row filter: paired bulk rows that curate
+      # left "unknown" keep their links and take their pair's tissue; label_filter only
+      # decides which labels count as a key's tissue.
+      summary:
+        environment: host
+        script: integration
+        drop: [filter, n_jobs]
+        args:
+          name: leiden_s1_baselines
+          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca, *bf_emb]
+          label_filter: ["tissue_label_source=cellxgene,archs4"]
+          min_cells: 5
+          scib_runs: [leiden_s1_sc_pb, leiden_s1_sc_bulk, leiden_s1_bulk_pb, leiden_s1_all]
 
   # ---- 4. reconstruction: r25 plans on the three leiden_s1 test parts --------------------
   reconstruction:
@@ -288,7 +362,7 @@ tasks:
         environment: host
         foreach: {plan: *plans}
         args:
-          models: &recon_gen [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, bulkformer]
+          models: &recon_gen [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, bulkformer]
           name: leiden_s1_baselines
           baselines: true
       compare_mvc:
@@ -296,7 +370,7 @@ tasks:
         environment: host
         foreach: {plan: *plans}
         args:
-          models: &recon_mvc [sc_baseline@mvc, bulk_baseline@mvc, bulk_sc_pretrain@mvc, unified_baseline@mvc]
+          models: &recon_mvc [sc_baseline@mvc, bulk_baseline@mvc, bulk_sc_baseline@mvc, unified_baseline@mvc]
           name: leiden_s1_baselines_mvc
           baselines: true
       plot:                       # -> results/reconstruction/_plots/<plan>/leiden_s1_baselines/
@@ -336,14 +410,14 @@ tasks:
           embedder: pca
       geneicl_probe:
         environment: geneicl
-        foreach: {model: [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, pca]}
+        foreach: {model: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, pca]}
         args:
           seed: 42
           resume: true
       geneicl_compare:            # -> results/geneicl_benchmark/_compare/leiden_s1_baselines/
         environment: geneicl
         args:
-          models: &geneicl_models [sc_baseline, bulk_baseline, bulk_sc_pretrain, unified_baseline, pca, bulkformer]
+          models: &geneicl_models [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, pca, bulkformer]
           reference: [scfoundation, en]
           name: leiden_s1_baselines
       geneicl_plot:               # -> results/geneicl_benchmark/_plots/leiden_s1_baselines/

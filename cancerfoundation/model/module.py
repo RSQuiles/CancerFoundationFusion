@@ -1038,6 +1038,7 @@ class TransformerModule(nn.Module):
                 temperature=self.contrastive_temperature,
                 exclude_class_codes=self.class_exclude_codes,
                 min_class_count=self.class_min_count,
+                stats=loss_dict,
             )
             if self.contrastive:
                 loss = loss + self.weight_contrastive * loss_contrastive
@@ -1101,6 +1102,7 @@ class TransformerModule(nn.Module):
                 emb[src_m], tissue[src_m], emb[tgt_m], tissue[tgt_m],
                 min_class_count=self.class_min_count,
                 exclude_class_codes=self.class_exclude_codes,
+                stats=loss_dict,
             )
             if self.cdd and self._cdd_w > 0:
                 loss = loss + self._cdd_w * loss_cdd
@@ -1230,6 +1232,7 @@ class TransformerModule(nn.Module):
         exclude_class_codes: tuple = (),
         min_class_count: int = 1,
         use_cls_token: bool = True,
+        stats: Optional[dict] = None,
     ) -> torch.Tensor:
         """Tissue-aware cross-modal InfoNCE between real bulk and pseudobulk.
 
@@ -1245,7 +1248,8 @@ class TransformerModule(nn.Module):
         only with a label >= 0 that is not in ``exclude_class_codes``; it is an anchor
         only when its class has >= ``min_class_count`` valid rows in BOTH domains of
         the batch (rows of other classes still serve as negatives). Without an anchor
-        the loss is 0.
+        the loss is 0. ``stats``, when given, receives the share of the batch's bulk
+        and pseudobulk rows that were anchors (monitoring only).
 
         Modality convention (BulkSCCollator): 0 = real bulk, 1 = single cell,
         2 = pseudobulk.
@@ -1267,6 +1271,12 @@ class TransformerModule(nn.Module):
             valid = valid & ~torch.isin(labels, excluded)
         b_sel = valid & (modalities == 0)
         p_sel = valid & (modalities == 2)
+        # Monitoring only: share of the batch's bulk / pseudobulk rows that are anchors.
+        n_bulk_rows = (modalities == 0).sum().clamp_min(1).float()
+        n_pb_rows = (modalities == 2).sum().clamp_min(1).float()
+        if stats is not None:
+            stats["class_anchor_frac_bulk"] = zero.detach().float()
+            stats["class_anchor_frac_pb"] = zero.detach().float()
         if not b_sel.any() or not p_sel.any():
             return zero
 
@@ -1283,6 +1293,9 @@ class TransformerModule(nn.Module):
         p_same = (p_lab.unsqueeze(1) == p_lab.unsqueeze(0)).sum(1)
         b_anchor = (pos.sum(1) >= m) & (b_same >= m)
         p_anchor = (pos.sum(0) >= m) & (p_same >= m)
+        if stats is not None:
+            stats["class_anchor_frac_bulk"] = (b_anchor.sum().float() / n_bulk_rows).detach()
+            stats["class_anchor_frac_pb"] = (p_anchor.sum().float() / n_pb_rows).detach()
         if not b_anchor.any():
             return zero
 
@@ -1415,6 +1428,7 @@ class TransformerModule(nn.Module):
         min_class_count: int = 2,
         exclude_class_codes: tuple = (),
         eps: float = 1e-8,
+        stats: Optional[dict] = None,
     ) -> torch.Tensor:
         """Contrastive Domain Discrepancy: intra-class MMD minus inter-class MMD.
 
@@ -1423,10 +1437,13 @@ class TransformerModule(nn.Module):
         present in BOTH domains with >= ``min_class_count`` samples and not in
         ``exclude_class_codes`` (and non-negative) are used. Biased kernel means
         (diagonal included) with a single shared bandwidth (median heuristic over
-        the pooled sample), matching :meth:`_mmd_rbf` conventions.
+        the pooled sample), matching :meth:`_mmd_rbf` conventions. ``stats``, when
+        given, receives the number of classes used (``cdd_n_classes``, monitoring only).
         """
         ref = source_emb if source_emb.numel() else target_emb
         zero = ref.new_zeros(())
+        if stats is not None:
+            stats["cdd_n_classes"] = zero.detach().float()
         if source_emb.size(0) == 0 or target_emb.size(0) == 0:
             return zero
 
@@ -1443,6 +1460,8 @@ class TransformerModule(nn.Module):
             and s_ok[c] >= min_class_count and t_ok[c] >= min_class_count
         )
         M = len(valid)
+        if stats is not None:
+            stats["cdd_n_classes"] = zero.detach().float() + M
         if M == 0:
             return zero
 

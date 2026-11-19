@@ -207,6 +207,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         class_min_count: int = 2,
         class_aware_n_classes: int = 8,
         class_aware_bulk_frac: float = 0.6,
+        class_aware_pb_frac: float = 0.6,
         sampler_seed: Optional[int] = None,
         binning_method: str = "quantile",
     ):
@@ -254,6 +255,7 @@ class BulkSCDataModule(pl.LightningDataModule):
         self.class_min_count = class_min_count
         self.class_aware_n_classes = class_aware_n_classes
         self.class_aware_bulk_frac = class_aware_bulk_frac
+        self.class_aware_pb_frac = class_aware_pb_frac
 
         # Setup token values based on embedding style
         if self.input_style == "category":
@@ -362,6 +364,7 @@ class BulkSCDataModule(pl.LightningDataModule):
                     class_min_count=self.class_min_count,
                     class_aware_n_classes=self.class_aware_n_classes,
                     class_aware_bulk_frac=self.class_aware_bulk_frac,
+                    class_aware_pb_frac=self.class_aware_pb_frac,
                 )
             else:
                 # Val: deterministic sequential batches so all ranks see

@@ -24,6 +24,7 @@ Layout::
         ├── geneicl_<suite>/<model>/                 e.g. geneicl_benchmark/
         ├── geneicl_<suite>/_compare/<name>/, _plots/<name>/
         ├── scib_benchmark/<name>/                   one scIB analysis (+ manifest.json)
+        ├── integration/<name>/                      cross-level link metrics + summary (+ manifest.json)
         ├── _checks/<check>/                         data checks (e.g. store_<modality>_<split>)
         └── _eval_runs/<config>_<timestamp>/         evaluate.run_evaluation records (configs, logs)
 
@@ -32,7 +33,7 @@ per-model output lives under a directory named after the model (never in a
 filename), and an analysis spanning several models lists them in its
 ``manifest.json`` under ``"models"``. A task directory holds model directories and
 ``_``-prefixed ones only (``_compare``, ``_plots``, ``_checks``), except
-``scib_benchmark``, whose subdirectories are analyses, never models.
+``scib_benchmark`` and ``integration``, whose subdirectories are analyses, never models.
 
 """
 
@@ -70,10 +71,12 @@ _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 RUN_CARD = "run.json"
 # Result tasks that are not "one directory per model": representation has its own
-# layout, and scib_benchmark/<name>/ are analyses spanning models.
+# layout, and scib_benchmark/<name>/ and integration/<name>/ are analyses spanning models.
 REPRESENTATION_TASK = "representation"
 SCIB_TASK = "scib_benchmark"
-_NON_MODEL_TASKS = {REPRESENTATION_TASK, SCIB_TASK}
+INTEGRATION_TASK = "integration"
+_ANALYSIS_TASKS = (SCIB_TASK, INTEGRATION_TASK)
+_NON_MODEL_TASKS = {REPRESENTATION_TASK, *_ANALYSIS_TASKS}
 DEFAULT_COMPARISON = "default"
 EMBED_CARD = "embed.json"
 ASSESSMENT_MANIFEST = "manifest.json"
@@ -316,6 +319,13 @@ class ExperimentLayout:
             raise ValueError(f"Invalid scIB analysis name {name!r}")
         return self.task_root(SCIB_TASK) / name
 
+    def integration_dir(self, name: str) -> Path:
+        """``results/integration/<name>/``: one cross-level integration analysis (link
+        metrics between single cells, pseudobulk and bulk, plus the scIB summary)."""
+        if not _MODEL_NAME_RE.match(str(name)):
+            raise ValueError(f"Invalid integration analysis name {name!r}")
+        return self.task_root(INTEGRATION_TASK) / name
+
     @property
     def checks_dir(self) -> Path:
         """``results/_checks/``: data checks that belong to no evaluation task (store checks)."""
@@ -372,8 +382,9 @@ class ExperimentLayout:
                     files.extend(sorted(model_dir.glob("*.json")))
         if self.results_dir.is_dir():
             # Comparison manifests sit at any depth under _compare / _plots (with or without
-            # a plan level); scIB analyses directly under scib_benchmark/.
+            # a plan level); scIB and integration analyses directly under their task.
             for kind in ("_compare", "_plots"):
                 files.extend(sorted(self.results_dir.glob(f"*/{kind}/**/{ASSESSMENT_MANIFEST}")))
-            files.extend(sorted(self.task_root(SCIB_TASK).glob(f"*/{ASSESSMENT_MANIFEST}")))
+            for task in _ANALYSIS_TASKS:
+                files.extend(sorted(self.task_root(task).glob(f"*/{ASSESSMENT_MANIFEST}")))
         return files

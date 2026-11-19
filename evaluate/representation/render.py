@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from evaluate.modalities import DISPLAY_NAMES, MODALITIES
+from evaluate.modalities import DISPLAY_NAMES, DRAW_ORDER
 
 # Label values treated as "no value" when colouring.
 UNKNOWN_LABELS: frozenset[str] = frozenset({"unknown", "nan", "none", "n/a", ""})
@@ -37,6 +37,7 @@ MODALITY_STYLE: dict[str, dict] = {
     "pseudobulk": dict(color="#4dac26", s=30, marker="^", linewidths=0.5, edgecolors="black"),
     # "bulk":       dict(color="#d6604d", s=30, marker="D", linewidths=0.5, edgecolors="black"),
     "bulk":       dict(color="#4393c3", s=4,  marker="o", linewidths=0),
+    "cell_mean":  dict(color="black", s=70, marker="*", linewidths=0.5, edgecolors="black", alpha=1.0),
 }
 _PLAIN_STYLE = dict(s=6, marker="o", linewidths=0)
 
@@ -122,7 +123,7 @@ def _scatter(ax, coords, modality, colors=None, order=None) -> None:
         ax.scatter(coords[:, 0], coords[:, 1], c=colors, alpha=None if colors is not None else 0.5,
                    rasterized=True, **_PLAIN_STYLE)
         return
-    for mod in order or MODALITIES:
+    for mod in order or DRAW_ORDER:
         mask = modality == mod
         if not mask.any():
             continue
@@ -130,12 +131,13 @@ def _scatter(ax, coords, modality, colors=None, order=None) -> None:
         if colors is not None:
             style.pop("color", None)
             style["c"] = colors[mask]
-        ax.scatter(coords[mask, 0], coords[mask, 1], alpha=0.5, rasterized=True, **style)
+        alpha = style.pop("alpha", 0.5)
+        ax.scatter(coords[mask, 0], coords[mask, 1], alpha=alpha, rasterized=True, **style)
 
 
 def _modality_handles(modality: np.ndarray, colored: bool) -> list:
     handles = []
-    for mod in MODALITIES:
+    for mod in DRAW_ORDER:
         if not (modality == mod).any():
             continue
         style = MODALITY_STYLE[mod]

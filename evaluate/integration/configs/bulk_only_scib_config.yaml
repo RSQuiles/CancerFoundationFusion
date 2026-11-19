@@ -1,4 +1,4 @@
-# Defaults for evaluate/alignment/scib_benchmark.py (--config). Keys are option names;
+# Defaults for evaluate/integration/scib_benchmark.py (--config). Keys are option names;
 # the CLI overrides them. The scib: block applies to the script; top-level keys too.
 # root: /cluster/work/boeva/rquiles/unifiedFM_experiments
 

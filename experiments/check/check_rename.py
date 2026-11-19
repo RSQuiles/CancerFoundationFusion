@@ -59,6 +59,7 @@ def _build_root(root: Path) -> tuple[ExperimentLayout, Path]:
         "runs": [{"model_name": OLD, "checkpoint_dir": save_dir}, {"model_name": OTHER}],
     })
     _write(layout.scib_dir("scib") / "manifest.json", {"models": {OLD: "row1", OTHER: "row2"}})
+    _write(layout.integration_dir("links") / "manifest.json", {"models": [OLD, OTHER], "row_labels": {OLD: "r1"}})
     _write(layout.task_compare_dir("reconstruction", "plan_r25", "cmp") / "manifest.json",
            {"models": [OLD, OTHER], "rows": [f"{OLD}@mvc", OTHER]})
     _write(layout.task_plot_dir("canc_type", "plan", "cmp") / "manifest.json", {"models": [OLD, OTHER]})
@@ -119,6 +120,9 @@ def check_rename() -> None:
               (layout.scib_dir("scib") / "manifest.json").exists())
         manifest = json.loads((layout.scib_dir("scib") / "manifest.json").read_text())
         check("manifest dict key renamed", set(manifest["models"]) == {NEW, OTHER})
+        links = json.loads((layout.integration_dir("links") / "manifest.json").read_text())
+        check("integration manifest renamed, not moved",
+              links["models"] == [NEW, OTHER] and set(links["row_labels"]) == {NEW})
         plots = json.loads((layout.task_plot_dir("canc_type", "plan", "cmp") / "manifest.json").read_text())
         check("task plot manifest renamed", plots["models"] == [NEW, OTHER])
         flat = json.loads((layout.task_plot_dir("other_task", "cmp") / "manifest.json").read_text())

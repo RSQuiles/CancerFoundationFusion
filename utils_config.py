@@ -750,6 +750,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fraction of the bulk slots in a class-aware batch drawn from the batch's chosen tissues (the rest are drawn freely from ALL bulk, so every bulk row still trains). --cdd-bulk-class-frac is the old name. Default 0.6.",
     )
     parser.add_argument(
+        "--class-aware-pb-frac",
+        dest="class_aware_pb_frac",
+        type=float,
+        default=0.6,
+        help="Fraction of the pseudobulk slots in a class-aware batch drawn from the batch's chosen tissues. The rest are drawn as in a standard batch, so pseudobulks of tissues bulk lacks (and excluded labels) still train reconstruction. Default 0.6, as --class-aware-bulk-frac; 1.0 matches every slot (the previous behavior).",
+    )
+    parser.add_argument(
         "--class-aware-n-classes",
         dest="class_aware_n_classes",
         type=int,

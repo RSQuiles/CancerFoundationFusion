@@ -477,6 +477,7 @@ class BulkSCSampler(Sampler[list[int]]):
         class_min_count: int = 2,
         class_aware_n_classes: int = 8,
         class_aware_bulk_frac: float = 0.6,
+        class_aware_pb_frac: float = 0.6,
     ):
         # Account for the Subset resulting from random_split.
         # SubsetReindexer builds a LUT once; each remap() call also returns a
@@ -567,6 +568,7 @@ class BulkSCSampler(Sampler[list[int]]):
         self.class_aware = class_aware
         self.class_aware_n_classes = class_aware_n_classes
         self.class_aware_bulk_frac = min(max(class_aware_bulk_frac, 0.0), 1.0)
+        self.class_aware_pb_frac = min(max(class_aware_pb_frac, 0.0), 1.0)
         self.class_min_count = class_min_count
         self.class_aware_exclude_group_codes = set(class_aware_exclude_group_codes or ())
         self._build_source_pools()
@@ -614,6 +616,7 @@ class BulkSCSampler(Sampler[list[int]]):
         # Define RNG — seeded for reproducibility and correct DDP sharding
         self._seed = seed
         self.rng = np.random.default_rng(seed)
+        self._plan_class_aware()
 
         # Confirm batch composition
         # if self.verbose:
@@ -838,6 +841,29 @@ class BulkSCSampler(Sampler[list[int]]):
         if self.verbose:
             print(
                 f"[CDD] class-aware sampling over {len(self.shared_groups)} shared tissues."
+            )
+
+    def _plan_class_aware(self) -> None:
+        """Fix the class-aware batch layout once (``utils.sampling.class_aware_allocation``)."""
+        self.class_aware_plan = None
+        if not self.class_aware:
+            return
+        from utils.sampling import class_aware_allocation
+
+        plan = class_aware_allocation(
+            self.n_pb, self.n_bulk, len(self.shared_groups), self.class_aware_n_classes,
+            self.class_min_count, self.class_aware_pb_frac, self.class_aware_bulk_frac,
+        )
+        self.class_aware_plan = plan
+        if self.verbose or plan["k"] < plan["k_requested"]:
+            lo_p, hi_p = plan["pb_per_tissue"]
+            lo_b, hi_b = plan["bulk_per_tissue"]
+            print(
+                f"[CLASS-AWARE] {plan['k']} tissues per batch (asked "
+                f"{self.class_aware_n_classes}, {len(self.shared_groups)} shared; lowered so "
+                f"each has >= class_min_count {self.class_min_count} in both domains): "
+                f"{lo_p}-{hi_p} pseudobulk and {lo_b}-{hi_b} bulk per tissue; free slots "
+                f"{plan['n_pb_free']} pseudobulk, {plan['n_bulk_free']} bulk."
             )
 
     def _build_agg_pb_pools(self) -> None:
@@ -1101,29 +1127,8 @@ class BulkSCSampler(Sampler[list[int]]):
             balanced=self.sample_balanced,
         )
 
-        # --precomputed-pb: draw n_pb precomputed PB rows directly (one row per PB), tissue
-        # -pure when a PB group column is set, else from the global precomputed-PB pool.
-        # The collator passes these rows through unchanged (no on-the-fly aggregation).
+        pb_idx = self._draw_free_pb(self.n_pb)
         if self.precomputed_pb:
-            # With aggregation consistency the pools are pre-filtered to pseudobulks
-            # whose constituent cells are present, so every drawn row is usable.
-            pb_pool = self.pb_indices_with_sc if self.precomputed_agg else self.pb_indices
-            group_pool = (
-                self.pb_group_to_indices_agg
-                if self.precomputed_agg
-                else self.pb_group_to_indices
-            )
-            if group_pool is not None:
-                # source_groups is derived from this very pool (see the alias in
-                # __init__), so it never names a tissue the pool cannot serve.
-                pb_groups = self.rng.choice(self.source_groups, size=self.n_pb, replace=True)
-                pb_sel = [
-                    int(self.sample(group_pool[g], size=1, balanced=False)[0])
-                    for g in pb_groups
-                ]
-                pb_idx = np.array(pb_sel)
-            else:
-                pb_idx = self.sample(pb_pool, size=self.n_pb, balanced=False)
             bulk_idx = self.sample(
                 self.bulk_indices,
                 size=self.n_bulk,
@@ -1139,33 +1144,6 @@ class BulkSCSampler(Sampler[list[int]]):
             indices.extend(bulk_idx)
             return indices
 
-        # If a PB group column is set, each pseudobulk is built from cells
-        # of a single randomly chosen tissue group
-        if self.sc_group_to_indices is not None:
-            pb_groups = self.rng.choice(self.sc_groups, size=self.n_pb, replace=True)
-            pb_sc_indices = []
-            for g in pb_groups:
-                sc_pool = self.sc_group_to_indices[g]
-                # Tissue-group selection already defines the sampling strategy
-                # for PB; balanced class sampling would ignore the pool, so
-                # we always sample uniformly within the group here.
-                pb_sc_indices.extend(
-                    list(self.sample(
-                        sc_pool,
-                        size=self.n_sc_per_pb,
-                        modality="pb",
-                        balanced=False,
-                        ))
-                )
-            pb_idx = np.array(pb_sc_indices)
-        else:
-            pb_idx = self.sample(
-                self.sc_indices,
-                size=self.n_pb * self.n_sc_per_pb,
-                modality="pb",
-                balanced=self.sample_balanced,
-            )
-
         bulk_idx = self.sample(
             self.bulk_indices,
             size=self.n_bulk,
@@ -1178,6 +1156,54 @@ class BulkSCSampler(Sampler[list[int]]):
         indices.extend(bulk_idx)
         return indices
 
+    def _draw_free_pb(self, n: int):
+        """``n`` pseudobulk slots drawn without class matching (the standard batch's draw).
+
+        --precomputed-pb: one precomputed PB row per slot, tissue-pure over
+        ``source_groups`` when a PB group column is set, else from the global PB pool;
+        with aggregation consistency the pools only hold PBs whose cells are present.
+        On the fly: ``n * n_sc_per_pb`` SC cells, ``n_sc_per_pb`` consecutive cells of
+        one randomly chosen tissue per slot when a group column is set.
+        """
+        if n <= 0:
+            return np.array([], dtype=np.int64)
+        if self.precomputed_pb:
+            pb_pool = self.pb_indices_with_sc if self.precomputed_agg else self.pb_indices
+            group_pool = (
+                self.pb_group_to_indices_agg
+                if self.precomputed_agg
+                else self.pb_group_to_indices
+            )
+            if group_pool is not None:
+                # source_groups is derived from this very pool (see the alias in
+                # __init__), so it never names a tissue the pool cannot serve.
+                pb_groups = self.rng.choice(self.source_groups, size=n, replace=True)
+                return np.array([
+                    int(self.sample(group_pool[g], size=1, balanced=False)[0])
+                    for g in pb_groups
+                ])
+            return self.sample(pb_pool, size=n, balanced=False)
+
+        # If a PB group column is set, each pseudobulk is built from cells
+        # of a single randomly chosen tissue group
+        if self.sc_group_to_indices is not None:
+            pb_groups = self.rng.choice(self.sc_groups, size=n, replace=True)
+            pb_sc_indices = []
+            for g in pb_groups:
+                # Tissue-group selection already defines the sampling strategy
+                # for PB; balanced class sampling would ignore the pool, so
+                # we always sample uniformly within the group here.
+                pb_sc_indices.extend(list(self.sample(
+                    self.sc_group_to_indices[g], size=self.n_sc_per_pb, modality="pb", balanced=False,
+                )))
+            return np.array(pb_sc_indices)
+        return self.sample(
+            self.sc_indices,
+            size=n * self.n_sc_per_pb,
+            modality="pb",
+            balanced=self.sample_balanced,
+        )
+
     def sample_class_aware_batch(self):
         """Class-aware batch for CDD: the same K tissues are drawn in both the
         pseudobulk (source) and bulk (target) halves, so the class-conditional
@@ -1188,6 +1214,8 @@ class BulkSCSampler(Sampler[list[int]]):
         chosen tissues; the rest are drawn freely from ALL bulk. Reserving every slot
         would mean bulk rows outside the shared tissues — "unknown" rows above all —
         never appear in any batch, so they would receive no gradient from any loss.
+        The pseudobulk half works the same way with class_aware_pb_frac (default 0.6,
+        as for bulk; 1.0 = all slots matched): the free part reaches pseudobulks of tissues bulk lacks.
         """
         indices: list[int] = []
 
@@ -1196,14 +1224,20 @@ class BulkSCSampler(Sampler[list[int]]):
             self.sc_indices, size=self.n_sc, modality="sc", balanced=self.sample_balanced,
         )
 
-        # Pick K shared tissues for this batch and spread PBs/bulk across them.
-        K = min(self.class_aware_n_classes, len(self.shared_groups))
+        # Pick K shared tissues for this batch and spread PBs/bulk across them. K comes
+        # from _plan_class_aware: lowered so each tissue gets >= class_min_count rows in
+        # both domains, otherwise it would count in neither contrastive nor CDD.
+        plan = self.class_aware_plan
+        K = plan["k"]
         chosen = self.rng.choice(self.shared_groups, size=K, replace=False)
 
-        # Pseudobulks: n_pb tissue-pure PBs distributed round-robin over the K tissues.
-        # --precomputed-pb draws one precomputed PB row per slot from the tissue's PB pool;
-        # otherwise it draws n_sc_per_pb SC cells per slot for on-the-fly aggregation.
-        pb_groups = [chosen[i % K] for i in range(self.n_pb)]
+        # Pseudobulks: the matched part (class_aware_pb_frac of n_pb) is tissue-pure PBs
+        # distributed round-robin over the K tissues; the free part is drawn as in a
+        # standard batch, so pseudobulks of tissues bulk lacks (and "unknown") still
+        # train reconstruction. --precomputed-pb draws one precomputed PB row per slot
+        # from the tissue's PB pool; otherwise n_sc_per_pb SC cells per slot for
+        # on-the-fly aggregation.
+        pb_groups = [chosen[i % K] for i in range(plan["n_pb_matched"])]
         pb_sc_indices: list[int] = []
         pb_group_pool = (
             self.pb_group_to_indices_agg
@@ -1219,12 +1253,14 @@ class BulkSCSampler(Sampler[list[int]]):
                 pb_sc_indices.extend(list(self.sample(
                     self.sc_group_to_indices[g], size=self.n_sc_per_pb, modality="pb", balanced=False,
                 )))
+        if plan["n_pb_free"] > 0:
+            pb_sc_indices.extend(int(i) for i in self._draw_free_pb(plan["n_pb_free"]))
         pb_idx = np.array(pb_sc_indices)
 
         # Bulk: a matched part over the SAME K tissues (so CDD sees paired classes),
         # plus a free part over all bulk (so every bulk row still trains).
-        n_matched = int(round(self.n_bulk * self.class_aware_bulk_frac))
-        n_free = self.n_bulk - n_matched
+        n_matched = plan["n_bulk_matched"]
+        n_free = plan["n_bulk_free"]
         bulk_sel: list[int] = []
         if n_matched > 0:
             bulk_groups = [chosen[i % K] for i in range(n_matched)]

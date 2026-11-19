@@ -27,7 +27,6 @@ Usage:
         --field tissue_general --cellxgene-only
 """
 
-import re
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -38,7 +37,7 @@ import scanpy as sc
 from scipy.spatial.distance import cdist
 import scipy.sparse as sp
 
-from tissue_names import walk_tissue_names
+from tissue_names import keyword_tissue as _tissue_of_row  # shared with map_archs4_tissue.py
 
 # Field names that trigger tissue inference instead of constant broadcast.
 TISSUE_FIELDS = {"tissue", "tissue_general"}
@@ -53,35 +52,6 @@ def read_anndata(file_path: Path) -> sc.AnnData:
     except (OSError, KeyError):
         pass
     return sc.read_h5ad(file_path)
-
-
-def _normalize_text(s) -> str:
-    s = str(s).lower()
-    s = re.sub(r"[_\-/]", " ", s)
-    s = re.sub(r"[^a-z0-9 ]", "", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
-def _tissue_of_row(values, cellxgene_only: bool, precise: bool) -> str:
-    """Infer a tissue label from a row's metadata field values."""
-    norm_items = [_normalize_text(v) for v in values]
-
-    def check(name: str) -> bool:
-        words = _normalize_text(name).split()
-        if not words:
-            return False
-        for item in norm_items:
-            if len(words) == 1:
-                if words[0] in item:
-                    return True
-            elif all(w in item for w in words):
-                return True
-        return False
-
-    return walk_tissue_names(
-        lambda name: check(name), cellxgene_only=cellxgene_only, precise=precise
-    )
 
 
 def infer_tissue_column(

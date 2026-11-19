@@ -1,6 +1,13 @@
 """
 Utilities for data preprocessing for unified pipeline:
+
+- ``tissue_categories`` + ``walk_tissue_names``: the keyword tables behind the heuristic
+  ``tissue_general`` of ``add_fields.py``; ``keyword_tissue`` applies them to one row.
+- ``CELLXGENE_NAME``: those category names -> CellxGene ``tissue_general`` names, used by
+  ``map_archs4_tissue.py curate --trust-heuristic``.
 """
+
+import re
 
 # Tissue categories that do NOT correspond to a CellxGene `tissue_general` value
 # (the ones flagged "No direct CellxGene match — kept for bulk" in
@@ -353,3 +360,59 @@ tissue_categories = {
         "CAL27", "SCC4", "SCC9", "SCC15",
     ],
 }
+
+
+def normalize_text(s) -> str:
+    """Lowercase, ``_ - /`` -> space, other punctuation dropped, single spaces."""
+    s = str(s).lower()
+    s = re.sub(r"[_\-/]", " ", s)
+    s = re.sub(r"[^a-z0-9 ]", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def keyword_tissue(values, cellxgene_only: bool = False, precise: bool = False) -> str:
+    """Tissue category of one row from its metadata strings (keyword matching only).
+
+    The rule of ``add_fields.py`` before its centroid fill: a one-word name matches as a
+    substring of a value, a longer name when all its words occur in one value.
+    """
+    norm_items = [normalize_text(v) for v in values]
+
+    def check(name: str) -> bool:
+        words = normalize_text(name).split()
+        if not words:
+            return False
+        for item in norm_items:
+            if len(words) == 1:
+                if words[0] in item:
+                    return True
+            elif all(w in item for w in words):
+                return True
+        return False
+
+    return walk_tissue_names(check, cellxgene_only=cellxgene_only, precise=precise)
+
+
+# Heuristic category (``tissue_categories`` key) -> CellxGene ``tissue_general`` name.
+# A proposal: ``map_archs4_tissue.py curate`` checks every target against the labels the
+# ARCHS4 map and the CellxGene h5ads actually use, and maps a target missing there to
+# "unknown" (reported), so a wrong guess here costs labels, never invents a class.
+CELLXGENE_NAME = {
+    "skin": "skin of body",
+    "adipose": "adipose tissue",
+    "muscle": "musculature",
+    "nasal": "nose",
+    "vascular": "vasculature",
+    "thyroid": "thyroid gland",
+    "oral cavity": "mouth",
+    **{name: name for name in (
+        "blood", "brain", "colon", "intestine", "esophagus", "eye", "heart", "kidney",
+        "lung", "prostate gland", "urinary bladder", "ureter", "exocrine gland", "embryo",
+        "liver", "pancreas", "stomach", "breast", "ovary", "testis", "bone marrow", "bone",
+        "thymus", "spleen", "cervix", "placenta", "connective tissue", "lymph node",
+        "adrenal gland", "uterus",
+    )},
+}
+missing = set(tissue_categories) - set(CELLXGENE_NAME)
+assert not missing, f"CELLXGENE_NAME lacks {sorted(missing)}"
+del missing

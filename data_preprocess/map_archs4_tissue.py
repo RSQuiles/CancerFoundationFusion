@@ -29,13 +29,31 @@ Two subcommands (the approach of ``notebooks/map_archs4_tissue.ipynb``, made a s
     uns and the other obs columns stay byte for byte as they were. That is checked
     after writing.
 
+``curate``: make ``tissue_general`` hold curated labels only (for the class-aware losses
+  and the evaluation), keeping the old labels.
+  - bulk: the old column moves to ``tissue_noncurated``. The new ``tissue_general`` is
+    the map's CellxGene label (``tissue``) or category name (``cell line``,
+    ``in vitro``, ``xenograft``), and ``unknown`` for everything else: ``unmatched``
+    ARCHS4 rows and non-ARCHS4 rows, whose labels came from keyword matching plus a
+    centroid fill (``add_fields.py``). ``--trust-heuristic`` keeps a non-ARCHS4 label,
+    renamed to its CellxGene name (``tissue_names.CELLXGENE_NAME``), when keywords
+    alone reproduce it.
+  - single_cell / pseudobulk: their labels are CellxGene already; nothing is relabelled.
+  - Every modality gets ``tissue_label_source`` (cellxgene, archs4, archs4_culture,
+    keyword, heuristic, none), so evaluation can filter on it in every modality.
+  - ``--in-place`` edits obs only, without copying the file, and undoes every step on
+    failure.
+
     python map_archs4_tissue.py build-map --metadata .../archs4/metadata.csv \\
         --uberon-obo .../uberon-basic.obo [--out-dir archs4_tissue_map]
     python map_archs4_tissue.py apply --h5ad .../BULK_pretraining.h5ad --overwrite [--dry-run]
     python map_archs4_tissue.py apply --h5ad in.h5ad --out relabelled.h5ad
+    python map_archs4_tissue.py curate --h5ad .../BULK_pretraining.h5ad --modality bulk \\
+        --vocab-h5ad .../pseudobulk.h5ad (--in-place | --out FILE | --dry-run)
+    python map_archs4_tissue.py curate --h5ad .../pseudobulk.h5ad --modality pseudobulk --in-place
 
-``build-map`` needs obonet, networkx and cellxgene_ontology_guide; ``apply`` needs
-h5py, pandas and anndata.
+``build-map`` needs obonet, networkx and cellxgene_ontology_guide; ``apply`` and
+``curate`` need h5py, pandas and anndata.
 """
 
 from __future__ import annotations
@@ -671,6 +689,278 @@ def verify(src: Path, dst: Path, col: str, existed: bool) -> None:
 
 
 # ======================================================================================
+# curate
+# ======================================================================================
+SRC_CELLXGENE, SRC_ARCHS4, SRC_CULTURE = "cellxgene", "archs4", "archs4_culture"
+SRC_KEYWORD, SRC_HEURISTIC, SRC_NONE = "keyword", "heuristic", "none"
+TMP = "__curate_tmp_"
+
+
+def _str(x) -> str:
+    return x.decode() if isinstance(x, bytes) else str(x)
+
+
+def _column_order(obs) -> list[str]:
+    return [_str(c) for c in obs.attrs.get("column-order", [])]
+
+
+def _read_obs(path: Path, columns: list[str]) -> tuple[pd.Index, dict[str, pd.Series | None]]:
+    """obs index and the requested columns (None when absent), via h5py."""
+    import h5py
+
+    read_elem, _ = _io()
+    with h5py.File(path, "r") as f:
+        obs = f["obs"]
+        if obs.attrs.get("encoding-type") != "dataframe":
+            sys.exit(f"Error: {path.name}: obs is not an anndata >= 0.7 dataframe group")
+        names = pd.Index(_decode(read_elem(obs[_str(obs.attrs["_index"])])).astype(str))
+        cols = {c: (_decode(read_elem(obs[c])) if c in obs else None) for c in columns}
+    return names, cols
+
+
+def _h5ad_labels(paths: list[Path], column: str) -> set[str]:
+    """Labels of ``column`` in the --vocab-h5ad files (CellxGene h5ads: pseudobulk, single cell)."""
+    labels: set[str] = set()
+    for path in paths:
+        _, cols = _read_obs(path, [column])
+        if cols[column] is None:
+            sys.exit(f"Error: --vocab-h5ad {path} has no obs column {column!r}")
+        found = set(cols[column].dropna().astype(str)) - {UNKNOWN}
+        print(f"vocabulary: {len(found)} labels from {path.name}")
+        labels |= found
+    return labels
+
+
+def curate_values(args, ids: np.ndarray, old: pd.Series, keyword_meta: pd.DataFrame | None,
+                  mapping: pd.DataFrame | None, vocab: set[str]) -> tuple[pd.Series, pd.Series, dict]:
+    """New curated labels and their source per row (see ``curate``)."""
+    n = len(ids)
+    old_s = old.astype(object).where(old.notna(), None)
+    if args.modality != "bulk":
+        label = old_s.fillna(UNKNOWN).astype(str)
+        return label, pd.Series(np.full(n, SRC_CELLXGENE, dtype=object)), {}
+
+    hit = mapping.reindex(ids)
+    cat = hit["category"].to_numpy(dtype=object)
+    tg = hit["tissue_general"].to_numpy(dtype=object)
+    label = np.full(n, UNKNOWN, dtype=object)
+    source = np.where(pd.Series(old_s).isin([None, UNKNOWN, ""]).to_numpy(), SRC_NONE, SRC_HEURISTIC).astype(object)
+    is_tissue = (cat == TISSUE) & pd.notna(tg)
+    is_culture = np.isin(cat, [CELL_LINE, IN_VITRO, XENOGRAFT])
+    label[is_tissue], source[is_tissue] = tg[is_tissue], SRC_ARCHS4
+    label[is_culture], source[is_culture] = cat[is_culture], SRC_CULTURE
+
+    renamed: dict = {}
+    if args.trust_heuristic:
+        from tissue_names import CELLXGENE_NAME, keyword_tissue
+
+        not_archs4 = pd.isna(cat)
+        rows = np.flatnonzero(not_archs4 & (source == SRC_HEURISTIC))
+        cache: dict[tuple, str] = {}
+        kw = np.full(n, None, dtype=object)
+        values = keyword_meta.astype(str).to_numpy()
+        for i in rows:
+            key = tuple(values[i])
+            if key not in cache:
+                cache[key] = keyword_tissue(key)
+            kw[i] = cache[key]
+        reproduced = np.array([kw[i] is not None and kw[i] == old_s.iloc[i] for i in range(n)])
+        for i in np.flatnonzero(reproduced):
+            target = CELLXGENE_NAME.get(old_s.iloc[i])
+            renamed.setdefault((old_s.iloc[i], target, target in vocab), 0)
+            renamed[(old_s.iloc[i], target, target in vocab)] += 1
+            if target in vocab:
+                label[i], source[i] = target, SRC_KEYWORD
+    return pd.Series(label, dtype=object), pd.Series(source, dtype=object), renamed
+
+
+def _shared_report(old: pd.Series, new: pd.Series, vocab_pb: set[str] | None) -> None:
+    if not vocab_pb:
+        return
+    for name, s in (("before", old), ("after", new)):
+        v = s.astype(str)
+        known = ~v.isin([UNKNOWN, "nan", "None", ""])
+        shared = v.isin(vocab_pb) & known
+        print(f"  {name}: {v[known].nunique():>3} labels, {v[shared].nunique():>3} shared with --vocab-h5ad; "
+              f"rows with a shared label {pct(int(shared.sum()), len(v))}")
+
+
+def curate(args) -> None:
+    """``tissue_general`` -> ``tissue_noncurated``; curated ``tissue_general`` + ``tissue_label_source``."""
+    import h5py
+
+    _, write_elem = _io()
+    modes = sum([bool(args.in_place), args.out is not None, bool(args.dry_run)])
+    if modes != 1:
+        sys.exit("Error: give exactly one of --in-place, --out FILE, --dry-run")
+    if args.out is not None and args.out.resolve() == args.h5ad.resolve():
+        sys.exit("Error: --out is the input; use --in-place")
+    if args.trust_heuristic and not args.keyword_columns:
+        sys.exit("Error: --trust-heuristic needs --keyword-columns (the obs strings the heuristic labels came from)")
+    bulk = args.modality == "bulk"
+    col, nc_col, src_col = args.column, args.noncurated_column, args.source_column
+
+    wanted = [col, nc_col, src_col] + ([args.id_column] if args.id_column else []) + list(args.keyword_columns or [])
+    names, cols = _read_obs(args.h5ad, wanted)
+    for c in (src_col,) + ((nc_col,) if bulk else ()):
+        if cols[c] is not None:
+            sys.exit(f"Error: obs/{c} already exists in {args.h5ad.name}: curate was run on this file already")
+    if cols[col] is None:
+        sys.exit(f"Error: obs has no column {col!r}")
+    missing_kw = [c for c in args.keyword_columns or [] if cols[c] is None]
+    if missing_kw:
+        sys.exit(f"Error: --keyword-columns not in obs: {missing_kw}")
+    old = cols[col]
+    ids = (cols[args.id_column] if args.id_column else pd.Series(names)).astype(str).str.strip().to_numpy()
+    n = len(ids)
+
+    mapping = load_map(args.map) if bulk else None
+    if bulk:
+        found = pd.Index(mapping.index).get_indexer(ids) >= 0
+        if found.mean() < args.min_overlap:
+            sys.exit(f"Error: only {found.mean():.1%} of the ids are in the map (< --min-overlap "
+                     f"{args.min_overlap:.0%}); check the id format. Nothing written.")
+    vocab_pb = _h5ad_labels(args.vocab_h5ad, col) if (bulk and args.vocab_h5ad) else set()
+    vocab = (set(mapping.loc[mapping["category"] == TISSUE, "tissue_general"].dropna()) | vocab_pb
+             if bulk else set())
+
+    noncurated = old
+    if bulk and args.noncurated_from is not None:
+        o_names, o_cols = _read_obs(args.noncurated_from, [col])
+        if o_cols[col] is None:
+            sys.exit(f"Error: --noncurated-from {args.noncurated_from} has no obs column {col!r}")
+        orig = pd.Series(o_cols[col].to_numpy(), index=o_names)
+        orig = orig[~orig.index.duplicated()]
+        aligned = orig.reindex(names)
+        n_from = int(aligned.notna().sum())
+        noncurated = pd.Series(np.where(aligned.notna(), aligned.to_numpy(dtype=object), old.to_numpy(dtype=object)),
+                               dtype=object)
+        print(f"{nc_col}: {n_from:,} of {n:,} rows from {args.noncurated_from}, the rest from the current {col}")
+    elif bulk:
+        print(f"[note] {nc_col} = the current {col}. Rows an earlier 'apply --overwrite' relabelled hold that "
+              f"label, not their original one (give --noncurated-from ORIGINAL.h5ad to restore it).")
+
+    keyword_meta = pd.DataFrame({c: cols[c] for c in args.keyword_columns}) if args.trust_heuristic else None
+    label, source, renamed = curate_values(args, ids, noncurated if bulk else old, keyword_meta, mapping, vocab)
+
+    banner(f"curate {args.modality} -> {args.h5ad.name}")
+    print(f"rows: {n:,}")
+    print(f"{src_col}:")
+    for s, k in source.value_counts().items():
+        print(f"  {s:<16} {pct(int(k), n)}")
+    if renamed:
+        print("--trust-heuristic: heuristic label -> CellxGene name (rows reproduced by keywords alone)")
+        for (a, b, ok), k in sorted(renamed.items(), key=lambda x: -x[1]):
+            print(f"  {a:>20} -> {str(b):<22} {k:>9,}" + ("" if ok else "   [not in the vocabulary: unknown]"))
+    if bulk:
+        before = old.astype(object).where(old.notna(), "<NA>").astype(str)
+        changed = (before != label.astype(str)).to_numpy()
+        print(f"{col} changed: {pct(int(changed.sum()), n)}")
+        if changed.any():
+            pairs = pd.DataFrame({"before": before[changed], "after": label[changed].astype(str)}).value_counts().head(25)
+            print("most frequent changes (before -> after):")
+            for (b, a), k in pairs.items():
+                print(f"  {b[:35]:>35} -> {a:<30} {k:>9,}")
+        after = label.value_counts()
+        print(f"\n{col} after ({after.size} values); top 40:")
+        print(after.head(40).map(lambda k: pct(int(k), n)).to_string())
+        if vocab_pb:
+            print("labels shared with the --vocab-h5ad files (what the class-aware losses can pair):")
+            _shared_report(old, label, vocab_pb)
+
+    if args.dry_run:
+        print("\n--dry-run: nothing written")
+        return
+
+    target = args.h5ad
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        print(f"\ncopying {args.h5ad} -> {args.out} ...")
+        shutil.copyfile(args.h5ad, args.out)
+        target = args.out
+    with h5py.File(target, "r") as f:
+        before_tree = _tree(f)
+        order0 = _column_order(f["obs"])
+
+    new_cols = [src_col] + ([nc_col] if bulk else [])
+    order1 = order0 + [c for c in new_cols if c not in order0]
+    done: list[tuple] = []   # undo log
+    try:
+        with h5py.File(target, "r+") as f:
+            obs = f["obs"]
+            write_elem(obs, TMP + "src", pd.Categorical(source.astype(str).to_numpy(dtype=object)))
+            done.append(("del", TMP + "src"))
+            if bulk:
+                write_elem(obs, TMP + "new", pd.Categorical(label.astype(str).to_numpy(dtype=object)))
+                done.append(("del", TMP + "new"))
+                if args.noncurated_from is not None:
+                    nc_values = noncurated.astype(object).where(noncurated.notna(), UNKNOWN).astype(str)
+                    write_elem(obs, TMP + "nc", pd.Categorical(nc_values.to_numpy(dtype=object)))
+                    done.append(("del", TMP + "nc"))
+                    obs.move(col, TMP + "old")
+                    done.append(("move", TMP + "old", col))
+                    obs.move(TMP + "nc", nc_col)
+                    done.append(("move", nc_col, TMP + "nc"))
+                else:
+                    obs.move(col, nc_col)
+                    done.append(("move", nc_col, col))
+                obs.move(TMP + "new", col)
+                done.append(("move", col, TMP + "new"))
+            obs.move(TMP + "src", src_col)
+            done.append(("move", src_col, TMP + "src"))
+            obs.attrs["column-order"] = np.array(order1, dtype=object)
+            done.append(("order", order0))
+        verify_curated(before_tree, target, order1, [col, nc_col, src_col, TMP + "old"])
+        with h5py.File(target, "r+") as f:
+            if TMP + "old" in f["obs"]:
+                del f["obs"][TMP + "old"]   # last step: --noncurated-from holds the original labels
+        done = []
+    except BaseException:
+        if done:
+            print("[error] undoing the changes ...")
+            with h5py.File(target, "r+") as f:
+                obs = f["obs"]
+                for op in reversed(done):
+                    if op[0] == "del" and op[1] in obs:
+                        del obs[op[1]]
+                    elif op[0] == "move" and op[1] in obs:
+                        obs.move(op[1], op[2])
+                    elif op[0] == "order":
+                        obs.attrs["column-order"] = np.array(op[1], dtype=object)
+        if args.out is not None and target.exists():
+            target.unlink()
+        raise
+    what = f"obs/{col} curated, old values in obs/{nc_col}, obs/{src_col} added" if bulk else f"obs/{src_col} added"
+    print(f"written: {target} ({what})")
+
+
+def verify_curated(before: dict, path: Path, order1: list[str], own_cols: list[str]) -> None:
+    """Fail unless only the ``own_cols`` obs groups and obs column-order changed."""
+    import h5py
+
+    read_elem, _ = _io()
+    with h5py.File(path, "r") as f:
+        after = _tree(f)
+        if _column_order(f["obs"]) != order1:
+            raise RuntimeError(f"obs column-order is {_column_order(f['obs'])}, expected {order1}")
+        n_obs = len(read_elem(f["obs"][_str(f["obs"].attrs["_index"])]))
+        for c in own_cols:
+            if c in f["obs"] and len(read_elem(f["obs"][c])) != n_obs:
+                raise RuntimeError(f"obs/{c} does not have {n_obs} rows")
+        if any(k.startswith(f"obs/{TMP}") and not k.startswith(f"obs/{TMP}old") for k in after):
+            raise RuntimeError("temporary obs groups left behind")
+    own = lambda k: any(k == f"obs/{c}" or k.startswith(f"obs/{c}/") for c in own_cols)   # noqa: E731
+    strip = lambda t: (t[0], tuple(x for x in t[1] if x[0] != "column-order"))   # noqa: E731
+    before, after = dict(before), dict(after)
+    before["obs"], after["obs"] = strip(before["obs"]), strip(after["obs"])
+    diff = sorted(k for k in set(before) | set(after) if not own(k) and before.get(k) != after.get(k))
+    if diff:
+        raise RuntimeError(f"unexpected changes besides {own_cols}: {diff[:10]}")
+    print(f"verified: only obs/{{{', '.join(c for c in own_cols if not c.startswith(TMP))}}} "
+          "and the obs column order changed")
+
+
+# ======================================================================================
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -695,6 +985,35 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--min-overlap", type=float, default=0.05,
                    help="Refuse when fewer ids than this share are in the map (an id format mismatch)")
     a.add_argument("--dry-run", action="store_true", help="Print the statistics, write nothing")
+
+    c = sub.add_parser(
+        "curate", formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        help="curated tissue_general (old one -> tissue_noncurated) + tissue_label_source")
+    c.add_argument("--h5ad", type=Path, required=True)
+    c.add_argument("--modality", required=True, choices=["bulk", "single_cell", "pseudobulk"],
+                   help="bulk: curate from the map; single_cell/pseudobulk: CellxGene labels, only the source column is added")
+    c.add_argument("--map", type=Path, default=DEFAULT_MAP_DIR, help=f"Map directory or {MAP_FILE} (bulk)")
+    mode = c.add_mutually_exclusive_group()
+    mode.add_argument("--in-place", action="store_true",
+                      help="Edit the file itself (obs only, no copy; undone on failure)")
+    mode.add_argument("--out", type=Path, default=None, help="Write a curated copy here")
+    mode.add_argument("--dry-run", action="store_true", help="Print the statistics, write nothing")
+    c.add_argument("--column", default="tissue_general", help="Label column to curate")
+    c.add_argument("--noncurated-column", default="tissue_noncurated", help="Where the old labels go (bulk)")
+    c.add_argument("--noncurated-from", type=Path, default=None,
+                   help="Original h5ad whose --column holds the labels from before 'apply --overwrite' (bulk)")
+    c.add_argument("--source-column", default="tissue_label_source",
+                   help="New column: cellxgene, archs4, archs4_culture, keyword, heuristic or none")
+    c.add_argument("--id-column", default=None, help="obs column with the ARCHS4 sample ids (default: the obs index)")
+    c.add_argument("--min-overlap", type=float, default=0.05,
+                   help="Refuse when fewer ids than this share are in the map (bulk)")
+    c.add_argument("--vocab-h5ad", type=Path, nargs="*", default=[],
+                   help="CellxGene h5ads (e.g. pseudobulk) whose labels extend the vocabulary and are "
+                        "reported as shared classes (bulk)")
+    c.add_argument("--trust-heuristic", action="store_true",
+                   help="Keep a non-ARCHS4 row's old label (renamed to its CellxGene name) when keyword "
+                        "matching over --keyword-columns reproduces it (bulk)")
+    c.add_argument("--keyword-columns", nargs="*", default=[], help="obs string columns for --trust-heuristic")
     return p
 
 
@@ -702,6 +1021,8 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     if args.command == "build-map":
         build_map(args)
+    elif args.command == "curate":
+        curate(args)
     else:
         apply_map(args)
 

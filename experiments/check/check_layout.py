@@ -60,6 +60,8 @@ def check_paths() -> None:
           == ROOT / "results/reconstruction/_compare/bulk_s0_test_r25/cmp"
           and L.task_compare_dir("geneicl_benchmark", "cmp") == ROOT / "results/geneicl_benchmark/_compare/cmp")
     check("scIB analyses in their own task directory", L.scib_dir("t") == ROOT / "results/scib_benchmark/t")
+    check("integration analyses in their own task directory",
+          L.integration_dir("t") == ROOT / "results/integration/t" and raises(lambda: L.integration_dir("../x")))
     check("data checks under results/_checks/", L.check_dir("store_sc_s0") == ROOT / "results/_checks/store_sc_s0")
     check("bad scIB / check / task names rejected",
           raises(lambda: L.scib_dir("../x")) and raises(lambda: L.check_dir("a/b"))

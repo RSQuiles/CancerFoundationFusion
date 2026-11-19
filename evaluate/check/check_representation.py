@@ -135,6 +135,16 @@ def check_alignment() -> None:
         paired = pd.read_parquet(out / "alignment_test_paired.parquet")
         check("--paired-only keeps only paired rows", "unpaired" not in set(paired["paired"]))
 
+        # each of the 10 pairs has 2 cells: one star per pair, from all loaded cells
+        plot_alignment.main(["--root", tmp, "--models", MODEL, "--paired-only", "--per-modality", "sc=5",
+                             "--cell-means", "--link-col", "paired", "--min-cells", "2", "--connect-pairs"])
+        stars = pd.read_parquet(out / "alignment_test_paired.parquet")
+        check("--cell-means: one mean per pair, computed before the subsample",
+              (stars["modality"] == "cell_mean").sum() == 10 and (stars["modality"] == "sc").sum() == 5)
+        check("--cell-means: a key with too few cells gets no star",
+              not raises(lambda: plot_alignment.main(["--root", tmp, "--models", MODEL, "--cell-means",
+                                                      "--link-col", "paired", "--min-cells", "50"])))
+
         segs = plot_alignment.pair_segments(
             np.zeros((4, 2)),
             pd.DataFrame({"modality": ["bulk", "pseudobulk", "sc", "bulk"]}),

@@ -40,8 +40,9 @@ from experiments.layout import RUN_CARD, ExperimentLayout, validate_model_name
 
 # String values under these keys are model names when they equal OLD exactly.
 NAME_KEYS = {"name", "model", "model_name", "wandb_name"}
-# Under these keys a list element (or dict key) equal to OLD is a model name.
-NAME_COLLECTION_KEYS = {"models", "previous_names"}
+# Under these keys a list element (or dict key) equal to OLD is a model name
+# (row_labels: {model: display label} of the scIB and integration manifests).
+NAME_COLLECTION_KEYS = {"models", "previous_names", "row_labels"}
 # Under these keys a list element (or dict key) is a row label: OLD, or OLD@<qualifier>
 # (e.g. a reconstruction run of OLD's MVC head, "OLD@mvc"). The model part is rewritten.
 ROW_COLLECTION_KEYS = {"rows"}

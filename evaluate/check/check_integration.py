@@ -1,4 +1,4 @@
-"""Self-check for ``evaluate/alignment/scib_benchmark.py`` on synthetic embeddings.
+"""Self-check for ``evaluate/integration/scib_benchmark.py`` on synthetic embeddings.
 
 Covers loading several models on their shared rows, the filter and the label-stratified
 per-modality quotas, the label x batch pre-flight report, the dry-run outputs and the
@@ -6,7 +6,11 @@ results table figure with custom row labels (``--plot-only`` on a synthetic resu
 skipped without ``plottable``). The Benchmarker itself runs only where ``scib_metrics``
 imports (the bulkFM env); otherwise it is skipped.
 
-    python -m evaluate.check.check_alignment
+Also covers ``integration.py``: the link metrics on planted, shuffled and constant
+embeddings (numpy only), and an end-to-end run on fake sc / pseudobulk / bulk files with
+a fake scIB analysis (needs anndata).
+
+    python -m evaluate.check.check_integration
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from experiments.check._harness import check, finish, raises  # noqa: E402
 from experiments.layout import ExperimentLayout  # noqa: E402
-from evaluate.alignment import scib_benchmark  # noqa: E402
+from evaluate.integration import integration, scib_benchmark  # noqa: E402
 
 SIZES = {"bulk": 80, "pseudobulk": 120}
 
@@ -53,7 +57,123 @@ def _write_root(root: Path) -> ExperimentLayout:
     return layout
 
 
+def check_link_metrics() -> None:
+    print("\n-- link metrics (integration.py) --")
+    rng = np.random.default_rng(1)
+    keys = pd.Index([f"k{i}" for i in range(40)])
+    tissue = pd.Series(np.array(["lung", "colon", "liver", "skin"])[np.arange(40) % 4], index=keys)
+    b = rng.normal(size=(40, 16))
+    good = integration.match_edge(keys, b + 0.01 * rng.normal(size=b.shape), keys, b, tissue)
+    check("planted links: top-1 = 1, rank = 0, rank in tissue = 0",
+          good["top1"] == 1.0 and good["rank"] == 0.0 and good["rank_tissue"] == 0.0
+          and good["n_queries"] == 40 and good["n_tissue_queries"] == 40)
+    shuffled = [integration.match_edge(keys, rng.normal(size=b.shape), keys, b, tissue)["rank"] for _ in range(20)]
+    check("independent embeddings: rank near chance (0.5)", abs(np.mean(shuffled) - 0.5) < 0.05)
+    flat = integration.match_edge(keys, np.ones((40, 4)), keys, np.ones((40, 4)), tissue)
+    check("constant embedding sits at chance, not at the top", flat["rank"] == 0.5 and flat["rank_tissue"] == 0.5)
+    half = integration.match_edge(keys[:10], b[:10], keys, b, tissue.where(np.arange(40) >= 5))
+    check("queries without a tissue left out of rank in tissue only",
+          half["n_queries"] == 10 and half["n_tissue_queries"] == 5)
+    none = integration.match_edge(pd.Index(["x"]), b[:1], keys, b, tissue)
+    check("no shared key: n/a", none["n_queries"] == 0 and np.isnan(none["rank"]))
+
+    emb = np.arange(10, dtype=float)[:, None] * np.ones((1, 3))
+    link = pd.Series(["a"] + ["b"] * 3 + ["c"] * 6, dtype=object)
+    labels = pd.Series(["lung"] * 4 + [np.nan, "colon", "colon", "liver", np.nan, np.nan], dtype=object)
+    frame, vec = integration.link_centroids(emb, link, labels, min_count=5)
+    check("min count drops keys", list(frame.index) == ["c"] and int(frame.loc["c", "n"]) == 6)
+    check("key vector is the mean of its rows", np.allclose(vec[0], emb[4:].mean(0)))
+    check("key tissue is its most common known label", frame.loc["c", "tissue"] == "colon")
+    frame, _ = integration.link_centroids(emb, pd.Series([np.nan] * 10, dtype=object), labels)
+    check("no linked row: empty", frame.empty)
+
+    obs = pd.DataFrame({"tissue_general": ["lung", "unknown", "colon", "cell line"],
+                        "tissue_label_source": ["cellxgene", "none", "keyword", "archs4_culture"]})
+    cur = integration.curated_labels(obs, "tissue_general", {"tissue_label_source": ["cellxgene", "archs4"]}, "x")
+    check("only curated, known labels count", cur.tolist()[0] == "lung" and cur.iloc[1:].isna().all())
+    cur = integration.curated_labels(obs.drop(columns="tissue_label_source"), "tissue_general",
+                                     {"tissue_label_source": ["cellxgene"]}, "x")
+    check("missing filter column: labels used unfiltered (unknown still dropped)",
+          cur.notna().tolist() == [True, False, True, True])
+
+    pb = pd.DataFrame({"n": [1, 1], "tissue": ["lung", np.nan]}, index=["p1", "p2"])
+    sc = pd.DataFrame({"n": [9, 9], "tissue": ["colon", "liver"]}, index=["p1", "p2"])
+    bulk = pd.DataFrame({"n": [1, 1, 1], "tissue": [np.nan, np.nan, "skin"]}, index=["p1", "p2", "p3"])
+    t = integration.key_tissues({"bulk": (bulk, None), "sc": (sc, None), "pseudobulk": (pb, None)})
+    check("key tissue: pseudobulk first, then cells, then bulk",
+          t["p1"] == "lung" and t["p2"] == "liver" and t["p3"] == "skin")
+
+
+def check_integration_run(tmp: str) -> None:
+    import anndata as ad
+
+    print("\n-- integration.py end to end --")
+    layout = ExperimentLayout(Path(tmp))
+    rng = np.random.default_rng(2)
+    n_pb = 24
+    tissues = np.array(["lung", "colon", "liver"])[np.arange(n_pb) % 3]
+    pb_vec = rng.normal(size=(n_pb, 8))
+    pair = np.where(np.arange(n_pb) < 12, np.arange(n_pb) + 1, 0)
+    for model, linked in (("good", True), ("bad", False)):
+        out = layout.embedding_dir(model)
+        out.mkdir(parents=True)
+        cell_pb = np.repeat(np.arange(n_pb), 6)
+        noise = rng.normal(size=(len(cell_pb), 8))
+        cell_vec = pb_vec[cell_pb] + 0.05 * noise if linked else noise
+        bulk_vec = pb_vec[:12] + 0.05 * rng.normal(size=(12, 8)) if linked else rng.normal(size=(12, 8))
+        tables = {
+            "sc": (pd.DataFrame({"pseudobulk_id": [f"pb:{i}" for i in cell_pb], "paired": pair[cell_pb],
+                                 "tissue_general": tissues[cell_pb], "tissue_label_source": "cellxgene"}),
+                   cell_vec),
+            "pseudobulk": (pd.DataFrame({"pseudobulk_id": [f"pb:{i}" for i in range(n_pb)], "paired": pair,
+                                         "tissue_general": tissues, "tissue_label_source": "cellxgene"}),
+                           pb_vec if linked else rng.normal(size=pb_vec.shape)),
+            # paired bulk rows lost their tissue in curate: they take their pair's
+            "bulk": (pd.DataFrame({"paired": np.arange(12) + 1, "tissue_general": "unknown",
+                                   "tissue_label_source": "none"}), bulk_vec),
+        }
+        for mod, (obs, emb) in tables.items():
+            obs.index = [f"{mod}{i}" for i in range(len(obs))]
+            ad.AnnData(obs=obs, obsm={"X_emb": emb.astype(np.float32)}).write_h5ad(out / f"{mod}_test.h5ad")
+    scib_dir = layout.scib_dir("fake_all")
+    scib_dir.mkdir(parents=True)
+    _fake_results(scib_dir)
+    for f in ("scib.csv", "scib_minmax.csv"):  # rows named after this run's models
+        text = (scib_dir / f).read_text(encoding="utf-8")
+        (scib_dir / f).write_text(text.replace("m1,", "good,").replace("m2,", "bad,"), encoding="utf-8")
+    (scib_dir / "meta.json").write_text(json.dumps({"modalities": ["sc", "pseudobulk", "bulk"]}), encoding="utf-8")
+
+    out = integration.main(["--root", tmp, "--name", "links", "--models", "good", "bad", "--min-cells", "5",
+                            "--scib-runs", "fake_all", "missing_run", "--row-labels", "good=Good", "--formats", "png"])
+    summary = pd.read_csv(out / "summary.csv", index_col=0)
+    check("one summary row per model", list(summary.index) == ["good", "bad"])
+    check("linked model ranks its partners first",
+          summary.loc["good", "pb_cells_rank_tissue"] == 0.0 and summary.loc["good", "pair_pb_bulk_rank_tissue"] == 0.0)
+    check("random model near chance", summary.loc["bad", "pb_cells_rank"] > 0.2)
+    check("pairs with an unknown bulk row keep their tissue", summary["pair_cells_bulk_rank_tissue"].notna().all())
+    check("scIB aggregates joined, a missing analysis skipped",
+          "scib_fake_all_batch" in summary.columns and "scib_fake_all_bio" in summary.columns
+          and not any(c.startswith("scib_missing_run") for c in summary.columns))
+    coverage = pd.read_csv(out / "coverage.csv")
+    row = coverage[(coverage["model"] == "good") & (coverage["edge"] == "pair_pb_bulk")].iloc[0]
+    check("coverage counts shared keys with a tissue", row["keys_shared"] == 12 and row["keys_shared_with_tissue"] == 12)
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    check("manifest lists the models and row labels",
+          manifest["models"] == ["good", "bad"] and manifest["row_labels"] == {"good": "Good"})
+    check("written to results/integration/<name>/",
+          out == layout.integration_dir("links") and (out / "integration.png").exists())
+
+
 def main() -> None:
+    check_link_metrics()
+    try:
+        import anndata  # noqa: F401
+    except ImportError:
+        print("  [skip] anndata not importable: no end-to-end runs")
+        finish()
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        check_integration_run(tmp)
     with tempfile.TemporaryDirectory() as tmp:
         layout = _write_root(Path(tmp))
         print("\n-- loading and selection --")
@@ -121,7 +241,7 @@ def main() -> None:
             check("row labels and figures recorded, models kept",
                   manifest["row_labels"] == {"m1": "Model one (long label)", "m2": "Model two"}
                   and "scib_results.png" in manifest["figures"] and manifest["models"] == ["m1", "m2", "pca"])
-            from evaluate.alignment.scib_plot import read_results, relabel
+            from evaluate.integration.scib_plot import read_results, relabel
 
             relabeled = relabel(read_results(out / "scib.csv"), {"m1": "A"})
             check("relabel renames rows, keeps the Metric Type row",

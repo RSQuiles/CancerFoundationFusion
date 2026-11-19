@@ -326,19 +326,41 @@ def check_class_aware(store: Store, args, mode: str, pools) -> Report:
     shared = shared_classes(store, args, pools, rep, group)
     if not shared:
         return rep
-    # Expected rows per tissue in one class-aware batch.
+    # Rows per tissue in one class-aware batch, laid out as the sampler does.
+    from utils.sampling import class_aware_allocation
+
     n_bulk = round(args.batch_size * args.bulk_ratio)
     n_pb = round(args.batch_size * args.pb_ratio)
-    k = min(args.class_aware_n_classes, len(shared))
-    pb_per = n_pb / k if k else 0
-    bulk_per = n_bulk * args.class_aware_bulk_frac / k if k else 0
-    rep.info(f"batch {args.batch_size}: {n_bulk} bulk, {n_pb} pseudobulk over K={k} tissues -> "
-             f"~{pb_per:.1f} pseudobulk and ~{bulk_per:.1f} matched bulk per tissue")
+    plan = class_aware_allocation(n_pb, n_bulk, len(shared), args.class_aware_n_classes,
+                                  args.class_min_count, args.class_aware_pb_frac,
+                                  args.class_aware_bulk_frac)
+    k = plan["k"]
+    lo_p, hi_p = plan["pb_per_tissue"]
+    lo_b, hi_b = plan["bulk_per_tissue"]
+    rep.info(f"batch {args.batch_size}: {n_bulk} bulk ({plan['n_bulk_matched']} matched, "
+             f"{plan['n_bulk_free']} free), {n_pb} pseudobulk ({plan['n_pb_matched']} matched, "
+             f"{plan['n_pb_free']} free) over K={k} tissues -> {lo_p}-{hi_p} pseudobulk and "
+             f"{lo_b}-{hi_b} bulk per tissue")
+    if k < plan["k_requested"]:
+        rep.info(f"K lowered from {plan['k_requested']} to {k} so every tissue has "
+                 f">= --class-min-count {args.class_min_count} rows in both domains")
+    # Rows outside the shared classes train reconstruction only, through the free slots.
+    n_src = sum(pools.values())
+    src_out = n_src - sum(pools[c] for c in shared)
+    if src_out:
+        where = (f"drawn by the {plan['n_pb_free']} free pseudobulk slots per batch"
+                 if plan["n_pb_free"] else
+                 "never drawn as pseudobulk in a class-aware batch (--class-aware-pb-frac 1.0)")
+        rep.info(f"source rows outside the shared classes (reconstruction only): {src_out}/{n_src} "
+                 f"({src_out / max(1, n_src):.0%}); {where}")
+        if not plan["n_pb_free"] and mode == "precomputed":
+            rep.warn("these pseudobulks are drawn only by paired batches: set "
+                     "--class-aware-pb-frac < 1 (e.g. 0.75) so they still train reconstruction")
     if n_pb == 0:
         rep.fail("--pb-ratio gives 0 pseudobulks per batch")
-    elif min(pb_per, bulk_per) < args.class_min_count:
-        rep.warn(f"below --class-min-count {args.class_min_count}: many tissues will not count in "
-                 f"cdd/contrastive (lower --class-aware-n-classes or --class-min-count)")
+    elif plan["n_pb_matched"] and min(lo_p, lo_b if plan["n_bulk_matched"] else lo_p) < max(1, args.class_min_count):
+        rep.warn(f"below --class-min-count {args.class_min_count}: some tissues will not count in "
+                 f"cdd/contrastive (raise the matched fractions or lower --class-min-count)")
     else:
         rep.ok("enough rows per tissue for --class-min-count")
     return rep
@@ -480,6 +502,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--class-min-count", type=int, default=2)
     p.add_argument("--class-aware-n-classes", type=int, default=8)
     p.add_argument("--class-aware-bulk-frac", type=float, default=0.6)
+    p.add_argument("--class-aware-pb-frac", type=float, default=0.6)
     p.add_argument("--dat-columns", nargs="+", default=["modality"])
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--bulk-ratio", type=float, default=0.3)

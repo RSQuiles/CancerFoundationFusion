@@ -80,9 +80,10 @@ SCRIPTS: dict[str, str] = {
     "plot_pca": "evaluate.representation.plot_pca",
     "alignment": "evaluate.representation.plot_alignment",
     "plot_alignment": "evaluate.representation.plot_alignment",
-    # alignment (scIB)
-    "scib": "evaluate.alignment.scib_benchmark",
-    "scib_benchmark": "evaluate.alignment.scib_benchmark",
+    # integration (scIB, cross-level link metrics)
+    "scib": "evaluate.integration.scib_benchmark",
+    "scib_benchmark": "evaluate.integration.scib_benchmark",
+    "integration": "evaluate.integration.integration",
     # reconstruction
     "mask_plan": "evaluate.reconstruction.mask_plan",
     "reconstruction": "evaluate.reconstruction.run_reconstruction",

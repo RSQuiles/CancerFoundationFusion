@@ -8,6 +8,13 @@ still encoding modality. The pair-id column only colours paired rows; the rest a
 grey. ``--connect-pairs`` draws a faint segment from each bulk point to the
 centroid of its pair's pseudobulk and single-cell points.
 
+``--cell-means --link-col COL`` adds one star per link key (a pseudobulk with
+``pseudobulk_id``, a pair with ``paired``): the mean embedding of its single cells, taken
+over every loaded cell before the subsample and fitted with the UMAP, so it sits where
+``evaluate/integration/integration.py`` measures it. A segment joins each star to its
+pseudobulk; with ``--connect-pairs``, each bulk point is joined to its pair's pseudobulk,
+which draws the chain cells -> pseudobulk -> bulk when the link is ``paired``.
+
 The three files must come from one gene panel (``embed_splits.py`` embeds them together);
 mismatched ``panel_hash`` values in ``embed.json`` are refused, since a per-modality
 panel separates modalities by construction.
@@ -36,7 +43,8 @@ from evaluate._cli import format_title, parse_mapping, parse_quotas, parse_with_
 from experiments.layout import ExperimentLayout, canonical_modality  # noqa: E402
 from utils.sampling import filter_mask, filter_tag, parse_filter_specs, stratified_subsample  # noqa: E402
 from evaluate.io import EMB_KEY, load_embedding, panel_hashes  # noqa: E402
-from evaluate.modalities import MOD_BULK, MODALITIES, PAIRED_COL  # noqa: E402
+from evaluate.modalities import MOD_BULK, MOD_CELL_MEAN, MOD_PB, MOD_SC, MODALITIES, PAIRED_COL  # noqa: E402
+from utils.sampling import link_keys  # noqa: E402
 from evaluate.representation.render import compute_umap, draw_umap_panels, save_coords, save_figure  # noqa: E402
 
 MODALITY_COL = "modality"
@@ -61,7 +69,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--paired-col", default=PAIRED_COL, help="obs column with pair ids (>0 = paired)")
     parser.add_argument("--paired-only", action="store_true", help="Keep only paired rows")
     parser.add_argument("--connect-pairs", action="store_true",
-                        help="Segments from each bulk point to its pair's pseudobulk / SC centroids")
+                        help="Segments from each bulk point to its pair's pseudobulk / SC centroids "
+                             "(with --cell-means: to its pair's pseudobulk only)")
+    parser.add_argument("--cell-means", action="store_true",
+                        help="Add the mean embedding of the cells of each --link-col key as a star, "
+                             "joined to that key's pseudobulk")
+    parser.add_argument("--link-col", default="pseudobulk_id",
+                        help="obs column linking cells to their pseudobulk (pseudobulk_id) or pair (paired)")
+    parser.add_argument("--min-cells", type=int, default=5, help="Cells a key needs for its star")
     parser.add_argument("--color", nargs="+", default=["modality", "tissue_general", PAIRED_COL])
     parser.add_argument("--skip-unknown", action="store_true")
     parser.add_argument("--max-legend-entries", type=int, default=None,
@@ -105,6 +120,58 @@ def pair_segments(coords: np.ndarray, obs: pd.DataFrame, pairs: pd.Series) -> li
     return segments
 
 
+def cell_mean_rows(adata, link_col: str, min_cells: int, columns: list[str]):
+    """One row per ``link_col`` key with >= ``min_cells`` cells: their mean embedding, and
+    per obs column in ``columns`` the most common value among them. None when there is
+    nothing to add."""
+    import anndata as ad
+    from evaluate.integration.integration import link_centroids
+
+    if link_col not in adata.obs.columns:
+        print(f"  [warn] sc has no '{link_col}' column; no cell means")
+        return None
+    keys = link_keys(adata.obs[link_col])
+    frame, vectors = link_centroids(adata.obsm[EMB_KEY], keys, pd.Series(np.nan, index=adata.obs.index),
+                                    min_cells)
+    if frame.empty:
+        print(f"  [warn] no '{link_col}' key has {min_cells}+ cells; no cell means")
+        return None
+    cols = [c for c in dict.fromkeys(columns) if c in adata.obs.columns and c != link_col]
+    obs = adata.obs[cols].astype(object).assign(_key=keys.to_numpy()).dropna(subset=["_key"])
+    modes = obs.groupby("_key").agg(lambda c: c.mode().iloc[0] if c.notna().any() else np.nan)
+    means = modes.reindex(frame.index.astype(str))
+    means[link_col] = frame.index.astype(str)
+    means[MODALITY_COL] = MOD_CELL_MEAN
+    means.index = [f"cell_mean:{k}" for k in frame.index]
+    print(f"  cell means: {len(frame)} '{link_col}' keys (median {int(frame['n'].median())} cells)")
+    return ad.AnnData(obs=means.astype(object), obsm={EMB_KEY: vectors.astype(np.float32)})
+
+
+def link_segments(coords: np.ndarray, obs: pd.DataFrame, key: pd.Series, pairs: pd.Series,
+                  connect_pairs: bool) -> list[np.ndarray]:
+    """Cell mean -> pseudobulk of the same key; with ``connect_pairs`` also bulk -> its
+    pair's pseudobulk centroid (cells -> pb -> bulk when ``key`` is the pair id). ``key``
+    and ``pairs`` hold the link key per row, NaN for none."""
+    mod = obs[MODALITY_COL].astype(str).to_numpy()
+    xy = pd.DataFrame(coords, columns=["x", "y"], index=obs.index)
+    segments = []
+
+    def targets(key: pd.Series, where: np.ndarray) -> pd.DataFrame:
+        return xy[where].groupby(key[where].to_numpy()).mean()
+
+    if key.notna().any():
+        pb = targets(key, (mod == MOD_PB) & key.notna().to_numpy())
+        for name in obs.index[(mod == MOD_CELL_MEAN) & key.notna().to_numpy()]:
+            if key[name] in pb.index:
+                segments.append(np.array([xy.loc[name].to_numpy(), pb.loc[key[name]].to_numpy()]))
+    if connect_pairs:
+        pb = targets(pairs, (mod == MOD_PB) & pairs.notna().to_numpy())
+        for name in obs.index[(mod == MOD_BULK) & pairs.notna().to_numpy()]:
+            if pairs[name] in pb.index:
+                segments.append(np.array([xy.loc[name].to_numpy(), pb.loc[pairs[name]].to_numpy()]))
+    return segments
+
+
 def collect(layout: ExperimentLayout, model: str, args, filters) -> tuple:
     import anndata as ad
 
@@ -121,7 +188,7 @@ def collect(layout: ExperimentLayout, model: str, args, filters) -> tuple:
     if None in hashes.values():
         print(f"  [warn] no panel hash recorded for some files: {hashes}")
 
-    pieces = []
+    pieces, extra = [], []
     for label in labels:
         try:
             adata = load_embedding(layout, model, label, args.part, args.variant)
@@ -133,6 +200,11 @@ def collect(layout: ExperimentLayout, model: str, args, filters) -> tuple:
         if args.paired_only:
             mask &= pair_ids(adata.obs, args.paired_col).notna().to_numpy()
         adata = adata[mask].copy()
+        if args.cell_means and label == MOD_SC:
+            means = cell_mean_rows(adata, args.link_col, args.min_cells,
+                                   [*args.color, args.paired_col, *args.stratify_by])
+            if means is not None:
+                extra.append(means)
         strata = [c for c in args.stratify_by if c in adata.obs.columns]
         keep = stratified_subsample(adata.obs, quotas[label], strata, args.min_per_stratum, args.seed)
         adata = adata[adata.obs_names.isin(keep)].copy()
@@ -141,7 +213,7 @@ def collect(layout: ExperimentLayout, model: str, args, filters) -> tuple:
             pieces.append(adata)
     if len(pieces) < 2:
         raise SystemExit(f"[{model}] fewer than two modalities left to align")
-    combined = ad.concat(pieces, join="outer", merge="same", label=None)
+    combined = ad.concat(pieces + extra, join="outer", merge="same", label=None)
     combined.obs_names_make_unique()
     return combined, hashes
 
@@ -163,12 +235,21 @@ def main(argv: list[str] | None = None) -> None:
 
         obs = combined.obs.copy()
         pairs = pair_ids(obs, args.paired_col)
+        if args.link_col == args.paired_col:
+            link = pairs
+        elif args.link_col in obs.columns:
+            link = link_keys(obs[args.link_col])
+        else:
+            link = pd.Series(np.nan, index=obs.index, dtype=object)
         highlight = {}
         if args.paired_col in obs.columns:
             obs[args.paired_col] = pairs.fillna("unpaired")
             highlight[args.paired_col] = pairs.notna().to_numpy()
             print(f"  {int(pairs.notna().sum())} paired rows across {pairs.nunique()} pairs")
-        segments = pair_segments(coords, obs, pairs) if args.connect_pairs else None
+        if args.cell_means:
+            segments = link_segments(coords, obs, link, pairs, args.connect_pairs)
+        else:
+            segments = pair_segments(coords, obs, pairs) if args.connect_pairs else None
 
         counts = obs[MODALITY_COL].value_counts().to_dict()
         count_text = ", ".join(f"{k}={v}" for k, v in counts.items())

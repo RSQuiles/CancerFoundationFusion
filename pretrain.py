@@ -336,6 +336,10 @@ def main(input_args=None):
         raise ValueError(
             f"--class-aware-bulk-frac must be in [0, 1], got {args.class_aware_bulk_frac}."
         )
+    if not 0.0 <= args.class_aware_pb_frac <= 1.0:
+        raise ValueError(
+            f"--class-aware-pb-frac must be in [0, 1], got {args.class_aware_pb_frac}."
+        )
     # --class-aware composes with --paired-sampling: the sampler still yields a
     # paired batch every paired_every_n steps and a class-aware batch otherwise.
     # CDD and contrastive are computed only on the (class-aware) non-paired batches;
@@ -392,6 +396,7 @@ def main(input_args=None):
         class_exclude_labels=args.class_exclude_labels,
         class_min_count=args.class_min_count,
         class_aware_bulk_frac=args.class_aware_bulk_frac,
+        class_aware_pb_frac=args.class_aware_pb_frac,
         class_aware_n_classes=args.class_aware_n_classes,
         sampler_seed=args.seed,
     )

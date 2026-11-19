@@ -5,7 +5,7 @@ model, keeps the rows every model embedded, filters and subsamples them ONCE (so
 model is scored on the same rows), and runs ``scib_metrics``' Benchmarker with the
 modality as batch and a biological label (e.g. tissue) as label.
 
-    python -m evaluate.alignment.scib_benchmark --name tissue_s0_test \\
+    python -m evaluate.integration.scib_benchmark --name tissue_s0_test \\
         --models unified_v1 bulkformer --pre-integrated pca \\
         --modalities bulk pseudobulk --per-modality bulk=all pseudobulk=all --label-key tissue_general
 
@@ -19,7 +19,7 @@ The table's rows are the model names unless ``--row-labels MODEL=LABEL ...`` ren
 (a YAML mapping in the config works too); the CSVs keep the model names. To change the
 labels later without rerunning the benchmark:
 
-    python -m evaluate.alignment.scib_benchmark --name tissue_s0_test --plot-only \
+    python -m evaluate.integration.scib_benchmark --name tissue_s0_test --plot-only \
         --row-labels unified_v1="CF unified" bulkformer=BulkFormer
 
 **XLA autotuning is off by default.** scib_metrics runs on JAX; on the GPU nodes XLA's
@@ -43,7 +43,7 @@ Reading the numbers:
   score and no "Total". kBET and ``--pre-integrated`` are batch-only and refused; list
   ``pca`` under ``--models`` to show it as a baseline row instead::
 
-      python -m evaluate.alignment.scib_benchmark --name tissue_bulk --models m1 m2 pca \\
+      python -m evaluate.integration.scib_benchmark --name tissue_bulk --models m1 m2 pca \\
           --modalities bulk --per-modality bulk=all --label-key tissue_general --bio-only
 
 ``scib_metrics`` lives in the ``bulkFM`` conda env, not the bionemo container
@@ -137,7 +137,7 @@ def configure_xla(keep_autotune: bool = False, environ=None) -> str:
 
 def draw_figures(out_dir: Path, args, labels: dict[str, str]) -> list[str]:
     """The results table figures; a failure only warns, since the CSVs are the result."""
-    from evaluate.alignment.scib_plot import draw_scib_figures
+    from evaluate.integration.scib_plot import draw_scib_figures
 
     try:
         return draw_scib_figures(out_dir, labels, args.plot_formats)

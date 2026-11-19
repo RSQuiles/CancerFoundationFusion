@@ -53,8 +53,8 @@ SC_H5AD=$DATA/single_cell/single_cell.h5ad
 BULK_H5AD=$DATA/bulk/BULK_pretraining.h5ad
 PB_H5AD=$DATA/pseudobulk/pseudobulk.h5ad
 
-STORE_COLUMNS=(tissue_general)                      # single-modality stores
-MIX_COLUMNS=(tissue_general paired pseudobulk_id)   # joint store
+STORE_COLUMNS=(tissue_general tissue_label_source)  # single-modality stores
+MIX_COLUMNS=(tissue_general tissue_label_source paired pseudobulk_id)   # joint store
 
 # ---- environment ---------------------------------------------------------------------
 PROJECT=/cluster/work/boeva/rquiles/CancerFoundationFusion

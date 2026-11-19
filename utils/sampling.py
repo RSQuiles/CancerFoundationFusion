@@ -394,3 +394,45 @@ def split_summary(assignment: pd.Series, labels: pd.Series, parts: list[str] | N
     for part in parts:
         table[f"{part}_frac"] = (table[part] / totals).round(3)
     return table
+
+
+def class_aware_allocation(
+    n_pb: int,
+    n_bulk: int,
+    n_shared: int,
+    n_classes: int,
+    min_count: int,
+    pb_frac: float = 0.6,
+    bulk_frac: float = 0.6,
+) -> dict:
+    """Slots of one class-aware batch: matched / free per domain and the tissues K.
+
+    K is lowered from ``n_classes`` until every chosen tissue gets >= ``min_count``
+    matched rows in each domain that has matched slots. Round-robin over too many
+    tissues used to leave some with a single bulk row: they counted in neither
+    contrastive nor CDD, and their pseudobulk slots were wasted. Shared by the
+    sampler (``BulkSCSampler``) and ``data_preprocess/check_store_losses.py``.
+    """
+    m = max(1, int(min_count))
+    n_pb_matched = int(round(n_pb * pb_frac))
+    n_bulk_matched = int(round(n_bulk * bulk_frac))
+    k_requested = max(0, min(int(n_classes), int(n_shared)))
+    k = k_requested
+    for n in (n_pb_matched, n_bulk_matched):
+        if n > 0:
+            k = min(k, n // m)
+    k = max(1, k) if k_requested > 0 else 0
+
+    def spread(n):   # rows per chosen tissue, as round-robin over k gives them
+        return (n // k, -(-n // k)) if k else (0, 0)
+
+    return {
+        "k_requested": k_requested,
+        "k": k,
+        "n_pb_matched": n_pb_matched,
+        "n_pb_free": n_pb - n_pb_matched,
+        "n_bulk_matched": n_bulk_matched,
+        "n_bulk_free": n_bulk - n_bulk_matched,
+        "pb_per_tissue": spread(n_pb_matched),
+        "bulk_per_tissue": spread(n_bulk_matched),
+    }

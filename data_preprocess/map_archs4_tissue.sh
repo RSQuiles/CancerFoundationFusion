@@ -12,6 +12,13 @@
 #   cd data_preprocess && sbatch map_archs4_tissue.sh --map-only
 #   cd data_preprocess && sbatch map_archs4_tissue.sh --apply-only    # reuse the saved map
 #   cd data_preprocess && sbatch map_archs4_tissue.sh --dry-run       # apply: statistics only
+#   cd data_preprocess && sbatch map_archs4_tissue.sh --curate-only [--dry-run]
+#
+# --curate (after apply) / --curate-only: curated tissue_general for the class-aware losses
+# and the evaluation. Bulk: the old column moves to tissue_noncurated, rows without a map
+# label become "unknown". Single cell and pseudobulk only gain tissue_label_source. Edits
+# obs in place, no copy; refuses a file that was curated already. Set NONCURATED_FROM to
+# an original copy of the bulk h5ad to keep the labels "apply --overwrite" replaced.
 #
 # apply edits only obs/$COLUMN (X, var, uns and the other obs columns stay byte for byte).
 # OUT empty = relabel $H5AD in place (via a temporary copy next to it, so the disk needs
@@ -29,16 +36,24 @@ H5AD=/cluster/work/boeva/rquiles/unifiedFM_experiments/data/bulk/BULK_pretrainin
 OUT=""                    # "" = --overwrite
 COLUMN=tissue_general
 ID_COLUMN=""              # "" = match on the obs index
+# curate
+SC_H5AD=/cluster/work/boeva/rquiles/unifiedFM_experiments/data/single_cell/single_cell.h5ad
+PB_H5AD=/cluster/work/boeva/rquiles/unifiedFM_experiments/data/pseudobulk/pseudobulk.h5ad
+NONCURATED_FROM=""        # original BULK_pretraining.h5ad from before apply, if one exists
+KEYWORD_COLUMNS=""        # e.g. "source_name description": keep keyword-reproduced heuristic labels
 
 RUN_MAP=1
 RUN_APPLY=1
+RUN_CURATE=0
 DRY_RUN=0
 for arg in "$@"; do
     case "$arg" in
-        --map-only)   RUN_APPLY=0 ;;
-        --apply-only) RUN_MAP=0 ;;
-        --dry-run)    DRY_RUN=1 ;;
-        *) echo "unknown option: $arg (use --map-only, --apply-only, --dry-run)"; exit 1 ;;
+        --map-only)    RUN_APPLY=0 ;;
+        --apply-only)  RUN_MAP=0 ;;
+        --curate)      RUN_CURATE=1 ;;
+        --curate-only) RUN_MAP=0; RUN_APPLY=0; RUN_CURATE=1 ;;
+        --dry-run)     DRY_RUN=1 ;;
+        *) echo "unknown option: $arg (use --map-only, --apply-only, --curate, --curate-only, --dry-run)"; exit 1 ;;
     esac
 done
 
@@ -69,6 +84,22 @@ if [[ "$RUN_APPLY" -eq 1 ]]; then
         APPLY_ARGS+=(--overwrite)
     fi
     python -u map_archs4_tissue.py apply "${APPLY_ARGS[@]}"
+fi
+
+if [[ "$RUN_CURATE" -eq 1 ]]; then
+    MODE=(--in-place)
+    [[ "$DRY_RUN" -eq 1 ]] && MODE=(--dry-run)
+    echo "=== curate bulk $(date '+%F %T') ==="
+    CURATE_ARGS=(--h5ad "$H5AD" --modality bulk --map "$MAP_DIR" --column "$COLUMN" --vocab-h5ad "$PB_H5AD")
+    [[ -n "$ID_COLUMN" ]] && CURATE_ARGS+=(--id-column "$ID_COLUMN")
+    [[ -n "$NONCURATED_FROM" ]] && CURATE_ARGS+=(--noncurated-from "$NONCURATED_FROM")
+    # shellcheck disable=SC2206
+    [[ -n "$KEYWORD_COLUMNS" ]] && CURATE_ARGS+=(--trust-heuristic --keyword-columns $KEYWORD_COLUMNS)
+    python -u map_archs4_tissue.py curate "${CURATE_ARGS[@]}" "${MODE[@]}"
+    for pair in "pseudobulk:$PB_H5AD" "single_cell:$SC_H5AD"; do
+        echo "=== curate ${pair%%:*} $(date '+%F %T') ==="
+        python -u map_archs4_tissue.py curate --h5ad "${pair#*:}" --modality "${pair%%:*}"             --column "$COLUMN" "${MODE[@]}"
+    done
 fi
 
 echo "=== done $(date '+%F %T') ==="

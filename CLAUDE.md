@@ -42,9 +42,26 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
   `--class-column` (default `tissue_general`, must be in `--conditions`; keep it out of
   `--condition-encoders` to make it label-only), `--class-exclude-labels` (default
   `unknown`), `--class-min-count` (rows a class needs in BOTH domains of a batch, default
-  2). `--class-aware` (needs `--pb-group-column`) draws the pseudobulk and
-  `--class-aware-bulk-frac` (0.6) of the bulk of each non-paired batch from the same
-  `--class-aware-n-classes` (8) tissues. The old names `--cdd-class-column`,
+  2). `--class-aware` (needs `--pb-group-column`) draws `--class-aware-pb-frac` (0.6) of
+  the pseudobulk and `--class-aware-bulk-frac` (0.6) of the bulk of each non-paired batch
+  from the same `--class-aware-n-classes` (8) tissues; the other slots are drawn as in a
+  standard batch.
+  - **Unmatched rows:** a row whose class is not in both domains, or is excluded, still
+    gets every reconstruction loss but no class loss. Only the free slots reach those
+    rows: at pb frac 1.0 (the behavior before this option), pseudobulks of tissues bulk lacks (and `unknown` ones) are
+    drawn by paired batches only.
+  - **Effective K:** K is lowered until every chosen tissue gets >= `--class-min-count`
+    rows in both domains (`utils.sampling.class_aware_allocation`, shared with
+    `check_store_losses.py`). Otherwise round-robin left tissues with one bulk row that
+    counted in neither loss. The sampler prints `[CLASS-AWARE]` when it lowers K.
+  - **Logging:** `train/class_anchor_frac_bulk` / `_pb` (share of the batch's bulk /
+    pseudobulk rows that were contrastive anchors) and `train/cdd_n_classes`.
+  - **ARCHS4 labels:** with the relabelled bulk, exclude `cell line`, `in vitro` and
+    `xenograft` too, so they are not contrastive negatives (they still reconstruct). After
+    `map_archs4_tissue.py curate`, bulk rows without a curated label are `unknown`, so the
+    class losses never pair on heuristic labels.
+
+  The old names `--cdd-class-column`,
   `--cdd-exclude-labels`, `--cdd-min-class-count`, `--cdd-class-aware` and
   `--cdd-bulk-class-frac` are accepted as flags, config keys and model hparams.
 - `--contrastive-training`: tissue-aware cross-modal InfoNCE (supervised-contrastive
@@ -88,14 +105,17 @@ results/reconstruction/<model>/<plan>[_mvc]/                     one model's run
 results/reconstruction/_compare/<plan>/<name>/, _plots/<plan>/<name>/   comparison tables / figures (+ manifest.json)
 results/geneicl_<suite>/<model>/, _compare/<name>/, _plots/<name>/      (e.g. geneicl_benchmark/)
 results/scib_benchmark/<name>/ (+ manifest.json)                 one scIB analysis over several models
+results/integration/<name>/ (+ manifest.json)                    cross-level link metrics + summary with scIB
 results/_checks/<check>/, results/_eval_runs/<config>_<timestamp>/
 ```
 
 `results/` holds **one directory per evaluation task** (`representation`, `reconstruction`,
-`geneicl_benchmark`, `scib_benchmark`); there is no `tasks/` or `assessment/` level. Inside a
-task: one directory per model, plus the reserved `_compare/` (tables, `compare.py`) and
-`_plots/` (figures) of named comparisons (default name `default`). `scib_benchmark/`
-holds analyses only, never model directories (`ExperimentLayout.model_task_roots`).
+`geneicl_benchmark`, `scib_benchmark`, `integration`); there is no `tasks/` or `assessment/`
+level. Inside a task: one directory per model, plus the reserved `_compare/` (tables,
+`compare.py`) and `_plots/` (figures) of named comparisons (default name `default`).
+`scib_benchmark/` and `integration/` hold analyses only, never model directories
+(`ExperimentLayout.model_task_roots`). Their manifests' `"models"` and `"row_labels"` keys
+are renamed by `rename_model`.
 Results from the old layout move with `python -m experiments.migrate_results_layout`
 (dry run; `--apply` moves, rewrites paths in the JSON files, removes the emptied
 `tasks/` and `assessment/`; see "Migrating results" below).
@@ -221,6 +241,28 @@ python bulk_sc_data_preprocessing.py --h5ad-path a.h5ad b.h5ad --data-path out/ 
     [--id-column COL]` relabels the rows whose id (obs index) the map resolves; the rest
     keep their value. Only `obs/<column>` is rewritten, with h5py on a copy, and the rest of
     the file is checked unchanged before `--overwrite` replaces the input.
+  - **`curate`: `tissue_general` holds curated labels only**, for the class-aware losses,
+    the plots and scIB.
+    - Usage: `curate --h5ad X --modality bulk|single_cell|pseudobulk (--in-place | --out Y
+      | --dry-run)`; `map_archs4_tissue.sh --curate-only` runs it on the three sources.
+    - **Bulk:** the old column moves to `tissue_noncurated`. The new one is the map's
+      CellxGene label or `cell line` / `in vitro` / `xenograft`; everything else is
+      `unknown`. That covers `unmatched` ARCHS4 rows and non-ARCHS4 rows (GTEx and
+      others), whose labels came from `add_fields.py` keywords plus a centroid fill.
+    - **Optional keyword labels:** `--trust-heuristic --keyword-columns ...` keeps a
+      non-ARCHS4 label, renamed by `tissue_names.CELLXGENE_NAME`, when keyword matching
+      alone (`keyword_tissue`) reproduces it. The renamed label must exist in the
+      vocabulary: map labels plus `--vocab-h5ad`.
+    - **Overwritten labels:** `--noncurated-from ORIG.h5ad` restores the labels an
+      earlier `apply --overwrite` replaced.
+    - **Single cell / pseudobulk:** the labels stay.
+    - **Every modality** gets `tissue_label_source` (cellxgene, archs4, archs4_culture,
+      keyword, heuristic, none). It is stored in the leiden_s1 stores, and the leiden_s1
+      scIB steps filter on `tissue_label_source=cellxgene,archs4`.
+    - **Writing:** `--in-place` touches obs only (group moves, new groups, column-order),
+      with no copy of the file. Every step is undone on failure, and a curated file is
+      refused.
+    - **Re-embed after curating:** embedding files keep the obs of embed time.
 - `utils/sampling.py` holds the filtering, stratified subsampling and group split used here,
   by embed and by the figures.
 - `python data_preprocess/check_preprocessing.py` self-checks all of this, with SCDL and
@@ -499,6 +541,14 @@ python -m evaluate.representation.plot_pca --models m1 pca --modality bulk --alr
 Filtering happens before subsampling. Each figure is saved with a `.parquet` of coordinates
 plus obs. `plot_alignment` fits ONE UMAP over all modalities and refuses files whose
 `panel_hash` differ (`--allow-mixed-panels` overrides).
+- **Cell means** (`plot_alignment --cell-means --link-col pseudobulk_id|paired
+  [--min-cells 5]`): one star per link key, the mean embedding of its single cells.
+  - It is taken over every loaded cell before the subsample and fitted with the UMAP
+    (modality `cell_mean`), so it sits where `integration.py` measures it.
+  - A segment joins each star to its key's pseudobulk.
+  - With `--connect-pairs`, each bulk point is joined to its pair's pseudobulk, so
+    `--link-col paired --paired-only` draws the chain cells mean -> pseudobulk -> bulk
+    (`alignment_test_paired.png`).
 - **PCA** (`plot_pca.py`, `plot_pca.sh`, config block `pca:`): the same inputs, filter,
   subsample, colours, titles and labels as `plot_umap`, but a PCA (centred, not scaled)
   fitted on the plotted rows, drawing `--components` (default PC1 vs PC2) with the
@@ -649,14 +699,14 @@ python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test
   its own env; `mask_plan.py`, `compare.py` and `plot_reconstruction.py` (CPU,
   `plot_reconstruction.sh`) anywhere with pandas and pyarrow.
 
-### Alignment: scIB (`evaluate/alignment/`)
+### Integration: scIB (`evaluate/integration/`, was `evaluate/alignment/`)
 ```bash
-python -m evaluate.alignment.scib_benchmark --name tissue_s0_test --models m1 m2 bulkformer \
+python -m evaluate.integration.scib_benchmark --name tissue_s0_test --models m1 m2 bulkformer \
     --pre-integrated pca --modalities bulk pseudobulk --per-modality bulk=all pseudobulk=all \
     --label-key tissue_general [--kbet] [--leiden] [--dry-run] [--row-labels m1="CF unified" ...]
 # redraw the results table from the saved CSVs (new labels, no rerun; needs only plottable)
-python -m evaluate.alignment.scib_benchmark --name tissue_s0_test --plot-only --row-labels m1="CF unified"
-./evaluate/alignment/scib_benchmark.sh          # bulkFM conda env (scib_metrics is not in the container)
+python -m evaluate.integration.scib_benchmark --name tissue_s0_test --plot-only --row-labels m1="CF unified"
+./evaluate/integration/scib_benchmark.sh          # bulkFM conda env (scib_metrics is not in the container)
 ```
 - **Rows:** only the rows every model embedded are kept (row names `<modality>:<obs name>`).
   `--filter` runs first, then a label-stratified per-modality subsample, once for all
@@ -691,6 +741,49 @@ python -m evaluate.alignment.scib_benchmark --name tissue_s0_test --plot-only --
   `--plot-formats` picks the formats. `--row-labels MODEL=LABEL` (or a YAML mapping) names
   the rows; the CSVs keep the model names, and labels must be unique. A failed figure only
   warns, since the CSVs are the result.
+
+### Integration: cross-level links (`evaluate/integration/integration.py`)
+```bash
+python -m evaluate.integration.integration --name leiden_s1 --models m1 m2 pca_leiden_s1 \
+    --scib-runs leiden_s1_sc_pb leiden_s1_sc_bulk leiden_s1_bulk_pb leiden_s1_all \
+    [--label-filter tissue_label_source=cellxgene,archs4] [--min-cells 5] [--row-labels m1="CF" ...]
+```
+- **Why not only scIB.** scIB measures label-level integration: within a tissue, do the
+  modalities mix? It never sees which rows belong together, so a model that maps every
+  sample of a tissue to one point scores perfectly there. This script measures the
+  sample-level correspondence of the linked split. Torch-free (numpy, pandas).
+- **Links** (`utils.sampling.link_keys`): `pseudobulk_id` joins a pseudobulk to its
+  cells; `paired` joins a bulk sample, its pseudobulk(s) and their cells. Each level gives
+  one vector per key, the mean `X_emb` of its rows. Cell means need `--min-cells` cells
+  and come from the joint-panel `sc_<part>.h5ad`, so a subsampled file gives a mean over
+  the cells it holds (the same cells for every model). `coverage.csv` reports keys and
+  cells per key.
+- **Edges:** `pb_cells` (cells mean <-> pseudobulk), `pair_cells_pb`, `pair_pb_bulk` and
+  `pair_cells_bulk`. Each is computed in both directions (`links.csv`) and averaged in
+  the summary.
+- **Metrics** (cosine):
+  - `top1`: the own partner is the nearest;
+  - `rank`: the partner's normalized rank among all candidates (0 = nearest, 0.5 =
+    chance, ties count half);
+  - `rank_tissue`: the same among candidates of the key's tissue only, i.e. sample
+    identity beyond tissue.
+- **Tissue of a key:** the most common label among its rows that pass `--label-filter`
+  (curated labels), looked up in the pseudobulk, then the cells, then the bulk rows.
+  - A pair whose bulk row `curate` left `unknown` keeps its tissue. That is why the
+    evaluation step drops the scIB task's row `filter`: the filter only decides which
+    labels count.
+  - Embeddings made before `curate` have no `tissue_label_source`; their labels are used
+    unfiltered, with a warning.
+- **Summary** (`--scib-runs`; `scib` itself is a config section name): reads the
+  aggregates of each `results/scib_benchmark/<name>/scib.csv`.
+  - The figure is ONE table (`_plot_style.draw_metric_table`): *Pseudobulk vs its
+    cells*, *Pairs: rank in tissue*, *scIB batch* (one column per run, headed by its
+    modalities) and *scIB bio* (the run with the most modalities).
+  - A model without a modality (BulkFormer has no cells) or outside a scIB run (the
+    pre-integrated PCA) shows n/a.
+- **Outputs** in `results/integration/<name>/`: `links.csv`, `coverage.csv`, `summary.csv`,
+  `manifest.json` (`"models"`, `"row_labels"`, the scIB runs), `integration.{png,pdf}`.
+  Config section `integration:`; run in the bulkFM env (`environment: host`).
 
 ### GeneICL benchmark (`evaluate/geneicl/`)
 The frozen bulk benchmark of GeneICL (52 tasks: 27 classification + 25 regression over 32
@@ -759,7 +852,7 @@ python -m evaluate.geneicl.plot_benchmark --name main [--models unified_v1 pca] 
 
 Offline self-checks: `python -m experiments.check.check_layout`, `check_sampling` and
 `check_rename`, `check_resume`, `check_warm_start`, `check_migrate_results` (no torch or anndata), plus `python -m evaluate.check.check_run_evaluation` (no anndata) and `check_representation`,
-`check_reconstruction`, `check_alignment` and `check_geneicl` (need anndata/scanpy; the
+`check_reconstruction`, `check_integration` and `check_geneicl` (need anndata/scanpy; the
 Benchmarker itself is skipped without scib_metrics; `check_geneicl` runs against a fake
 GeneICL checkout with a stub `benchmark.py`).
 
@@ -1135,8 +1228,9 @@ evaluate/                     # NEW, works on the experiments root
 │   ├── compare.py            # several models on their shared entries -> reconstruction/_compare/<plan>/<name>/
 │   ├── plot_reconstruction.py # MAE by bin/target, metric tables -> reconstruction/_plots/<plan>/<name>/
 │   └── example_reconstruction_config.yaml, run_reconstruction.sh, plot_reconstruction.sh
-├── alignment/
+├── integration/              # was alignment/
 │   ├── scib_benchmark.py     # scib_metrics Benchmarker over several models' embeddings
+│   ├── integration.py        # cross-level link metrics (cells mean / pseudobulk / bulk) + summary table
 │   ├── scib_plot.py          # classical scIB results table from the CSVs, custom row labels
 │   └── example_scib_config.yaml, scib_benchmark.sh (bulkFM conda env)
 ├── geneicl/
@@ -1146,7 +1240,7 @@ evaluate/                     # NEW, works on the experiments root
 │   ├── compare.py            # models (+ GeneICL reference rows) on shared tasks -> geneicl_<suite>/_compare/<name>/
 │   ├── plot_benchmark.py     # task x model heatmaps + summary table -> geneicl_<suite>/_plots/<name>/
 │   └── example_geneicl_config.yaml, embed_suite.sh, run_probe.sh
-└── check/                    # check_representation, check_reconstruction, check_alignment, check_geneicl, check_run_evaluation
+└── check/                    # check_representation, check_reconstruction, check_integration, check_geneicl, check_run_evaluation
 
 evaluate_old/                 # ARCHIVED: the previous evaluate/ (does not run as is)
 ├── run_analysis.py           # Config-driven orchestrator: UMAPs + metrics + benchmark over N experiments
@@ -1191,7 +1285,7 @@ data_preprocess/
 ├── data_processing.ipynb         # Interactive h5ad → memory-mapped conversion
 ├── bulk_preprocessing.ipynb      # Bulk RNA-seq preprocessing
 ├── bulk_sc_data_preprocessing.py # h5ads (or parts of them) -> training store; build_pipeline_ready
-├── tissue_names.py               # Tissue-name tables + walk_tissue_names (was data_preprocess/utils.py)
+├── tissue_names.py               # Tissue-name tables, walk_tissue_names / keyword_tissue, CELLXGENE_NAME
 ├── map_archs4_tissue.py          # ARCHS4 sample -> CellxGene tissue_general map; apply it to an h5ad obs column
 ├── archs4_tissue_rules.py        # its hand-curated tables (manual map, tumor names, exclusion regexes)
 └── protein_embeddings.py         # ESM3/RNABert embedding generation
