@@ -66,7 +66,7 @@ tasks:
       zero_fraction: 0.4
     steps:
       embed_splits:
-        foreach: {model: [sc_midrank, sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5]}
+        foreach: {model: [sc_mr_ordinal, sc_mr_ordinal_mvc5, sc_midrank , sc_mr_corn, sc_mr_mvc5]}
 
   # ---- 2. UMAPs of the single-cell test split -------------------------------------------
   representation:
@@ -81,7 +81,7 @@ tasks:
           models: [sc_midrank, sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5, pca_sc_leiden_s0]
           modality: sc
           subsample: 20000
-          color: [tissue_general, cell_type, assay, dataset_id]
+          color: [tissue_general]
           title: "{model}: {modality_name} ({part})"
 
 
@@ -148,7 +148,7 @@ tasks:
       modalities: [sc]
       per_modality: ["sc=all"]
       bio_only: true
-      n_jobs: 4
+      n_jobs: 1
       models: [sc_midrank, sc_mr_ordinal, sc_mr_corn, sc_mr_mvc5, sc_mr_ordinal_mvc5, pca_sc_leiden_s0]
     steps:
       scib_tissue:                # -> results/scib_benchmark/sc_pretrain_tissue/

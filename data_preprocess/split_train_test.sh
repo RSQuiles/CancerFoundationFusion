@@ -10,7 +10,7 @@ export TMPDIR=/cluster/work/boeva/rquiles/tmp
 mkdir -p $TMPDIR
 
 # Default, do not use Singularity
-USE_LOCAL=0
+USE_LOCAL=1
 
 # Parse args
 for arg in "$@"; do
@@ -25,15 +25,17 @@ SPLIT_NAME=leiden_s0
 # Writes train.txt, test.txt, split.json (and clusters.csv with --cluster leiden) to --out-dir.
 # The source h5ad is only read; expression values are never normalized.
 SCRIPT_ARGS=(
-    --input $DATA_DIR/bulk/BULK_pretraining.h5ad
-    --out-dir $DATA_DIR/bulk/splits/$SPLIT_NAME
+    --input $DATA_DIR/pseudobulk/PB_pretraining.h5ad
+    --out-dir $DATA_DIR/pseudobulk/splits/$SPLIT_NAME
     --fractions train=0.9 test=0.1
     --cluster leiden
     --group-by paired:0
+    --inherit-from single_cell:leiden_s0
+    --link-col pseudobulk_id
     --seed 0
     --overwrite
     --build-store
-    --store-dir $DATA_DIR/bulk/pipeline_ready/$SPLIT_NAME
+    --store-dir $DATA_DIR/pseudobulk/pipeline_ready/$SPLIT_NAME
 )
 
 # --stratify-by tissue_general   stratifies by fields in obs DataFrame

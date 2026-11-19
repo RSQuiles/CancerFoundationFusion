@@ -21,7 +21,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-/cluster/work/boeva/rquiles/CancerFoundationFusion}"
-CONFIG="${CONFIG:-$PROJECT_ROOT/evaluate/configs/sc_pretrain_evaluation.yaml}"
+CONFIG="${CONFIG:-$PROJECT_ROOT/evaluate/configs/leiden_s1_baselines_evaluation.yaml}"
 CONDA_ENV="${CONDA_ENV:-bulkFM}"
 
 # Environment setup runs WITHOUT -e and -u: /etc/profile.d scripts read unset

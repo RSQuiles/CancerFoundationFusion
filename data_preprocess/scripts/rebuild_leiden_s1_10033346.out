@@ -1,0 +1,729 @@
+Environment: conda 'bulkFM' (/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/bin/python)
+
+================================================================================
+[1] single_cell split (root of every link)    (2026-11-18 17:21:58)
+================================================================================
+Splitting /cluster/work/boeva/rquiles/unifiedFM_experiments/data/single_cell/single_cell.h5ad into {'train': 0.9, 'test': 0.1}
+  1487203 rows x 13004 genes
+  [linked_pseudobulk_id] 599468 linked rows, 19999 keys
+  [linked_paired] 245299 linked rows, 276 keys
+  [cluster] fitting on 200000 of 1487203 rows
+  [cluster] 61 clusters
+  4 strata have fewer groups than parts; pooling them into one stratum
+split          train   test  train_frac  test_frac
+stratum                                           
+0 | no | no      268     30       0.899      0.101
+0 | no | yes   38952   4616       0.894      0.106
+0 | yes | no     277     44       0.863      0.137
+1 | no | no      113     13       0.897      0.103
+1 | no | yes    8150   1424       0.851      0.149
+1 | yes | no      68      8       0.895      0.105
+10 | no | no    7492    833       0.900      0.100
+10 | no | yes   4025     75       0.982      0.018
+10 | yes | no   4958    587       0.894      0.106
+11 | no | no    2806    312       0.900      0.100
+11 | no | yes      2      0       1.000      0.000
+11 | yes | no   1501    188       0.889      0.111
+12 | no | no    4864    541       0.900      0.100
+12 | yes | no   3786    462       0.891      0.109
+13 | no | no   15007   1668       0.900      0.100
+13 | no | yes    158     27       0.854      0.146
+13 | yes | no  13873   1518       0.901      0.099
+14 | no | no    6153    684       0.900      0.100
+14 | no | yes    156     76       0.672      0.328
+14 | yes | no   4955    592       0.893      0.107
+15 | no | no       3      1       0.750      0.250
+15 | no | yes   9004    175       0.981      0.019
+15 | yes | no      1      0       1.000      0.000
+16 | no | no      11      1       0.917      0.083
+16 | no | yes  14027    914       0.939      0.061
+16 | yes | no     12      3       0.800      0.200
+17 | no | no   19774   2197       0.900      0.100
+17 | no | yes    125     58       0.683      0.317
+17 | yes | no  15982   1861       0.896      0.104
+18 | no | no   21954   2439       0.900      0.100
+18 | no | yes    184     31       0.856      0.144
+18 | yes | no  16820   1884       0.899      0.101
+19 | no | no     210     23       0.901      0.099
+19 | no | yes   9723   8773       0.526      0.474
+19 | yes | no    206     23       0.900      0.100
+2 | no | no    10648   1183       0.900      0.100
+2 | no | yes     234      1       0.996      0.004
+2 | yes | no    7325    824       0.899      0.101
+20 | no | no   11960   1329       0.900      0.100
+20 | no | yes    194     45       0.812      0.188
+20 | yes | no  13099   1360       0.906      0.094
+21 | no | no    8290    921       0.900      0.100
+21 | no | yes     35      0       1.000      0.000
+21 | yes | no   7604    922       0.892      0.108
+22 | no | no    7879    876       0.900      0.100
+22 | no | yes     74     14       0.841      0.159
+22 | yes | no   7875    815       0.906      0.094
+23 | no | no   15691   1743       0.900      0.100
+23 | no | yes      4      0       1.000      0.000
+23 | yes | no  13934   1554       0.900      0.100
+24 | no | no    7592    844       0.900      0.100
+24 | yes | no  15463   1754       0.898      0.102
+25 | no | no    5229    581       0.900      0.100
+25 | no | yes      1      0       1.000      0.000
+25 | yes | no   5064    556       0.901      0.099
+26 | no | no   17185   1909       0.900      0.100
+26 | no | yes     55     17       0.764      0.236
+26 | yes | no  20528   2105       0.907      0.093
+27 | no | no   18882   2098       0.900      0.100
+27 | no | yes     92     15       0.860      0.140
+27 | yes | no  19182   1977       0.907      0.093
+28 | no | no    1615    179       0.900      0.100
+28 | no | yes     53     14       0.791      0.209
+28 | yes | no    984     86       0.920      0.080
+29 | no | no    4477    498       0.900      0.100
+29 | yes | no   1940    240       0.890      0.110
+3 | no | no    27207   3023       0.900      0.100
+3 | no | yes     562    206       0.732      0.268
+3 | yes | no   23090   2471       0.903      0.097
+30 | no | no   28583   3176       0.900      0.100
+30 | no | yes      8      0       1.000      0.000
+30 | yes | no  27519   3005       0.902      0.098
+31 | no | no    5489    610       0.900      0.100
+31 | no | yes     49     15       0.766      0.234
+31 | yes | no   5641    690       0.891      0.109
+32 | no | no   16901   1878       0.900      0.100
+32 | no | yes    273      9       0.968      0.032
+32 | yes | no  15706   1654       0.905      0.095
+33 | no | no   11919   1324       0.900      0.100
+33 | no | yes     17      2       0.895      0.105
+33 | yes | no   8599    997       0.896      0.104
+34 | no | no   10872   1208       0.900      0.100
+34 | no | yes     57      1       0.983      0.017
+34 | yes | no   7782    893       0.897      0.103
+35 | no | no    6056    673       0.900      0.100
+35 | no | yes     54     67       0.446      0.554
+35 | yes | no   3722    327       0.919      0.081
+36 | no | no   22846   2538       0.900      0.100
+36 | yes | no  21488   2401       0.899      0.101
+37 | no | no   23817   2646       0.900      0.100
+37 | no | yes     31      0       1.000      0.000
+37 | yes | no  25289   3027       0.893      0.107
+38 | no | no    5534    615       0.900      0.100
+38 | no | yes      2      1       0.667      0.333
+38 | yes | no   4876    638       0.884      0.116
+39 | no | no   48276   5364       0.900      0.100
+39 | no | yes     19      1       0.950      0.050
+39 | yes | no  49374   5437       0.901      0.099
+4 | no | no     1939    216       0.900      0.100
+4 | no | yes       1      0       1.000      0.000
+4 | yes | no    1702    148       0.920      0.080
+40 | no | no   31391   3488       0.900      0.100
+40 | no | yes     43      6       0.878      0.122
+40 | yes | no  34088   3830       0.899      0.101
+41 | no | no    3603    400       0.900      0.100
+41 | no | yes     83     10       0.892      0.108
+41 | yes | no   3195    356       0.900      0.100
+42 | no | no   25629   2848       0.900      0.100
+42 | no | yes      2      1       0.667      0.333
+42 | yes | no  30667   3382       0.901      0.099
+43 | no | no    6045    672       0.900      0.100
+43 | no | yes     58     27       0.682      0.318
+43 | yes | no   6053    693       0.897      0.103
+44 | no | no    8400    933       0.900      0.100
+44 | no | yes     45      3       0.938      0.062
+44 | yes | no   3677    415       0.899      0.101
+45 | no | no   15298   1700       0.900      0.100
+45 | no | yes     29      2       0.935      0.065
+45 | yes | no   5308    526       0.910      0.090
+46 | no | no    1805    201       0.900      0.100
+46 | yes | no   1912    208       0.902      0.098
+47 | no | no    3469    385       0.900      0.100
+47 | no | yes     40      0       1.000      0.000
+47 | yes | no   2194    254       0.896      0.104
+48 | no | no    3106    345       0.900      0.100
+49 | no | no   24336   2704       0.900      0.100
+49 | yes | no  15918   1808       0.898      0.102
+5 | no | no     4009    445       0.900      0.100
+5 | no | yes      87      8       0.916      0.084
+5 | yes | no    4465    535       0.893      0.107
+50 | no | no   14708   1634       0.900      0.100
+50 | yes | no  14519   1591       0.901      0.099
+51 | no | no    1306    145       0.900      0.100
+51 | yes | no   1167    148       0.887      0.113
+52 | no | no   10691   1188       0.900      0.100
+52 | yes | no  12962   1489       0.897      0.103
+53 | no | no    7311    812       0.900      0.100
+53 | yes | no  12400   1321       0.904      0.096
+54 | no | no     987    110       0.900      0.100
+54 | yes | no    150     18       0.893      0.107
+55 | no | no    4306    478       0.900      0.100
+56 | no | no    1558    173       0.900      0.100
+56 | no | yes      0      1       0.000      1.000
+56 | yes | no   3329    453       0.880      0.120
+57 | no | no     629     70       0.900      0.100
+57 | no | yes     17      1       0.944      0.056
+57 | yes | no    783     79       0.908      0.092
+58 | no | no    1920    213       0.900      0.100
+58 | yes | no   1571    204       0.885      0.115
+59 | no | no    2078    231       0.900      0.100
+59 | yes | no   5868    617       0.905      0.095
+6 | no | no      450     50       0.900      0.100
+6 | no | yes    6451    784       0.892      0.108
+6 | yes | no     369     46       0.889      0.111
+60 | no | no    1419    158       0.900      0.100
+60 | yes | no   1066    120       0.899      0.101
+7 | no | no       93     10       0.903      0.097
+7 | no | yes   21722   9770       0.690      0.310
+7 | yes | no      56     10       0.848      0.152
+8 | no | no       88     10       0.898      0.102
+8 | no | yes   11939   9211       0.564      0.436
+8 | yes | no      85      5       0.944      0.056
+9 | no | no     6014    668       0.900      0.100
+9 | no | yes   71911  10150       0.876      0.124
+9 | yes | no    7462    820       0.901      0.099
+  train=1316428  test=170775
+  'pseudobulk_id' keys per part: {'test': 2000, 'train': 17999}
+  'paired' keys per part: {'test': 35, 'train': 241}
+Wrote /cluster/work/boeva/rquiles/unifiedFM_experiments/data/single_cell/splits/leiden_s1
+Done.
+
+================================================================================
+[2] bulk split (paired rows inherit from single_cell)    (2026-11-18 17:29:36)
+================================================================================
+Splitting /cluster/work/boeva/rquiles/unifiedFM_experiments/data/bulk/BULK_pretraining.h5ad into {'train': 0.9, 'test': 0.1}
+  642692 rows x 13004 genes
+  [linked_paired] 286 linked rows, 276 keys
+  [cluster] fitting on 200000 of 642692 rows
+  [cluster] 175 clusters
+  286 rows inherit their part from single_cell:leiden_s1 via 'paired' (286 linked)
+  286 rows inherit their part in total
+split      train  test  train_frac  test_frac
+stratum                                      
+0 | no      8109   901       0.900      0.100
+0 | yes       19     2       0.905      0.095
+1 | no       652    73       0.899      0.101
+10 | no     3946   439       0.900      0.100
+100 | no    8854   984       0.900      0.100
+101 | no     129    14       0.902      0.098
+102 | no    3768   419       0.900      0.100
+103 | no     349    39       0.899      0.101
+104 | no    4242   471       0.900      0.100
+105 | no     879    98       0.900      0.100
+106 | no    2950   328       0.900      0.100
+107 | no    4319   480       0.900      0.100
+108 | no    3754   417       0.900      0.100
+109 | no    6754   750       0.900      0.100
+11 | no     5022   558       0.900      0.100
+110 | no    1095   122       0.900      0.100
+111 | no     446    50       0.899      0.101
+112 | no    1366   152       0.900      0.100
+113 | no     823    92       0.899      0.101
+113 | yes      1     0       1.000      0.000
+114 | no    2220   247       0.900      0.100
+115 | no    3126   347       0.900      0.100
+116 | no     181    20       0.900      0.100
+117 | no    5058   562       0.900      0.100
+117 | yes      2     0       1.000      0.000
+118 | no    1537   171       0.900      0.100
+118 | yes      1     0       1.000      0.000
+119 | no     266    30       0.899      0.101
+12 | no      431    48       0.900      0.100
+120 | no    5256   584       0.900      0.100
+121 | no    2307   256       0.900      0.100
+122 | no    1476   164       0.900      0.100
+123 | no    2256   251       0.900      0.100
+124 | no    1287   143       0.900      0.100
+125 | no    2551   284       0.900      0.100
+126 | no    1025   114       0.900      0.100
+127 | no    2828   314       0.900      0.100
+128 | no    1874   208       0.900      0.100
+129 | no    3379   375       0.900      0.100
+13 | no     2796   311       0.900      0.100
+130 | no     114    13       0.898      0.102
+131 | no    2056   229       0.900      0.100
+132 | no    4273   475       0.900      0.100
+133 | no     472    53       0.899      0.101
+134 | no     619    69       0.900      0.100
+135 | no     114    13       0.898      0.102
+136 | no    5793   644       0.900      0.100
+137 | no     599    67       0.899      0.101
+138 | no     103    12       0.896      0.104
+139 | no    1630   181       0.900      0.100
+14 | no    10063  1118       0.900      0.100
+14 | yes      18     5       0.783      0.217
+140 | no    1296   144       0.900      0.100
+141 | no    1158   129       0.900      0.100
+142 | no    1214   135       0.900      0.100
+143 | no     142    16       0.899      0.101
+144 | no    1461   162       0.900      0.100
+145 | no     479    53       0.900      0.100
+146 | no    1439   160       0.900      0.100
+147 | no    3270   363       0.900      0.100
+148 | no    1331   148       0.900      0.100
+149 | no    2147   239       0.900      0.100
+15 | no      586    65       0.900      0.100
+150 | no     324    36       0.900      0.100
+151 | no     175    20       0.897      0.103
+152 | no     490    54       0.901      0.099
+153 | no     495    55       0.900      0.100
+154 | no     369    41       0.900      0.100
+155 | no     399    44       0.901      0.099
+156 | no     427    48       0.899      0.101
+157 | no     516    57       0.901      0.099
+158 | no     950   106       0.900      0.100
+159 | no    1052   117       0.900      0.100
+16 | no     9183  1020       0.900      0.100
+160 | no     194    22       0.898      0.102
+161 | no     876    97       0.900      0.100
+162 | no     851    95       0.900      0.100
+163 | no    1903   211       0.900      0.100
+164 | no     820    91       0.900      0.100
+165 | no     225    25       0.900      0.100
+166 | no     520    58       0.900      0.100
+167 | no     291    32       0.901      0.099
+168 | no     169    19       0.899      0.101
+169 | no     461    51       0.900      0.100
+17 | no     8901   989       0.900      0.100
+170 | no    3292   366       0.900      0.100
+171 | no     351    39       0.900      0.100
+172 | no     303    34       0.899      0.101
+173 | no      94    11       0.895      0.105
+174 | no     243    27       0.900      0.100
+18 | no     5976   664       0.900      0.100
+18 | yes      21     5       0.808      0.192
+19 | no    12487  1387       0.900      0.100
+19 | yes      28     4       0.875      0.125
+2 | no      5557   617       0.900      0.100
+2 | yes       11     2       0.846      0.154
+20 | no     3105   345       0.900      0.100
+20 | yes       1     0       1.000      0.000
+21 | no     7983   887       0.900      0.100
+21 | yes       3     0       1.000      0.000
+22 | no     2289   254       0.900      0.100
+22 | yes       0     1       0.000      1.000
+23 | no     1621   180       0.900      0.100
+23 | yes       1     0       1.000      0.000
+24 | no     1111   123       0.900      0.100
+25 | no      253    28       0.900      0.100
+26 | no      960   107       0.900      0.100
+27 | no      359    40       0.900      0.100
+28 | no    21310  2368       0.900      0.100
+28 | yes       2     0       1.000      0.000
+29 | no     2245   249       0.900      0.100
+29 | yes       1     0       1.000      0.000
+3 | no      1246   138       0.900      0.100
+30 | no     7835   871       0.900      0.100
+31 | no      762    85       0.900      0.100
+32 | no      442    49       0.900      0.100
+33 | no     2072   230       0.900      0.100
+34 | no     6877   764       0.900      0.100
+35 | no      373    42       0.899      0.101
+36 | no     5629   626       0.900      0.100
+36 | yes       7     1       0.875      0.125
+37 | no     3818   424       0.900      0.100
+38 | no     7798   866       0.900      0.100
+38 | yes       1     0       1.000      0.000
+39 | no      253    28       0.900      0.100
+4 | no      6827   759       0.900      0.100
+4 | yes       29     2       0.935      0.065
+40 | no     1554   173       0.900      0.100
+41 | no     8171   908       0.900      0.100
+42 | no     3541   394       0.900      0.100
+42 | yes       5     0       1.000      0.000
+43 | no    10609  1179       0.900      0.100
+44 | no    11654  1295       0.900      0.100
+45 | no      913   101       0.900      0.100
+46 | no     8499   944       0.900      0.100
+46 | yes       7     3       0.700      0.300
+47 | no      195    22       0.899      0.101
+48 | no     5602   623       0.900      0.100
+48 | yes       8     3       0.727      0.273
+49 | no    11404  1267       0.900      0.100
+49 | yes       1     0       1.000      0.000
+5 | no      3362   374       0.900      0.100
+5 | yes       10     0       1.000      0.000
+50 | no     4695   522       0.900      0.100
+50 | yes       1     1       0.500      0.500
+51 | no     1171   130       0.900      0.100
+52 | no     2884   320       0.900      0.100
+52 | yes       1     0       1.000      0.000
+53 | no     2731   304       0.900      0.100
+53 | yes       1     0       1.000      0.000
+54 | no     5065   563       0.900      0.100
+55 | no     4144   461       0.900      0.100
+56 | no     5024   558       0.900      0.100
+56 | yes       1     0       1.000      0.000
+57 | no     4339   482       0.900      0.100
+58 | no     4495   500       0.900      0.100
+59 | no     1717   191       0.900      0.100
+6 | no      2235   248       0.900      0.100
+6 | yes        3     0       1.000      0.000
+60 | no      511    57       0.900      0.100
+61 | no     5378   598       0.900      0.100
+61 | yes       4     1       0.800      0.200
+62 | no     7645   849       0.900      0.100
+62 | yes       9     1       0.900      0.100
+63 | no     4538   504       0.900      0.100
+64 | no     4594   511       0.900      0.100
+64 | yes       2     0       1.000      0.000
+65 | no      635    71       0.899      0.101
+66 | no     2281   253       0.900      0.100
+66 | yes       1     0       1.000      0.000
+67 | no     3320   369       0.900      0.100
+68 | no     3348   372       0.900      0.100
+68 | yes       2     1       0.667      0.333
+69 | no    11245  1249       0.900      0.100
+7 | no     14460  1607       0.900      0.100
+7 | yes       42     3       0.933      0.067
+70 | no      877    97       0.900      0.100
+71 | no      364    40       0.901      0.099
+72 | no     2485   276       0.900      0.100
+73 | no     7355   817       0.900      0.100
+74 | no      787    88       0.899      0.101
+75 | no      384    43       0.899      0.101
+76 | no     2124   236       0.900      0.100
+77 | no     4919   547       0.900      0.100
+78 | no      428    48       0.899      0.101
+79 | no     4844   538       0.900      0.100
+79 | yes       0     1       0.000      1.000
+8 | no      1308   145       0.900      0.100
+8 | yes        4     1       0.800      0.200
+80 | no      816    91       0.900      0.100
+81 | no     1023   114       0.900      0.100
+82 | no     1269   141       0.900      0.100
+83 | no    16814  1868       0.900      0.100
+84 | no      695    77       0.900      0.100
+85 | no     9157  1017       0.900      0.100
+86 | no     1060   118       0.900      0.100
+87 | no     4972   552       0.900      0.100
+88 | no     1833   204       0.900      0.100
+89 | no    10894  1210       0.900      0.100
+9 | no      3122   347       0.900      0.100
+90 | no      294    33       0.899      0.101
+91 | no     2371   264       0.900      0.100
+92 | no    12646  1405       0.900      0.100
+93 | no    11227  1248       0.900      0.100
+94 | no     1266   141       0.900      0.100
+95 | no      647    72       0.900      0.100
+96 | no     6208   690       0.900      0.100
+96 | yes       1     0       1.000      0.000
+97 | no    11842  1316       0.900      0.100
+98 | no     8844   983       0.900      0.100
+99 | no     2587   288       0.900      0.100
+  train=578402  test=64290
+  'paired' keys per part: {'test': 35, 'train': 241}
+Wrote /cluster/work/boeva/rquiles/unifiedFM_experiments/data/bulk/splits/leiden_s1
+Done.
+
+================================================================================
+[3] pseudobulk split (inherits from single_cell, then bulk)    (2026-11-18 17:47:05)
+================================================================================
+Splitting /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pseudobulk/pseudobulk.h5ad into {'train': 0.9, 'test': 0.1}
+  20276 rows x 13004 genes
+  [linked_paired] 276 linked rows, 276 keys
+  [linked_pseudobulk_id] 19999 linked rows, 19999 keys
+  [cluster] fitting on 20276 of 20276 rows
+  [cluster] 69 clusters
+  19999 rows inherit their part from single_cell:leiden_s1 via 'pseudobulk_id' (19999 linked)
+  276 rows inherit their part from single_cell:leiden_s1 via 'paired' (276 linked)
+  0 rows inherit their part from bulk:leiden_s1 via 'paired' (276 linked)
+  20275 rows inherit their part in total
+split          train  test  train_frac  test_frac
+stratum                                          
+0 | no | yes       7     2       0.778      0.222
+0 | yes | no     207    27       0.885      0.115
+1 | no | yes     236    23       0.911      0.089
+1 | yes | no       2     0       1.000      0.000
+10 | no | yes    582    62       0.904      0.096
+11 | no | yes     58     7       0.892      0.108
+12 | no | yes    690    84       0.891      0.109
+13 | no | yes     30     6       0.833      0.167
+14 | no | yes    389    40       0.907      0.093
+15 | no | yes    212    22       0.906      0.094
+16 | no | yes    206    17       0.924      0.076
+16 | yes | no      2     0       1.000      0.000
+17 | no | yes     18     2       0.900      0.100
+18 | no | no       1     0       1.000      0.000
+18 | no | yes   1077   105       0.911      0.089
+19 | no | yes    199    31       0.865      0.135
+2 | no | yes     266    19       0.933      0.067
+20 | no | yes    902   108       0.893      0.107
+21 | no | yes     15     1       0.938      0.062
+22 | no | yes    430    46       0.903      0.097
+23 | no | yes    101    13       0.886      0.114
+24 | no | yes    143    11       0.929      0.071
+25 | no | yes     91     6       0.938      0.062
+26 | no | yes    670    84       0.889      0.111
+27 | no | yes    208    22       0.904      0.096
+28 | no | yes    575    69       0.893      0.107
+29 | no | yes    251    27       0.903      0.097
+3 | no | yes     312    29       0.915      0.085
+3 | yes | no       2     1       0.667      0.333
+30 | no | yes    173    20       0.896      0.104
+31 | no | yes    299    27       0.917      0.083
+32 | no | yes    640    76       0.894      0.106
+33 | no | yes    325    28       0.921      0.079
+34 | no | yes    615    74       0.893      0.107
+35 | no | yes     29     5       0.853      0.147
+36 | no | yes    854    81       0.913      0.087
+37 | no | yes    275    32       0.896      0.104
+38 | no | yes    295    33       0.899      0.101
+39 | no | yes    356    38       0.904      0.096
+4 | no | yes    1107   131       0.894      0.106
+4 | yes | no      28     7       0.800      0.200
+40 | no | yes     24     2       0.923      0.077
+41 | no | yes    240    30       0.889      0.111
+42 | no | yes    412    43       0.905      0.095
+43 | no | yes    303    33       0.902      0.098
+44 | no | yes    164    18       0.901      0.099
+45 | no | yes    143    19       0.883      0.117
+46 | no | yes    214    23       0.903      0.097
+47 | no | yes    285    42       0.872      0.128
+48 | no | yes     30     2       0.938      0.062
+49 | no | yes    396    47       0.894      0.106
+5 | no | yes      19     2       0.905      0.095
+50 | no | yes     61    12       0.836      0.164
+51 | no | yes    321    28       0.920      0.080
+52 | no | yes     49     4       0.925      0.075
+53 | no | yes    229    28       0.891      0.109
+54 | no | yes    176    19       0.903      0.097
+55 | no | yes    271    35       0.886      0.114
+56 | no | yes    129    16       0.890      0.110
+57 | no | yes     91    10       0.901      0.099
+58 | no | yes     76    11       0.874      0.126
+59 | no | yes     56     6       0.903      0.097
+6 | no | yes      25     4       0.862      0.138
+60 | no | yes    121    13       0.903      0.097
+61 | no | yes     51     7       0.879      0.121
+62 | no | yes     56     6       0.903      0.097
+63 | no | yes     40     8       0.833      0.167
+64 | no | yes    120     8       0.938      0.062
+65 | no | yes     96    17       0.850      0.150
+66 | no | yes     22     1       0.957      0.043
+67 | no | yes     35     1       0.972      0.028
+68 | no | yes     36     4       0.900      0.100
+7 | no | yes     373    49       0.884      0.116
+8 | no | yes     230    20       0.920      0.080
+9 | no | yes     469    51       0.902      0.098
+  train=18241  test=2035
+  'paired' keys per part: {'test': 35, 'train': 241}
+  'pseudobulk_id' keys per part: {'test': 2000, 'train': 17999}
+Wrote /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pseudobulk/splits/leiden_s1
+Done.
+
+================================================================================
+[4] link check across the three splits    (2026-11-18 17:49:02)
+================================================================================
+single_cell: 1487203 rows in /cluster/work/boeva/rquiles/unifiedFM_experiments/data/single_cell/splits/leiden_s1 ({'train': 1316428, 'test': 170775})
+bulk: 642692 rows in /cluster/work/boeva/rquiles/unifiedFM_experiments/data/bulk/splits/leiden_s1 ({'train': 578402, 'test': 64290})
+pseudobulk: 20276 rows in /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pseudobulk/splits/leiden_s1 ({'train': 18241, 'test': 2035})
+
+== link 'pseudobulk_id'
+  bulk: no 'pseudobulk_id' column
+  619467 linked rows, 19999 keys
+  keys per part and modality:
+    modality  pseudobulk  single_cell
+    part                             
+    test            2000         2000
+    train          17999        17999
+  [OK] every key sits in one part
+  keys by the modalities that carry them:
+    pseudobulk + single_cell: 19999
+
+== link 'paired'
+  245861 linked rows, 276 keys
+  keys per part and modality:
+    modality  bulk  pseudobulk  single_cell
+    part                                   
+    test        35          35           35
+    train      241         241          241
+  [OK] every key sits in one part
+  keys by the modalities that carry them:
+    bulk + pseudobulk + single_cell: 276
+
+OK: linked rows share their part
+
+================================================================================
+[5] joint store sc_bulk_pb_leiden_s1    (2026-11-18 17:49:14)
+================================================================================
+  single_cell.h5ad: 1316428 rows from leiden_s1/train
+  BULK_pretraining.h5ad: 578402 rows from leiden_s1/train
+  pseudobulk.h5ad: 18241 rows from leiden_s1/train
+Building the gene vocabulary (intersection of 3 source(s))
+[1/3] single_cell.h5ad: 1316428 rows, 13004/13004 genes in the vocabulary
+  5 transient file(s) of at most 500,000,000 entries, int32 indices
+[2/3] BULK_pretraining.h5ad: 578402 rows, 13004/13004 genes in the vocabulary
+  13 transient file(s) of at most 500,000,000 entries, int32 indices
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 4.89432e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 3.92777e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 5.24133e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.45158e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.10615e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 6.65008e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 3.40306e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.38041e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 5.09295e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 4.29328e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 6.94702e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.82755e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 3.24274e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+[3/3] pseudobulk.h5ad: 18241 rows, 13004/13004 genes in the vocabulary
+  1 transient file(s) of at most 500,000,000 entries, int32 indices
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.1986e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+Exporting files...
+Store verified: 88 rows identical to their source
+Store written to /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pipeline_ready/sc_bulk_pb_leiden_s1 (1913071 rows, 13004 genes in the vocabulary)
+Done.
+
+================================================================================
+[6] single_cell store (train part, joint vocabulary)    (2026-11-18 18:08:27)
+================================================================================
+Reading gene vocabulary /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pipeline_ready/sc_bulk_pb_leiden_s1/vocab.json
+[1/1] single_cell.h5ad: 1316428 rows, 13004/13004 genes in the vocabulary
+  5 transient file(s) of at most 500,000,000 entries, int32 indices
+Exporting files...
+Store verified: 60 rows identical to their source
+Store written to /cluster/work/boeva/rquiles/unifiedFM_experiments/data/single_cell/pipeline_ready/leiden_s1 (1316428 rows, 13004 genes in the vocabulary)
+Conversion completed successfully.
+
+================================================================================
+[7] bulk store (train part, joint vocabulary)    (2026-11-18 18:14:56)
+================================================================================
+Reading gene vocabulary /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pipeline_ready/sc_bulk_pb_leiden_s1/vocab.json
+[1/1] BULK_pretraining.h5ad: 578402 rows, 13004/13004 genes in the vocabulary
+  13 transient file(s) of at most 500,000,000 entries, int32 indices
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 4.89432e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 3.92777e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 5.24133e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.45158e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.10615e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 6.65008e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 3.40306e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.38041e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 5.09295e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 4.29328e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 6.94702e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.82755e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 3.24274e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+Exporting files...
+Store verified: 76 rows identical to their source
+Store written to /cluster/work/boeva/rquiles/unifiedFM_experiments/data/bulk/pipeline_ready/leiden_s1 (578402 rows, 13004 genes in the vocabulary)
+Conversion completed successfully.
+
+================================================================================
+[8] pseudobulk store (train part, joint vocabulary)    (2026-11-18 18:29:30)
+================================================================================
+Reading gene vocabulary /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pipeline_ready/sc_bulk_pb_leiden_s1/vocab.json
+[1/1] pseudobulk.h5ad: 18241 rows, 13004/13004 genes in the vocabulary
+  1 transient file(s) of at most 500,000,000 entries, int32 indices
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.1986e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+Exporting files...
+Store verified: 52 rows identical to their source
+Store written to /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pseudobulk/pipeline_ready/leiden_s1 (18241 rows, 13004 genes in the vocabulary)
+Conversion completed successfully.
+
+================================================================================
+[9] losses supported by sc_bulk_pb_leiden_s1 (report only)    (2026-11-18 18:31:31)
+================================================================================
+Store: /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pipeline_ready/sc_bulk_pb_leiden_s1
+Losses: reconstruction, mmd, dat, contrastive, cdd, class_aware, aggregation, paired | pseudobulk source: precomputed
+
+== store
+  [OK]   vocab.json, mapping.json, obs.parquet and mem.map/ present in /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pipeline_ready/sc_bulk_pb_leiden_s1
+         vocabulary: 13006 tokens
+  [WARN] no store.json; 1913071 rows (cannot compare with the store's own count)
+
+== reconstruction
+         obs columns: tissue_general, paired, pseudobulk_id, modality
+  [OK]   condition 'tissue_general': 78 categories
+
+== unified mode (--unified)
+         'modality' categories: {'bulk': 0, 'pseudobulk': 1, 'sc': 2}
+  [OK]   578402 'bulk' rows
+  [OK]   1316428 'sc' rows
+  [OK]   18241 precomputed 'pseudobulk' rows
+
+== pseudobulk source (precomputed)
+  [OK]   18241 precomputed pseudobulk rows
+  [OK]   69 'tissue_general' groups in the source
+
+== mmd (precomputed)
+  [OK]   22 bulk and 22 pseudobulk rows per batch of 64
+
+== dat (precomputed)
+  [OK]   22 bulk and 22 pseudobulk rows per batch of 64
+  [OK]   modality discriminator: bulk vs pseudobulk
+
+== contrastive (precomputed)
+         train with 'tissue_general' in --conditions (label only: leave it out of --condition-encoders)
+  [OK]   22 class(es) shared by bulk and source (>= 2 rows each): 0, blood, bone marrow, brain, breast, colon, embryo, exocrine gland (+14 more)
+         bulk rows in shared classes: 495081/578402 (86%); excluded labels: 96; bulk-only classes: 7 (adipose, bone, cervix, connective tissue, muscle (+2 more))
+         contrastive needs same-class partners in each batch: use --class-aware
+
+== cdd (precomputed)
+         train with 'tissue_general' in --conditions (label only: leave it out of --condition-encoders)
+  [OK]   22 class(es) shared by bulk and source (>= 2 rows each): 0, blood, bone marrow, brain, breast, colon, embryo, exocrine gland (+14 more)
+         bulk rows in shared classes: 495081/578402 (86%); excluded labels: 96; bulk-only classes: 7 (adipose, bone, cervix, connective tissue, muscle (+2 more))
+
+== class_aware sampling (precomputed)
+  [OK]   22 class(es) shared by bulk and source (>= 2 rows each): 0, blood, bone marrow, brain, breast, colon, embryo, exocrine gland (+14 more)
+         bulk rows in shared classes: 495081/578402 (86%); excluded labels: 96; bulk-only classes: 7 (adipose, bone, cervix, connective tissue, muscle (+2 more))
+         batch 64: 22 bulk, 22 pseudobulk over K=8 tissues -> ~2.8 pseudobulk and ~1.6 matched bulk per tissue
+  [WARN] below --class-min-count 2: many tissues will not count in cdd/contrastive (lower --class-aware-n-classes or --class-min-count)
+
+== aggregation (precomputed)
+  [WARN] 17999/18241 precomputed pseudobulks have constituent cells in the store
+         cells per linked pseudobulk: median 30, min 20
+  [WARN] 1 'tissue_general' groups lose every pseudobulk with aggregation on: 0
+
+== paired
+         pair ids: 241 on pseudobulk rows, 241 on bulk rows
+  [OK]   241 pseudobulk-bulk pairs
+  [WARN] 5 pair ids have several bulk rows (only the last is used)
+  [OK]   241 pairs also have matched single cells (used in the paired SC term)
+
+== summary
+  reconstruction  READY
+  mmd             precomputed: READY
+  dat             precomputed: READY
+  contrastive     precomputed: READY
+  cdd             precomputed: READY
+  class_aware     precomputed: READY (warnings)
+  aggregation     precomputed: READY (warnings)
+  paired          READY (warnings)
+
+Every requested loss is ready in at least one source mode.
+
+================================================================================
+[10] store sizes (for the step budget in experiments/configs/leiden_s1_baselines.json)    (2026-11-18 18:31:33)
+================================================================================
+  /cluster/work/boeva/rquiles/unifiedFM_experiments/data/single_cell/pipeline_ready/leiden_s1: 1316428 rows
+  /cluster/work/boeva/rquiles/unifiedFM_experiments/data/bulk/pipeline_ready/leiden_s1: 578402 rows
+  /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pseudobulk/pipeline_ready/leiden_s1: 18241 rows
+  /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pipeline_ready/sc_bulk_pb_leiden_s1: 1913071 rows
+
+Done (2026-11-18 18:31:34).

@@ -1,9 +1,9 @@
 #!/bin/bash -l
 #SBATCH --job-name=rebuild_leiden_s1
-#SBATCH --output=slurm_outputs/rebuild_leiden_s1_%j.out
-#SBATCH --time=24:00:00
+#SBATCH --output=rebuild_leiden_s1_%j.out
+#SBATCH --time=10:00:00
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=2
 #SBATCH --mem-per-cpu=64G
 #
 # Linked train/test splits + every training store for leiden_s1, in one allocation.
@@ -56,7 +56,7 @@ export TMPDIR=/cluster/work/boeva/rquiles/tmp
 mkdir -p "$TMPDIR"
 
 # --conda [ENV]: run every step in a conda env instead of the container.
-USE_CONDA=0
+USE_CONDA=1
 CONDA_ENV=${CONDA_ENV:-bulkFM}
 while [[ $# -gt 0 ]]; do
     case "$1" in
