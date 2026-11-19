@@ -12,6 +12,13 @@
 #   sbatch data_preprocess/scripts/rebuild_leiden_s1.sbatch --conda [ENV]    # conda env (default bulkFM)
 #   CONDA_ENV=myenv sbatch data_preprocess/scripts/rebuild_leiden_s1.sbatch --conda
 #
+# Stores only, from the splits already on disk (e.g. after relabelling obs columns of a
+# source h5ad with map_archs4_tissue.py: the split rows do not depend on tissue_general):
+#   sbatch data_preprocess/scripts/rebuild_leiden_s1.sbatch --stores-only --stores mix bulk
+# --stores-only skips steps 1-4; --stores picks among mix single_cell bulk pseudobulk
+# (default all four). A single-modality store needs the joint store's vocab.json, so it
+# must exist already or "mix" must be in the list.
+#
 # The conda env needs what the container has: scanpy + igraph/leidenalg (Leiden),
 # anndata, h5py, pandas/pyarrow, and bionemo-scdl with torch (the store builds).
 #
@@ -58,15 +65,29 @@ mkdir -p "$TMPDIR"
 # --conda [ENV]: run every step in a conda env instead of the container.
 USE_CONDA=1
 CONDA_ENV=${CONDA_ENV:-bulkFM}
+RUN_SPLITS=1
+STORES=(mix single_cell bulk pseudobulk)
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --conda)
             USE_CONDA=1
             if [[ $# -gt 1 && "$2" != --* ]]; then CONDA_ENV=$2; shift; fi ;;
-        *) echo "unknown option: $1 (use --conda [ENV])"; exit 1 ;;
+        --stores-only) RUN_SPLITS=0 ;;
+        --stores)
+            STORES=()
+            while [[ $# -gt 1 && "$2" != --* ]]; do
+                case "$2" in
+                    mix|single_cell|bulk|pseudobulk) STORES+=("$2") ;;
+                    *) echo "unknown store: $2 (use mix single_cell bulk pseudobulk)"; exit 1 ;;
+                esac
+                shift
+            done
+            [[ ${#STORES[@]} -gt 0 ]] || { echo "--stores needs at least one store"; exit 1; } ;;
+        *) echo "unknown option: $1 (use --conda [ENV], --stores-only, --stores ...)"; exit 1 ;;
     esac
     shift
 done
+want() { [[ " ${STORES[*]} " == *" $1 "* ]]; }
 
 if [[ "$USE_CONDA" -eq 1 ]]; then
     set +u   # conda's activation scripts read unset variables
@@ -103,6 +124,16 @@ done
 COMMON=(--root "$ROOT" --split-name "$SPLIT" --fractions "${FRACTIONS[@]}" --seed "$SEED"
         --cluster leiden --overwrite)
 
+if [[ "$RUN_SPLITS" -eq 0 ]]; then
+    echo "--stores-only: reusing the splits in $DATA/*/splits/$SPLIT; stores: ${STORES[*]}"
+    for mod in single_cell bulk pseudobulk; do
+        for f in train.txt split.json; do
+            [[ -f "$DATA/$mod/splits/$SPLIT/$f" ]] || { echo "missing split file: $DATA/$mod/splits/$SPLIT/$f"; exit 1; }
+        done
+    done
+fi
+
+if [[ "$RUN_SPLITS" -eq 1 ]]; then
 # ---- 1-3. splits ---------------------------------------------------------------------
 banner "single_cell split (root of every link)"
 py split_train_test.py "${COMMON[@]}" --modality single_cell --input "$SC_H5AD" \
@@ -127,13 +158,17 @@ banner "link check across the three splits"
 py check_split_links.py --root "$ROOT" --split "$SPLIT" \
     --modalities single_cell bulk pseudobulk --links pseudobulk_id:0,-1 paired:0 \
     --max-leak "$MAX_LEAK"
+fi
 
 # ---- 5. joint store ------------------------------------------------------------------
+if want mix; then
 banner "joint store $MIX"
 py build_mix.py --root "$ROOT" --name "$MIX" --overwrite \
     --source "single_cell:$SPLIT" "bulk:$SPLIT" "pseudobulk:$SPLIT" \
     --obs-columns "${MIX_COLUMNS[@]}" --pb-id-column pseudobulk_id
+fi
 VOCAB=$DATA/pipeline_ready/$MIX/vocab.json
+[[ -f "$VOCAB" ]] || { echo "missing joint vocabulary $VOCAB (add mix to --stores)"; exit 1; }
 
 # ---- 6. single-modality stores (same vocabulary) ------------------------------------
 build_store() {   # <modality dir> <modality label> <source h5ad> [extra args]
@@ -145,9 +180,9 @@ build_store() {   # <modality dir> <modality label> <source h5ad> [extra args]
         --vocab-path "$VOCAB" --default-modality "$label" \
         --obs-columns "${STORE_COLUMNS[@]}" --overwrite "$@"
 }
-build_store single_cell sc "$SC_H5AD"
-build_store bulk bulk "$BULK_H5AD"
-build_store pseudobulk pseudobulk "$PB_H5AD" --pb-id-column pseudobulk_id
+want single_cell && build_store single_cell sc "$SC_H5AD"
+want bulk && build_store bulk bulk "$BULK_H5AD"
+want pseudobulk && build_store pseudobulk pseudobulk "$PB_H5AD" --pb-id-column pseudobulk_id
 
 # ---- 7. report -----------------------------------------------------------------------
 banner "losses supported by $MIX (report only)"

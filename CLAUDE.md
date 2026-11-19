@@ -198,6 +198,9 @@ python bulk_sc_data_preprocessing.py --h5ad-path a.h5ad b.h5ad --data-path out/ 
   - **Then:** `check_split_links.py`, the joint store, and the single-modality stores with
     the joint store's `vocab.json` (all models share the genes). `check_store_losses.py`
     reports the result.
+  - **Stores only:** `--stores-only [--stores mix bulk ...]` keeps the splits on disk and
+    rebuilds just those stores (e.g. after `map_archs4_tissue.py apply` relabelled
+    `BULK_pretraining.h5ad`; leiden_s1 rows do not depend on `tissue_general`).
   - `python data_preprocess/check_split_links.py --split S --modalities single_cell bulk
     pseudobulk --links pseudobulk_id:0,-1 paired:0 [--max-leak N]` reports link keys per
     part and modality, keys spanning parts (exit 1 above `--max-leak`), and keys carried
