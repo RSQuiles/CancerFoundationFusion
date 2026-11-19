@@ -202,6 +202,22 @@ python bulk_sc_data_preprocessing.py --h5ad-path a.h5ad b.h5ad --data-path out/ 
     pseudobulk --links pseudobulk_id:0,-1 paired:0 [--max-leak N]` reports link keys per
     part and modality, keys spanning parts (exit 1 above `--max-leak`), and keys carried
     by one modality only.
+- **ARCHS4 tissue labels** (`map_archs4_tissue.py`, `map_archs4_tissue.sh`; the notebook
+  `notebooks/map_archs4_tissue.ipynb` as a script):
+  - `build-map --metadata metadata.csv --uberon-obo uberon-basic.obo` maps every ARCHS4
+    sample to a CellxGene `tissue_general` through UBERON (characteristics keys, rule-based
+    matcher, `cellxgene_ontology_guide`) and writes
+    `archs4_tissue_map/archs4_tissue_map.csv.gz` + `.json` (run card with statistics).
+  - Categories, decided per sample: `cell line` (a cell-line key or a cell-line name
+    wins over an organ), `xenograft`, `in vitro`, `tissue`, `unmatched` (reason in
+    `match`). `tissue_general` holds the CellxGene label or the category name, and is
+    empty when unmatched.
+  - The hand-curated tables are in `archs4_tissue_rules.py`, with UBERON terms by label;
+    a missing or ambiguous label stops the run.
+  - `apply --h5ad X.h5ad (--out Y | --overwrite | --dry-run) [--column tissue_general]
+    [--id-column COL]` relabels the rows whose id (obs index) the map resolves; the rest
+    keep their value. Only `obs/<column>` is rewritten, with h5py on a copy, and the rest of
+    the file is checked unchanged before `--overwrite` replaces the input.
 - `utils/sampling.py` holds the filtering, stratified subsampling and group split used here,
   by embed and by the figures.
 - `python data_preprocess/check_preprocessing.py` self-checks all of this, with SCDL and
@@ -1173,6 +1189,8 @@ data_preprocess/
 ├── bulk_preprocessing.ipynb      # Bulk RNA-seq preprocessing
 ├── bulk_sc_data_preprocessing.py # h5ads (or parts of them) -> training store; build_pipeline_ready
 ├── tissue_names.py               # Tissue-name tables + walk_tissue_names (was data_preprocess/utils.py)
+├── map_archs4_tissue.py          # ARCHS4 sample -> CellxGene tissue_general map; apply it to an h5ad obs column
+├── archs4_tissue_rules.py        # its hand-curated tables (manual map, tumor names, exclusion regexes)
 └── protein_embeddings.py         # ESM3/RNABert embedding generation
 ```
 
