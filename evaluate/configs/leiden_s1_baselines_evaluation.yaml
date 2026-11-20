@@ -78,6 +78,15 @@ tasks:
       split: leiden_s1
       test_subset: 20000          # per modality, stratified; bulk / pb keep all rows if fewer
       stratify_by: [tissue_general]
+      # Tissue-balanced test subsets: equal rows per tissue (capped at what a tissue has),
+      # "unknown" at most 5%, and every test pair kept in all modalities while it fits
+      # (pairs at most 25% of a subset and never more than their tissue's share; 50 cells
+      # per pair). Metrics on these files weight tissues about equally.
+      stratify_mode: balanced
+      unknown_frac: 0.05
+      keep_linked: ["paired:0"]
+      linked_frac: 0.25
+      linked_per_key: 50
     steps:
       cf_joint:
         script: embed_splits
@@ -134,6 +143,8 @@ tasks:
     shared:
       part: test
       stratify_by: [tissue_general]
+      stratify_mode: balanced
+      unknown_frac: 0.05
       skip_unknown: true
       labels: {tissue_general: Tissue, cell_type: Cell type, assay: Assay, dataset_id: Dataset,
                modality: Modality, paired: Pair}

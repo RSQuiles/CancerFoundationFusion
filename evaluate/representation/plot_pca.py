@@ -43,6 +43,7 @@ from utils.sampling import filter_tag, parse_filter_specs  # noqa: E402
 from evaluate.io import EMB_KEY, load_embedding, load_external  # noqa: E402
 from evaluate.modalities import DISPLAY_NAMES  # noqa: E402
 from evaluate.representation.plot_umap import prepare  # noqa: E402
+from utils.sampling import STRATIFY_MODES  # noqa: E402
 from evaluate.representation.render import draw_umap_panels, save_coords, save_figure  # noqa: E402
 
 
@@ -70,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stratify-by", nargs="*", default=["tissue_general"],
                         help="obs columns the subsample is stratified on (missing ones are skipped)")
     parser.add_argument("--min-per-stratum", type=int, default=1)
+    parser.add_argument("--stratify-mode", default="proportional", choices=list(STRATIFY_MODES),
+                        help="How the subsample is shared among strata: proportional to their sizes, "
+                             "balanced (equal per stratum, capped at its size) or sqrt.")
+    parser.add_argument("--unknown-frac", type=float, default=None,
+                        help="At most this share of the subsample for unknown strata (0 = none).")
     parser.add_argument("--color", nargs="+", default=["tissue_general"], help="obs columns to colour by")
     parser.add_argument("--skip-unknown", action="store_true", help="Grey out unknown/NaN labels")
     parser.add_argument("--max-legend-entries", type=int, default=None,

@@ -29,7 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from evaluate._cli import format_title, parse_mapping, parse_with_config  # noqa: E402
 from experiments.layout import ExperimentLayout, canonical_modality  # noqa: E402
-from utils.sampling import filter_mask, filter_tag, parse_filter_specs, stratified_subsample  # noqa: E402
+from utils.sampling import filter_mask, filter_tag, parse_filter_specs, STRATIFY_MODES, stratified_subsample  # noqa: E402
 from evaluate.io import EMB_KEY, load_embedding, load_external  # noqa: E402
 from evaluate.modalities import DISPLAY_NAMES  # noqa: E402
 from evaluate.representation.render import compute_umap, draw_umap_panels, save_coords, save_figure  # noqa: E402
@@ -54,6 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stratify-by", nargs="*", default=["tissue_general"],
                         help="obs columns the subsample is stratified on (missing ones are skipped)")
     parser.add_argument("--min-per-stratum", type=int, default=1)
+    parser.add_argument("--stratify-mode", default="proportional", choices=list(STRATIFY_MODES),
+                        help="How the subsample is shared among strata: proportional to their sizes, "
+                             "balanced (equal per stratum, capped at its size) or sqrt.")
+    parser.add_argument("--unknown-frac", type=float, default=None,
+                        help="At most this share of the subsample for unknown strata (0 = none).")
     parser.add_argument("--color", nargs="+", default=["tissue_general"], help="obs columns to colour by")
     parser.add_argument("--skip-unknown", action="store_true", help="Grey out unknown/NaN labels")
     parser.add_argument("--max-legend-entries", type=int, default=None,
@@ -78,7 +83,8 @@ def prepare(adata, filters, args, label: str):
     sub = adata[mask].copy()
     strata = [c for c in args.stratify_by if c in sub.obs.columns]
     n = args.subsample if args.subsample and args.subsample > 0 else None
-    keep = stratified_subsample(sub.obs, n, strata, args.min_per_stratum, args.seed)
+    keep = stratified_subsample(sub.obs, n, strata, args.min_per_stratum, args.seed,
+                                mode=args.stratify_mode, unknown_frac=args.unknown_frac)
     sub = sub[sub.obs_names.isin(keep)].copy()
     print(f"  {label}: plotting {sub.n_obs} rows" + (f" (stratified on {strata})" if strata and n else ""))
     return sub

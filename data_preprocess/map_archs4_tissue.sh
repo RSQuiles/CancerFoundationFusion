@@ -15,6 +15,7 @@
 #   cd data_preprocess && sbatch map_archs4_tissue.sh --curate-only [--dry-run]
 #
 # --curate (after apply) / --curate-only: curated tissue_general for the class-aware losses
+# (single cell and pseudobulk: tissue "0" of the paired datasets is renamed "paired" first)
 # and the evaluation. Bulk: the old column moves to tissue_noncurated, rows without a map
 # label become "unknown". Single cell and pseudobulk only gain tissue_label_source. Edits
 # obs in place, no copy; refuses a file that was curated already. Set NONCURATED_FROM to
@@ -97,6 +98,10 @@ if [[ "$RUN_CURATE" -eq 1 ]]; then
     [[ -n "$KEYWORD_COLUMNS" ]] && CURATE_ARGS+=(--trust-heuristic --keyword-columns $KEYWORD_COLUMNS)
     python -u map_archs4_tissue.py curate "${CURATE_ARGS[@]}" "${MODE[@]}"
     for pair in "pseudobulk:$PB_H5AD" "single_cell:$SC_H5AD"; do
+        # The paired datasets' cells (and pseudobulks) carry tissue "0" (the store fill for
+        # "none"): name them "paired". Nothing happens when there is no "0".
+        echo "=== rename tissue 0 -> paired in ${pair%%:*} $(date '+%F %T') ==="
+        python -u map_archs4_tissue.py rename-category --h5ad "${pair#*:}" --column "$COLUMN"             --rename 0=paired --source-value paired "${MODE[@]}"
         echo "=== curate ${pair%%:*} $(date '+%F %T') ==="
         python -u map_archs4_tissue.py curate --h5ad "${pair#*:}" --modality "${pair%%:*}"             --column "$COLUMN" "${MODE[@]}"
     done

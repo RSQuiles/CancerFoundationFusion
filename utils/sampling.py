@@ -125,20 +125,44 @@ def stratum_labels(obs: pd.DataFrame, strata: Iterable[str] | None) -> pd.Series
     return label
 
 
-def allocate(sizes: pd.Series, n: int, min_per_stratum: int = 1) -> pd.Series:
-    """Per-stratum sample sizes summing to ``min(n, total)``, proportional to ``sizes``.
+STRATIFY_MODES = ("proportional", "balanced", "sqrt")
 
-    Each stratum gets at least ``min(min_per_stratum, size)`` (so rare strata stay
-    visible) and never more than its size. Largest-remainder rounding hands out the
-    rest. If the floors alone exceed ``n``, the floors win and the total exceeds
-    ``n``; that is reported rather than silently dropping strata.
+
+def allocate(
+    sizes: pd.Series,
+    n: int,
+    min_per_stratum: int = 1,
+    mode: str = "proportional",
+    caps: dict | None = None,
+) -> pd.Series:
+    """Per-stratum sample sizes summing to ``min(n, total)`` (less if caps bind).
+
+    ``mode`` decides how ``n`` is shared out:
+
+    - ``proportional`` (default): in proportion to the stratum sizes, so the subsample
+      keeps the data's composition;
+    - ``balanced``: equal quotas, each capped at its stratum's size, with what small
+      strata cannot take passed on to the others (water-filling);
+    - ``sqrt``: in proportion to sqrt(size), a compromise between the two.
+
+    Each stratum gets at least ``min(min_per_stratum, size, cap)`` (so rare strata stay
+    visible) and never more than its size or its ``caps`` entry. Caps apply before the
+    rest is handed out, so a capped stratum's unused share goes to the others. If the
+    floors alone exceed ``n``, the floors win and the total exceeds ``n``; that is
+    reported rather than silently dropping strata.
     """
+    if mode not in STRATIFY_MODES:
+        raise ValueError(f"Unknown stratify mode {mode!r}; use one of {STRATIFY_MODES}")
     sizes = sizes.astype("int64")
-    total = int(sizes.sum())
-    if n >= total:
-        return sizes.copy()
+    limit = sizes.to_numpy().copy()
+    if caps:
+        for i, key in enumerate(sizes.index):
+            if key in caps:
+                limit[i] = min(limit[i], max(0, int(caps[key])))
+    if n >= int(limit.sum()):
+        return pd.Series(limit, index=sizes.index)
 
-    floor = np.minimum(sizes.to_numpy(), max(0, int(min_per_stratum))).astype("int64")
+    floor = np.minimum(limit, max(0, int(min_per_stratum))).astype("int64")
     alloc = floor.copy()
     remaining = n - int(floor.sum())
     if remaining < 0:
@@ -148,9 +172,21 @@ def allocate(sizes: pd.Series, n: int, min_per_stratum: int = 1) -> pd.Series:
         )
         return pd.Series(alloc, index=sizes.index)
 
-    room = sizes.to_numpy() - alloc
+    room = limit - alloc
+    if mode == "proportional" and not caps:
+        weights = None          # the original rule: shares proportional to the room left
+    elif mode == "proportional":
+        weights = sizes.to_numpy().astype(float)
+    elif mode == "sqrt":
+        weights = np.sqrt(sizes.to_numpy().astype(float))
+    else:
+        weights = np.ones(len(sizes), dtype=float)
     while remaining > 0 and room.sum() > 0:
-        share = room / room.sum() * remaining
+        if weights is None:
+            share = room / room.sum() * remaining
+        else:
+            w = np.where(room > 0, weights, 0.0)
+            share = w / w.sum() * remaining
         step = np.minimum(np.floor(share).astype(int), room)
         if step.sum() == 0:
             # Hand the last few rows to the largest remainders.
@@ -162,11 +198,54 @@ def allocate(sizes: pd.Series, n: int, min_per_stratum: int = 1) -> pd.Series:
                     alloc[i] += 1
                     room[i] -= 1
                     remaining -= 1
-            break
+            if weights is None:
+                break
+            continue
         alloc += step
         room -= step
         remaining -= int(step.sum())
     return pd.Series(alloc, index=sizes.index)
+
+
+UNKNOWN_STRATUM_LABELS: frozenset[str] = frozenset({"unknown", "nan", "none", "n/a", ""})
+
+
+def unknown_caps(
+    sizes: pd.Series,
+    n: int,
+    unknown_frac: float | None,
+    unknown_labels: Iterable[str] = (),
+) -> dict:
+    """``{stratum: max rows}`` for strata with an unknown part (``unknown_frac * n`` in total).
+
+    A joint stratum (``tissue | assay``) counts as unknown when any part is. The cap is
+    shared by all unknown strata in proportion to their sizes. ``None`` = no cap.
+    """
+    if unknown_frac is None:
+        return {}
+    labels = UNKNOWN_STRATUM_LABELS | {fold_label(v) for v in unknown_labels}
+    unknown = [k for k in sizes.index
+               if any(fold_label(part) in labels for part in str(k).split(_SEP))]
+    if not unknown:
+        return {}
+    budget = max(0, int(np.floor(float(unknown_frac) * n)))
+    sub = sizes.loc[unknown].astype("int64")
+    shares = allocate(sub, budget, min_per_stratum=0) if budget < int(sub.sum()) else sub
+    return {k: int(v) for k, v in shares.items()}
+
+
+def stratum_quotas(
+    labels: pd.Series,
+    n: int,
+    min_per_stratum: int = 1,
+    mode: str = "proportional",
+    unknown_frac: float | None = None,
+    unknown_labels: Iterable[str] = (),
+) -> pd.Series:
+    """Rows per stratum for a subsample of ``n`` (``allocate`` with the unknown cap)."""
+    sizes = labels.value_counts()
+    caps = unknown_caps(sizes, n, unknown_frac, unknown_labels)
+    return allocate(sizes, int(n), min_per_stratum, mode=mode, caps=caps)
 
 
 def stratified_subsample(
@@ -175,26 +254,164 @@ def stratified_subsample(
     strata: Iterable[str] | None = None,
     min_per_stratum: int = 1,
     seed: int = 0,
+    mode: str = "proportional",
+    unknown_frac: float | None = None,
+    unknown_labels: Iterable[str] = (),
+    keep: Iterable[str] | None = None,
+    exclude: Iterable[str] | None = None,
 ) -> pd.Index:
     """Obs names of a stratified random subsample of ``n`` rows, in original order.
 
     ``n=None`` (or ``n >= len(obs)``) returns every row. Without strata it is a
-    plain uniform subsample.
+    plain uniform subsample. ``mode`` and ``unknown_frac`` shape the quotas (see
+    ``allocate``, ``unknown_caps``). ``keep`` names rows that are always taken (e.g. the
+    linked rows from ``select_linked_rows``); they count toward their stratum's quota and
+    the rest of each quota is drawn from the other rows. ``exclude`` names rows that are
+    never drawn (unless also in ``keep``), e.g. the linked rows not selected, so a pair
+    cannot enter one modality through the random fill; quotas are computed on the rows
+    left. The defaults reproduce the original draw exactly.
     """
+    if exclude is not None:
+        out = obs.index.isin(list(exclude))
+        if keep is not None:
+            out &= ~obs.index.isin(list(keep))
+        obs = obs[~out]
     if n is None or n >= len(obs):
         return obs.index.copy()
     labels = stratum_labels(obs, strata)
-    quotas = allocate(labels.value_counts(), int(n), min_per_stratum)
+    quotas = stratum_quotas(labels, int(n), min_per_stratum, mode, unknown_frac, unknown_labels)
     rng = np.random.default_rng(seed)
     positions = np.arange(len(obs))
-    chosen: list[np.ndarray] = []
+    kept = obs.index.isin(list(keep)) if keep is not None else np.zeros(len(obs), dtype=bool)
+    chosen: list[np.ndarray] = [positions[kept]] if kept.any() else []
     for stratum, quota in quotas.items():
+        in_stratum = (labels == stratum).to_numpy()
+        quota = int(quota) - int((in_stratum & kept).sum())
         if quota <= 0:
             continue
-        pool = positions[(labels == stratum).to_numpy()]
-        chosen.append(rng.choice(pool, size=int(quota), replace=False))
-    picked = np.sort(np.concatenate(chosen)) if chosen else np.array([], dtype=int)
+        pool = positions[in_stratum & ~kept]
+        chosen.append(rng.choice(pool, size=min(quota, len(pool)), replace=False))
+    picked = np.unique(np.concatenate(chosen)) if chosen else np.array([], dtype=int)
     return obs.index[picked]
+
+
+def _hash_rank(values: Iterable[str], seed: int) -> list[str]:
+    """``values`` in a seeded order that does not depend on which others are present."""
+    import hashlib
+
+    return sorted(values, key=lambda v: hashlib.sha1(f"{seed}:{v}".encode()).hexdigest())
+
+
+def parse_link_spec(spec: str) -> tuple[str, list[str]]:
+    """``"paired:0"`` -> ``("paired", ["0"])``: the column and its extra no-link values."""
+    col, _, extra = spec.partition(":")
+    return col.strip(), [v.strip() for v in extra.split(",") if v.strip()]
+
+
+def row_link_keys(obs: pd.DataFrame, link_specs: Iterable[str]) -> pd.Series:
+    """``<col>:<key>`` per row for the first ``link_specs`` column that links it, else NaN."""
+    keys = pd.Series(np.nan, index=obs.index, dtype=object)
+    for col, extra in (parse_link_spec(s) for s in link_specs):
+        if col not in obs.columns:
+            continue
+        k = link_keys(obs[col], extra)
+        fill = (col + ":" + k.astype(str)).where(k.notna())
+        keys = keys.where(keys.notna(), fill)
+    return keys
+
+
+def select_linked_rows(
+    pools: dict[str, pd.DataFrame],
+    budgets: dict[str, int | None],
+    link_specs: Iterable[str],
+    strata: Iterable[str] | None = None,
+    min_per_stratum: int = 1,
+    mode: str = "proportional",
+    unknown_frac: float | None = None,
+    unknown_labels: Iterable[str] = (),
+    linked_frac: float = 0.25,
+    per_key: int | None = None,
+    seed: int = 0,
+) -> tuple[dict[str, pd.Index], dict]:
+    """Rows to keep because they carry a link (a pair id), chosen jointly over ``pools``.
+
+    ``pools`` maps a modality to its obs (the rows a subsample is drawn from) and
+    ``budgets`` to its subsample size (None = every row). Link keys are visited in a
+    seeded hash order, so every call sees them in the same order whatever the pools. A
+    key is accepted only if, in **every** pool that has it, its rows (at most
+    ``per_key``, picked in a seeded order) fit both
+
+    - the pool's linked budget, ``linked_frac * budget`` rows in total, and
+    - the quota of each stratum they fall in (``stratum_quotas`` with the same mode and
+      unknown cap), counting the linked rows already accepted,
+
+    so links never take more than a fraction of the sample nor more than a stratum's
+    share, and a pair is kept in all modalities or in none. Returns the kept obs names
+    per pool and a summary (keys available / accepted, rows per pool).
+    """
+    link_specs = list(link_specs)
+    state = {}
+    all_keys: set[str] = set()
+    for name, obs in pools.items():
+        n = budgets.get(name)
+        full = n is None or n >= len(obs)
+        labels = stratum_labels(obs, strata)
+        quotas = None if full else stratum_quotas(labels, int(n), min_per_stratum, mode,
+                                                  unknown_frac, unknown_labels)
+        keys = row_link_keys(obs, link_specs).dropna()
+        rows_by_key: dict[str, list[str]] = {}
+        for key, idx in keys.groupby(keys).groups.items():
+            names = _hash_rank([str(i) for i in idx], seed)
+            rows_by_key[str(key)] = names[:per_key] if per_key else names
+        all_keys |= set(rows_by_key)
+        state[name] = {
+            "full": full,
+            "labels": labels.set_axis(obs.index.astype(str)),
+            "quota": quotas,
+            "used": pd.Series(0, index=quotas.index if quotas is not None else [], dtype="int64"),
+            "budget": None if full else int(np.floor(linked_frac * int(n))),
+            "total": 0,
+            "rows_by_key": rows_by_key,
+            "kept": [],
+        }
+    accepted = 0
+    for key in _hash_rank(all_keys, seed):
+        plan = {}
+        fits = True
+        for name, st in state.items():
+            rows = st["rows_by_key"].get(key)
+            if not rows:
+                continue
+            if st["full"]:
+                plan[name] = (rows, None)
+                continue
+            if st["total"] + len(rows) > st["budget"]:
+                fits = False
+                break
+            counts = st["labels"].loc[rows].value_counts()
+            over = (st["used"].reindex(counts.index, fill_value=0) + counts
+                    > st["quota"].reindex(counts.index, fill_value=0))
+            if over.any():
+                fits = False
+                break
+            plan[name] = (rows, counts)
+        if not fits or not plan:
+            continue
+        accepted += 1
+        for name, (rows, counts) in plan.items():
+            st = state[name]
+            st["kept"].extend(rows)
+            st["total"] += len(rows)
+            if counts is not None:
+                st["used"] = st["used"].add(counts, fill_value=0).astype("int64")
+    kept = {name: pd.Index(st["kept"]) for name, st in state.items()}
+    info = {
+        "link_specs": link_specs,
+        "keys_available": len(all_keys),
+        "keys_accepted": accepted,
+        "rows": {name: len(v) for name, v in kept.items()},
+    }
+    return kept, info
 
 
 # --------------------------------------------------------------------------- #

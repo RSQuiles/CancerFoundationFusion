@@ -97,7 +97,7 @@
         "features": {
           "unified": true,
           "monitor_losses": ["mmd", "contrastive", "cdd"],
-          "class_exclude_labels": ["unknown", "cell line", "in vitro", "xenograft"]
+          "class_exclude_labels": ["unknown", "paired", "cell line", "in vitro", "xenograft"]
         }
       }
     }

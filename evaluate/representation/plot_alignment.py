@@ -41,7 +41,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from evaluate._cli import format_title, parse_mapping, parse_quotas, parse_with_config  # noqa: E402
 from experiments.layout import ExperimentLayout, canonical_modality  # noqa: E402
-from utils.sampling import filter_mask, filter_tag, parse_filter_specs, stratified_subsample  # noqa: E402
+from utils.sampling import filter_mask, filter_tag, parse_filter_specs, STRATIFY_MODES, stratified_subsample  # noqa: E402
 from evaluate.io import EMB_KEY, load_embedding, panel_hashes  # noqa: E402
 from evaluate.modalities import MOD_BULK, MOD_CELL_MEAN, MOD_PB, MOD_SC, MODALITIES, PAIRED_COL  # noqa: E402
 from utils.sampling import link_keys  # noqa: E402
@@ -64,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stratify-by", nargs="*", default=["tissue_general"],
                         help="obs columns each modality's subsample is stratified on")
     parser.add_argument("--min-per-stratum", type=int, default=1)
+    parser.add_argument("--stratify-mode", default="proportional", choices=list(STRATIFY_MODES),
+                        help="How the subsample is shared among strata: proportional to their sizes, "
+                             "balanced (equal per stratum, capped at its size) or sqrt.")
+    parser.add_argument("--unknown-frac", type=float, default=None,
+                        help="At most this share of the subsample for unknown strata (0 = none).")
     parser.add_argument("--filter", nargs="*", default=[], metavar="COL=V1,V2",
                         help="Applied to every modality (a column missing from one modality is an error)")
     parser.add_argument("--paired-col", default=PAIRED_COL, help="obs column with pair ids (>0 = paired)")
@@ -208,7 +213,8 @@ def collect(layout: ExperimentLayout, model: str, args, filters) -> tuple:
             if means is not None:
                 extra.append(means)
         strata = [c for c in args.stratify_by if c in adata.obs.columns]
-        keep = stratified_subsample(adata.obs, quotas[label], strata, args.min_per_stratum, args.seed)
+        keep = stratified_subsample(adata.obs, quotas[label], strata, args.min_per_stratum, args.seed,
+                                    mode=args.stratify_mode, unknown_frac=args.unknown_frac)
         adata = adata[adata.obs_names.isin(keep)].copy()
         print(f"  {label}: {adata.n_obs} rows")
         if adata.n_obs:

@@ -52,7 +52,7 @@ from embed.embed import (  # noqa: E402
     write_embeddings,
 )
 from experiments.layout import EMBEDDING_PARTS, ExperimentLayout, canonical_modality  # noqa: E402
-from utils.sampling import stratified_subsample  # noqa: E402
+from utils.sampling import STRATIFY_MODES, row_link_keys, select_linked_rows, stratified_subsample  # noqa: E402
 
 PART_COL = "_embed_part"
 
@@ -90,6 +90,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stratify-by", "--train-stratify-by", dest="stratify_by", nargs="*",
                         default=["tissue_general"],
                         help="obs columns stratifying both subsets (missing ones are skipped).")
+    parser.add_argument("--stratify-mode", default="proportional", choices=list(STRATIFY_MODES),
+                        help="How a subset is shared among strata: proportional to their sizes, "
+                             "balanced (equal per stratum, capped at its size) or sqrt.")
+    parser.add_argument("--unknown-frac", type=float, default=None,
+                        help="At most this share of a subset for unknown strata (default: no cap; "
+                             "0 leaves them out). Their unused share goes to the other strata.")
+    parser.add_argument("--unknown-labels", nargs="*", default=[],
+                        help="Extra labels that count as unknown (unknown, nan, none, n/a and empty always do).")
+    parser.add_argument("--keep-linked", nargs="*", default=[], metavar="COL[:NOLINK,...]",
+                        help="Test part: keep rows linked by these columns (e.g. paired:0), the same "
+                             "keys in every modality, within --linked-frac and each stratum's quota.")
+    parser.add_argument("--linked-frac", type=float, default=0.25,
+                        help="With --keep-linked: at most this share of a modality's test subset is linked rows.")
+    parser.add_argument("--linked-per-key", type=int, default=None,
+                        help="With --keep-linked: at most this many rows per link key (e.g. cells per pair).")
+    parser.add_argument("--link-modalities", nargs="+", default=["sc", "bulk", "pseudobulk"],
+                        help="With --keep-linked: modalities whose test parts decide the kept keys "
+                             "(the same in every call, also one-modality own_panel calls).")
     add_normalization_args(parser)
     add_input_mode_args(parser)
     add_model_run_args(parser)
@@ -132,7 +150,45 @@ def _size(n: int | None) -> int | None:
     return n if n is not None and n > 0 else None
 
 
-def collect_rows(layout: ExperimentLayout, args, label: str):
+def _test_obs(layout: ExperimentLayout, args, label: str):
+    """obs of one modality's test part (None when the split has no test list for it)."""
+    import anndata as ad
+
+    raw = layout.split_source(label, args.split)
+    path = layout.split_index_file(label, args.split, "test")
+    if not raw.exists() or not path.exists():
+        return None
+    names = set(path.read_text(encoding="utf-8").split())
+    backed = ad.read_h5ad(raw, backed="r")
+    try:
+        obs = backed.obs
+        return obs[obs.index.isin(names)].copy()
+    finally:
+        backed.file.close()
+
+
+def linked_test_rows(layout: ExperimentLayout, args) -> tuple[dict, dict]:
+    """The linked test rows to keep per modality, chosen jointly (``select_linked_rows``)."""
+    pools = {}
+    for m in dict.fromkeys(canonical_modality(x) for x in args.link_modalities):
+        obs = _test_obs(layout, args, m)
+        if obs is None:
+            print(f"  [keep-linked] no test part for {m}; not used to choose keys")
+            continue
+        pools[m] = obs
+    strata = [c for c in args.stratify_by if all(c in o.columns for o in pools.values())]
+    budgets = {m: _size(args.test_subset) for m in pools}
+    kept, info = select_linked_rows(
+        pools, budgets, args.keep_linked, strata, mode=args.stratify_mode,
+        unknown_frac=args.unknown_frac, unknown_labels=args.unknown_labels,
+        linked_frac=args.linked_frac, per_key=args.linked_per_key, seed=args.seed,
+    )
+    print(f"  [keep-linked] {info['keys_accepted']} of {info['keys_available']} link keys kept; "
+          f"rows per modality: {info['rows']}")
+    return kept, info
+
+
+def collect_rows(layout: ExperimentLayout, args, label: str, keep=None):
     """The rows of one modality to embed, in memory, tagged with modality and part."""
     import anndata as ad
 
@@ -158,11 +214,22 @@ def collect_rows(layout: ExperimentLayout, args, label: str):
         selected = {}
         if "test" in args.parts:
             test_obs = obs[obs.index.isin(lists["test"])]
-            selected["test"] = stratified_subsample(test_obs, _size(args.test_subset), strata, seed=args.seed)
+            # With --keep-linked, linked rows enter only through the joint selection (keep):
+            # the others are excluded, so the per-key cap holds and no pair appears in one
+            # modality but not in another.
+            linked_rows = (row_link_keys(test_obs, args.keep_linked).dropna().index
+                           if args.keep_linked else None)
+            selected["test"] = stratified_subsample(
+                test_obs, _size(args.test_subset), strata, seed=args.seed, mode=args.stratify_mode,
+                unknown_frac=args.unknown_frac, unknown_labels=args.unknown_labels, keep=keep,
+                exclude=linked_rows,
+            )
         if "train_subset" in args.parts:
             train_obs = obs[obs.index.isin(lists["train"])]
-            selected["train_subset"] = stratified_subsample(train_obs, _size(args.train_subset), strata,
-                                                            seed=args.seed)
+            selected["train_subset"] = stratified_subsample(
+                train_obs, _size(args.train_subset), strata, seed=args.seed, mode=args.stratify_mode,
+                unknown_frac=args.unknown_frac, unknown_labels=args.unknown_labels,
+            )
 
         pieces = []
         for part, names in selected.items():
@@ -231,7 +298,10 @@ def main(argv: list[str] | None = None) -> None:
     labels = list(dict.fromkeys(canonical_modality(m) for m in args.modalities))
 
     print(f"Collecting rows for {labels} from split '{args.split}'")
-    pieces = [p for label in labels for p in collect_rows(layout, args, label)]
+    linked, linked_info = ({}, None)
+    if args.keep_linked and "test" in args.parts:
+        linked, linked_info = linked_test_rows(layout, args)
+    pieces = [p for label in labels for p in collect_rows(layout, args, label, keep=linked.get(label))]
     if not pieces:
         sys.exit("Error: nothing to embed")
     adata = pool(pieces)
@@ -250,6 +320,15 @@ def main(argv: list[str] | None = None) -> None:
         "test_subset": _size(args.test_subset),
         "train_subset": _size(args.train_subset) if "train_subset" in args.parts else None,
         "stratify_by": args.stratify_by,
+        "stratify_mode": args.stratify_mode,
+        "unknown_frac": args.unknown_frac,
+        "unknown_labels": args.unknown_labels,
+        "keep_linked": args.keep_linked,
+        "linked_frac": args.linked_frac if args.keep_linked else None,
+        "linked_per_key": args.linked_per_key if args.keep_linked else None,
+        "linked_keys": ({"accepted": linked_info["keys_accepted"], "available": linked_info["keys_available"],
+                         "rows": linked_info["rows"], "modalities": list(linked_info["rows"])}
+                        if linked_info else None),
         "variant": args.variant,
     })
 

@@ -693,6 +693,8 @@ def verify(src: Path, dst: Path, col: str, existed: bool) -> None:
 # ======================================================================================
 SRC_CELLXGENE, SRC_ARCHS4, SRC_CULTURE = "cellxgene", "archs4", "archs4_culture"
 SRC_KEYWORD, SRC_HEURISTIC, SRC_NONE = "keyword", "heuristic", "none"
+SRC_PAIRED = "paired"           # cells / pseudobulks of the paired datasets (label "paired" or "0")
+PAIRED_LABELS = {"paired", "0"}
 TMP = "__curate_tmp_"
 
 
@@ -738,7 +740,9 @@ def curate_values(args, ids: np.ndarray, old: pd.Series, keyword_meta: pd.DataFr
     old_s = old.astype(object).where(old.notna(), None)
     if args.modality != "bulk":
         label = old_s.fillna(UNKNOWN).astype(str)
-        return label, pd.Series(np.full(n, SRC_CELLXGENE, dtype=object)), {}
+        source = np.where(label.isin(PAIRED_LABELS), SRC_PAIRED,
+                          np.where(label == UNKNOWN, SRC_NONE, SRC_CELLXGENE)).astype(object)
+        return label, pd.Series(source, dtype=object), {}
 
     hit = mapping.reindex(ids)
     cat = hit["category"].to_numpy(dtype=object)
@@ -961,6 +965,96 @@ def verify_curated(before: dict, path: Path, order1: list[str], own_cols: list[s
 
 
 # ======================================================================================
+# rename-category
+# ======================================================================================
+def rename_category(args) -> None:
+    """Rename labels of one obs column (e.g. single-cell tissue "0" -> "paired"), obs only."""
+    import h5py
+
+    _, write_elem = _io()
+    modes = sum([bool(args.in_place), args.out is not None, bool(args.dry_run)])
+    if modes != 1:
+        sys.exit("Error: give exactly one of --in-place, --out FILE, --dry-run")
+    renames = {}
+    for spec in args.rename:
+        old, sep, new = spec.partition("=")
+        if not sep or not old or not new:
+            sys.exit(f"Error: --rename {spec!r} must look like OLD=NEW")
+        renames[old] = new
+    col, src_col = args.column, args.source_column
+    names, cols = _read_obs(args.h5ad, [col, src_col])
+    if cols[col] is None:
+        sys.exit(f"Error: obs has no column {col!r}")
+    with h5py.File(args.h5ad, "r") as f:
+        kind = _str(f["obs"][col].attrs.get("encoding-type", ""))
+    if kind not in ("categorical", "string-array"):
+        sys.exit(f"Error: obs/{col} is stored as {kind!r}; only categorical or string columns are renamed")
+    old = cols[col].astype(object)
+    hit = old.astype(str).isin(list(renames))
+    new = old.where(~hit, old.astype(str).map(renames))
+    n = len(old)
+    banner(f"rename {args.h5ad.name} obs['{col}']")
+    for o, nw in renames.items():
+        k = int((old.astype(str) == o).sum())
+        merged = " (merged into an existing label)" if nw in set(old.astype(str)) else ""
+        print(f"  {o!r} -> {nw!r}: {pct(k, n)}{merged}")
+    if not hit.any():
+        print("nothing to rename")
+        return
+    set_source = args.source_value is not None and cols[src_col] is not None
+    if args.source_value is not None and cols[src_col] is None:
+        print(f"  [note] no obs/{src_col}: --source-value not applied")
+    if set_source:
+        src_new = cols[src_col].astype(object).where(~hit, args.source_value)
+        print(f"  obs/{src_col} of those rows -> {args.source_value!r}")
+    if args.dry_run:
+        print("\n--dry-run: nothing written")
+        return
+
+    target = args.h5ad
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(args.h5ad, args.out)
+        target = args.out
+    with h5py.File(target, "r") as f:
+        before_tree = _tree(f)
+        order = _column_order(f["obs"])
+    columns = [(col, new)] + ([(src_col, src_new)] if set_source else [])
+    done: list[tuple] = []
+    try:
+        with h5py.File(target, "r+") as f:
+            obs = f["obs"]
+            for c, values in columns:
+                values = values.astype(str).to_numpy(dtype=object)
+                write_elem(obs, TMP + c, values if kind == "string-array" and c == col else pd.Categorical(values))
+                done.append(("del", TMP + c))
+                obs.move(c, TMP + "old_" + c)
+                done.append(("move", TMP + "old_" + c, c))
+                obs.move(TMP + c, c)
+                done.append(("move", c, TMP + c))
+        own = [c for c, _ in columns] + [TMP + "old_" + c for c, _ in columns]
+        verify_curated(before_tree, target, order, own)
+        with h5py.File(target, "r+") as f:
+            for c, _ in columns:
+                del f["obs"][TMP + "old_" + c]
+        done = []
+    except BaseException:
+        if done:
+            print("[error] undoing the changes ...")
+            with h5py.File(target, "r+") as f:
+                obs = f["obs"]
+                for op in reversed(done):
+                    if op[0] == "del" and op[1] in obs:
+                        del obs[op[1]]
+                    elif op[0] == "move" and op[1] in obs:
+                        obs.move(op[1], op[2])
+        if args.out is not None and target.exists():
+            target.unlink()
+        raise
+    print(f"written: {target} (obs/{col}" + (f" and obs/{src_col}" if set_source else "") + " renamed)")
+
+
+# ======================================================================================
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -1014,6 +1108,21 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Keep a non-ARCHS4 row's old label (renamed to its CellxGene name) when keyword "
                         "matching over --keyword-columns reproduces it (bulk)")
     c.add_argument("--keyword-columns", nargs="*", default=[], help="obs string columns for --trust-heuristic")
+
+    r = sub.add_parser("rename-category", formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+                       help="rename labels of one obs column (obs only, e.g. tissue 0 -> paired)")
+    r.add_argument("--h5ad", type=Path, required=True)
+    r.add_argument("--column", default="tissue_general")
+    r.add_argument("--rename", nargs="+", required=True, metavar="OLD=NEW",
+                   help="Labels to rename; a NEW that exists already merges the two")
+    r.add_argument("--source-column", default="tissue_label_source",
+                   help="Column whose value is set to --source-value on the renamed rows, when it exists")
+    r.add_argument("--source-value", default=None,
+                   help="e.g. paired: keeps those rows out of the curated-label filters")
+    rmode = r.add_mutually_exclusive_group()
+    rmode.add_argument("--in-place", action="store_true", help="Edit the file itself (obs only, no copy)")
+    rmode.add_argument("--out", type=Path, default=None, help="Write a renamed copy here")
+    rmode.add_argument("--dry-run", action="store_true", help="Print the counts, write nothing")
     return p
 
 
@@ -1023,6 +1132,8 @@ def main(argv: list[str] | None = None) -> None:
         build_map(args)
     elif args.command == "curate":
         curate(args)
+    elif args.command == "rename-category":
+        rename_category(args)
     else:
         apply_map(args)
 

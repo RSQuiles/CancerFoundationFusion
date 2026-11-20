@@ -53,7 +53,7 @@
       "class_aware": true,
       "class_aware_bulk_frac": 0.6,
       "class_aware_pb_frac": 0.6,
-      "class_exclude_labels": ["unknown", "cell line", "in vitro", "xenograft"]
+      "class_exclude_labels": ["unknown", "paired", "cell line", "in vitro", "xenograft"]
     },
     "model": {
       "nlayers": 8,

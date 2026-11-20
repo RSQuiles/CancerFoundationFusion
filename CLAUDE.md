@@ -277,6 +277,12 @@ python bulk_sc_data_preprocessing.py --h5ad-path a.h5ad b.h5ad --data-path out/ 
       with no copy of the file. Every step is undone on failure, and a curated file is
       refused.
     - **Re-embed after curating:** embedding files keep the obs of embed time.
+  - **`rename-category --h5ad X --rename OLD=NEW [--source-value V] (--in-place | --out
+    | --dry-run)`:** renames labels of one obs column, obs only (a NEW that exists merges).
+    The `--curate` step of the .sh first renames single-cell / pseudobulk tissue `0` (the
+    paired datasets) to `paired`, with source `paired`; `curate` gives such rows source
+    `paired` and `unknown` rows `none`. So the curated-label filters leave both out, and
+    the class-aware configs exclude `paired` from the class losses.
 - `utils/sampling.py` holds the filtering, stratified subsampling and group split used here,
   by embed and by the figures.
 - `python data_preprocess/check_preprocessing.py` self-checks all of this, with SCDL and
@@ -433,6 +439,23 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
     the hash covers all three; fixed panels keep the old sorted-set hash. A GeneICL
     directory embedded before input modes is refused until `--overwrite` (or
     `--input-mode legacy_panel`).
+- **Test and train subsets** (`embed_splits.py`, `utils.sampling`):
+  - **`--stratify-mode`:** `proportional` (default: the data's tissue mix), `balanced`
+    (equal rows per tissue, capped at what it has, leftovers passed on) or `sqrt`.
+  - **`--unknown-frac F`:** caps unknown strata at `F * n` (0 = none); the freed share
+    goes to the tissues.
+  - **`--keep-linked paired:0`** (test part): keeps test pairs **in every modality or in
+    none**. Keys are taken in a seeded hash order and accepted only while, in every
+    modality of `--link-modalities`, their rows (at most `--linked-per-key`) fit
+    `--linked-frac` of the subset and their tissue's quota (`select_linked_rows`). One
+    call per modality (own_panel) therefore keeps the same pairs.
+    Linked rows not selected are excluded from the random fill, so a pair never enters
+    one modality only.
+  - Kept rows count toward their tissue's quota. All values and the kept keys and rows
+    go to `embed.json`.
+  - The leiden_s1 configs use balanced, 5% unknown, pairs within 25%, 50 cells per pair.
+  - The defaults draw exactly the rows they drew before. The plot scripts take
+    `--stratify-mode` and `--unknown-frac` for their own subsample.
 - `embed_splits.py` embeds every requested modality and part **in one call, through one
   shared gene panel**, so alignment plots compare like with like. `--parts` picks `test`,
   `train_subset` or both, and defaults to `test` only. `--test-subset` and
