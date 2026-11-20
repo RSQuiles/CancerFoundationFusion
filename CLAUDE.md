@@ -785,8 +785,9 @@ python -m evaluate.integration.scib_benchmark --name tissue_s0_test --plot-only 
   - **bio:** isolated labels, silhouette, cLISI, k-means NMI/ARI, plus Leiden with
     `--leiden`;
   - **batch:** BRAS, iLISI, graph connectivity, plus kBET with `--kbet`;
-  - **PCR comparison:** only with `--pre-integrated <model>` (normally `pca`), which is then
-    the reference and not a row. The embedding files hold no X, so without a reference
+  - **PCR comparison:** only with `--pre-integrated <model>` (normally `pca`), the
+    reference. Listed under `--models` too, it is also a row (the unintegrated baseline,
+    as in scIB tables), as the leiden_s1 configs do. The embedding files hold no X, so without a reference
     the first model stands in for Benchmarker's PCA and PCR is off.
 - **Pre-flight:** the label x batch crosstab and how many labels BRAS/kBET can use (both
   batches, ≥ `--min-label-cells`). Fewer than 2 is warned about: rank on iLISI then.

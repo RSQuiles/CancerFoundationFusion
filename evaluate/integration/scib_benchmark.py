@@ -35,8 +35,9 @@ Reading the numbers:
   present in one modality only; the pre-flight report says how many labels qualify, and
   with fewer than 2 they measure almost nothing: rank on iLISI then.
 - **PCR comparison** needs a non-integrated reference embedding: ``--pre-integrated
-  pca`` (the reserved PCA pseudo-model) enables it, and that model is then the reference
-  rather than a row. Without it PCR is off.
+  pca`` (the reserved PCA pseudo-model) enables it. Listed under ``--models`` as well, the
+  same embedding is also a row (the "unintegrated" baseline of scIB tables; its PCR
+  comparison is then against itself). Without ``--pre-integrated`` PCR is off.
 - BRAS uses cosine distance while iLISI and the UMAPs use Euclidean, so they can disagree.
 - **Bio conservation only** (``--bio-only``): no batch-correction metric is computed, so
   one modality is enough (several are pooled). The table then has a "Bio conservation"
@@ -266,12 +267,12 @@ def main(argv: list[str] | None = None) -> Path:
     if args.bio_only and args.pre_integrated:
         sys.exit(f"Error: --pre-integrated only serves PCR (batch correction); drop it with --bio-only, "
                  f"or list '{args.pre_integrated}' under --models to show it as a baseline row")
-    rows = [validate_model_name(m) for m in args.models if m != args.pre_integrated]
-    if args.pre_integrated in args.models:
-        print(f"  '{args.pre_integrated}' is the pre-integrated reference, so it is not also a row")
+    rows = [validate_model_name(m) for m in dict.fromkeys(args.models)]
+    if args.pre_integrated in rows:
+        print(f"  '{args.pre_integrated}' is the pre-integrated reference and also a row (unintegrated baseline)")
     if not rows:
         sys.exit("Error: no model left to benchmark")
-    models = rows + ([args.pre_integrated] if args.pre_integrated else [])
+    models = list(dict.fromkeys(rows + ([args.pre_integrated] if args.pre_integrated else [])))
     shown = [labels.get(r, r) for r in rows]
     if len(set(shown)) < len(shown):
         sys.exit(f"Error: --row-labels must give the rows unique names, got {shown}")

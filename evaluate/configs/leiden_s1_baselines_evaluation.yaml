@@ -216,13 +216,13 @@ tasks:
     steps:
       # Bulk vs pseudobulk on one joint panel: batch = modality, label = tissue. This is
       # the reference table for the later alignment-loss experiments. PCA is the
-      # pre-integrated reference (PCR comparison), not a row.
+      # pre-integrated reference (PCR comparison) and also a row (unintegrated baseline).
       scib_bulk_pb:
         environment: host
         script: scib
         args:
           name: leiden_s1_bulk_pb
-          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *bf_emb]
+          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *bf_emb, *pca]
           pre_integrated: *pca
           modalities: [bulk, pseudobulk]
           per_modality: ["bulk=all", "pseudobulk=all"]
@@ -235,7 +235,7 @@ tasks:
         script: scib
         args: &scib_sc
           name: leiden_s1_sc_pb
-          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline]
+          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca]
           pre_integrated: *pca
           modalities: [sc, pseudobulk]
           per_modality: ["sc=5000", "pseudobulk=all"]

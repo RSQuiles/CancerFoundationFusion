@@ -201,7 +201,12 @@ def main() -> None:
                                    "--pre-integrated", "pca", "--dry-run"])
         check("written under results/scib_benchmark/<name>/", out == layout.scib_dir("t"))
         manifest = json.loads((out / "manifest.json").read_text())
-        check("manifest lists every model; the reference is not a row",
+        check("manifest lists every model; the listed reference is also a row (unintegrated)",
+              manifest["models"] == ["m1", "m2", "pca"] and manifest["rows"] == ["m1", "m2", "pca"])
+        ref_only = scib_benchmark.main(["--root", tmp, "--name", "t_ref", "--models", "m1", "m2",
+                                        "--pre-integrated", "pca", "--dry-run"])
+        manifest = json.loads((ref_only / "manifest.json").read_text())
+        check("a reference not listed under --models is no row",
               manifest["models"] == ["m1", "m2", "pca"] and manifest["rows"] == ["m1", "m2"])
         check("label x batch table saved", (out / "label_batch.csv").exists())
         meta = json.loads((out / "meta.json").read_text())

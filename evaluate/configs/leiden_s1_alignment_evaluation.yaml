@@ -148,13 +148,15 @@ tasks:
         align_combo: "+ MMD + contr. + paired"
         align_agg_ctrl: "agg batches, control"
         align_agg: "+ aggregation"
+        pca_leiden_s1: "PCA"
     steps:
       scib_bulk_pb:             # the main alignment table: batch = modality, label = tissue
         environment: host
         script: scib
         args:
           name: leiden_s1_alignment_bulk_pb
-          models: *all
+          models: &scib_models [unified_baseline, align_ctrl, align_ctrl_s1, align_mmd, align_contrastive,
+                                align_cdd, align_paired, align_combo, align_agg_ctrl, align_agg, pca_leiden_s1]
           pre_integrated: pca_leiden_s1
           modalities: [bulk, pseudobulk]
           per_modality: ["bulk=all", "pseudobulk=all"]
@@ -164,7 +166,7 @@ tasks:
         script: scib
         args: &scib_sc
           name: leiden_s1_alignment_sc_pb
-          models: *all
+          models: *scib_models
           pre_integrated: pca_leiden_s1
           modalities: [sc, pseudobulk]
           per_modality: ["sc=5000", "pseudobulk=all"]
@@ -183,7 +185,7 @@ tasks:
         script: scib
         args: &bio
           name: leiden_s1_alignment_sc_tissue
-          models: *all
+          models: *scib_models
           variant: own_panel
           bio_only: true
           modalities: [sc]
@@ -211,7 +213,7 @@ tasks:
         drop: [filter, n_jobs]
         args:
           name: leiden_s1_alignment
-          models: *all
+          models: *scib_models
           label_filter: ["tissue_label_source=cellxgene,archs4"]
           min_cells: 5
           scib_runs: [leiden_s1_alignment_bulk_pb, leiden_s1_alignment_sc_pb, leiden_s1_alignment_all]
