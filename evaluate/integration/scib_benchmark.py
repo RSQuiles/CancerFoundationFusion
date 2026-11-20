@@ -39,6 +39,10 @@ Reading the numbers:
   same embedding is also a row (the "unintegrated" baseline of scIB tables; its PCR
   comparison is then against itself). Without ``--pre-integrated`` PCR is off.
 - BRAS uses cosine distance while iLISI and the UMAPs use Euclidean, so they can disagree.
+- **Shared labels** (``--shared-labels``): only labels every modality of the run has are
+  kept (after ``--filter``). A tissue only one modality has stays apart rightly, but the
+  label-free iLISI and PCR count that as a batch effect. Isolated labels is then off (every
+  label would be "isolated"); ``meta.json`` lists ``dropped_labels``.
 - **Bio conservation only** (``--bio-only``): no batch-correction metric is computed, so
   one modality is enough (several are pooled). The table then has a "Bio conservation"
   score and no "Total". kBET and ``--pre-integrated`` are batch-only and refused; list
@@ -103,6 +107,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="Pre-flight report only; no scib_metrics needed")
     parser.add_argument("--bio-only", action="store_true",
                         help="Bio conservation metrics only (no batch correction); allows a single modality")
+    parser.add_argument("--shared-labels", action="store_true",
+                        help="Keep only labels present in every modality of the run (after --filter); "
+                             "isolated labels is then off. A tissue only one modality has is not a "
+                             "batch effect, but iLISI and PCR would count it as one")
     parser.add_argument("--row-labels", nargs="*", default=None, metavar="MODEL=LABEL",
                         help="Row names of the results table figure (default: the model names)")
     parser.add_argument("--plot-only", action="store_true",
@@ -193,17 +201,36 @@ def load_models(layout: ExperimentLayout, models: list[str], modalities: list[st
     return obs, {m: np.concatenate(v) for m, v in embs.items()}, hashes
 
 
-def select_rows(obs: pd.DataFrame, args, modalities: list[str]) -> np.ndarray:
-    """Filter, then a label-stratified subsample per batch value (modality); boolean mask."""
+def unshared_labels(obs: pd.DataFrame, keep: np.ndarray, label_key: str, batch_key: str,
+                    modalities: list[str]) -> list[str]:
+    """Labels of the kept rows that are missing from at least one of ``modalities``."""
+    sub = obs[keep]
+    labels = sub[label_key].astype(str)
+    batches = sub[batch_key].astype(str)
+    per_mod = [set(labels[batches == m]) for m in modalities]
+    return sorted(set().union(*per_mod) - set.intersection(*per_mod)) if per_mod else []
+
+
+def select_rows(obs: pd.DataFrame, args, modalities: list[str], return_dropped: bool = False):
+    """Filter, then (``--shared-labels``) labels every modality has, then a label-stratified
+    subsample per batch value (modality); boolean mask (and the dropped labels)."""
     filters = parse_filter_specs(args.filter)
     keep = filter_mask(obs, filters, label="embeddings") if filters else np.ones(len(obs), bool)
+    dropped: list[str] = []
+    if getattr(args, "shared_labels", False):
+        dropped = unshared_labels(obs, keep, args.label_key, args.batch_key, modalities)
+        out = obs[args.label_key].astype(str).isin(dropped).to_numpy()
+        print(f"  --shared-labels: {len(dropped)} labels not in every modality dropped "
+              f"({int((keep & out).sum())} rows), e.g. {dropped[:5]}")
+        keep = keep & ~out
     quotas = parse_quotas(args.per_modality, modalities)
     chosen = set()
     for mod in modalities:
         sub = obs[keep & (obs[args.batch_key].astype(str) == mod).to_numpy()] if args.batch_key in obs else obs[keep]
         strata = [args.label_key] if args.label_key in sub.columns else []
         chosen |= set(stratified_subsample(sub, quotas.get(mod), strata, seed=args.seed))
-    return obs.index.isin(list(chosen))
+    mask = obs.index.isin(list(chosen))
+    return (mask, dropped) if return_dropped else mask
 
 
 def label_batch_report(obs: pd.DataFrame, batch_key: str, label_key: str, min_cells: int,
@@ -231,7 +258,8 @@ def run_benchmark(adata, args, row_keys: list[str], pre_key: str | None):
     bm = Benchmarker(
         adata, batch_key=args.batch_key, label_key=args.label_key, embedding_obsm_keys=row_keys,
         bio_conservation_metrics=BioConservation(
-            isolated_labels=not args.bio_only, silhouette_label=True, clisi_knn=True,
+            # With --shared-labels every label is in every batch, so "isolated" would mean all.
+            isolated_labels=not (args.bio_only or args.shared_labels), silhouette_label=True, clisi_knn=True,
             nmi_ari_cluster_labels_kmeans=True, nmi_ari_cluster_labels_leiden=args.leiden),
         batch_correction_metrics=None if args.bio_only else BatchCorrection(
             bras=True, ilisi_knn=True, graph_connectivity=True, kbet_per_label=args.kbet,
@@ -262,6 +290,8 @@ def main(argv: list[str] | None = None) -> Path:
     if not (args.models and args.name):
         sys.exit("Error: give --models and --name")
     xla_flags = None if (args.dry_run or args.plot_only) else configure_xla(args.xla_autotune)
+    if args.bio_only and args.shared_labels:
+        sys.exit("Error: --shared-labels concerns batches; drop it with --bio-only")
     if args.bio_only and args.kbet:
         sys.exit("Error: --kbet is a batch-correction metric; drop it with --bio-only")
     if args.bio_only and args.pre_integrated:
@@ -284,7 +314,7 @@ def main(argv: list[str] | None = None) -> Path:
     for key in (args.batch_key, args.label_key):
         if key not in obs.columns:
             sys.exit(f"Error: obs has no '{key}' column (columns: {list(obs.columns)[:15]})")
-    mask = select_rows(obs, args, modalities)
+    mask, dropped_labels = select_rows(obs, args, modalities, return_dropped=True)
     obs = obs[mask].copy()
     obs[args.label_key] = obs[args.label_key].astype(object).where(obs[args.label_key].notna(), UNKNOWN_LABEL).astype(str)
     obs[args.batch_key] = obs[args.batch_key].astype(str)
@@ -306,6 +336,7 @@ def main(argv: list[str] | None = None) -> Path:
         "variant": args.variant,
         "modalities": modalities, "batch_key": args.batch_key, "label_key": args.label_key,
         "filters": parse_filter_specs(args.filter), "per_modality": args.per_modality, "seed": args.seed,
+        "shared_labels": args.shared_labels, "dropped_labels": dropped_labels,
         "n_rows": int(len(obs)), "kbet": args.kbet, "leiden": args.leiden, "bio_only": args.bio_only,
         "panel_hashes": hashes, "xla_flags": xla_flags,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"), **summary,

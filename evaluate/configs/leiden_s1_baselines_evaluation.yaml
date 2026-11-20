@@ -217,6 +217,9 @@ tasks:
       # Bulk vs pseudobulk on one joint panel: batch = modality, label = tissue. This is
       # the reference table for the later alignment-loss experiments. PCA is the
       # pre-integrated reference (PCR comparison) and also a row (unintegrated baseline).
+      # shared_labels: only tissues every modality of the run has. A tissue one modality
+      # lacks stays apart rightly, but iLISI and PCR would count it as a batch effect
+      # (dropped tissues -> meta.json; isolated labels is off then).
       scib_bulk_pb:
         environment: host
         script: scib
@@ -227,6 +230,7 @@ tasks:
           modalities: [bulk, pseudobulk]
           per_modality: ["bulk=all", "pseudobulk=all"]
           batch_key: modality
+          shared_labels: true
       # Single cells vs each other modality, and all three. Same keys as above; 5000 cells
       # (label-stratified) so the cells do not swamp the batch metrics. BulkFormer is left
       # out: it has no cells, and scIB keeps only the rows every model embedded.
@@ -240,6 +244,7 @@ tasks:
           modalities: [sc, pseudobulk]
           per_modality: ["sc=5000", "pseudobulk=all"]
           batch_key: modality
+          shared_labels: true
       scib_sc_bulk:
         environment: host
         script: scib

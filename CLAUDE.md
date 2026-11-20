@@ -791,6 +791,12 @@ python -m evaluate.integration.scib_benchmark --name tissue_s0_test --plot-only 
     the first model stands in for Benchmarker's PCA and PCR is off.
 - **Pre-flight:** the label x batch crosstab and how many labels BRAS/kBET can use (both
   batches, ≥ `--min-label-cells`). Fewer than 2 is warned about: rank on iLISI then.
+- **Shared labels** (`--shared-labels`, config `shared_labels: true`): after `--filter`,
+  only labels every modality of the run has are kept. A tissue one modality lacks stays
+  apart rightly, but the label-free iLISI and PCR count that as a batch effect. BRAS and
+  kBET skip such labels anyway. Isolated labels is off then, since every label would be
+  "isolated". `meta.json` lists `dropped_labels`. The leiden_s1 batch runs use it; the
+  bio-only runs keep every tissue.
 - **Bio conservation only** (`--bio-only`, config `bio_only: true`): the batch-correction
   group is off (`batch_correction_metrics=None`), so a single modality is accepted
   (several are pooled); without the flag one modality is refused. The table has a "Bio
@@ -835,7 +841,10 @@ python -m evaluate.integration.integration --name leiden_s1 --models m1 m2 pca_l
   - `rank`: the partner's normalized rank among all candidates (0 = nearest, 0.5 =
     chance, ties count half);
   - `rank_tissue`: the same among candidates of the key's tissue only, i.e. sample
-    identity beyond tissue.
+    identity beyond tissue. Useful for `pb_cells`, where a tissue-only model already gets
+    a low `rank`. Pairs carry no curated tissue (their cells and pseudobulks are labelled
+    `paired`), so the pair columns of the table use `rank`; `rank_tissue` stays in the
+    CSVs.
 - **Tissue of a key:** the most common label among its rows that pass `--label-filter`
   (curated labels), looked up in the pseudobulk, then the cells, then the bulk rows.
   - A pair whose bulk row `curate` left `unknown` keeps its tissue. That is why the
@@ -845,9 +854,11 @@ python -m evaluate.integration.integration --name leiden_s1 --models m1 m2 pca_l
     unfiltered, with a warning.
 - **Summary** (`--scib-runs`; `scib` itself is a config section name): reads the
   aggregates of each `results/scib_benchmark/<name>/scib.csv`.
-  - The figure is ONE table (`_plot_style.draw_metric_table`): *Pseudobulk vs its
-    cells*, *Pairs: rank in tissue*, *scIB batch* (one column per run, headed by its
-    modalities) and *scIB bio* (the run with the most modalities).
+  - The figure is ONE table (`_plot_style.draw_metric_table`):
+    - *Pseudobulk vs its cells*: top-1, rank, rank in tissue;
+    - *Pairs: rank*: pb→bulk top-1, then the rank of cells→pb, pb→bulk and cells→bulk;
+    - *scIB batch*: one column per run, headed by its modalities;
+    - *scIB bio*: the run with the most modalities.
   - A model without a modality (BulkFormer has no cells) or outside a scIB run (the
     pre-integrated PCA) shows n/a.
 - **Outputs** in `results/integration/<name>/`: `links.csv`, `coverage.csv`, `summary.csv`,

@@ -275,12 +275,16 @@ def summarize(links: pd.DataFrame) -> pd.DataFrame:
 def figure(summary: pd.DataFrame, labels: dict[str, str], scib_meta: dict[str, dict], args):
     from evaluate._plot_style import Col, draw_metric_table
 
+    # Pairs carry no curated tissue (their cells and pseudobulks are labelled "paired"),
+    # so their columns rank among all paired candidates; rank_tissue stays in the CSVs.
     cols = [
         Col("pb_cells_top1", "top-1", "Pseudobulk vs its cells", "max"),
-        Col("pb_cells_rank_tissue", "rank", "Pseudobulk vs its cells", "min"),
-        Col("pair_cells_pb_rank_tissue", "cells→pb", "Pairs: rank in tissue", "min"),
-        Col("pair_pb_bulk_rank_tissue", "pb→bulk", "Pairs: rank in tissue", "min"),
-        Col("pair_cells_bulk_rank_tissue", "cells→bulk", "Pairs: rank in tissue", "min"),
+        Col("pb_cells_rank", "rank", "Pseudobulk vs its cells", "min"),
+        Col("pb_cells_rank_tissue", "rank in tissue", "Pseudobulk vs its cells", "min"),
+        Col("pair_pb_bulk_top1", "pb→bulk top-1", "Pairs: rank", "max"),
+        Col("pair_cells_pb_rank", "cells→pb", "Pairs: rank", "min"),
+        Col("pair_pb_bulk_rank", "pb→bulk", "Pairs: rank", "min"),
+        Col("pair_cells_bulk_rank", "cells→bulk", "Pairs: rank", "min"),
     ]
     names = list(scib_meta)
     for name in names:
@@ -291,8 +295,9 @@ def figure(summary: pd.DataFrame, labels: dict[str, str], scib_meta: dict[str, d
     row_names = [labels.get(m, m) for m in summary.index]
     footnote = (f"Link metrics: cosine similarity between per-key mean embeddings ({args.part} split; cell means "
                 f"need >= {args.min_cells} cells), averaged over both directions. top-1: own partner is the "
-                "nearest. rank: normalized rank of the own partner among candidates of the same curated "
-                "tissue (0 = nearest, 0.5 = chance). scIB: aggregate scores of each run "
+                "nearest (chance = 1/candidates). rank: normalized rank of the own partner among all "
+                "candidates (0 = nearest, 0.5 = chance); in tissue: among candidates of its curated tissue "
+                "only, i.e. sample identity beyond tissue. scIB: aggregate scores of each run "
                 "(batch = modality, label = tissue). n/a: the model lacks a modality.")
     title = args.title or f"Integration: {args.name}"
     return draw_metric_table(summary.reset_index(drop=True), row_names, cols, title, footnote)

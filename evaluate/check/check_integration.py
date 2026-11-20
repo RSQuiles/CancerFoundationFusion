@@ -151,6 +151,9 @@ def check_integration_run(tmp: str) -> None:
           summary.loc["good", "pb_cells_rank_tissue"] == 0.0 and summary.loc["good", "pair_pb_bulk_rank_tissue"] == 0.0)
     check("random model near chance", summary.loc["bad", "pb_cells_rank"] > 0.2)
     check("pairs with an unknown bulk row keep their tissue", summary["pair_cells_bulk_rank_tissue"].notna().all())
+    check("table columns: plain rank for pairs, rank and rank in tissue for pb vs cells",
+          {"pb_cells_rank", "pb_cells_rank_tissue", "pair_pb_bulk_top1", "pair_cells_pb_rank",
+           "pair_pb_bulk_rank", "pair_cells_bulk_rank"} <= set(summary.columns))
     check("scIB aggregates joined, a missing analysis skipped",
           "scib_fake_all_batch" in summary.columns and "scib_fake_all_bio" in summary.columns
           and not any(c.startswith("scib_missing_run") for c in summary.columns))
@@ -191,6 +194,13 @@ def main() -> None:
               and (picked["modality"] == "pseudobulk").sum() == 115)
         check("quota stratified by label (all bulk tissues kept)",
               set(picked.loc[picked["modality"] == "bulk", "tissue_general"]) == {"skin", "lung", "colon"})
+
+        args.shared_labels = True
+        mask, dropped = scib_benchmark.select_rows(obs, args, ["bulk", "pseudobulk"], return_dropped=True)
+        check("--shared-labels drops the bulk-only tissue before the subsample",
+              dropped == ["skin"] and "skin" not in set(obs[mask]["tissue_general"])
+              and (obs[mask]["modality"] == "bulk").sum() == 40)
+        args.shared_labels = False
 
         _, summary = scib_benchmark.label_batch_report(picked, "modality", "tissue_general", 10)
         check("pre-flight: skin is bulk-only, so 2 of 3 labels usable",
