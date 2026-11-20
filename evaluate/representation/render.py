@@ -54,12 +54,27 @@ SINGLE_STYLE: dict[str, dict] = {
     "pseudobulk": dict(color=MODALITY_COLORS["pseudobulk"], s=10, marker="o", linewidths=0),
     "cell_mean":  _CELL_MEAN,
 }
+# Paired rows only (plot_alignment --paired-only): the joint shapes, with bulk and
+# pseudobulk larger than the cells and outlined in bold, so each pair's two bulk-level
+# points stand out among its cells.
+PAIRED_STYLE: dict[str, dict] = {
+    "sc":         dict(color=MODALITY_COLORS["sc"], s=10, marker="o", linewidths=0),
+    "bulk":       dict(color=MODALITY_COLORS["bulk"], s=45, marker="s", linewidths=1.2,
+                       edgecolors="black", alpha=0.9),
+    "pseudobulk": dict(color=MODALITY_COLORS["pseudobulk"], s=60, marker="^", linewidths=1.2,
+                       edgecolors="black", alpha=0.9),
+    "cell_mean":  dict(_CELL_MEAN, s=90),
+}
 MODALITY_STYLE = JOINT_STYLE  # the name other modules import
+MARKER_STYLES = {"single": SINGLE_STYLE, "joint": JOINT_STYLE, "paired": PAIRED_STYLE}
 _PLAIN_STYLE = dict(s=6, marker="o", linewidths=0)
 
 
-def _style_for(modality: np.ndarray | None) -> dict[str, dict]:
-    """``SINGLE_STYLE`` when the rows hold one data modality (cell means not counted)."""
+def _style_for(modality: np.ndarray | None, scheme: str | None = None) -> dict[str, dict]:
+    """The marker table: ``scheme`` (single, joint, paired) when given; else ``SINGLE_STYLE``
+    when the rows hold one data modality (cell means not counted), ``JOINT_STYLE`` otherwise."""
+    if scheme is not None:
+        return MARKER_STYLES[scheme]
     if modality is None:
         return JOINT_STYLE
     data = {m for m in np.unique(modality) if m != "cell_mean"}
@@ -141,13 +156,13 @@ def _style_axes(ax, title: str, axis_labels: tuple[str, str] = ("UMAP 1", "UMAP 
         ax.spines[spine].set_visible(False)
 
 
-def _scatter(ax, coords, modality, colors=None, order=None) -> None:
+def _scatter(ax, coords, modality, colors=None, order=None, scheme: str | None = None) -> None:
     """Draw points, with per-modality marker shapes when ``modality`` is given."""
     if modality is None:
         ax.scatter(coords[:, 0], coords[:, 1], c=colors, alpha=None if colors is not None else 0.5,
                    rasterized=True, **_PLAIN_STYLE)
         return
-    styles = _style_for(modality)
+    styles = _style_for(modality, scheme)
     for mod in order or DRAW_ORDER:
         mask = modality == mod
         if not mask.any():
@@ -160,17 +175,20 @@ def _scatter(ax, coords, modality, colors=None, order=None) -> None:
         ax.scatter(coords[mask, 0], coords[mask, 1], alpha=alpha, rasterized=True, **style)
 
 
-def _modality_handles(modality: np.ndarray, colored: bool) -> list:
+def _modality_handles(modality: np.ndarray, colored: bool, scheme: str | None = None) -> list:
     handles = []
-    styles = _style_for(modality)
+    styles = _style_for(modality, scheme)
     for mod in DRAW_ORDER:
         if not (modality == mod).any():
             continue
         style = styles[mod]
         color = style["color"] if colored else "dimgrey"
+        edged = style.get("linewidths", 0) >= 1
         handles.append(mlines.Line2D(
-            [], [], linestyle="None", markersize=9 if mod == "cell_mean" else 6,
-            marker=style["marker"], color=color, markeredgecolor=color, label=DISPLAY_NAMES[mod],
+            [], [], linestyle="None", markersize=9 if mod == "cell_mean" else 7 if edged else 6,
+            marker=style["marker"], color=color, label=DISPLAY_NAMES[mod],
+            markeredgecolor=style.get("edgecolors", color) if edged else color,
+            markeredgewidth=style["linewidths"] if edged else 1.0,
         ))
     return handles
 
@@ -255,6 +273,7 @@ def draw_umap_panels(
     labels: dict[str, str] | None = None,
     axis_labels: tuple[str, str] = ("UMAP 1", "UMAP 2"),
     max_legend_entries: int | None = None,
+    marker_style: str | None = None,
 ) -> plt.Figure:
     """One panel per colour key; marker shape encodes modality when ``modality_col`` is set.
 
@@ -268,6 +287,8 @@ def draw_umap_panels(
     A categorical panel always gets its legend, wrapped into columns, with the panel
     widened to fit; ``max_legend_entries`` caps it to the most frequent categories plus a
     "+K more" line. A numeric column with more than 20 values gets a colour bar instead.
+    ``marker_style`` (single, joint, paired) fixes the marker table; by default it follows
+    how many modalities the rows hold.
     """
     labels = labels or {}
     modality_label = labels.get(modality_col or "modality", "Modality")
@@ -297,12 +318,12 @@ def draw_umap_panels(
 
             ax.add_collection(LineCollection(segments, colors="black", linewidths=0.3, alpha=0.25, zorder=0))
         if key is None:
-            _scatter(ax, coords, modality)
+            _scatter(ax, coords, modality, scheme=marker_style)
             _style_axes(ax, "embedding", axis_labels)
         elif modality is not None and key == modality_col:
-            _scatter(ax, coords, modality)
+            _scatter(ax, coords, modality, scheme=marker_style)
             _style_axes(ax, modality_label, axis_labels)
-            lax.legend(handles=_modality_handles(modality, colored=True), title=modality_label,
+            lax.legend(handles=_modality_handles(modality, colored=True, scheme=marker_style), title=modality_label,
                        fontsize=8, title_fontsize=8, loc="center left", bbox_to_anchor=(0.0, 0.5),
                        frameon=False)
         else:
@@ -313,7 +334,7 @@ def draw_umap_panels(
             colors, palette, categories = assign_colors(
                 values, skip_unknown=skip_unknown or mask is not None
             )
-            _scatter(ax, coords, modality, colors=colors)
+            _scatter(ax, coords, modality, colors=colors, scheme=marker_style)
             _style_axes(ax, labels.get(key, key), axis_labels)
             if palette is not None:
                 shown, n_more = legend_categories(values, categories, max_legend_entries)
@@ -321,7 +342,7 @@ def draw_umap_panels(
             else:
                 _colorbar(fig, lax, values, labels.get(key, key))
             if modality is not None and len(np.unique(modality)) > 1:
-                ax.legend(handles=_modality_handles(modality, colored=False), title=modality_label,
+                ax.legend(handles=_modality_handles(modality, colored=False, scheme=marker_style), title=modality_label,
                           fontsize=7, title_fontsize=7, loc="lower left", frameon=True, framealpha=0.85)
     if title:
         fig.suptitle(title, fontsize=12, fontweight="bold")

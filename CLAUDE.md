@@ -465,13 +465,28 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
   only via `match_on=symbol`, with ambiguous ones dropped). Vocabulary genes the input
   lacks are fed as `-10` (missing), never as 0. Raw counts become ln(TPM+1) with the
   release gene lengths, summing over vocabulary-matched genes only. The embedding is the
-  mean of the observed genes' contextual vectors (768-d). `input=auto` means counts
-  when at least half of the sampled rows look like counts; otherwise it stops and asks
-  for `input=tpm|log_tpm|log2_tpm`. With count input, a row that is not count-like
-  (negative, non-integral, non-finite, or zero over the vocabulary genes) is skipped with
-  a warning instead of crashing: it comes back as an all-NaN row, and `write_embeddings`
-  leaves all-NaN rows out of the file and records them in `embed.json` (`n_dropped`,
-  `dropped_rows`). Options: `repo` (or
+  mean of the observed genes' contextual vectors (768-d).
+  - **`input=auto` (default) decides per row** (`recover_counts`), since sources mix
+    scales (the single-cell source holds both counts and normalized rows):
+    - an integral row is used as counts;
+    - a normalized row is converted back to counts. A log row (max <= 30) tries ln(x+1),
+      then log2(x+1); a linear one (CPM, CP10K) is used as is. Either is then divided by
+      its smallest non-zero value (one count in UMI data).
+    - **Labels:** an integral result confirms the guess and is rounded (`log1p->counts`,
+      `log2p->counts`, `linear->counts`). Otherwise it stays unrounded and is flagged
+      approximate (`...~`, e.g. TPM).
+    - **Why this is exact:** ln(TPM+1) divides by the row's own total, so the unknown
+      scale does not matter, only the log base.
+  - **Flagging:** every conversion prints a `[WARNING] k of n rows ... were converted`
+    line. The provenance gets `input_conversion` (counts per label, row names per label),
+    so `embed.json` and BulkFormer's reconstruction `metrics.json` record it.
+  - `input=counts|cpm|log1p_cpm|tpm|log_tpm|log2_tpm` applies one scale to every row;
+    with `counts`, non-count rows are skipped.
+  - **Unusable rows** (negative, non-finite, or zero over the vocabulary genes, or not
+    counts with `input=counts`) are skipped with a warning instead of crashing. They come
+    back as all-NaN rows, which `write_embeddings` leaves out of the file and records in
+    `embed.json` (`n_dropped`, `dropped_rows`).
+  - Options: `repo` (or
   `$BULKFORMER_REPO`), `model_dir`, `gene_column`, `batch_size` (8), `chunk_rows`,
   `device`, `amp_dtype`. It runs in **BulkFormer's own conda env** (torch_geometric,
   performer_pytorch) plus `anndata` and `pyyaml`. It never imports `cancerfoundation`,
@@ -588,7 +603,9 @@ plus obs. `plot_alignment` fits ONE UMAP over all modalities and refuses files w
   - Colored by modality: single cell blue, bulk red, pseudobulk green
     (`MODALITY_COLORS`). Other panels keep the shapes, and a gray shape legend explains
     them.
-  - `plot_alignment --paired-only` colors by pair only, unless `--color` is given.
+  - `plot_alignment --paired-only` colors by pair only, unless `--color` is given. It uses
+    `PAIRED_STYLE`: bulk and pseudobulk larger than the cells, with a bold black edge
+    (`draw_umap_panels(marker_style=...)` sets the table explicitly).
 - **Legends** (`render.draw_umap_panels`, shared by UMAP, PCA and alignment): a categorical
   panel always gets its legend, however many categories it has (single-cell
   `tissue_general` has more than 60, which used to drop it). The legend wraps every 30
@@ -657,7 +674,12 @@ python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test
     `sum(cumprod(sigmoid))`. zinb is refused.
 - **BulkFormer (space `ln_tpm1`):** its imputation mode. It reuses `BulkFormerEmbedder`'s
   loading and preprocessing, computes ln(TPM+1) targets from the full sample, and sets the
-  masked genes to -10. `--context full` (default) leaves every other gene visible;
+  masked genes to -10.
+  - **Mixed scales:** with `input=auto`, normalized rows (e.g. part of the single-cell
+    test set) are converted back to counts per row.
+  - **Flags:** `metrics.json["input_conversion"]` gives the samples per label, and
+    `per_sample.csv` has an `input_conversion` column.
+  - **Unusable rows** get no targets and count in `n_dropped`. `--context full` (default) leaves every other gene visible;
   `--context plan` hides all but the plan's context genes, for an equal-context comparison.
 - **New models**: subclass `Reconstructor`, `@register("<name>")`, implement `predict`
   returning the full target matrix (NaN = unknown) plus `row`/`gene`/`pred` of the masked

@@ -264,7 +264,8 @@ def main(argv: list[str] | None = None) -> None:
         fig = draw_umap_panels(coords, obs, args.color, modality_col=MODALITY_COL,
                                skip_unknown=args.skip_unknown, title=title,
                                segments=segments, highlight=highlight, labels=labels,
-                               max_legend_entries=args.max_legend_entries)
+                               max_legend_entries=args.max_legend_entries,
+                               marker_style="paired" if args.paired_only else None)
         out_dir = args.out_dir or layout.alignment_dir(model, args.variant)
         stem = out_dir / f"alignment_{args.part}{suffix}"
         save_figure(fig, stem.with_suffix(".png"), dpi=args.dpi)

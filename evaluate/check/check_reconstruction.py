@@ -218,6 +218,19 @@ class _Noisy(_Perfect):
         return out
 
 
+@register("_fake_converted")
+class _Converted(_Perfect):
+    """Like BulkFormer with input=auto: some rows were normalized and converted back."""
+
+    def predict(self, adata, plan):
+        out = super().predict(adata, plan)
+        labels = np.array(["counts"] * plan.n_samples, dtype=object)
+        labels[:3] = "log1p->counts"
+        labels[3] = "linear->counts~"
+        out["row_input"] = labels
+        return out
+
+
 def check_end_to_end(tmp: Path, layout: ExperimentLayout) -> None:
     print("\n-- run_reconstruction + compare --")
     base = ["--root", str(tmp), "--plan", "bulk:s0:test:r25"]
@@ -227,6 +240,17 @@ def check_end_to_end(tmp: Path, layout: ExperimentLayout) -> None:
           all((out / f).exists() for f in ("metrics.json", "entries.parquet", "per_sample.csv", "mae_by_target.csv")))
     check("dropped entries counted", report["n_dropped"] == 30 and report["n_scored"] + 30 == report["n_masked"])
     check("perfect model scores spearman ~1", report["metrics"]["pred"]["spearman_mean"] > 0.99)
+    check("no input_conversion without row labels", "input_conversion" not in report)
+
+    run_reconstruction.main(base + ["--reconstructor", "_fake_converted", "--name", "converted"])
+    conv_dir = layout.task_dir("reconstruction", "converted") / "bulk_s0_test_r25"
+    n = json.loads((conv_dir / "metrics.json").read_text()).get("input_conversion", {})
+    check("converted rows counted in metrics.json",
+          n == {"counts": 26, "log1p->counts": 3, "linear->counts~": 1})
+    flags = pd.read_csv(conv_dir / "per_sample.csv").set_index("sample")["input_conversion"]
+    check("per_sample.csv flags each converted sample",
+          int((flags == "log1p->counts").sum()) == 3 and int((flags == "linear->counts~").sum()) == 1
+          and int((flags == "counts").sum()) == len(flags) - 4)
     check("breakdown by tissue and modality", {"tissue_general", "modality"} <= set(report["by_group"]))
     card = json.loads((out / "metrics.json").read_text())
     check("metrics.json is strict JSON (NaN -> null)", "NaN" not in (out / "metrics.json").read_text() and card["space"] == "ln_tpm1")

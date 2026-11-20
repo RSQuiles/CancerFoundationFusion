@@ -194,10 +194,20 @@ def run(args, adata, plan, name: str, reconstructor, out_dir: Path) -> dict:
         "provenance": reconstructor.provenance(),
         "metrics": summary, "by_group": by_group,
     }
+    row_input = result.get("row_input")
+    if row_input is not None:
+        # Rows that were not raw counts and were converted (BulkFormer, input=auto): the
+        # counts per label here, the label per sample in per_sample.csv.
+        labels = np.asarray(row_input).astype(str)
+        values, counts = np.unique(labels, return_counts=True)
+        report["input_conversion"] = {str(v): int(c) for v, c in zip(values, counts)}
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "metrics.json").write_text(json.dumps(_clean(report), indent=2), encoding="utf-8")
     frame.to_parquet(out_dir / "entries.parquet", index=False)
     per_sample = M.per_sample(frame)
+    if row_input is not None:
+        per_sample["input_conversion"] = per_sample["sample"].map(
+            dict(zip(map(str, plan.obs_names), np.asarray(row_input).astype(str))))
     obs_cols = [c for c in group_cols if c in adata.obs.columns]
     if obs_cols:
         per_sample = per_sample.merge(adata.obs[obs_cols].astype(str), left_on="sample", right_index=True, how="left")

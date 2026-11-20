@@ -408,6 +408,8 @@ class BulkFormerReconstructor(Reconstructor):
         import pandas as pd
         import scipy.sparse as sp
 
+        from embed.embed_any import conversion_summary, report_conversion
+
         bf = self._bf
         bf._ensure_loaded()
         api, vocab = bf._api, bf._vocab
@@ -421,25 +423,31 @@ class BulkFormerReconstructor(Reconstructor):
         plan_vocab = np.array([pos_to_vocab.get(int(p), -1) for p in var_pos])
         print(f"  [bulkformer] {int((plan_vocab >= 0).sum())} of {len(plan.genes)} plan genes in the "
               f"vocabulary; context: {self.context}")
-        input_type = bf._resolve_input(adata.X[:512][:, positions])
+        input_type = bf._resolve_input()
         mask_value = float(bf._model.config.mask_value)
 
         n, n_genes = plan.n_samples, len(plan.genes)
         targets = np.full((n, n_genes), np.nan, dtype=np.float32)
         rows, genes, preds = [], [], []
+        row_input = np.empty(n, dtype=object)
         for start in range(0, n, bf.chunk_rows):
             stop = min(start + bf.chunk_rows, n)
             X = adata.X[start:stop][:, positions]
             X = X.toarray() if sp.issparse(X) else np.asarray(X)
-            frame = pd.DataFrame(X.astype(np.float32), index=adata.obs_names[start:stop], columns=ensg)
-            aligned, _, _ = api.main_gene_selection(X_df=bf._to_log_tpm(frame, input_type), gene_list=vocab_genes)
-            truth = aligned.to_numpy(dtype=np.float32)
+            # input=auto: each row as counts, normalized rows converted back (flagged).
+            X, scale, usable, row_input[start:stop] = bf._prepare(X, input_type)
+            truth = np.full((stop - start, len(vocab_genes)), mask_value, dtype=np.float32)
+            if usable.any():
+                frame = pd.DataFrame(X[usable].astype(np.float32), index=adata.obs_names[start:stop][usable],
+                                     columns=ensg)
+                aligned, _, _ = api.main_gene_selection(X_df=bf._to_log_tpm(frame, scale), gene_list=vocab_genes)
+                truth[usable] = aligned.to_numpy(dtype=np.float32)
             inputs = truth.copy()
             for j, i in enumerate(range(start, stop)):
                 ok = plan_vocab >= 0
                 t = np.full(n_genes, np.nan, dtype=np.float32)
                 t[ok] = truth[j, plan_vocab[ok]]
-                t[t == mask_value] = np.nan  # a gene the source lacks has no target
+                t[t == mask_value] = np.nan  # a gene the source lacks (or an unusable row) has no target
                 targets[i] = t
                 msk = plan.masked(i)
                 msk = msk[(plan_vocab[msk] >= 0) & ~np.isnan(t[msk])]
@@ -457,9 +465,12 @@ class BulkFormerReconstructor(Reconstructor):
                 preds.append(out[j, plan_vocab[genes[i]]])
             print(f"  [bulkformer] {stop}/{n} samples")
         n_masked = sum(len(plan.masked(i)) for i in range(n))
+        bf.input_conversion = conversion_summary(row_input, plan.obs_names)
+        report_conversion(bf.input_conversion)
         return {"targets": targets, "row": np.concatenate(rows), "gene": np.concatenate(genes),
                 "pred": np.concatenate(preds).astype(np.float32),
-                "n_dropped": int(n_masked - sum(len(g) for g in genes))}
+                "n_dropped": int(n_masked - sum(len(g) for g in genes)),
+                "row_input": row_input}
 
     def provenance(self) -> dict[str, Any]:
         out = super().provenance()

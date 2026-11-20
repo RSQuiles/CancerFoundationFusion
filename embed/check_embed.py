@@ -111,6 +111,41 @@ def check_machinery() -> None:
           list(_count_like_rows(rows)) == [True, False, False, False, False, True])
 
 
+def check_recover_counts() -> None:
+    """``recover_counts``: each row's normalization guessed, undone and flagged (numpy only)."""
+    from embed.embed_any import conversion_summary, recover_counts
+
+    rng = np.random.default_rng(0)
+    counts = rng.negative_binomial(1, 0.3, size=(6, 400)).astype(np.float64)
+    counts[:, 0] = 1  # every UMI row has a 1-count gene
+    lengths = rng.uniform(0.5, 10, 400)
+    rows = np.stack([
+        counts[0],                                                  # counts
+        np.log1p(counts[1] / counts[1].sum() * 1e4),                # ln(CP10K + 1)
+        np.log2(counts[2] / counts[2].sum() * 1e6 + 1),             # log2(CPM + 1)
+        counts[3] / counts[3].sum() * 1e6,                          # CPM
+        (counts[4] / lengths) / (counts[4] / lengths).sum() * 1e6,  # TPM: not a rescaled count row
+        -counts[5],                                                 # negative
+        np.zeros(400),                                              # empty
+    ]).astype(np.float32)
+    out, labels = recover_counts(rows)
+    check("labels per row", list(labels) == ["counts", "log1p->counts", "log2p->counts", "linear->counts",
+                                             "linear->counts~", "invalid", "invalid"])
+    check("exact recoveries give the original counts",
+          all(np.array_equal(out[i], counts[i]) for i in range(4)))
+
+    def log_tpm(x):  # BulkFormer's normalize_data up to its gene lengths: per-row scale-free
+        r = x / lengths
+        return np.log1p(r / r.sum() * 1e6)
+
+    check("ln(TPM+1) of a converted row equals that of its counts",
+          all(np.allclose(log_tpm(out[i]), log_tpm(counts[i]), rtol=1e-4, atol=1e-4) for i in range(4)))
+    summary = conversion_summary(labels, [f"r{i}" for i in range(7)])
+    check("conversion summary: converted and invalid rows, names per label",
+          summary["n_converted"] == 4 and summary["n_invalid"] == 2
+          and summary["rows"]["log1p->counts"] == ["r1"] and "counts" not in summary["rows"])
+
+
 def _preprocess_module():
     """``cancerfoundation/data/preprocess.py`` by path: numpy only, no package init (torch)."""
     import importlib.util
@@ -333,6 +368,7 @@ def check_splits() -> None:
 
 
 def main() -> None:
+    check_recover_counts()
     check_machinery()
     check_input_modes()
     check_any()

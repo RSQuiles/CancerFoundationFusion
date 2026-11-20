@@ -183,18 +183,6 @@ def _load_bulkformer_api(repo: Path):
     return module
 
 
-def _looks_like_counts(X, max_rows: int = 512) -> bool:
-    """Same rule as ``cancerfoundation.data.preprocess.looks_like_counts`` (max > 20 and
-    integral), restated here so this embedder runs in BulkFormer's own environment,
-    which cannot import the cancerfoundation package."""
-    import scipy.sparse as sp
-
-    X = X[: min(max_rows, X.shape[0])]
-    vals = np.asarray(X.data if sp.issparse(X) else X).ravel()
-    vals = vals[np.isfinite(vals) & (vals != 0)]
-    return bool(vals.size) and float(vals.max()) > 20 and bool(np.allclose(vals, np.round(vals)))
-
-
 def _count_like_rows(X) -> np.ndarray:
     """Per row: can BulkFormer's ``normalize_data`` treat it as raw counts?
 
@@ -210,6 +198,91 @@ def _count_like_rows(X) -> np.ndarray:
     nonneg = (safe >= 0).all(axis=1)
     integral = np.isclose(safe, np.round(safe)).all(axis=1)
     return finite & nonneg & integral & (safe.sum(axis=1) > 0)
+
+
+LOG_SCALE_MAX = 30.0  # a non-integral row with a larger value is linear (CPM, CP10K, TPM)
+INTEGRAL_SHARE = 0.99  # share of non-zeros that must land on integers for an exact recovery
+CONVERTED_NAMES_KEPT = 1000  # converted row names recorded per label in the provenance
+
+
+def _integral_share(values: np.ndarray) -> float:
+    """Share of ``values`` within float32 round-off of an integer (relative 1e-5, absolute 0.05)."""
+    if not values.size:
+        return 0.0
+    return float(np.mean(np.isclose(values, np.round(values), rtol=1e-5, atol=0.05)))
+
+
+def recover_counts(X) -> tuple[np.ndarray, np.ndarray]:
+    """Bring each row back to raw counts, guessing its normalization. Numpy only.
+
+    Returns ``(counts, labels)``, one label per row:
+      ``counts``           integral already, unchanged;
+      ``log1p->counts``    natural ln(x + 1) of a rescaled count row (ln(CP10K+1), ...);
+      ``log2p->counts``    log2(x + 1) of one;
+      ``linear->counts``   a rescaled count row (CPM, CP10K);
+      ``...~``             the same transform undone, but the result is not integral
+                           (e.g. TPM, or another log base): approximate, left unrounded;
+      ``invalid``          negative, non-finite or zero total: not usable.
+
+    The transform is undone, then the row is divided by its smallest non-zero value,
+    which is one count in UMI data; integral results (``INTEGRAL_SHARE`` of the
+    non-zeros) confirm the guess and are rounded. BulkFormer's TPM divides by the row's
+    own total, so ln(TPM+1) does not depend on that scale: only the log base matters.
+    """
+    import scipy.sparse as sp
+
+    X = X.toarray() if sp.issparse(X) else np.asarray(X)
+    X = X.astype(np.float64, copy=True)
+    labels = np.empty(len(X), dtype=object)
+    for i, row in enumerate(X):
+        if not np.isfinite(row).all() or (row < 0).any() or row.sum() <= 0:
+            labels[i] = "invalid"
+            continue
+        nz = row[row > 0]
+        if np.isclose(nz, np.round(nz)).all():
+            labels[i] = "counts"
+            continue
+        if nz.max() <= LOG_SCALE_MAX:
+            candidates = [("log1p", np.expm1(row)), ("log2p", np.exp2(row) - 1.0)]
+        else:
+            candidates = [("linear", row)]
+        fallback = None
+        for name, linear in candidates:
+            scaled = linear / linear[linear > 0].min()
+            if _integral_share(scaled[scaled > 0]) >= INTEGRAL_SHARE:
+                X[i], labels[i] = np.round(scaled), f"{name}->counts"
+                break
+            fallback = fallback or (name, scaled)
+        else:
+            X[i], labels[i] = fallback[1], f"{fallback[0]}->counts~"
+    return X, labels
+
+
+def conversion_summary(labels, names) -> dict[str, Any]:
+    """``{"n_rows", "n_converted", "n_invalid", "by_label": {label: n}, "rows": {label: [names]}}``.
+
+    Rows labelled ``counts`` (or an explicit ``input=`` scale) are not conversions.
+    """
+    labels = np.asarray(labels, dtype=object)
+    names = np.asarray(names).astype(str)
+    by_label = {str(k): int(v) for k, v in zip(*np.unique(labels.astype(str), return_counts=True))}
+    converted = np.array(["->" in str(label) for label in labels], dtype=bool)
+    rows = {label: names[labels == label][:CONVERTED_NAMES_KEPT].tolist()
+            for label in by_label if "->" in label}
+    return {"n_rows": int(len(labels)), "n_converted": int(converted.sum()),
+            "n_invalid": int((labels == "invalid").sum()), "by_label": by_label, "rows": rows}
+
+
+def report_conversion(summary: dict[str, Any]) -> None:
+    """The warning line for rows that were not raw counts and were converted."""
+    if not summary["n_converted"]:
+        return
+    converted = {k: v for k, v in summary["by_label"].items() if "->" in k}
+    examples = [n for names in summary["rows"].values() for n in names[:2]][:5]
+    print(f"  [bulkformer] [WARNING] {summary['n_converted']} of {summary['n_rows']} rows were not raw "
+          f"counts and were converted to counts: {converted}, e.g. {examples}"
+          + ("; '~' = approximate (not integral after conversion)"
+             if any(k.endswith("~") for k in converted) else ""))
 
 
 @register("bulkformer")
@@ -232,9 +305,13 @@ class BulkFormerEmbedder(Embedder):
     Options:
       ``repo``        bulkformer-latest checkout (default: ``$BULKFORMER_REPO``).
       ``model_dir``   the six release files (default: ``<repo>/model/bulkformer-latest``).
-      ``input``       ``auto`` (default: raw counts if they look like counts, otherwise an
-                      error asking for the scale), ``counts``, ``cpm``, ``log1p_cpm``, ``tpm``, ``log_tpm``
-                      (natural ln(TPM+1)) or ``log2_tpm``.
+      ``input``       ``auto`` (default): per row, raw counts are used as they are and
+                      normalized rows are converted back to counts (``recover_counts``:
+                      ln(x+1), log2(x+1) or linear, rescaled by the smallest non-zero
+                      value), with a warning and ``input_conversion`` in the provenance.
+                      Or one scale for every row: ``counts`` (non-count rows skipped),
+                      ``cpm``, ``log1p_cpm``, ``tpm``, ``log_tpm`` (natural ln(TPM+1)) or
+                      ``log2_tpm``.
       ``gene_column`` var column holding the gene IDs (default: ``var_names``).
       ``match_on``    ``auto`` (Ensembl when most IDs start with ENSG), ``ensembl`` or
                       ``symbol`` (mapped through the vocabulary's ``gene_symbol``;
@@ -275,7 +352,8 @@ class BulkFormerEmbedder(Embedder):
         self.batch_size, self.chunk_rows = int(batch_size), int(chunk_rows)
         self.device, self.amp_dtype = device, amp_dtype
         self._api = self._model = self._vocab = self._manifest = None
-        self.dropped_rows: list[str] = []  # rows the last embed() skipped (not count-like)
+        self.dropped_rows: list[str] = []  # rows the last embed() skipped (not usable)
+        self.input_conversion: dict[str, Any] | None = None  # per-row scales of the last call
 
     # -- loading ---------------------------------------------------------------
 
@@ -350,22 +428,23 @@ class BulkFormerEmbedder(Embedder):
         positions = np.asarray(positions)
         return positions, [ids[p] for p in positions]
 
-    def _resolve_input(self, X) -> str:
-        """The input scale; ``auto`` means counts when most sampled rows look like counts.
+    def _resolve_input(self, X=None) -> str:
+        """The input scale: ``auto`` (decided per row by ``_prepare``) or the given one."""
+        return self.input
 
-        Rows that do not look like counts are then dropped by ``embed``, so a few stray
-        normalized rows no longer stop the run; a matrix that is mostly not counts still
-        does, because then the scale is genuinely unknown.
+    def _prepare(self, X, input_type: str) -> tuple[np.ndarray, str, np.ndarray, np.ndarray]:
+        """``(values, scale, ok, labels)`` of a dense chunk of vocabulary-matched genes.
+
+        ``auto``: ``recover_counts`` per row, so every usable row goes in as counts and
+        ``labels`` says what was converted. ``counts``: rows that are not count-like are
+        not usable. Any other scale applies to every row as given.
         """
-        if self.input != "auto":
-            return self.input
-        ok = _count_like_rows(X)
-        if ok.mean() >= 0.5 and _looks_like_counts(X[np.flatnonzero(ok)]):
-            return "counts"
-        raise ValueError(
-            f"bulkformer input=auto only recognizes raw counts, and only {int(ok.sum())} of {len(ok)} "
-            "sampled rows look like counts. Set input=tpm, log_tpm (natural ln(TPM+1)) or log2_tpm."
-        )
+        if input_type == "auto":
+            values, labels = recover_counts(X)
+            return values, "counts", labels != "invalid", labels
+        ok = _count_like_rows(X) if input_type == "counts" else np.ones(len(X), dtype=bool)
+        labels = np.where(ok, input_type, "invalid").astype(object)
+        return np.asarray(X), input_type, ok, labels
 
     def _to_log_tpm(self, frame, input_type: str):
         """Natural ln(TPM + 1), as BulkFormer's usage guide prescribes per input scale."""
@@ -390,25 +469,26 @@ class BulkFormerEmbedder(Embedder):
         self.genes = ensg
         vocab_genes = self._vocab["canonical_ensg"].astype(str).tolist()
         input_type = self._resolve_input(adata.X[:512][:, positions])
-        print(f"  [bulkformer] input treated as {input_type}; embedding {adata.n_obs} samples "
-              f"(batch {self.batch_size})")
+        print(f"  [bulkformer] input scale: {'per row (auto)' if input_type == 'auto' else input_type}; "
+              f"embedding {adata.n_obs} samples (batch {self.batch_size})")
 
-        # With count input, a row BulkFormer's normalize_data would reject (negative,
-        # non-integral, non-finite or all-zero over the vocabulary genes) is skipped and
+        # A row BulkFormer's normalize_data would reject (negative, non-finite, all-zero
+        # over the vocabulary genes; with input=counts also non-integral) is skipped and
         # comes back as a NaN row; write_embeddings leaves NaN rows out of the file.
         dim = int(self._model.config.dim)
         dropped = np.zeros(adata.n_obs, dtype=bool)
+        labels = np.empty(adata.n_obs, dtype=object)
         blocks = []
         for start in range(0, adata.n_obs, self.chunk_rows):
             stop = min(start + self.chunk_rows, adata.n_obs)
             X = adata.X[start:stop][:, positions]
             X = X.toarray() if sp.issparse(X) else np.asarray(X)
-            ok = _count_like_rows(X) if input_type == "counts" else np.ones(len(X), dtype=bool)
+            X, scale, ok, labels[start:stop] = self._prepare(X, input_type)
             dropped[start:stop] = ~ok
             out = np.full((len(X), dim), np.nan, dtype=np.float32)
             if ok.any():
                 frame = pd.DataFrame(X[ok].astype(np.float32), index=adata.obs_names[start:stop][ok], columns=ensg)
-                log_tpm = self._to_log_tpm(frame, input_type)
+                log_tpm = self._to_log_tpm(frame, scale)
                 # Full release gene axis in vocabulary order; absent genes and NaN become -10.
                 aligned, _, _ = self._api.main_gene_selection(X_df=log_tpm, gene_list=vocab_genes)
                 out[ok] = self._api.extract_feature(
@@ -422,10 +502,13 @@ class BulkFormerEmbedder(Embedder):
             blocks.append(out)
             if adata.n_obs > self.chunk_rows:
                 print(f"  [bulkformer] rows {start}-{stop} of {adata.n_obs}")
+        self.input_conversion = conversion_summary(labels, adata.obs_names)
+        report_conversion(self.input_conversion)
         if dropped.any():
             names = list(adata.obs_names[dropped][:5])
-            print(f"  [bulkformer] [WARNING] {int(dropped.sum())} of {adata.n_obs} rows do not look like raw "
-                  f"counts (negative, non-integral, non-finite or all-zero over the vocabulary genes) and "
+            print(f"  [bulkformer] [WARNING] {int(dropped.sum())} of {adata.n_obs} rows are not usable "
+                  f"(negative, non-finite or all-zero over the vocabulary genes"
+                  f"{', or not raw counts with input=counts' if input_type == 'counts' else ''}) and "
                   f"were not embedded, e.g. {names}")
         self.dropped_rows = list(map(str, adata.obs_names[dropped]))
         return np.concatenate(blocks, axis=0)
@@ -435,6 +518,8 @@ class BulkFormerEmbedder(Embedder):
         if self._manifest is not None:
             out["checkpoint_metadata"] = self._manifest.get("checkpoint_metadata")
             out["options"]["amp_dtype"] = self.amp_dtype
+        if self.input_conversion is not None:
+            out["input_conversion"] = self.input_conversion
         return out
 
 
