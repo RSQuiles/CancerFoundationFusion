@@ -467,7 +467,9 @@ def main(input_args=None):
         contrastive=args.contrastive_training,
         contrastive_temperature=args.contrastive_temperature,
         mmd=args.mmd,
-        aggregation=args.agg_consistency,
+        # --loss-weight-agg 0: the sampler still draws each pseudobulk's cells, the loss
+        # is only logged (with 'aggregation' in --monitor-losses): a batch-matched control.
+        aggregation=args.agg_consistency and args.loss_weight_agg > 0,
         agg_fn=args.agg_fn,
         paired_alignment=args.paired_sampling,
         noise=args.noise,

@@ -55,6 +55,12 @@ def check_cli() -> None:
                        defaults.class_exclude_labels, defaults.class_aware_n_classes,
                        defaults.contrastive_temperature, defaults.class_aware_pb_frac)
           == (False, "tissue_general", 2, ["unknown"], 8, 0.1, 0.6))
+    agg = parser.parse_args(["--agg-consistency", "--loss-weight-agg", "0", "--monitor-losses", "aggregation"])
+    check("aggregation monitor-only control parses (cells drawn, loss logged only)",
+          agg.agg_consistency and agg.loss_weight_agg == 0.0 and agg.monitor_losses == ["aggregation"])
+    src = (ROOT / "pretrain.py").read_text(encoding="utf-8")
+    check("pretrain trains aggregation only with a positive weight",
+          "aggregation=args.agg_consistency and args.loss_weight_agg > 0" in src)
     translated = _filter_known_config_keys(parser, {"cdd_class_aware": True, "cdd_class_column": "x"})
     check("old config keys translated", translated == {"class_aware": True, "class_column": "x"}, str(translated))
     try:

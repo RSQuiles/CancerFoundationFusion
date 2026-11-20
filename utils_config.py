@@ -892,7 +892,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--loss-weight-mmd",            type=float, default=1.0, help="Weight for MMD alignment loss.")
     parser.add_argument("--loss-weight-cdd",            type=float, default=0.3, help="Weight (beta) for the Contrastive Domain Discrepancy loss. Paper default 0.3.")
     parser.add_argument("--loss-weight-paired",         type=float, default=1.0, help="Weight for paired alignment loss.")
-    parser.add_argument("--loss-weight-agg",            type=float, default=1.0, help="Weight for aggregation consistency loss.")
+    parser.add_argument("--loss-weight-agg",            type=float, default=1.0, help="Weight for aggregation consistency loss. 0 with --agg-consistency: the cells are still drawn into each batch but the loss is only logged (add aggregation to --monitor-losses), a batch-matched control.")
     parser.add_argument("--loss-weight-dat",            type=float, default=1.0, help="Weight for DAT condition loss.")
     parser.add_argument("--loss-weight-reconstruction", type=float, default=1.0, help="Weight applied to all reconstruction losses (loss_expr, loss_mvc, loss_gen).")
 

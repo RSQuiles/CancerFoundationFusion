@@ -1218,7 +1218,9 @@ class TransformerModule(nn.Module):
                     loss = loss + self.weight_agg * loss_agg
                     loss_dict["loss_agg"] = loss_agg.detach() * self.weight_agg
                 else:
-                    loss_dict["loss_agg_monitor"] = loss_agg.detach() * self.weight_agg
+                    # weight 0 = monitor-only control (--loss-weight-agg 0): log the raw value
+                    w = self.weight_agg if self.weight_agg > 0 else 1.0
+                    loss_dict["loss_agg_monitor"] = loss_agg.detach() * w
 
         loss_dict["total_loss"] = loss
         return loss_dict

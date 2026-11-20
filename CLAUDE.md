@@ -71,6 +71,20 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
   negatives keep the embedding from collapsing). Temperature `--contrastive-temperature`
   (0.1). Skipped on paired batches; use `--class-aware` so batches hold matching tissues.
   `python scripts/check_contrastive_loss.py` self-checks it (part 2 needs torch).
+- `--agg-consistency`: the MSE between each pseudobulk's CLS embedding and the mean
+  embedding of its own cells. The sampler draws `--n-sc-per-pseudobulk` constituent cells
+  per pseudobulk into the batch, and those cells are trained on too. With
+  `--loss-weight-agg 0` the cells are still drawn but the loss is not trained on. Add
+  `aggregation` to `--monitor-losses` to log its raw value. That makes a batch-matched
+  control (`align_agg_ctrl` in `experiments/configs/leiden_s1_alignment.json`).
+- **Alignment ablation:** `experiments/configs/leiden_s1_alignment.json` warm-starts nine
+  runs from `unified_baseline`:
+  - two controls (seeds 0 and 1, the noise floor);
+  - one run each for MMD, contrastive, CDD and paired, plus a combination;
+  - the aggregation pair.
+
+  Every run logs the alignment losses it does not train on. The evaluation config is
+  `evaluate/configs/leiden_s1_alignment_evaluation.yaml`.
 - `--cdd`: Contrastive Domain Discrepancy (class-conditional MMD between pseudobulk and
   bulk, keyed on `--class-column`), **fully supervised on the given labels**: a tissue
   counts only when it is in both domains of a batch (≥ `--class-min-count`), so

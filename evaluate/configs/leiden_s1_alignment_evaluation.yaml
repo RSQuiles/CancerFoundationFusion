@@ -1,0 +1,314 @@
+# Evaluation of the alignment-loss ablation (experiments/configs/leiden_s1_alignment.json):
+# nine runs warm-started from unified_baseline, 50k steps each, differing only in the
+# alignment loss they train on.
+#   align_ctrl, align_ctrl_s1   no alignment loss (seed 0 / 1): reference and noise floor
+#   align_mmd                   marginal (MMD)
+#   align_contrastive           class-conditional, tissue InfoNCE
+#   align_cdd                   class-conditional, CDD (no MMD warmup)
+#   align_paired                instance level, paired batches
+#   align_combo                 MMD + contrastive + paired
+#   align_agg_ctrl, align_agg   pseudobulk <-> its own cells; the control draws the same
+#                               cells but only logs the loss (loss_weight_agg 0)
+# The parent, unified_baseline, is a row everywhere (its embeddings and reconstruction runs
+# come from leiden_s1_baselines_evaluation.yaml; embed_parent re-embeds it if needed).
+#
+#   CONFIG=evaluate/configs/leiden_s1_alignment_evaluation.yaml sbatch evaluate/run_evaluation.sh
+#
+# How to read it:
+#   - an effect is a difference to align_ctrl that is larger than align_ctrl vs align_ctrl_s1;
+#   - bulk <-> pb: scib_bulk_pb (mixing vs tissue), the integration summary's pair links
+#     (test pairs were never seen in training: does align_paired generalize?);
+#   - pseudobulk <-> its cells (agg): scib_sc_pb and the summary's cell-mean links,
+#     compared within align_ctrl / align_agg_ctrl / align_agg only (agg batches differ);
+#   - the cost: bio conservation per modality (own panels), reconstruction with the
+#     expression decoder (gen) and from the CLS embedding alone (mvc), GeneICL.
+# Reconstruction line plots take at most 8 models, hence two comparisons per plan:
+# leiden_s1_alignment (parent + 7 main runs) and leiden_s1_alignment_agg.
+#
+# Prerequisite: curated tissue labels (map_archs4_tissue.sh --curate-only) before embed.
+
+project_root: /cluster/work/boeva/rquiles/CancerFoundationFusion
+
+shared:
+  root: /cluster/work/boeva/rquiles/unifiedFM_experiments
+
+default_environment: container
+environments:
+  container:                # bionemo image: CancerFoundation, GPU
+    command: [singularity, run, --nv,
+              --pwd, /cluster/work/boeva/rquiles/CancerFoundationFusion,
+              --bind, "/cluster/work/boeva/rquiles,/cluster/work/boeva/eheiss,/cluster/work/boeva/bulkFM",
+              /cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif,
+              python, -u]
+  geneicl:                  # GeneICL's eval env; run_probe reads $GENEICL_PYTHON
+    setup: |
+      source ~/.bashrc
+      conda activate geneicl || exit 1
+      export GENEICL_PYTHON="$(command -v python)"
+  host: {}                  # the env run_evaluation.sh activated (bulkFM: scib_metrics, matplotlib)
+
+tasks:
+  # ---- 1. embeddings (joint panel + own panel per modality) ----------------------------
+  embed:
+    shared:
+      split: leiden_s1
+      test_subset: 20000
+      stratify_by: [tissue_general]
+    steps:
+      cf_joint:
+        script: embed_splits
+        foreach:
+          model: &runs [align_ctrl, align_ctrl_s1, align_mmd, align_contrastive, align_cdd,
+                        align_paired, align_combo, align_agg_ctrl, align_agg]
+        args:
+          modalities: [sc, bulk, pseudobulk]
+          parts: [test]
+      cf_own_panel:
+        script: embed_splits
+        foreach:
+          model: *runs
+          modalities: [[sc], [bulk], [pseudobulk]]
+        args:
+          variant: own_panel
+          parts: [test]
+      embed_parent:             # only if unified_baseline was embedded before curating
+        script: embed_splits
+        enabled: false
+        foreach:
+          model: [unified_baseline]
+          modalities: [[sc, bulk, pseudobulk]]
+        args:
+          parts: [test]
+
+  # ---- 2. representation figures (CPU) -------------------------------------------------
+  representation:
+    shared:
+      part: test
+      stratify_by: [tissue_general]
+      skip_unknown: true
+      labels: {tissue_general: Tissue, modality: Modality, paired: Pair}
+    steps:
+      umap_bulk_pb:
+        script: umap
+        foreach: {modality: [bulk, pseudobulk]}
+        args:
+          models: &all [unified_baseline, align_ctrl, align_ctrl_s1, align_mmd, align_contrastive,
+                        align_cdd, align_paired, align_combo, align_agg_ctrl, align_agg]
+          variant: own_panel
+          subsample: 20000
+          color: [tissue_general]
+          title: "{model}: {modality_name} ({part})"
+      alignment:
+        args:
+          models: *all
+          per_modality: ["sc=5000", "bulk=all", "pseudobulk=all"]
+          color: [modality, tissue_general, paired]
+          connect_pairs: true
+          cell_means: true
+          link_col: pseudobulk_id
+          title: "{model}: modality alignment ({counts})"
+      alignment_pairs:
+        script: alignment
+        args:
+          models: *all
+          paired_only: true
+          per_modality: ["sc=all", "bulk=all", "pseudobulk=all"]
+          color: [modality, tissue_general]
+          connect_pairs: true
+          cell_means: true
+          link_col: paired
+          title: "{model}: test pairs, cells mean -> pseudobulk -> bulk ({counts})"
+
+  # ---- 3. integration: scIB + link metrics (bulkFM env) --------------------------------
+  integration:
+    shared:
+      part: test
+      label_key: tissue_general
+      filter: ["tissue_label_source=cellxgene,archs4"]
+      n_jobs: 4
+      row_labels: &row_labels
+        unified_baseline: "parent (no alignment)"
+        align_ctrl: "control"
+        align_ctrl_s1: "control (seed 1)"
+        align_mmd: "+ MMD"
+        align_contrastive: "+ contrastive"
+        align_cdd: "+ CDD"
+        align_paired: "+ paired"
+        align_combo: "+ MMD + contr. + paired"
+        align_agg_ctrl: "agg batches, control"
+        align_agg: "+ aggregation"
+    steps:
+      scib_bulk_pb:             # the main alignment table: batch = modality, label = tissue
+        environment: host
+        script: scib
+        args:
+          name: leiden_s1_alignment_bulk_pb
+          models: *all
+          pre_integrated: pca_leiden_s1
+          modalities: [bulk, pseudobulk]
+          per_modality: ["bulk=all", "pseudobulk=all"]
+          batch_key: modality
+      scib_sc_pb:               # the agg question (and side effects of the bulk losses)
+        environment: host
+        script: scib
+        args: &scib_sc
+          name: leiden_s1_alignment_sc_pb
+          models: *all
+          pre_integrated: pca_leiden_s1
+          modalities: [sc, pseudobulk]
+          per_modality: ["sc=5000", "pseudobulk=all"]
+          batch_key: modality
+      scib_all:
+        environment: host
+        script: scib
+        args:
+          <<: *scib_sc
+          name: leiden_s1_alignment_all
+          modalities: [sc, pseudobulk, bulk]
+          per_modality: ["sc=5000", "pseudobulk=all", "bulk=all"]
+      # Cost of alignment inside each modality: bio conservation on own panels.
+      scib_sc_tissue:
+        environment: host
+        script: scib
+        args: &bio
+          name: leiden_s1_alignment_sc_tissue
+          models: *all
+          variant: own_panel
+          bio_only: true
+          modalities: [sc]
+          per_modality: ["sc=all"]
+      scib_bulk_tissue:
+        environment: host
+        script: scib
+        args:
+          <<: *bio
+          name: leiden_s1_alignment_bulk_tissue
+          modalities: [bulk]
+          per_modality: ["bulk=all"]
+      scib_pb_tissue:
+        environment: host
+        script: scib
+        args:
+          <<: *bio
+          name: leiden_s1_alignment_pb_tissue
+          modalities: [pseudobulk]
+          per_modality: ["pseudobulk=all"]
+      # Link metrics (pair and cell-mean nearest neighbours) + one summary table.
+      summary:
+        environment: host
+        script: integration
+        drop: [filter, n_jobs]
+        args:
+          name: leiden_s1_alignment
+          models: *all
+          label_filter: ["tissue_label_source=cellxgene,archs4"]
+          min_cells: 5
+          scib_runs: [leiden_s1_alignment_bulk_pb, leiden_s1_alignment_sc_pb, leiden_s1_alignment_all]
+
+  # ---- 4. reconstruction: the cost on the decoders (r25 plans from the baseline eval) ---
+  reconstruction:
+    steps:
+      cf_gen:
+        script: reconstruction
+        foreach:
+          model: *runs
+          plan: &plans [sc:leiden_s1:test:r25, bulk:leiden_s1:test:r25, pseudobulk:leiden_s1:test:r25]
+        args: &cf_run
+          group_by: [tissue_general]
+          batch_size: 16
+      cf_mvc:
+        script: reconstruction
+        foreach:
+          model: *runs
+          plan: *plans
+        args:
+          <<: *cf_run
+          head: mvc
+      # Per plan, four comparisons (line plots take at most 8 models):
+      #   main (parent + 7 runs) and agg (parent, ctrl, agg_ctrl, agg), each for gen and mvc.
+      compare:                  # -> results/reconstruction/_compare/<plan>/<name>/
+        environment: host
+        foreach: {plan: *plans}
+        args: &cmp_main
+          name: leiden_s1_alignment
+          models: &recon_main [unified_baseline, align_ctrl, align_ctrl_s1, align_mmd, align_contrastive,
+                               align_cdd, align_paired, align_combo]
+          baselines: true
+      compare_agg:
+        script: compare
+        environment: host
+        foreach: {plan: *plans}
+        args: &cmp_agg
+          name: leiden_s1_alignment_agg
+          models: &recon_agg [unified_baseline, align_ctrl, align_agg_ctrl, align_agg]
+          baselines: true
+      compare_mvc:
+        script: compare
+        environment: host
+        foreach: {plan: *plans}
+        args: &cmp_main_mvc
+          name: leiden_s1_alignment_mvc
+          models: [unified_baseline@mvc, align_ctrl@mvc, align_ctrl_s1@mvc, align_mmd@mvc,
+                   align_contrastive@mvc, align_cdd@mvc, align_paired@mvc, align_combo@mvc]
+          baselines: true
+      compare_agg_mvc:
+        script: compare
+        environment: host
+        foreach: {plan: *plans}
+        args: &cmp_agg_mvc
+          name: leiden_s1_alignment_agg_mvc
+          models: [unified_baseline@mvc, align_ctrl@mvc, align_agg_ctrl@mvc, align_agg@mvc]
+          baselines: true
+      plot:                     # -> results/reconstruction/_plots/<plan>/<name>/
+        script: reconstruction_plot
+        environment: host
+        foreach: {plan: *plans}
+        args: *cmp_main
+      plot_agg:
+        script: reconstruction_plot
+        environment: host
+        foreach: {plan: *plans}
+        args: *cmp_agg
+      plot_mvc:
+        script: reconstruction_plot
+        environment: host
+        foreach: {plan: *plans}
+        args: *cmp_main_mvc
+      plot_agg_mvc:
+        script: reconstruction_plot
+        environment: host
+        foreach: {plan: *plans}
+        args: *cmp_agg_mvc
+
+  # ---- 5. GeneICL benchmark (bulk downstream tasks) --------------------------------------
+  geneicl:
+    shared:
+      geneicl_repo: /cluster/work/boeva/rquiles/Codebases/GeneICL
+      suite: benchmark
+    steps:
+      geneicl_embed:
+        foreach: {model: *runs}
+        args:
+          modality: bulk
+          gene_ids: auto
+          batch_size: 64
+      geneicl_probe:
+        environment: geneicl
+        foreach: {model: *runs}
+        args:
+          seed: 42
+          resume: true
+      geneicl_compare:
+        environment: geneicl
+        args:
+          models: &geneicl_models [unified_baseline, align_ctrl, align_ctrl_s1, align_mmd, align_contrastive,
+                                   align_cdd, align_paired, align_combo, align_agg_ctrl, align_agg, pca]
+          reference: [scfoundation, en]
+          name: leiden_s1_alignment
+      geneicl_plot:
+        environment: geneicl
+        args:
+          models: *geneicl_models
+          reference: [scfoundation, en]
+          name: leiden_s1_alignment
+          formats: [png, pdf]
