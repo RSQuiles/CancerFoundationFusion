@@ -32,14 +32,38 @@ PANEL_HEIGHT_INCHES = 4.6     # height of the scatter axes
 
 # Per-modality marker styling. Colour is used only when a panel is coloured by
 # modality; other panels recolour per point and keep the marker shape.
-MODALITY_STYLE: dict[str, dict] = {
-    "sc":         dict(color="#4393c3", s=4,  marker="o", linewidths=0),
-    "pseudobulk": dict(color="#4dac26", s=30, marker="^", linewidths=0.5, edgecolors="black"),
-    # "bulk":       dict(color="#d6604d", s=30, marker="D", linewidths=0.5, edgecolors="black"),
-    "bulk":       dict(color="#4393c3", s=4,  marker="o", linewidths=0),
-    "cell_mean":  dict(color="black", s=70, marker="*", linewidths=0.5, edgecolors="black", alpha=1.0),
+MODALITY_COLORS: dict[str, str] = {
+    "sc": "#2166ac",          # blue
+    "bulk": "#d6604d",        # red
+    "pseudobulk": "#4dac26",  # green
+    "cell_mean": "black",
 }
+_CELL_MEAN = dict(color="black", s=70, marker="*", linewidths=0.5, edgecolors="black", alpha=1.0)
+# Several modalities in one figure (plot_alignment): one shape per modality, sizes chosen
+# so circle, square and triangle look about equally large.
+JOINT_STYLE: dict[str, dict] = {
+    "sc":         dict(color=MODALITY_COLORS["sc"], s=8, marker="o", linewidths=0),
+    "bulk":       dict(color=MODALITY_COLORS["bulk"], s=7, marker="s", linewidths=0),
+    "pseudobulk": dict(color=MODALITY_COLORS["pseudobulk"], s=12, marker="^", linewidths=0),
+    "cell_mean":  _CELL_MEAN,
+}
+# One modality in the figure (plot_umap, plot_pca): circles; pseudobulks a little larger.
+SINGLE_STYLE: dict[str, dict] = {
+    "sc":         dict(color=MODALITY_COLORS["sc"], s=4, marker="o", linewidths=0),
+    "bulk":       dict(color=MODALITY_COLORS["bulk"], s=6, marker="o", linewidths=0),
+    "pseudobulk": dict(color=MODALITY_COLORS["pseudobulk"], s=10, marker="o", linewidths=0),
+    "cell_mean":  _CELL_MEAN,
+}
+MODALITY_STYLE = JOINT_STYLE  # the name other modules import
 _PLAIN_STYLE = dict(s=6, marker="o", linewidths=0)
+
+
+def _style_for(modality: np.ndarray | None) -> dict[str, dict]:
+    """``SINGLE_STYLE`` when the rows hold one data modality (cell means not counted)."""
+    if modality is None:
+        return JOINT_STYLE
+    data = {m for m in np.unique(modality) if m != "cell_mean"}
+    return SINGLE_STYLE if len(data) <= 1 else JOINT_STYLE
 
 
 def compute_umap(
@@ -123,11 +147,12 @@ def _scatter(ax, coords, modality, colors=None, order=None) -> None:
         ax.scatter(coords[:, 0], coords[:, 1], c=colors, alpha=None if colors is not None else 0.5,
                    rasterized=True, **_PLAIN_STYLE)
         return
+    styles = _style_for(modality)
     for mod in order or DRAW_ORDER:
         mask = modality == mod
         if not mask.any():
             continue
-        style = dict(MODALITY_STYLE.get(mod, _PLAIN_STYLE))
+        style = dict(styles.get(mod, _PLAIN_STYLE))
         if colors is not None:
             style.pop("color", None)
             style["c"] = colors[mask]
@@ -137,14 +162,15 @@ def _scatter(ax, coords, modality, colors=None, order=None) -> None:
 
 def _modality_handles(modality: np.ndarray, colored: bool) -> list:
     handles = []
+    styles = _style_for(modality)
     for mod in DRAW_ORDER:
         if not (modality == mod).any():
             continue
-        style = MODALITY_STYLE[mod]
+        style = styles[mod]
         color = style["color"] if colored else "dimgrey"
         handles.append(mlines.Line2D(
-            [], [], linestyle="None", markersize=6, marker=style["marker"], color=color,
-            markeredgecolor="black" if mod != "sc" else color, label=DISPLAY_NAMES[mod],
+            [], [], linestyle="None", markersize=9 if mod == "cell_mean" else 6,
+            marker=style["marker"], color=color, markeredgecolor=color, label=DISPLAY_NAMES[mod],
         ))
     return handles
 

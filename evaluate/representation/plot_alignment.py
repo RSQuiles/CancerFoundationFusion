@@ -77,7 +77,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--link-col", default="pseudobulk_id",
                         help="obs column linking cells to their pseudobulk (pseudobulk_id) or pair (paired)")
     parser.add_argument("--min-cells", type=int, default=5, help="Cells a key needs for its star")
-    parser.add_argument("--color", nargs="+", default=["modality", "tissue_general", PAIRED_COL])
+    parser.add_argument("--color", nargs="+", default=None,
+                        help="obs columns to colour by (default: modality tissue_general paired; "
+                             "with --paired-only: paired)")
     parser.add_argument("--skip-unknown", action="store_true")
     parser.add_argument("--max-legend-entries", type=int, default=None,
                         help="Cap a category legend to its N most frequent values plus a \"+K more\" line "
@@ -220,6 +222,8 @@ def collect(layout: ExperimentLayout, model: str, args, filters) -> tuple:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_with_config(build_parser(), "alignment", argv)
+    if args.color is None:
+        args.color = [args.paired_col] if args.paired_only else ["modality", "tissue_general", args.paired_col]
     if not args.models:
         sys.exit("Error: give --models")
     filters = parse_filter_specs(args.filter)

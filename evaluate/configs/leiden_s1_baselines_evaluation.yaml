@@ -178,7 +178,7 @@ tasks:
           models: *align_models
           paired_only: true
           per_modality: ["sc=all", "bulk=all", "pseudobulk=all"]
-          color: [modality, tissue_general]
+          color: [paired]            # shapes give the modality, colour the pair
           connect_pairs: true
           cell_means: true
           link_col: paired

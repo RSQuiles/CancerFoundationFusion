@@ -580,6 +580,15 @@ plus obs. `plot_alignment` fits ONE UMAP over all modalities and refuses files w
 - **Labels**: `--labels tissue_general=Tissue ...` (a mapping in YAML, usually top-level so
   both scripts share it) renames obs columns in panel and legend titles, including the
   modality legend. Category values and the saved parquet keep the raw names.
+- **Markers** (`render.SINGLE_STYLE` / `JOINT_STYLE`, picked by how many modalities a figure
+  holds):
+  - one modality (`plot_umap`, `plot_pca`): circles, pseudobulk a little larger;
+  - several (`plot_alignment`): circle = single cell, square = bulk, triangle =
+    pseudobulk, at about equal size, and the star for cell means.
+  - Colored by modality: single cell blue, bulk red, pseudobulk green
+    (`MODALITY_COLORS`). Other panels keep the shapes, and a gray shape legend explains
+    them.
+  - `plot_alignment --paired-only` colors by pair only, unless `--color` is given.
 - **Legends** (`render.draw_umap_panels`, shared by UMAP, PCA and alignment): a categorical
   panel always gets its legend, however many categories it has (single-cell
   `tissue_general` has more than 60, which used to drop it). The legend wraps every 30
