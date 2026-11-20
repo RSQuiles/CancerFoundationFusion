@@ -444,6 +444,10 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
     (equal rows per tissue, capped at what it has, leftovers passed on) or `sqrt`.
   - **`--unknown-frac F`:** caps unknown strata at `F * n` (0 = none); the freed share
     goes to the tissues.
+  - **`--cap-labels LABEL=F ...`** (YAML: a mapping): caps any named category the same
+    way (`utils.sampling.label_caps`). Used for the large non-tissue categories:
+    single-cell `paired` (the paired datasets) and the ARCHS4 bulk annotations `cell
+    line`, `in vitro`, `xenograft` (unrelated to the pairs).
   - **`--keep-linked paired:0`** (test part): keeps test pairs **in every modality or in
     none**. Keys are taken in a seeded hash order and accepted only while, in every
     modality of `--link-modalities`, their rows (at most `--linked-per-key`) fit
@@ -451,9 +455,16 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
     call per modality (own_panel) therefore keeps the same pairs.
     Linked rows not selected are excluded from the random fill, so a pair never enters
     one modality only.
+  - **`--linked-quota`:**
+    - `budget` (default): pairs are bounded by `--linked-frac` only. Their rows count toward
+      their stratum, which may exceed its quota or cap through pairs alone; the other
+      strata are re-allocated, so the total stays `n`.
+    - `stratum`: the pairs must also fit their stratum's quota. That admits few pairs when
+      they form a stratum of their own, as the single-cell `paired` cells do.
   - Kept rows count toward their tissue's quota. All values and the kept keys and rows
     go to `embed.json`.
-  - The leiden_s1 configs use balanced, 5% unknown, pairs within 25%, 50 cells per pair.
+  - The leiden_s1 configs use balanced, 5% unknown, 5% caps on those four labels, pairs
+    within 25% (`budget`), 10 cells per pair (a cell mean needs 5).
   - The defaults draw exactly the rows they drew before. The plot scripts take
     `--stratify-mode` and `--unknown-frac` for their own subsample.
 - `embed_splits.py` embeds every requested modality and part **in one call, through one

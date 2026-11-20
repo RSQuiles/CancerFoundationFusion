@@ -234,6 +234,57 @@ def unknown_caps(
     return {k: int(v) for k, v in shares.items()}
 
 
+def label_caps(sizes: pd.Series, n: int, caps: dict | None) -> dict:
+    """``{stratum: max rows}`` for ``caps`` = ``{label: frac}``: a label's strata get ``frac * n``.
+
+    A stratum carries a label when its label, or one part of a joint stratum
+    (``tissue | assay``), equals it (case/space/hyphen-insensitive). The share is split
+    among a label's strata in proportion to their sizes. Used for large categories that
+    are not tissues (e.g. ``paired``, ``cell line``) so they cannot dominate a subsample.
+    """
+    out: dict = {}
+    for label, frac in (caps or {}).items():
+        target = fold_label(label)
+        hit = [k for k in sizes.index if any(fold_label(part) == target for part in str(k).split(_SEP))]
+        if not hit:
+            continue
+        budget = max(0, int(np.floor(float(frac) * n)))
+        part = sizes.loc[hit].astype("int64")
+        shares = allocate(part, budget, min_per_stratum=0) if budget < int(part.sum()) else part
+        for k, v in shares.items():
+            out[k] = min(out.get(k, int(v)), int(v))
+    return out
+
+
+def parse_label_caps(spec) -> dict:
+    """``{"cell line": 0.05}`` or ``["cell line=0.05", "paired=0.05"]`` -> ``{label: frac}``."""
+    if not spec:
+        return {}
+    if isinstance(spec, dict):
+        items = spec.items()
+    else:
+        items = []
+        for entry in spec:
+            label, sep, frac = str(entry).rpartition("=")
+            if not sep or not label.strip():
+                raise ValueError(f"Label cap {entry!r} must look like LABEL=FRACTION")
+            items.append((label.strip(), frac))
+    out = {}
+    for label, frac in items:
+        value = float(frac)
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"Label cap for {label!r} must be in [0, 1], got {value}")
+        out[str(label)] = value
+    return out
+
+
+def _all_caps(sizes, n, unknown_frac, unknown_labels, caps) -> dict:
+    merged = dict(unknown_caps(sizes, n, unknown_frac, unknown_labels))
+    for k, v in label_caps(sizes, n, caps).items():
+        merged[k] = min(merged.get(k, v), v)
+    return merged
+
+
 def stratum_quotas(
     labels: pd.Series,
     n: int,
@@ -241,11 +292,12 @@ def stratum_quotas(
     mode: str = "proportional",
     unknown_frac: float | None = None,
     unknown_labels: Iterable[str] = (),
+    caps: dict | None = None,
 ) -> pd.Series:
-    """Rows per stratum for a subsample of ``n`` (``allocate`` with the unknown cap)."""
+    """Rows per stratum for a subsample of ``n`` (``allocate`` with the unknown and label caps)."""
     sizes = labels.value_counts()
-    caps = unknown_caps(sizes, n, unknown_frac, unknown_labels)
-    return allocate(sizes, int(n), min_per_stratum, mode=mode, caps=caps)
+    return allocate(sizes, int(n), min_per_stratum, mode=mode,
+                    caps=_all_caps(sizes, n, unknown_frac, unknown_labels, caps))
 
 
 def stratified_subsample(
@@ -259,6 +311,7 @@ def stratified_subsample(
     unknown_labels: Iterable[str] = (),
     keep: Iterable[str] | None = None,
     exclude: Iterable[str] | None = None,
+    caps: dict | None = None,
 ) -> pd.Index:
     """Obs names of a stratified random subsample of ``n`` rows, in original order.
 
@@ -269,7 +322,10 @@ def stratified_subsample(
     the rest of each quota is drawn from the other rows. ``exclude`` names rows that are
     never drawn (unless also in ``keep``), e.g. the linked rows not selected, so a pair
     cannot enter one modality through the random fill; quotas are computed on the rows
-    left. The defaults reproduce the original draw exactly.
+    left. ``caps`` (``{label: frac}``, see ``label_caps``) bounds named categories. When
+    the kept rows of a stratum exceed its quota they are all taken and the other strata
+    are re-allocated over what is left, so the total stays ``n``. The defaults reproduce
+    the original draw exactly.
     """
     if exclude is not None:
         out = obs.index.isin(list(exclude))
@@ -279,10 +335,21 @@ def stratified_subsample(
     if n is None or n >= len(obs):
         return obs.index.copy()
     labels = stratum_labels(obs, strata)
-    quotas = stratum_quotas(labels, int(n), min_per_stratum, mode, unknown_frac, unknown_labels)
+    quotas = stratum_quotas(labels, int(n), min_per_stratum, mode, unknown_frac, unknown_labels, caps)
     rng = np.random.default_rng(seed)
     positions = np.arange(len(obs))
     kept = obs.index.isin(list(keep)) if keep is not None else np.zeros(len(obs), dtype=bool)
+    if kept.any():
+        kept_counts = labels[kept].value_counts().reindex(quotas.index, fill_value=0)
+        over = kept_counts > quotas
+        if over.any():
+            rest = labels[~labels.isin(quotas.index[over])]
+            n_rest = max(0, int(n) - int(kept_counts[over].sum()))
+            quotas = pd.concat([
+                kept_counts[over],
+                stratum_quotas(rest, n_rest, min_per_stratum, mode, unknown_frac, unknown_labels, caps)
+                if len(rest) else pd.Series(dtype="int64"),
+            ])
     chosen: list[np.ndarray] = [positions[kept]] if kept.any() else []
     for stratum, quota in quotas.items():
         in_stratum = (labels == stratum).to_numpy()
@@ -332,6 +399,8 @@ def select_linked_rows(
     linked_frac: float = 0.25,
     per_key: int | None = None,
     seed: int = 0,
+    caps: dict | None = None,
+    linked_quota: str = "budget",
 ) -> tuple[dict[str, pd.Index], dict]:
     """Rows to keep because they carry a link (a pair id), chosen jointly over ``pools``.
 
@@ -348,7 +417,16 @@ def select_linked_rows(
     so links never take more than a fraction of the sample nor more than a stratum's
     share, and a pair is kept in all modalities or in none. Returns the kept obs names
     per pool and a summary (keys available / accepted, rows per pool).
+
+    ``linked_quota="budget"`` (default) drops the per-stratum condition: only the linked
+    budget bounds the pairs. Their rows still count toward their stratum's quota in
+    ``stratified_subsample``, so a stratum exceeds its quota only through pairs. This
+    matters when the pairs make up a stratum of their own (single-cell ``paired``), whose
+    balanced or capped quota would otherwise admit only a few pairs. ``"stratum"`` keeps
+    the per-stratum condition.
     """
+    if linked_quota not in ("budget", "stratum"):
+        raise ValueError(f"linked_quota must be 'budget' or 'stratum', got {linked_quota!r}")
     link_specs = list(link_specs)
     state = {}
     all_keys: set[str] = set()
@@ -357,7 +435,7 @@ def select_linked_rows(
         full = n is None or n >= len(obs)
         labels = stratum_labels(obs, strata)
         quotas = None if full else stratum_quotas(labels, int(n), min_per_stratum, mode,
-                                                  unknown_frac, unknown_labels)
+                                                  unknown_frac, unknown_labels, caps)
         keys = row_link_keys(obs, link_specs).dropna()
         rows_by_key: dict[str, list[str]] = {}
         for key, idx in keys.groupby(keys).groups.items():
@@ -389,11 +467,12 @@ def select_linked_rows(
                 fits = False
                 break
             counts = st["labels"].loc[rows].value_counts()
-            over = (st["used"].reindex(counts.index, fill_value=0) + counts
-                    > st["quota"].reindex(counts.index, fill_value=0))
-            if over.any():
-                fits = False
-                break
+            if linked_quota == "stratum":
+                over = (st["used"].reindex(counts.index, fill_value=0) + counts
+                        > st["quota"].reindex(counts.index, fill_value=0))
+                if over.any():
+                    fits = False
+                    break
             plan[name] = (rows, counts)
         if not fits or not plan:
             continue
@@ -407,6 +486,7 @@ def select_linked_rows(
     kept = {name: pd.Index(st["kept"]) for name, st in state.items()}
     info = {
         "link_specs": link_specs,
+        "linked_quota": linked_quota,
         "keys_available": len(all_keys),
         "keys_accepted": accepted,
         "rows": {name: len(v) for name, v in kept.items()},

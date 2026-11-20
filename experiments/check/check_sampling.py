@@ -198,7 +198,7 @@ def check_links() -> None:
     pools = {"sc": sc, "bulk": bulk, "pseudobulk": pb}
     budgets = {"sc": 2000, "bulk": 1000, "pseudobulk": None}
     kept, info = select_linked_rows(pools, budgets, ["paired:0"], ["tissue"], mode="balanced",
-                                    linked_frac=0.25, per_key=10, seed=0)
+                                    linked_frac=0.25, per_key=10, seed=0, linked_quota="stratum")
     keys = {m: set(pools[m].loc[kept[m], "paired"]) for m in pools}
     chk("the same pairs in every modality", keys["sc"] == keys["bulk"] == keys["pseudobulk"],
           str({m: len(k) for m, k in keys.items()}))
@@ -208,16 +208,16 @@ def check_links() -> None:
           pools["sc"].loc[kept["sc"]].groupby("paired").size().max() <= 10)
     q = stratum_quotas(stratum_labels(sc, ["tissue"]), 2000, mode="balanced")
     per_t = sc.loc[kept["sc"], "tissue"].value_counts()
-    chk("linked rows within each stratum's quota", bool((per_t <= q.reindex(per_t.index)).all()),
+    chk("linked_quota=stratum: linked rows within each stratum's quota", bool((per_t <= q.reindex(per_t.index)).all()),
           f"{per_t.to_dict()} vs {q.to_dict()}")
     tight, tinfo = select_linked_rows(pools, {"sc": 2000, "bulk": 20, "pseudobulk": None}, ["paired:0"],
-                                      ["tissue"], linked_frac=0.25, per_key=10, seed=0)
+                                      ["tissue"], linked_frac=0.25, per_key=10, seed=0, linked_quota="stratum")
     tkeys = {m: set(pools[m].loc[tight[m], "paired"]) for m in pools}
     chk("a pair that does not fit one modality is dropped from all",
           len(tkeys["bulk"]) <= 5 and tkeys["sc"] == tkeys["bulk"] == tkeys["pseudobulk"],
           str(tinfo))
     again, _ = select_linked_rows({"bulk": bulk}, {"bulk": 1000}, ["paired:0"], ["tissue"], mode="balanced",
-                                  linked_frac=0.25, per_key=10, seed=0)
+                                  linked_frac=0.25, per_key=10, seed=0, linked_quota="stratum")
     chk("key order does not depend on the other pools (subset call agrees)",
           set(again["bulk"]) >= set(kept["bulk"]))
     sub = stratified_subsample(bulk, 1000, ["tissue"], mode="balanced", keep=kept["bulk"], seed=1)
@@ -232,12 +232,63 @@ def check_links() -> None:
         and len(sub_sc) == 2000)
 
 
+def check_caps() -> None:
+    print("\n-- label caps, pairs that form their own stratum --")
+    from utils.sampling import label_caps, parse_label_caps
+
+    sizes = pd.Series({"paired": 6000, "cell line | 10x": 3000, "lung": 500, "liver": 500})
+    caps = label_caps(sizes, 1000, {"paired": 0.05, "Cell Line": 0.1})
+    chk("a capped label gets at most frac * n (joint stratum and case-insensitive match)",
+        caps == {"paired": 50, "cell line | 10x": 100}, str(caps))
+    q = allocate(sizes, 1000, mode="proportional", caps=caps)
+    chk("capped share goes to the other strata", q["paired"] == 50 and q["cell line | 10x"] == 100
+        and int(q.sum()) == 1000 and q["lung"] == q["liver"] == 425, str(q.to_dict()))
+    chk("caps parse from a mapping or KEY=VALUE list",
+        parse_label_caps({"paired": 0.05}) == parse_label_caps(["paired=0.05"]) == {"paired": 0.05})
+    chk("a cap outside [0, 1] is refused", raises(lambda: parse_label_caps(["x=2"])))
+    labels = pd.Series(["unknown"] * 700 + ["lung"] * 300)
+    chk("the unknown cap is unchanged by label caps",
+        stratum_quotas(labels, 100, unknown_frac=0.05).to_dict()
+        == stratum_quotas(labels, 100, unknown_frac=0.05, caps={}).to_dict())
+
+    # single cell: every pair's cells form the 'paired' stratum (as in SC_pretraining)
+    rng = np.random.default_rng(1)
+    n_pairs, per = 40, 30
+    t = np.array(["paired"] * (n_pairs * per) + list(rng.choice([f"t{i}" for i in range(30)], 20000)))
+    paired = np.r_[np.repeat(np.arange(1, n_pairs + 1), per), np.zeros(20000, dtype=int)]
+    sc = pd.DataFrame({"tissue": t, "paired": paired}, index=[f"c{i}" for i in range(len(t))])
+    bulk = pd.DataFrame({"tissue": ["unknown"] * n_pairs + ["lung"] * 3000,
+                         "paired": np.r_[np.arange(1, n_pairs + 1), np.zeros(3000, dtype=int)]},
+                        index=[f"b{i}" for i in range(n_pairs + 3000)])
+    pools, budgets = {"sc": sc, "bulk": bulk}, {"sc": 2000, "bulk": 1000}
+    capd = {"paired": 0.05}
+    strict, sinfo = select_linked_rows(pools, budgets, ["paired:0"], ["tissue"], mode="balanced", caps=capd,
+                                       unknown_frac=0.05, linked_frac=0.25, per_key=10, seed=0,
+                                       linked_quota="stratum")
+    loose, linfo = select_linked_rows(pools, budgets, ["paired:0"], ["tissue"], mode="balanced", caps=capd,
+                                      unknown_frac=0.05, linked_frac=0.25, per_key=10, seed=0)
+    chk("stratum rule: the capped 'paired' stratum admits only a few pairs",
+        sinfo["keys_accepted"] <= 10, str(sinfo))
+    chk("budget rule (default): every pair kept, bounded by linked_frac",
+        linfo["keys_accepted"] == n_pairs and linfo["rows"]["sc"] == n_pairs * 10, str(linfo))
+    sub_sc = stratified_subsample(sc, 2000, ["tissue"], mode="balanced", caps=capd, keep=loose["sc"],
+                                  exclude=sc.index[sc["paired"] > 0], seed=0)
+    comp = sc.loc[sub_sc, "tissue"].value_counts()
+    chk("pairs above the stratum's cap: total still n, 'paired' = the pair cells only",
+        len(sub_sc) == 2000 and comp["paired"] == n_pairs * 10, str(comp.head().to_dict()))
+    others = comp.drop("paired")
+    chk("the other strata stay balanced", others.max() - others.min() <= 1, str(others.describe().to_dict()))
+    chk("unknown linked_quota refused",
+        raises(lambda: select_linked_rows(pools, budgets, ["paired:0"], linked_quota="nope")))
+
+
 def main() -> None:
     check_filters()
     check_allocation()
     check_subsample()
     check_modes()
     check_links()
+    check_caps()
     check_split()
     finish()
 

@@ -52,7 +52,9 @@ from embed.embed import (  # noqa: E402
     write_embeddings,
 )
 from experiments.layout import EMBEDDING_PARTS, ExperimentLayout, canonical_modality  # noqa: E402
-from utils.sampling import STRATIFY_MODES, row_link_keys, select_linked_rows, stratified_subsample  # noqa: E402
+from utils.sampling import (  # noqa: E402
+    STRATIFY_MODES, parse_label_caps, row_link_keys, select_linked_rows, stratified_subsample,
+)
 
 PART_COL = "_embed_part"
 
@@ -98,6 +100,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "0 leaves them out). Their unused share goes to the other strata.")
     parser.add_argument("--unknown-labels", nargs="*", default=[],
                         help="Extra labels that count as unknown (unknown, nan, none, n/a and empty always do).")
+    parser.add_argument("--cap-labels", nargs="*", default=[], metavar="LABEL=FRACTION",
+                        help="At most this share of the subset for strata carrying LABEL (e.g. "
+                             "paired=0.05 \"cell line=0.05\"); YAML may give a mapping. The freed share "
+                             "goes to the other strata.")
     parser.add_argument("--keep-linked", nargs="*", default=[], metavar="COL[:NOLINK,...]",
                         help="Test part: keep rows linked by these columns (e.g. paired:0), the same "
                              "keys in every modality, within --linked-frac and each stratum's quota.")
@@ -105,6 +111,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="With --keep-linked: at most this share of a modality's test subset is linked rows.")
     parser.add_argument("--linked-per-key", type=int, default=None,
                         help="With --keep-linked: at most this many rows per link key (e.g. cells per pair).")
+    parser.add_argument("--linked-quota", default="budget", choices=["budget", "stratum"],
+                        help="With --keep-linked: budget = pairs bounded only by --linked-frac (their rows "
+                             "still count toward their stratum, which may then exceed its quota); stratum = "
+                             "also within each stratum's quota (fewer pairs when they form a stratum, "
+                             "e.g. single-cell 'paired').")
     parser.add_argument("--link-modalities", nargs="+", default=["sc", "bulk", "pseudobulk"],
                         help="With --keep-linked: modalities whose test parts decide the kept keys "
                              "(the same in every call, also one-modality own_panel calls).")
@@ -182,6 +193,7 @@ def linked_test_rows(layout: ExperimentLayout, args) -> tuple[dict, dict]:
         pools, budgets, args.keep_linked, strata, mode=args.stratify_mode,
         unknown_frac=args.unknown_frac, unknown_labels=args.unknown_labels,
         linked_frac=args.linked_frac, per_key=args.linked_per_key, seed=args.seed,
+        caps=parse_label_caps(args.cap_labels), linked_quota=args.linked_quota,
     )
     print(f"  [keep-linked] {info['keys_accepted']} of {info['keys_available']} link keys kept; "
           f"rows per modality: {info['rows']}")
@@ -222,13 +234,14 @@ def collect_rows(layout: ExperimentLayout, args, label: str, keep=None):
             selected["test"] = stratified_subsample(
                 test_obs, _size(args.test_subset), strata, seed=args.seed, mode=args.stratify_mode,
                 unknown_frac=args.unknown_frac, unknown_labels=args.unknown_labels, keep=keep,
-                exclude=linked_rows,
+                exclude=linked_rows, caps=parse_label_caps(args.cap_labels),
             )
         if "train_subset" in args.parts:
             train_obs = obs[obs.index.isin(lists["train"])]
             selected["train_subset"] = stratified_subsample(
                 train_obs, _size(args.train_subset), strata, seed=args.seed, mode=args.stratify_mode,
                 unknown_frac=args.unknown_frac, unknown_labels=args.unknown_labels,
+                caps=parse_label_caps(args.cap_labels),
             )
 
         pieces = []
@@ -323,7 +336,9 @@ def main(argv: list[str] | None = None) -> None:
         "stratify_mode": args.stratify_mode,
         "unknown_frac": args.unknown_frac,
         "unknown_labels": args.unknown_labels,
+        "cap_labels": parse_label_caps(args.cap_labels),
         "keep_linked": args.keep_linked,
+        "linked_quota": args.linked_quota if args.keep_linked else None,
         "linked_frac": args.linked_frac if args.keep_linked else None,
         "linked_per_key": args.linked_per_key if args.keep_linked else None,
         "linked_keys": ({"accepted": linked_info["keys_accepted"], "available": linked_info["keys_available"],

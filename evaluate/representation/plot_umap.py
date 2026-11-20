@@ -29,7 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from evaluate._cli import format_title, parse_mapping, parse_with_config  # noqa: E402
 from experiments.layout import ExperimentLayout, canonical_modality  # noqa: E402
-from utils.sampling import filter_mask, filter_tag, parse_filter_specs, STRATIFY_MODES, stratified_subsample  # noqa: E402
+from utils.sampling import filter_mask, filter_tag, parse_filter_specs, parse_label_caps, STRATIFY_MODES, stratified_subsample  # noqa: E402
 from evaluate.io import EMB_KEY, load_embedding, load_external  # noqa: E402
 from evaluate.modalities import DISPLAY_NAMES  # noqa: E402
 from evaluate.representation.render import compute_umap, draw_umap_panels, save_coords, save_figure  # noqa: E402
@@ -59,6 +59,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "balanced (equal per stratum, capped at its size) or sqrt.")
     parser.add_argument("--unknown-frac", type=float, default=None,
                         help="At most this share of the subsample for unknown strata (0 = none).")
+    parser.add_argument("--cap-labels", nargs="*", default=[], metavar="LABEL=FRACTION",
+                        help="At most this share of the subset for strata carrying LABEL (e.g. "
+                             "paired=0.05 \"cell line=0.05\"); YAML may give a mapping. The freed share "
+                             "goes to the other strata.")
     parser.add_argument("--color", nargs="+", default=["tissue_general"], help="obs columns to colour by")
     parser.add_argument("--skip-unknown", action="store_true", help="Grey out unknown/NaN labels")
     parser.add_argument("--max-legend-entries", type=int, default=None,
@@ -84,7 +88,8 @@ def prepare(adata, filters, args, label: str):
     strata = [c for c in args.stratify_by if c in sub.obs.columns]
     n = args.subsample if args.subsample and args.subsample > 0 else None
     keep = stratified_subsample(sub.obs, n, strata, args.min_per_stratum, args.seed,
-                                mode=args.stratify_mode, unknown_frac=args.unknown_frac)
+                                mode=args.stratify_mode, unknown_frac=args.unknown_frac,
+                                caps=parse_label_caps(args.cap_labels))
     sub = sub[sub.obs_names.isin(keep)].copy()
     print(f"  {label}: plotting {sub.n_obs} rows" + (f" (stratified on {strata})" if strata and n else ""))
     return sub

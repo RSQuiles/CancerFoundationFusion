@@ -55,14 +55,19 @@ tasks:
       test_subset: 20000
       stratify_by: [tissue_general]
       # Tissue-balanced test subsets: equal rows per tissue (capped at what a tissue has),
-      # "unknown" at most 5%, and every test pair kept in all modalities while it fits
-      # (pairs at most 25% of a subset and never more than their tissue's share; 50 cells
-      # per pair). Metrics on these files weight tissues about equally.
+      # "unknown" at most 5%, and the large non-tissue categories at most 5% each:
+      # single-cell "paired" (the paired datasets) and the ARCHS4 bulk annotations
+      # "cell line", "in vitro", "xenograft". Every test pair is kept in all modalities
+      # while the pairs fit 25% of a subset (10 cells per pair, enough for a cell mean);
+      # pair rows may exceed their stratum's cap (single-cell "paired"), nothing else
+      # can. Metrics on these files weight tissues about equally.
       stratify_mode: balanced
       unknown_frac: 0.05
+      cap_labels: {paired: 0.05, "cell line": 0.05, "in vitro": 0.05, xenograft: 0.05}
       keep_linked: ["paired:0"]
       linked_frac: 0.25
-      linked_per_key: 50
+      linked_per_key: 10
+      linked_quota: budget
     steps:
       cf_joint:
         script: embed_splits
@@ -96,6 +101,7 @@ tasks:
       stratify_by: [tissue_general]
       stratify_mode: balanced
       unknown_frac: 0.05
+      cap_labels: {paired: 0.05, "cell line": 0.05, "in vitro": 0.05, xenograft: 0.05}
       skip_unknown: true
       labels: {tissue_general: Tissue, modality: Modality, paired: Pair}
     steps:

@@ -76,6 +76,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "balanced (equal per stratum, capped at its size) or sqrt.")
     parser.add_argument("--unknown-frac", type=float, default=None,
                         help="At most this share of the subsample for unknown strata (0 = none).")
+    parser.add_argument("--cap-labels", nargs="*", default=[], metavar="LABEL=FRACTION",
+                        help="At most this share of the subset for strata carrying LABEL (e.g. "
+                             "paired=0.05 \"cell line=0.05\"); YAML may give a mapping. The freed share "
+                             "goes to the other strata.")
     parser.add_argument("--color", nargs="+", default=["tissue_general"], help="obs columns to colour by")
     parser.add_argument("--skip-unknown", action="store_true", help="Grey out unknown/NaN labels")
     parser.add_argument("--max-legend-entries", type=int, default=None,
