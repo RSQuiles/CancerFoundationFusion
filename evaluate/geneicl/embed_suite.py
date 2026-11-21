@@ -19,8 +19,8 @@ normalizes for itself. The panel is fitted per dataset, on all of its rows and w
 labels, as GeneICL's FM extractors do. ``--gene-ids auto`` (the default for a model)
 renames the symbols to Ensembl IDs when that overlaps the model vocabulary more.
 
-Datasets whose ``.npz`` exists are skipped unless ``--overwrite``; a directory written
-by another checkpoint or embedder is refused. Rows the embedder could not embed
+Every dataset is (re)embedded by default; with ``--no-overwrite`` the existing ``.npz``
+files are skipped and a directory written by another checkpoint or embedder is refused. Rows the embedder could not embed
 (non-finite) stop the run, since the probe would silently impute them.
 """
 
@@ -79,7 +79,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Modality the gene panel is selected for (GeneICL data is bulk)")
     parser.add_argument("--out-dir", type=Path, default=None,
                         help="Output directory (default: embeddings/<model>/geneicl_<suite>/)")
-    parser.add_argument("--overwrite", action="store_true", help="Re-embed datasets that already have a file")
+    parser.add_argument("--overwrite", action=argparse.BooleanOptionalAction, default=True,
+                        help="Re-embed datasets that already have a file (default); --no-overwrite skips them")
     add_normalization_args(parser)
     add_input_mode_args(parser)
     add_model_run_args(parser)
@@ -122,7 +123,7 @@ def check_identity(card: dict, identity: dict, overwrite: bool) -> None:
     if differ:
         details = "; ".join(f"{k}: on disk {a!r}, now {b!r}" for k, (a, b) in differ.items())
         raise SystemExit(f"Error: the existing GeneICL embeddings were made differently ({details}). "
-                         "Pass --overwrite to re-embed every dataset.")
+                         "Drop --no-overwrite to re-embed every dataset.")
 
 
 def embed_suite(

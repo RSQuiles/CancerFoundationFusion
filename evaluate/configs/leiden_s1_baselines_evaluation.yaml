@@ -76,21 +76,21 @@ tasks:
   embed:
     shared:
       split: leiden_s1
-      test_subset: 20000          # per modality, stratified; bulk / pb keep all rows if fewer
+      test_subset: 25000          # per modality, stratified; bulk / pb keep all rows if fewer
       stratify_by: [tissue_general]
-      # Tissue-balanced test subsets: equal rows per tissue (capped at what a tissue has),
-      # "unknown" at most 5%, and the large non-tissue categories at most 5% each:
-      # single-cell "paired" (the paired datasets) and the ARCHS4 bulk annotations
-      # "cell line", "in vitro", "xenograft". Every test pair is kept in all modalities
-      # while the pairs fit 25% of a subset (10 cells per pair, enough for a cell mean);
-      # pair rows may exceed their stratum's cap (single-cell "paired"), nothing else
-      # can. Metrics on these files weight tissues about equally.
-      stratify_mode: balanced
+      # Proportional test subsets (each tissue keeps its share of the data), with caps on
+      # the categories that would otherwise dominate: "unknown" at most 5%, single-cell
+      # "paired" (the paired datasets) and bulk "cell line" (an ARCHS4 annotation) at most
+      # 10% each, "in vitro" and "xenograft" at most 5%; the freed share goes to the other
+      # tissues. Every test pair is kept in all modalities while the pairs fit 25% of a
+      # subset (6250 rows), with up to 100 cells per pair; pair rows may exceed their
+      # stratum's cap (single-cell "paired"), nothing else can.
+      stratify_mode: proportional
       unknown_frac: 0.05
-      cap_labels: {paired: 0.05, "cell line": 0.05, "in vitro": 0.05, xenograft: 0.05}
+      cap_labels: {paired: 0.1, "cell line": 0.1, "in vitro": 0.05, xenograft: 0.05}
       keep_linked: ["paired:0"]
       linked_frac: 0.25
-      linked_per_key: 10
+      linked_per_key: 100
       linked_quota: budget
     steps:
       cf_joint:
@@ -148,9 +148,9 @@ tasks:
     shared:
       part: test
       stratify_by: [tissue_general]
-      stratify_mode: balanced
+      stratify_mode: proportional
       unknown_frac: 0.05
-      cap_labels: {paired: 0.05, "cell line": 0.05, "in vitro": 0.05, xenograft: 0.05}
+      cap_labels: {paired: 0.1, "cell line": 0.1, "in vitro": 0.05, xenograft: 0.05}
       skip_unknown: true
       labels: {tissue_general: Tissue, cell_type: Cell type, assay: Assay, dataset_id: Dataset,
                modality: Modality, paired: Pair}
@@ -211,7 +211,7 @@ tasks:
       # ARCHS4-mapped bulk tissues. Leaves out "unknown" and the culture categories
       # (cell line, in vitro, xenograft), which are not tissues to conserve or align.
       filter: ["tissue_label_source=cellxgene,archs4"]
-      n_jobs: 4
+      n_jobs: 1
       row_labels: &row_labels
         sc_baseline: "sc only"
         bulk_baseline: "bulk only"
@@ -336,6 +336,7 @@ tasks:
           n_samples: 2000
           zero_fraction: 0.4
           stratify_by: [tissue_general]
+          overwrite: true         # replace an existing plan of this name (false = refuse)
       mask_plan_bulk_pb:
         script: mask_plan
         environment: host
@@ -348,6 +349,7 @@ tasks:
           seq_len: 1200
           n_samples: 2000
           stratify_by: [tissue_general]
+          overwrite: true
 
       # Expression decoder (default head) -> results/reconstruction/<model>/<plan>/
       cf_gen:
@@ -414,7 +416,8 @@ tasks:
 
   # ---- 5. GeneICL benchmark (bulk downstream tasks) --------------------------------------
   # Final checkpoints. bulkformer's probe results are reused from earlier evaluations;
-  # pca is (re)run with skips: embed_suite skips existing files, run_probe --resume.
+  # Everything is recomputed: embed_suite overwrites existing files (overwrite: false
+  # skips them) and run_probe recomputes every fold (resume: true keeps finished ones).
   geneicl:
     shared:
       geneicl_repo: /cluster/work/boeva/rquiles/Codebases/GeneICL
@@ -426,16 +429,18 @@ tasks:
           modality: bulk          # the GeneICL datasets are bulk
           gene_ids: auto
           batch_size: 64
+          overwrite: true
       geneicl_embed_pca:
         script: geneicl_embed
         args:
           embedder: pca
+          overwrite: true
       geneicl_probe:
         environment: geneicl
         foreach: {model: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, pca]}
         args:
           seed: 42
-          resume: true
+          resume: false
       geneicl_compare:            # -> results/geneicl_benchmark/_compare/leiden_s1_baselines/
         environment: geneicl
         args:

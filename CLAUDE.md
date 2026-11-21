@@ -437,8 +437,8 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
   - `embed.json` records `input_mode`, `zero_fraction` and `panel_size`. A ranking's
     `panel_<hash>.txt` lists the mode, the zero fraction and the genes in rank order, and
     the hash covers all three; fixed panels keep the old sorted-set hash. A GeneICL
-    directory embedded before input modes is refused until `--overwrite` (or
-    `--input-mode legacy_panel`).
+    directory embedded before input modes is refused with `--no-overwrite` (the default
+    `--overwrite` re-embeds it; or `--input-mode legacy_panel`).
 - **Test and train subsets** (`embed_splits.py`, `utils.sampling`):
   - **`--stratify-mode`:** `proportional` (default: the data's tissue mix), `balanced`
     (equal rows per tissue, capped at what it has, leftovers passed on) or `sqrt`.
@@ -661,7 +661,7 @@ errors, so keep only options every reader has at the top level (usually `root`).
 ```bash
 # 1. a model-independent mask plan -> data/<mod>/splits/<split>/masks/<part>_<name>.npz
 python -m evaluate.reconstruction.mask_plan --modality bulk --split leiden_s0 --part test --name r25 \
-    --mask-ratio 0.25 --seq-len 1200 --n-samples 2000 [--gene-universe genes.txt] [--zero-fraction 0.4]
+    --mask-ratio 0.25 --seq-len 1200 --n-samples 2000 [--gene-universe genes.txt] [--zero-fraction 0.4]     [--no-overwrite]   # an existing plan of the name is replaced by default
 # 2. score models on it -> results/reconstruction/<name>/<plan>/
 python -m evaluate.reconstruction.run_reconstruction --model unified_v1 --plan bulk:leiden_s0:test:r25 [--head mvc]   # mvc -> row unified_v1@mvc
 python -m evaluate.reconstruction.run_reconstruction --reconstructor bulkformer --name bulkformer \
@@ -813,6 +813,7 @@ python -m evaluate.integration.scib_benchmark --name tissue_s0_test --plot-only 
   (several are pooled); without the flag one modality is refused. The table has a "Bio
   conservation" score and no "Total". `--kbet` and `--pre-integrated` are refused with
   it; list `pca` under `--models` to show it as a baseline row.
+- **`n_jobs` is 1** by default (`--n-jobs`), and every config sets 1.
 - **XLA autotuning off by default.** scib_metrics' JAX stalled for minutes per metric on the
   GPU nodes while XLA autotuned kernels ("Very slow compile?"). `--xla_gpu_autotune_level=0`
   is added to `XLA_FLAGS` unless a level is set there or `--xla-autotune` is given; the
@@ -902,9 +903,9 @@ python -m evaluate.geneicl.plot_benchmark --name main [--models unified_v1 pca] 
   (`gene_mappings/symbol_to_ensembl.json`, first symbol per ID) when that overlaps the
   model vocabulary more. `pca` defaults to `normalize=none` here. Each `.npz` holds `emb`
   + `obs_names`, GeneICL's `emb_dir` format, and `embed.json` records the panel per
-  dataset. Existing files are skipped, a directory made by another checkpoint or embedder
-  is refused (`--overwrite`), and non-finite rows stop the run, because the probe's
-  imputer would hide them.
+  dataset. Every dataset is re-embedded by default (`--overwrite`); with `--no-overwrite`
+  existing files are skipped and a directory made by another checkpoint or embedder is
+  refused. Non-finite rows stop the run, because the probe's imputer would hide them.
 - **Probe.** `run_probe.py` is torch-free. It runs `_probe_shim.py` with the GeneICL env's
   python (`--geneicl-python`, `$GENEICL_PYTHON`). The shim imports GeneICL's
   `benchmark.py`, adds the probe key to its hard-coded `EMB_MODELS` and calls its `main`

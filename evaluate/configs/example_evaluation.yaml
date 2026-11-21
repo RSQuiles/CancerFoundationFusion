@@ -114,7 +114,7 @@ tasks:
           per_modality: ["bulk=all", "pseudobulk=all"]
           batch_key: modality
           label_key: tissue_general
-          n_jobs: 4
+          n_jobs: 1
           # row_labels: {unified_paired_tissue_s0: CF paired, bulkformer: BulkFormer}
 
   # ---- reconstruction: mask plan -> models -> figures ---------------------------------

@@ -208,7 +208,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="obs columns the sample subset is stratified on (missing ones skipped)")
     parser.add_argument("--filter", nargs="*", default=[], metavar="COL=V1,V2")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--overwrite", action=argparse.BooleanOptionalAction, default=True,
+                        help="Replace an existing plan of the same name (default); --no-overwrite refuses it")
     return parser
 
 
@@ -239,7 +240,7 @@ def main(argv: list[str] | None = None) -> Path:
         out = args.out or layout.mask_plan(label, args.split, args.part, args.name)
         plan_id = f"{label}:{args.split}:{args.part}:{args.name}"
     if out.exists() and not args.overwrite:
-        sys.exit(f"Error: {out} exists; pass --overwrite to replace it")
+        sys.exit(f"Error: {out} exists and --no-overwrite was given")
 
     backed = ad.read_h5ad(source, backed="r")
     try:

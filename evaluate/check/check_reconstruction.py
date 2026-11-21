@@ -66,8 +66,8 @@ def check_plan(tmp: Path, layout: ExperimentLayout) -> None:
     check("masked and context disjoint",
           all(not set(plan.masked(i)) & set(plan.context(i)) for i in range(plan.n_samples)))
     check("plan id recorded", plan.plan_id == "bulk:s0:test:r25")
-    check("existing plan not overwritten", raises(lambda: mask_plan.main(args), SystemExit))
-    again = mask_plan.load_plan(mask_plan.main(args + ["--overwrite"]))
+    check("--no-overwrite refuses an existing plan", raises(lambda: mask_plan.main(args + ["--no-overwrite"]), SystemExit))
+    again = mask_plan.load_plan(mask_plan.main(args))   # overwrite is the default
     check("deterministic under a seed", np.array_equal(again.masked_idx, plan.masked_idx))
     check("resolved from MODALITY:SPLIT:PART:NAME",
           mask_plan.resolve_plan_path("bulk:s0:test:r25", tmp) == path)
