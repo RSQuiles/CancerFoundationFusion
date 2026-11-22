@@ -463,8 +463,11 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
       they form a stratum of their own, as the single-cell `paired` cells do.
   - Kept rows count toward their tissue's quota. All values and the kept keys and rows
     go to `embed.json`.
-  - The leiden_s1 configs use balanced, 5% unknown, 5% caps on those four labels, pairs
-    within 25% (`budget`), 10 cells per pair (a cell mean needs 5).
+  - The leiden_s1 configs (baselines and alignment, which must stay identical because the
+    alignment evaluation reuses `unified_baseline` and `pca_leiden_s1` files embedded by
+    the baselines one) use 25000 rows, proportional, 5% unknown, 10% caps on `paired` and
+    `cell line`, 5% on `in vitro` and `xenograft`, pairs within 25% (`budget`), 100 cells
+    per pair.
   - The defaults draw exactly the rows they drew before. The plot scripts take
     `--stratify-mode` and `--unknown-frac` for their own subsample.
 - `embed_splits.py` embeds every requested modality and part **in one call, through one

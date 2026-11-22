@@ -52,21 +52,21 @@ tasks:
   embed:
     shared:
       split: leiden_s1
-      test_subset: 20000
+      test_subset: 25000
       stratify_by: [tissue_general]
-      # Tissue-balanced test subsets: equal rows per tissue (capped at what a tissue has),
-      # "unknown" at most 5%, and the large non-tissue categories at most 5% each:
-      # single-cell "paired" (the paired datasets) and the ARCHS4 bulk annotations
-      # "cell line", "in vitro", "xenograft". Every test pair is kept in all modalities
-      # while the pairs fit 25% of a subset (10 cells per pair, enough for a cell mean);
-      # pair rows may exceed their stratum's cap (single-cell "paired"), nothing else
-      # can. Metrics on these files weight tissues about equally.
-      stratify_mode: balanced
+      # MUST match the embed block of leiden_s1_baselines_evaluation.yaml: unified_baseline
+      # and pca_leiden_s1 are rows here with the files embedded there, scIB keeps only the
+      # rows every model embedded, and the link metrics take each model's own file. The
+      # subsample depends on obs and these settings only, so equal settings = equal rows.
+      # Proportional test subsets, "unknown" at most 5%, single-cell "paired" and bulk
+      # "cell line" at most 10%, "in vitro" and "xenograft" at most 5%; every test pair kept
+      # in all modalities within 25% of a subset, up to 100 cells per pair.
+      stratify_mode: proportional
       unknown_frac: 0.05
-      cap_labels: {paired: 0.05, "cell line": 0.05, "in vitro": 0.05, xenograft: 0.05}
+      cap_labels: {paired: 0.1, "cell line": 0.1, "in vitro": 0.05, xenograft: 0.05}
       keep_linked: ["paired:0"]
       linked_frac: 0.25
-      linked_per_key: 10
+      linked_per_key: 100
       linked_quota: budget
     steps:
       cf_joint:
@@ -99,9 +99,9 @@ tasks:
     shared:
       part: test
       stratify_by: [tissue_general]
-      stratify_mode: balanced
+      stratify_mode: proportional       # as in the baselines config
       unknown_frac: 0.05
-      cap_labels: {paired: 0.05, "cell line": 0.05, "in vitro": 0.05, xenograft: 0.05}
+      cap_labels: {paired: 0.1, "cell line": 0.1, "in vitro": 0.05, xenograft: 0.05}
       skip_unknown: true
       labels: {tissue_general: Tissue, modality: Modality, paired: Pair}
     steps:
@@ -167,6 +167,7 @@ tasks:
           modalities: [bulk, pseudobulk]
           per_modality: ["bulk=all", "pseudobulk=all"]
           batch_key: modality
+          shared_labels: true       # as in the baselines config
       scib_sc_pb:               # the agg question (and side effects of the bulk losses)
         environment: host
         script: scib
@@ -177,6 +178,7 @@ tasks:
           modalities: [sc, pseudobulk]
           per_modality: ["sc=5000", "pseudobulk=all"]
           batch_key: modality
+          shared_labels: true
       scib_all:
         environment: host
         script: scib
