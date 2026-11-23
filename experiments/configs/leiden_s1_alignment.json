@@ -11,19 +11,30 @@
     "the aggregation loss, cells drawn) is in leiden_s1_alignment_test.json, launched first.",
     "Loss weights (base_config.features) are calibrated, not guessed. Order of launches:",
     "  1. --only align_calib: the loss-weight probe (trainer.calibrate_loss_steps), writes",
-    "  (the loss_weight_* values now in the file are placeholders: 1, CDD 0.3);",
     "     checkpoints/align_calib/loss_balance.json and prints the weights to paste below;",
+    "     (the loss_weight_* values now in the file are placeholders: 1, CDD 0.3);",
     "  2. paste them into base_config.features (loss_weight_*), then",
     "     python -m experiments.launch --config experiments/configs/leiden_s1_alignment_test.json;",
     "  3. if align_combo trains fine, launch this config (align_calib only re-reads its json).",
     "Each weight gives its term calibrate_target_share x the reconstruction gradient on the",
     "backbone at the parent; a combination applies the sum of the single-run pressures.",
-    "Batches (every run, controls included): 96 rows = 38 bulk + 38 pseudobulk + 20 cells; the",
-    "class-aware sampler puts 80% of bulk and pseudobulk on 6 shared tissues (~5 rows per tissue",
-    "per domain, ~8 free slots each). Aggregation runs and align_calib add 4 cells per pseudobulk",
-    "(~248 rows), so attention is flex (linear in L; same weights, no attention-weight dropout in",
-    "training) with grad_checkpoint. The parent trained at 64 rows with mha: read effects",
-    "against align_ctrl. Any sampler change needs a new calibration (delete loss_balance.json).",
+    "Batches (every run, controls included): 128 rows = 51 bulk + 51 pseudobulk + 26 cells; the",
+    "class-aware sampler puts 80% of bulk and pseudobulk on 8 shared tissues (~5 rows per tissue",
+    "per domain). n_sc_per_pseudobulk 4 for every run: aggregation runs add 4 cells per",
+    "pseudobulk (~332 rows) and paired batches 4 cells per pair (51 x 6 = ~306 rows), so the",
+    "cell views match across runs. Attention is flex (linear in L; same weights, no",
+    "attention-weight dropout in training) with grad_checkpoint. Keep 128 only if align_calib's",
+    "peak-memory lines stay <= ~20 GiB; else n_sc_per_pseudobulk 3, then batch_size 96",
+    "(bulk/pb ratios kept, class_aware_n_classes 6). The parent trained at 64 rows with mha:",
+    "read effects against align_ctrl. Any sampler change needs a new calibration (delete",
+    "loss_balance.json).",
+    "Paired loss: symmetric InfoNCE over the pairs of a paired batch (paired_loss infonce,",
+    "temperature 0.1): each bulk / pseudobulk / cell mean must be closer to its own pair than",
+    "to the batch's other pairs; train/paired_top1 tracks it (near 1 = training pairs learned).",
+    "align_paired (InfoNCE, the shared weight) vs align_paired_mse (the original MSE): same",
+    "batches, only the paired objective differs. align_calib measures both forms on the same",
+    "paired batches and prints 'paired forms: ... override loss_weight_paired <w>': set that w",
+    "in align_paired_mse's overrides (1.0 there is a placeholder).",
     "Paired runs: paired_sampling also draws a paired batch every 10 steps (the paired loss is",
     "bound to it), so their batches differ from the control's on those steps.",
     "Evaluation: evaluate/configs/leiden_s1_alignment_evaluation.yaml."
@@ -88,7 +99,8 @@
         "in vitro",
         "xenograft"
       ],
-      "class_aware_n_classes": 6
+      "class_aware_n_classes": 8,
+      "n_sc_per_pseudobulk": 4
     },
     "model": {
       "nlayers": 8,
@@ -98,7 +110,7 @@
       "lr": 0.0001,
       "warmup_ratio_or_step": 1000,
       "max_seq_len": 1200,
-      "batch_size": 96,
+      "batch_size": 128,
       "input_style": "binned",
       "n_bins": 51,
       "binning_method": "midrank",
@@ -121,7 +133,9 @@
       "loss_weight_contrastive": 1.0,
       "loss_weight_cdd": 0.3,
       "loss_weight_paired": 1.0,
-      "loss_weight_agg": 1.0
+      "loss_weight_agg": 1.0,
+      "paired_loss": "infonce",
+      "paired_temperature": 0.1
     }
   },
   "base_overrides": {},
@@ -135,8 +149,7 @@
         "data": {
           "paired_sampling": true,
           "paired_every_n": 10,
-          "pb_id_column": "pseudobulk_id",
-          "n_sc_per_pseudobulk": 4
+          "pb_id_column": "pseudobulk_id"
         },
         "features": {
           "mmd": true,
@@ -209,11 +222,23 @@
       }
     },
     {
+      "name": "align_paired_mse",
+      "overrides": {
+        "data": {
+          "paired_sampling": true,
+          "paired_every_n": 10
+        },
+        "features": {
+          "paired_loss": "mse",
+          "loss_weight_paired": 1.0
+        }
+      }
+    },
+    {
       "name": "align_agg_ctrl",
       "overrides": {
         "data": {
-          "pb_id_column": "pseudobulk_id",
-          "n_sc_per_pseudobulk": 4
+          "pb_id_column": "pseudobulk_id"
         },
         "features": {
           "agg_consistency": true,
@@ -232,8 +257,7 @@
       "name": "align_agg",
       "overrides": {
         "data": {
-          "pb_id_column": "pseudobulk_id",
-          "n_sc_per_pseudobulk": 4
+          "pb_id_column": "pseudobulk_id"
         },
         "features": {
           "agg_consistency": true,
@@ -252,8 +276,7 @@
         "data": {
           "paired_sampling": true,
           "paired_every_n": 10,
-          "pb_id_column": "pseudobulk_id",
-          "n_sc_per_pseudobulk": 4
+          "pb_id_column": "pseudobulk_id"
         },
         "features": {
           "mmd": true,

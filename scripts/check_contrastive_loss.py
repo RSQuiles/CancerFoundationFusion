@@ -282,9 +282,67 @@ def check_stats() -> None:
     check("cdd_n_classes counts the classes used", float(stats["cdd_n_classes"]) == 1.0, str(stats))
 
 
+def _np_paired_infonce(views, t):
+    """Numpy reference of TransformerModule.paired_contrastive_loss (symmetric InfoNCE)."""
+    import numpy as np
+
+    def ce(sim):  # mean -log softmax of the diagonal, row-wise
+        sim = sim - sim.max(axis=1, keepdims=True)
+        logp = sim - np.log(np.exp(sim).sum(axis=1, keepdims=True))
+        return -np.mean(np.diag(logp))
+
+    terms = []
+    for x, y in views:
+        if len(x) < 2:
+            continue
+        xn = x / np.linalg.norm(x, axis=1, keepdims=True)
+        yn = y / np.linalg.norm(y, axis=1, keepdims=True)
+        sim = xn @ yn.T / t
+        terms.append((ce(sim) + ce(sim.T)) / 2)
+    return float(np.mean(terms)) if terms else 0.0
+
+
+def check_paired_infonce() -> None:
+    import numpy as np
+
+    print("paired InfoNCE")
+    rng = np.random.default_rng(0)
+    n, d, t = 38, 32, 0.1
+    b = rng.normal(size=(n, d))
+    aligned = _np_paired_infonce([(b, b + 0.01 * rng.normal(size=(n, d)))], t)
+    rand = _np_paired_infonce([(b, rng.normal(size=(n, d)))], t)
+    flat = _np_paired_infonce([(np.ones((n, d)), np.ones((n, d)))], t)
+    check("reference: equal similarities give exactly ln(n); aligned far below; random above",
+          abs(flat - np.log(n)) < 1e-9 and aligned < 0.5 and rand > np.log(n) - 0.5,
+          f"flat {flat:.3f}, aligned {aligned:.3f}, random {rand:.3f}, ln(n) {np.log(n):.3f}")
+    check("reference: scale-invariant", abs(_np_paired_infonce([(5 * b, 0.1 * b)], t)
+                                             - _np_paired_infonce([(b, b)], t)) < 1e-9)
+    try:
+        import torch
+    except ImportError:
+        print("  [skip] torch not importable (method vs reference)")
+        return
+    fn = load_module_py().TransformerModule.paired_contrastive_loss
+    p = b + 0.3 * rng.normal(size=(n, d))
+    c = b[:20] + 0.5 * rng.normal(size=(20, d))
+    T = lambda a: torch.tensor(a, dtype=torch.float32)  # noqa: E731
+    stats: dict = {}
+    got = float(fn([("bulk", "pb", T(b), T(p)), ("cells", "bulk", T(c), T(b[:20])),
+                    ("cells", "pb", T(c), T(p[:20]))], temperature=t, stats=stats))
+    ref = _np_paired_infonce([(b, p), (c, b[:20]), (c, p[:20])], t)
+    check("method matches the numpy reference (cells view on a subset of pairs)", abs(got - ref) < 1e-4,
+          f"{got:.6f} vs {ref:.6f}")
+    check("paired_top1 = 1 for well separated pairs", float(stats["paired_top1"]) == 1.0, str(stats))
+    scaled = float(fn([("bulk", "pb", T(3 * b), T(0.2 * p))], temperature=t))
+    check("method scale-invariant", abs(scaled - float(fn([("bulk", "pb", T(b), T(p))], temperature=t))) < 1e-4)
+    one = fn([("bulk", "pb", T(b[:1]).requires_grad_(True), T(p[:1]))], temperature=t)
+    check("one pair: zero loss, graph kept", float(one) == 0.0 and one.requires_grad)
+
+
 def main() -> None:
     check_cli()
     check_allocation()
+    check_paired_infonce()
     check_loss()
     check_stats()
     check_sampler()

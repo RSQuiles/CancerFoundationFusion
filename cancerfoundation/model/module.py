@@ -78,6 +78,8 @@ class TransformerModule(nn.Module):
         weight_dat: float = 1.0,
         weight_reconstruction: float = 1.0,
         monitor_losses: Optional[list[str]] = None,
+        paired_loss: str = "mse",
+        paired_temperature: float = 0.1,
         # Contrastive Domain Discrepancy (CAN) parameters
         cdd: bool = False,
         weight_cdd: float = 0.3,
@@ -181,6 +183,13 @@ class TransformerModule(nn.Module):
         # Auxiliary losses to compute + log for monitoring only (no gradient). Logged
         # under train/loss_<name>_monitor when the corresponding loss is disabled.
         self.monitor_losses = set(monitor_losses or ())
+        # Paired objective on paired batches: "mse" (CLS distances, the original) or
+        # "infonce" (symmetric InfoNCE over the batch's pairs; scale-invariant, the other
+        # pairs are the negatives). See paired_contrastive_loss.
+        if paired_loss not in ("mse", "infonce"):
+            raise ValueError(f"paired_loss must be 'mse' or 'infonce', got {paired_loss!r}")
+        self.paired_loss = paired_loss
+        self.paired_temperature = paired_temperature
         # Loss-weight calibration (utils/loss_balance.py): when set to a dict, forward
         # stores each term's raw, unweighted, undetached loss here. Runtime only, never
         # an __init__ argument, so checkpoints are unaffected.
@@ -1141,6 +1150,8 @@ class TransformerModule(nn.Module):
                 n_pb, d_model = pb_embs.shape
 
                 loss_paired = self._paired_alignment_loss(bulk_embs, pb_embs)
+                sc_means = None
+                has_sc = None
 
                 # Per-pair mean SC embedding via scatter_add (fully differentiable)
                 if sc_mask.any():
@@ -1166,7 +1177,24 @@ class TransformerModule(nn.Module):
                         loss_paired = loss_paired + loss_paired_sc
                         # loss_dict["paired_alignment_loss_sc"] = loss_paired_sc.detach() * self.weight_paired
 
+                loss_paired_mse = loss_paired
+                if self.paired_loss == "infonce" or self.loss_terms is not None:
+                    # Rank the own pair above the batch's other pairs. Computed for the
+                    # loss-weight probe too, which calibrates both forms in one pass.
+                    views = [("bulk", "pb", bulk_embs, pb_embs)]
+                    if sc_means is not None:
+                        views += [("cells", "bulk", sc_means, bulk_embs[has_sc]),
+                                  ("cells", "pb", sc_means, pb_embs[has_sc])]
+                    loss_paired_infonce = self.paired_contrastive_loss(
+                        views, temperature=self.paired_temperature,
+                        stats=loss_dict if self.paired_loss == "infonce" else None)
+                if self.paired_loss == "infonce":
+                    loss_paired = loss_paired_infonce
                 self._record_term("paired", loss_paired)
+                if self.loss_terms is not None:
+                    # The other form, for the probe only (its weight for runs that use it).
+                    self._record_term("paired_alt", loss_paired_mse if self.paired_loss == "infonce"
+                                      else loss_paired_infonce)
                 if self.paired_alignment:
                     loss = loss + self.weight_paired * loss_paired
                     loss_dict["paired_alignment_loss"] = loss_paired.detach() * self.weight_paired
@@ -1333,6 +1361,49 @@ class TransformerModule(nn.Module):
         loss_fwd = _direction(sim, pos_f, b_anchor)          # bulk -> pseudobulk
         loss_bwd = _direction(sim.t(), pos_f.t(), p_anchor)  # pseudobulk -> bulk
         return ((loss_fwd + loss_bwd) / 2).to(embeddings.dtype)
+
+    @staticmethod
+    def paired_contrastive_loss(
+        views: list,
+        temperature: float = 0.1,
+        stats: Optional[dict] = None,
+    ) -> torch.Tensor:
+        """Symmetric InfoNCE between the views of the pairs of a paired batch.
+
+        ``views``: ``(name_x, name_y, X, Y)`` tuples, ``X`` and ``Y`` ``(n, D)`` rows aligned
+        by pair (row i of both is pair i). For each, with cosine similarities
+        ``S = norm(X) norm(Y)^T / t``::
+
+            L_xy = ( CE(S, i -> i) + CE(S^T, i -> i) ) / 2
+
+        so each row's own pair must beat the other ``n - 1`` pairs of the batch, in both
+        directions (CLIP style). The loss is the mean over the view pairs with ``n >= 2``.
+        It is ``ln(n)`` when every similarity is equal (no information); unrelated random
+        embeddings score above that at a low temperature, a learned pairing far below.
+        Scale-invariant, unlike the MSE form. ``stats``,
+        when given, receives ``paired_top1`` (bulk -> pb and pb -> bulk: share of rows
+        whose own partner is the most similar) for monitoring.
+        """
+        terms = []
+        for name_x, name_y, x, y in views:
+            n = x.size(0)
+            if n < 2:
+                continue
+            xf = F.normalize(x.float(), dim=1)
+            yf = F.normalize(y.float(), dim=1)
+            sim = (xf @ yf.t()) / temperature
+            target = torch.arange(n, device=sim.device)
+            terms.append((F.cross_entropy(sim, target) + F.cross_entropy(sim.t(), target)) / 2)
+            if stats is not None and (name_x, name_y) == ("bulk", "pb"):
+                with torch.no_grad():
+                    hit_xy = (sim.argmax(dim=1) == target).float().mean()
+                    hit_yx = (sim.argmax(dim=0) == target).float().mean()
+                    stats["paired_top1"] = ((hit_xy + hit_yx) / 2).detach()
+        if not terms:
+            ref = views[0][2] if views else None
+            return ref.sum() * 0.0 if ref is not None else torch.zeros(())
+        out = torch.stack(terms).mean()
+        return out.to(views[0][2].dtype)
 
     def _paired_alignment_loss(
         self,

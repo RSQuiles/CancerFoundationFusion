@@ -42,13 +42,19 @@ ALIGN_TERMS = {
     "cdd": ("loss_weight_cdd", "weight_cdd"),
     "paired": ("loss_weight_paired", "weight_paired"),
     "agg": ("loss_weight_agg", "weight_agg"),
+    # The paired form the probed model does NOT train on (mse <-> infonce), measured on the
+    # same paired batches, so one probe calibrates both. Its weight is a per-run override of
+    # loss_weight_paired for runs that switch paired_loss; never part of the shared snippet.
+    "paired_alt": ("loss_weight_paired", "weight_paired"),
 }
 NOTES = {
     "mmd": "marginal bulk vs pseudobulk (multi-RBF MMD on CLS)",
     "contrastive": "tissue InfoNCE bulk <-> pseudobulk (anchors need the tissue in both domains)",
     "cdd": "per-tissue MMD minus between-tissue MMD (tissues in both domains)",
-    "paired": "MSE pb<->bulk + cells mean<->bulk/pb, paired batches only",
+    "paired": "paired batches only: symmetric InfoNCE over the batch's pairs (paired_loss infonce) "
+              "or MSE pb<->bulk + cells mean<->bulk/pb (mse)",
     "agg": "MSE pseudobulk vs mean of its sampled cells (mean over pseudobulks)",
+    "paired_alt": "the other paired form (not trained here): loss_weight_paired for runs that switch paired_loss",
 }
 MIN_BATCHES = 10        # fewer batches carrying a term: the suggestion is flagged unreliable
 SPREAD_WARN = 1.0       # IQR / median of the ratio above this: flagged as variable
@@ -153,15 +159,31 @@ def format_report(result: dict[str, Any]) -> str:
         else:
             why = "not computed in any batch"
         flags = f"  [!] {'; '.join(e['flags'])}" if e["flags"] else ""
-        lines.append(f"  {term:12s}{NOTES[term]}\n  {'':12s}{why}{flags}")
+        forms = result.get("paired_forms") or {}
+        form = {"paired": forms.get("trained"), "paired_alt": forms.get("alt")}.get(term)
+        note = NOTES[term] + (f" [paired_loss {form}]" if form else "")
+        lines.append(f"  {term:12s}{note}\n  {'':12s}{why}{flags}")
     lines.append("=" * 100)
     return "\n".join(lines)
 
 
 def config_snippet(result: dict[str, Any]) -> str:
     """The ``features`` weights to paste into the launch config."""
-    weights = {e["config_key"]: e["suggested_weight"] for t, e in result["terms"].items() if t in ALIGN_TERMS}
+    weights = {e["config_key"]: e["suggested_weight"] for t, e in result["terms"].items()
+               if t in ALIGN_TERMS and t != "paired_alt"}
     return json.dumps(weights, indent=2)
+
+
+def paired_forms_line(result: dict[str, Any]) -> str | None:
+    """Both paired forms' weights: the shared one and the per-run override for the other."""
+    forms = result.get("paired_forms")
+    alt = result["terms"].get("paired_alt")
+    if not forms or not alt or not alt["batches"]:
+        return None
+    main = result["terms"]["paired"]["suggested_weight"]
+    return (f"[calibrate] paired forms: paired_loss {forms['trained']} -> loss_weight_paired {main:.3g} "
+            f"(shared snippet); runs with paired_loss {forms['alt']} -> override loss_weight_paired "
+            f"{alt['suggested_weight']:.3g}")
 
 
 # --------------------------------------------------------------------------- #
@@ -233,7 +255,10 @@ def probe(model, datamodule, args) -> Path:
         raise RuntimeError("[calibrate] no backbone parameter found (utils.warm_start.classify)")
     weights = {t: float(getattr(core, attr)) for t, (_, attr) in ALIGN_TERMS.items()}
     active = {"mmd": core.mmd, "contrastive": core.contrastive, "cdd": core.cdd,
-              "paired": core.paired_alignment, "agg": core.aggregation}
+              "paired": core.paired_alignment, "agg": core.aggregation,
+              "paired_alt": core.paired_alignment}
+    paired_forms = {"trained": core.paired_loss,
+                    "alt": "mse" if core.paired_loss == "infonce" else "infonce"}
     w_rec, w_mvc = float(core.weight_reconstruction), float(core.weight_mvc)
 
     print("\n" + "=" * 100)
@@ -330,16 +355,21 @@ def probe(model, datamodule, args) -> Path:
                   + ", ".join(f"{t}={v:.3g}" for t, v in ratios.items()), flush=True)
 
     result = suggest_weights(records, weights, R)
+    result["paired_forms"] = paired_forms
     print(format_report(result))
     snippet = config_snippet(result)
     print("[calibrate] paste into base_config.features of the launch config:\n" + snippet)
+    line = paired_forms_line(result)
+    if line:
+        print(line)
     print("[calibrate] the share is measured at the parent, where the alignment losses are largest: "
           "as they shrink in training, so does their pull, so R is a starting share.", flush=True)
 
     result.update({
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "steps": steps, "weights_at_probe": weights, "reconstruction": {"weight": w_rec, "weight_mvc": w_mvc},
-        "snippet": json.loads(snippet), "init_from": getattr(args, "init_from", None),
+        "snippet": json.loads(snippet), "paired_alt_weight": result["terms"]["paired_alt"]["suggested_weight"],
+        "init_from": getattr(args, "init_from", None),
         "paired_every_n": getattr(args, "paired_every_n", None),
     })
     save_dir.mkdir(parents=True, exist_ok=True)

@@ -4,14 +4,15 @@
 # The loss weights were calibrated (align_calib, checkpoints/align_calib/loss_balance.json):
 # each term pulls on the backbone with the same share of the reconstruction gradient at the
 # parent, so the runs differ in what they align, not in how hard they push.
-# Training batches: 96 rows (38 bulk, 38 pseudobulk, 20 cells; ~5 rows per shared tissue per
-# domain), flex attention + gradient checkpointing; the parent trained at 64 rows with mha,
-# so every effect is read against align_ctrl.
+# Training batches: 128 rows (51 bulk, 51 pseudobulk, 26 cells; 8 shared tissues with ~5 rows
+# per domain; 4 cells per pseudobulk and per pair), flex attention + gradient checkpointing;
+# the parent trained at 64 rows with mha, so every effect is read against align_ctrl.
 #   align_ctrl, align_ctrl_s1   no alignment loss (seed 0 / 1): reference and noise floor
 #   align_mmd                   marginal (MMD)
 #   align_contrastive           class-conditional, tissue InfoNCE
 #   align_cdd                   class-conditional, CDD (no warmup, 1000-step ramp)
-#   align_paired                instance level, paired batches
+#   align_paired                instance level, paired batches: InfoNCE over the batch's pairs
+#   align_paired_mse            the same with the original MSE paired loss (compare the two)
 #   align_agg_ctrl, align_agg   pseudobulk <-> its own cells; the control draws the same
 #                               cells but only logs the loss (loss_weight_agg 0)
 #   align_combo                 MMD + contrastive + paired (cells drawn, agg only logged)
@@ -82,7 +83,8 @@ tasks:
         script: embed_splits
         foreach:
           model: &runs [align_ctrl, align_ctrl_s1, align_mmd, align_contrastive, align_cdd,
-                        align_paired, align_combo, align_agg_ctrl, align_agg, align_combo_agg]
+                        align_paired, align_paired_mse, align_combo, align_agg_ctrl, align_agg,
+                        align_combo_agg]
         args:
           modalities: [sc, bulk, pseudobulk]
           parts: [test]
@@ -119,7 +121,8 @@ tasks:
         foreach: {modality: [bulk, pseudobulk]}
         args:
           models: &all [unified_baseline, align_ctrl, align_ctrl_s1, align_mmd, align_contrastive,
-                        align_cdd, align_paired, align_combo, align_agg_ctrl, align_agg, align_combo_agg]
+                        align_cdd, align_paired, align_paired_mse, align_combo, align_agg_ctrl, align_agg,
+                        align_combo_agg]
           variant: own_panel
           subsample: 20000
           color: [tissue_general]
@@ -159,7 +162,8 @@ tasks:
         align_mmd: "+ MMD"
         align_contrastive: "+ contrastive"
         align_cdd: "+ CDD"
-        align_paired: "+ paired"
+        align_paired: "+ paired (InfoNCE)"
+        align_paired_mse: "+ paired (MSE)"
         align_combo: "+ MMD + contr. + paired"
         align_agg_ctrl: "agg batches, control"
         align_agg: "+ aggregation"
@@ -172,8 +176,8 @@ tasks:
         args:
           name: leiden_s1_alignment_bulk_pb
           models: &scib_models [unified_baseline, align_ctrl, align_ctrl_s1, align_mmd, align_contrastive,
-                                align_cdd, align_paired, align_combo, align_agg_ctrl, align_agg, align_combo_agg,
-                                pca_leiden_s1]
+                                align_cdd, align_paired, align_paired_mse, align_combo, align_agg_ctrl,
+                                align_agg, align_combo_agg, pca_leiden_s1]
           pre_integrated: pca_leiden_s1
           modalities: [bulk, pseudobulk]
           per_modality: ["bulk=all", "pseudobulk=all"]
@@ -294,6 +298,22 @@ tasks:
           models: [unified_baseline@mvc, align_ctrl@mvc, align_agg_ctrl@mvc, align_agg@mvc,
                    align_combo@mvc, align_combo_agg@mvc]
           baselines: true
+      compare_paired:           # paired objective: InfoNCE vs MSE
+        script: compare
+        environment: host
+        foreach: {plan: *plans}
+        args: &cmp_paired
+          name: leiden_s1_alignment_paired
+          models: [unified_baseline, align_ctrl, align_paired, align_paired_mse]
+          baselines: true
+      compare_paired_mvc:
+        script: compare
+        environment: host
+        foreach: {plan: *plans}
+        args: &cmp_paired_mvc
+          name: leiden_s1_alignment_paired_mvc
+          models: [unified_baseline@mvc, align_ctrl@mvc, align_paired@mvc, align_paired_mse@mvc]
+          baselines: true
       plot:                     # -> results/reconstruction/_plots/<plan>/<name>/
         script: reconstruction_plot
         environment: host
@@ -314,6 +334,16 @@ tasks:
         environment: host
         foreach: {plan: *plans}
         args: *cmp_agg_mvc
+      plot_paired:
+        script: reconstruction_plot
+        environment: host
+        foreach: {plan: *plans}
+        args: *cmp_paired
+      plot_paired_mvc:
+        script: reconstruction_plot
+        environment: host
+        foreach: {plan: *plans}
+        args: *cmp_paired_mvc
 
   # ---- 5. GeneICL benchmark (bulk downstream tasks) --------------------------------------
   geneicl:
@@ -338,8 +368,8 @@ tasks:
         environment: geneicl
         args:
           models: &geneicl_models [unified_baseline, align_ctrl, align_ctrl_s1, align_mmd, align_contrastive,
-                                   align_cdd, align_paired, align_combo, align_agg_ctrl, align_agg,
-                                   align_combo_agg, pca]
+                                   align_cdd, align_paired, align_paired_mse, align_combo, align_agg_ctrl,
+                                   align_agg, align_combo_agg, pca]
           reference: [scfoundation, en]
           name: leiden_s1_alignment
       geneicl_plot:

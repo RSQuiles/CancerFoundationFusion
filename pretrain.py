@@ -363,6 +363,11 @@ def main(input_args=None):
             f"over the following {args.cdd_ramp_steps} steps as CDD ramps in."
         )
 
+    if args.paired_sampling:
+        print(f"[paired] loss {args.paired_loss}"
+              + (f", temperature {args.paired_temperature}, negatives = the other pairs of the batch"
+                 if args.paired_loss == "infonce" else ", CLS distances pb-bulk, cells-bulk, cells-pb"))
+
     datamodule = BulkSCDataModule(
         data_path=args.train_path,
         zero_percentages=args.zero_percentages,
@@ -487,6 +492,8 @@ def main(input_args=None):
         weight_contrastive=args.loss_weight_contrastive,
         weight_mmd=args.loss_weight_mmd,
         weight_paired=args.loss_weight_paired,
+        paired_loss=args.paired_loss,
+        paired_temperature=args.paired_temperature,
         weight_agg=args.loss_weight_agg,
         weight_dat=args.loss_weight_dat,
         weight_reconstruction=args.loss_weight_reconstruction,

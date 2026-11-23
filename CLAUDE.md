@@ -71,6 +71,17 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
   negatives keep the embedding from collapsing). Temperature `--contrastive-temperature`
   (0.1). Skipped on paired batches; use `--class-aware` so batches hold matching tissues.
   `python scripts/check_contrastive_loss.py` self-checks it (part 2 needs torch).
+- `--paired-loss mse|infonce` (default `mse`), `--paired-temperature` (0.1): the paired
+  objective on paired batches (`--paired-sampling`). `mse` is the original CLS distance
+  (pseudobulk-bulk, cells mean-bulk, cells mean-pseudobulk). `infonce`
+  (`TransformerModule.paired_contrastive_loss`) is a symmetric InfoNCE over the batch's
+  pairs for the same three view pairs: each row's own pair must beat the batch's other
+  pairs (cosine, so it cannot be lowered by shrinking the embeddings). It equals `ln(n)`
+  when every similarity is equal; `train/paired_top1` logs how often the own partner is
+  the nearest (bulk <-> pseudobulk). Pair ids are 1-to-1 and drawn without replacement,
+  so no two rows of different pairs are the same sample. `python
+  scripts/check_contrastive_loss.py` self-checks it (numpy reference; the method part
+  needs torch).
 - `--agg-consistency`: the MSE between each pseudobulk's CLS embedding and the mean
   embedding of its own cells, averaged over the batch's pseudobulks (it was a sum, so its
   weight scaled with how many a batch held). The sampler draws `--n-sc-per-pseudobulk` constituent cells
@@ -88,11 +99,14 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
     `leiden_s1_alignment_test.json`, launched first as a test (`base_from` the main one).
 
   The loss weights are calibrated by `align_calib` (see "Calibrating loss weights").
-  - **Batches** (every run, controls included): 96 rows = 38 bulk + 38 pseudobulk + 20
+  - **Batches** (every run, controls included): 128 rows = 51 bulk + 51 pseudobulk + 26
     cells (`bulk_ratio`/`pb_ratio` 0.4); the class-aware sampler puts 80% of bulk and
-    pseudobulk on 6 shared tissues, about 5 rows per tissue per domain, so contrastive and
-    CDD rest on more than 2 to 3 rows. Aggregation runs and `align_calib` add 4 cells per
-    pseudobulk (about 248 rows).
+    pseudobulk on 8 shared tissues, about 5 rows per tissue per domain, so contrastive and
+    CDD rest on more than 2 to 3 rows. `n_sc_per_pseudobulk` 4 in the base config:
+    aggregation runs add 4 cells per pseudobulk (about 332 rows) and paired batches 4 cells
+    per pair (about 306 rows), so the cell views match across runs (the default 10 gave
+    paired batches of 12 rows per pair). Keep 128 only if `align_calib`'s peak-memory lines
+    stay at or below about 20 GiB; else 3 cells, then batch 96 with 6 tissues.
   - **Memory:** `mha` builds dense `[B*heads, L, L]` tensors, which do not fit at that size
     even with `--grad-checkpoint`, so the ablation uses `--attn-impl flex` (same weights and
     inference; no attention-weight dropout in training) plus `--grad-checkpoint`. The parent
@@ -102,7 +116,13 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
     the first paired batch, the row count and the peak GPU memory, and names the settings to
     lower on an out-of-memory error.
   MMD, contrastive and CDD (trained or monitored) skip paired batches; only the paired
-  loss acts there. Every run logs the alignment losses it does not train on. The evaluation config is
+  loss acts there. The paired loss is `--paired-loss infonce` here (a calibration
+  after any change to it: the term's scale changes); `align_paired_mse` is the same run
+  with the original MSE, so the two paired objectives are compared on identical batches.
+  The probe measures both forms on the same paired batches (term `paired_alt`, the form
+  the probed model does not train) and prints `paired forms: ... override
+  loss_weight_paired <w>` for runs that switch `paired_loss`; that weight is never in the
+  shared snippet. Every run logs the alignment losses it does not train on. The evaluation config is
   `evaluate/configs/leiden_s1_alignment_evaluation.yaml`.
 - `--cdd`: Contrastive Domain Discrepancy (class-conditional MMD between pseudobulk and
   bulk, keyed on `--class-column`), **fully supervised on the given labels**: a tissue

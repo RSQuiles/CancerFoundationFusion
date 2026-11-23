@@ -71,6 +71,19 @@ def check_suggest() -> None:
     m = suggest_weights(noisy, weights, 0.3)["terms"]["mmd"]
     check("a ratio varying across batches is flagged", any("variable" in f for f in m["flags"]))
 
+    from utils.loss_balance import paired_forms_line
+
+    alt_records = [{**r, "terms": {**r["terms"], **({"paired_alt": {"loss": 0.1, "grad": r["recon_grad"] * 0.03}}
+                                                    if r["paired"] else {})}} for r in records]
+    alt = suggest_weights(alt_records, {**weights, "paired_alt": 1.0}, 0.3)
+    alt["paired_forms"] = {"trained": "infonce", "alt": "mse"}
+    check("other paired form calibrated on the same batches, kept out of the shared snippet",
+          abs(alt["terms"]["paired_alt"]["suggested_weight"] - 10) < 0.6
+          and "paired_alt" not in config_snippet(alt) and json.loads(config_snippet(alt))["loss_weight_paired"]
+          == alt["terms"]["paired"]["suggested_weight"])
+    line = paired_forms_line(alt) or ""
+    check("paired forms line names both forms and weights", "infonce" in line and "mse" in line and "override" in line)
+
     report = format_report(res)
     check("report lists every term and the rule", all(k in report for k in true_ratio) and "R / median" in report)
     snippet = json.loads(config_snippet(res))
