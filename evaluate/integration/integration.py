@@ -196,13 +196,24 @@ def key_tissues(levels: dict[str, tuple[pd.DataFrame, np.ndarray]]) -> pd.Series
 
 
 def model_links(data: dict[str, tuple[np.ndarray, pd.DataFrame]], label_key: str,
-                filters: dict[str, list[str]], min_cells: int) -> tuple[list[dict], list[dict]]:
-    """``(link rows, coverage rows)`` of one model; ``data`` maps modality -> (emb, obs)."""
+                filters: dict[str, list[str]], min_cells: int,
+                missing: dict[str, list[str]] | None = None) -> tuple[list[dict], list[dict]]:
+    """``(link rows, coverage rows)`` of one model; ``data`` maps modality -> (emb, obs).
+
+    A modality whose obs lacks a link column makes that column's edges n/a; it is printed
+    and, when ``missing`` is given, recorded there (modality -> columns)."""
     links, coverage = [], []
     for col in dict.fromkeys(c for c, _, _ in EDGES.values()):
         levels = {}
         for mod, (emb, obs) in data.items():
             if col not in obs.columns:
+                edges = [e for e, (c, a, b) in EDGES.items() if c == col and mod in (a, b)]
+                if edges:
+                    print(f"  [warn] {mod}: no '{col}' column in the embedding obs; {', '.join(edges)} n/a "
+                          "(files from a joint embed_splits call before the obs fix: run "
+                          "python -m embed.restore_obs --model <model>)")
+                    if missing is not None:
+                        missing.setdefault(mod, []).append(col)
                 continue
             labels = curated_labels(obs, label_key, filters, f"{mod}")
             levels[mod] = link_centroids(emb, link_keys(obs[col]), labels, min_cells if mod == MOD_SC else 1)
@@ -274,7 +285,21 @@ def summarize(links: pd.DataFrame) -> pd.DataFrame:
     return wide.reindex(links["model"].unique())
 
 
-def figure(summary: pd.DataFrame, labels: dict[str, str], scib_meta: dict[str, dict], args):
+def missing_edge_notes(links: pd.DataFrame) -> list[str]:
+    """One note per edge that no model could compute (its columns vanish from the table)."""
+    if links.empty or "edge" not in links:
+        return []
+    notes = []
+    for edge, rows in links.groupby("edge", sort=False):
+        if (rows["direction"] == "n/a").all():
+            col, a, b = EDGES[edge]
+            notes.append(f"{edge} ({LEVEL_NAMES[a]} vs {LEVEL_NAMES[b]}) n/a for every model: "
+                         f"no '{col}' in the embedding obs.")
+    return notes
+
+
+def figure(summary: pd.DataFrame, labels: dict[str, str], scib_meta: dict[str, dict], args,
+           notes: list[str] | None = None):
     from evaluate._plot_style import Col, draw_metric_table, highlight_note
 
     # Pairs carry no curated tissue (their cells and pseudobulks are labelled "paired"),
@@ -301,7 +326,8 @@ def figure(summary: pd.DataFrame, labels: dict[str, str], scib_meta: dict[str, d
                 "candidates (0 = nearest, 0.5 = chance); in tissue: among candidates of its curated tissue "
                 "only, i.e. sample identity beyond tissue. scIB: aggregate scores of each run "
                 "(batch = modality, label = tissue). n/a: the model lacks a modality. "
-                + highlight_note(args.highlight_top))
+                + highlight_note(args.highlight_top)
+                + "".join(" " + n for n in (notes or [])))
     title = args.title or f"Integration: {args.name}"
     return draw_metric_table(summary.reset_index(drop=True), row_names, cols, title, footnote,
                              highlight_top=args.highlight_top)
@@ -318,6 +344,7 @@ def main(argv: list[str] | None = None) -> Path:
     models = [validate_model_name(m) for m in args.models]
 
     all_links, all_cov, hashes = [], [], {}
+    missing: dict[str, dict[str, list[str]]] = {}
     for model in models:
         print(f"[{model}]")
         data = {}
@@ -333,7 +360,10 @@ def main(argv: list[str] | None = None) -> Path:
         hashes[model] = panel_hashes(layout, model, files, args.variant)
         if len({h for h in hashes[model].values() if h is not None}) > 1:
             print(f"  [warn] {model}: modalities embedded with different gene panels {hashes[model]}")
-        links, cov = model_links(data, args.label_key, filters, args.min_cells)
+        missing_cols: dict[str, list[str]] = {}
+        links, cov = model_links(data, args.label_key, filters, args.min_cells, missing_cols)
+        if missing_cols:
+            missing[model] = missing_cols
         all_links += [{"model": model, **r} for r in links]
         all_cov += [{"model": model, **r} for r in cov]
 
@@ -352,12 +382,13 @@ def main(argv: list[str] | None = None) -> Path:
 
     from evaluate._plot_style import save
 
-    figures = save(figure(summary, labels, scib_meta, args), out_dir / "integration", args.formats, args.dpi)
+    figures = save(figure(summary, labels, scib_meta, args, notes=missing_edge_notes(links)),
+                   out_dir / "integration", args.formats, args.dpi)
     (out_dir / "manifest.json").write_text(json.dumps({
         "analysis": "integration", "models": models, "row_labels": labels, "scib": list(scib_meta),
         "part": args.part, "variant": args.variant, "min_cells": args.min_cells, "label_key": args.label_key,
         "label_filter": filters, "panel_hashes": hashes, "figures": figures,
-        "highlight_top": args.highlight_top,
+        "highlight_top": args.highlight_top, "missing_link_columns": missing,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }, indent=2), encoding="utf-8")
     print(f"wrote {out_dir}")

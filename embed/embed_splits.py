@@ -260,7 +260,12 @@ def collect_rows(layout: ExperimentLayout, args, label: str, keep=None):
 
 
 def pool(pieces):
-    """One AnnData over every modality and part, on the genes they all share."""
+    """One AnnData over every modality and part, on the genes they all share.
+
+    ``join="inner"`` also intersects the obs columns, so the pooled obs lacks every column
+    one modality does not have (``pseudobulk_id`` is not in bulk). The files are therefore
+    written from each piece's own obs (:func:`piece_spans`), never from this one.
+    """
     import anndata as ad
 
     adata = ad.concat(pieces, join="inner", merge="same")
@@ -271,6 +276,23 @@ def pool(pieces):
     print(f"{adata.n_obs} rows x {adata.n_vars} genes shared by all modalities"
           + (f" ({dropped} genes not shared were dropped)" if dropped else ""))
     return adata
+
+
+def piece_spans(pieces) -> list[tuple[int, int]]:
+    """Row span ``(start, stop)`` of each piece in the pooled AnnData (``ad.concat`` keeps
+    their order); each piece is one (modality, part)."""
+    spans, start = [], 0
+    for p in pieces:
+        spans.append((start, start + p.n_obs))
+        start += p.n_obs
+    return spans
+
+
+def piece_obs(piece, obs_names):
+    """A piece's own obs (every source column + modality), indexed like the pooled rows."""
+    obs = piece.obs.drop(columns=[PART_COL]).copy()
+    obs.index = obs_names
+    return obs
 
 
 def embed_with_model(args, layout: ExperimentLayout, adata):
@@ -349,13 +371,14 @@ def main(argv: list[str] | None = None) -> None:
 
     out_dir = layout.embedding_dir(model_name, args.variant)
     print(f"Writing embeddings for '{model_name}' to {out_dir}")
-    keys = adata.obs[MODALITY_COL].astype(str) + "|" + adata.obs[PART_COL].astype(str)
-    for key in keys.unique():
-        label, part = key.split("|")
-        mask = (keys == key).to_numpy()
-        obs = adata.obs.loc[mask].drop(columns=[PART_COL])
+    # One file per piece, from the piece's own obs: the pooled obs keeps only the columns
+    # every modality has, which drops e.g. pseudobulk_id (bulk lacks it).
+    for piece, (start, stop) in zip(pieces, piece_spans(pieces)):
+        label = str(piece.obs[MODALITY_COL].iloc[0])
+        part = str(piece.obs[PART_COL].iloc[0])
+        obs = piece_obs(piece, adata.obs_names[start:stop])
         name = layout.embedding_file(model_name, label, part, args.variant).stem
-        write_embeddings(out_dir, name, obs, emb[mask], genes,
+        write_embeddings(out_dir, name, obs, emb[start:stop], genes,
                          provenance={**provenance, "modality": label, "part": part})
     set_card_fields(out_dir, model=model_name, variant=args.variant)
     print("Done.")

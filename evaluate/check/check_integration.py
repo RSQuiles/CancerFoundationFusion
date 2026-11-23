@@ -103,6 +103,26 @@ def check_link_metrics() -> None:
     check("key tissue: pseudobulk first, then cells, then bulk",
           t["p1"] == "lung" and t["p2"] == "liver" and t["p3"] == "skin")
 
+    # A joint-panel file without pseudobulk_id (embed_splits before the obs fix): the
+    # edge is n/a, reported, recorded, and named in the figure notes.
+    rng = np.random.default_rng(3)
+    obs_sc = pd.DataFrame({"paired": ["1"] * 6 + ["2"] * 6, "tissue_general": "lung"})
+    obs_pb = pd.DataFrame({"paired": ["1", "2"], "tissue_general": "lung"})
+    obs_bulk = pd.DataFrame({"paired": ["1", "2"], "tissue_general": "lung"})
+    data = {"sc": (rng.normal(size=(12, 4)), obs_sc), "pseudobulk": (rng.normal(size=(2, 4)), obs_pb),
+            "bulk": (rng.normal(size=(2, 4)), obs_bulk)}
+    missing: dict = {}
+    links, _ = integration.model_links(data, "tissue_general", {}, 5, missing)
+    links = pd.DataFrame([{"model": "m", **r} for r in links])
+    check("missing link column recorded per modality",
+          missing == {"sc": ["pseudobulk_id"], "pseudobulk": ["pseudobulk_id"]})
+    check("its edge is n/a, the pair edges still computed",
+          (links.loc[links.edge == "pb_cells", "direction"] == "n/a").all()
+          and (links.loc[links.edge == "pair_pb_bulk", "direction"] != "n/a").all())
+    notes = integration.missing_edge_notes(links)
+    check("figure note names the edge and the column", len(notes) == 1 and "pb_cells" in notes[0]
+          and "pseudobulk_id" in notes[0])
+
 
 def check_integration_run(tmp: str) -> None:
     import anndata as ad

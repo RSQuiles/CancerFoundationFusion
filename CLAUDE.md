@@ -543,7 +543,18 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
   - The defaults draw exactly the rows they drew before. The plot scripts take
     `--stratify-mode` and `--unknown-frac` for their own subsample.
 - `embed_splits.py` embeds every requested modality and part **in one call, through one
-  shared gene panel**, so alignment plots compare like with like. `--parts` picks `test`,
+  shared gene panel**, so alignment plots compare like with like.
+  - **Each file keeps its own modality's full obs.** The pooled AnnData is an inner
+    `ad.concat` (shared genes), which also keeps only the obs columns every modality has, so
+    files are written from each piece's own obs (`piece_spans`, `piece_obs`).
+  - **Files made before this fix** lack such columns, e.g. `pseudobulk_id` in the sc and
+    pseudobulk files (bulk has none), which leaves the integration `pb_cells` edge and
+    `plot_alignment --cell-means` with nothing to link. Repair them without re-embedding:
+    `python -m embed.restore_obs --model M ... [--variant V] [--dry-run]`.
+    - It adds the split source's missing obs columns, matched by obs name (more than 0.1%
+      unmatched rows stops it).
+    - It rewrites only the small embedding h5ad (obs + obsm).
+    - It records `obs_restored` in `embed.json`. `--parts` picks `test`,
   `train_subset` or both, and defaults to `test` only. `--test-subset` and
   `--train-subset` take a stratified subsample on `--stratify-by` (0 or unset for the
   test part = all rows). `--max-test` and `--train-stratify-by` are kept as aliases. With
@@ -948,6 +959,11 @@ python -m evaluate.integration.integration --name leiden_s1 --models m1 m2 pca_l
     - *scIB bio*: the run with the most modalities.
   - A model without a modality (BulkFormer has no cells) or outside a scIB run (the
     pre-integrated PCA) shows n/a.
+  - **A link column missing from an embedding's obs** makes its edges n/a.
+    - It prints `[warn] <modality>: no '<col>' column ...`, pointing to `embed.restore_obs`.
+    - It is recorded in the manifest (`missing_link_columns`).
+    - An edge n/a for every model is named in the figure footnote, since its columns drop
+      out of the table.
   - Shading: `--highlight-top` (see "Metric tables" below).
 - **Outputs** in `results/integration/<name>/`: `links.csv`, `coverage.csv`, `summary.csv`,
   `manifest.json` (`"models"`, `"row_labels"`, the scIB runs), `integration.{png,pdf}`.

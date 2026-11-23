@@ -280,6 +280,8 @@ def _write_split_root(tmp: str) -> ExperimentLayout:
         a = _adata(120, seed=10 + i)
         a.obs_names = [f"{mod}_{j}" for j in range(a.n_obs)]
         a.obs = a.obs.drop(columns=["modality"])
+        if mod == "sc":  # a column only one modality has (as pseudobulk_id is not in bulk)
+            a.obs["pseudobulk_id"] = [f"pb{j // 4}" for j in range(a.n_obs)]
         raw = layout.raw_h5ad(mod)
         raw.parent.mkdir(parents=True)
         a.write_h5ad(raw)
@@ -338,6 +340,50 @@ def check_selection() -> None:
               list(read_input(raw, 12, ["tissue_general"], seed=1).obs_names) == list(sub.obs_names))
 
 
+def check_obs_kept() -> None:
+    """A joint call keeps each modality's own obs columns; restore_obs repairs old files."""
+    print("\n-- obs columns of joint-panel files --")
+    import anndata as ad
+
+    from embed import embed_splits, restore_obs
+    from embed.embed import write_embeddings
+
+    with tempfile.TemporaryDirectory() as tmp:
+        layout = _write_split_root(tmp)
+        args = _splits_args("--test-subset", "12")
+        pieces = [p for mod in ("sc", "bulk") for p in embed_splits.collect_rows(layout, args, mod)]
+        pooled = embed_splits.pool(pieces)
+        check("the pooled obs lacks a column one modality has (inner concat)",
+              "pseudobulk_id" not in pooled.obs.columns)
+        spans = embed_splits.piece_spans(pieces)
+        sc_obs = embed_splits.piece_obs(pieces[0], pooled.obs_names[slice(*spans[0])])
+        bulk_obs = embed_splits.piece_obs(pieces[1], pooled.obs_names[slice(*spans[1])])
+        check("a piece's own obs keeps it, indexed like the pooled rows",
+              "pseudobulk_id" in sc_obs.columns and list(sc_obs.index) == list(pooled.obs_names[:spans[0][1]])
+              and "_embed_part" not in sc_obs.columns and "modality" in sc_obs.columns)
+        check("and the other modality does not get it", "pseudobulk_id" not in bulk_obs.columns)
+
+        # An old file: written from the pooled obs, without the column.
+        out = layout.embedding_dir("old")
+        rows = slice(*spans[0])
+        emb = np.arange(spans[0][1] * 3, dtype=np.float32).reshape(-1, 3)
+        write_embeddings(out, "sc_test", pooled.obs.iloc[rows].drop(columns=["_embed_part"]), emb[rows],
+                         provenance={"split": "s0", "modality": "sc", "part": "test"})
+        restore_obs.main(["--root", tmp, "--model", "old", "--dry-run"])
+        check("dry run writes nothing", "pseudobulk_id" not in ad.read_h5ad(out / "sc_test.h5ad").obs.columns)
+        restore_obs.main(["--root", tmp, "--model", "old"])
+        fixed = ad.read_h5ad(out / "sc_test.h5ad")
+        raw = ad.read_h5ad(layout.raw_h5ad("sc"))
+        check("restore_obs adds the source values row by row",
+              fixed.obs["pseudobulk_id"].astype(str).tolist()
+              == raw.obs.loc[fixed.obs_names, "pseudobulk_id"].astype(str).tolist())
+        check("restore_obs leaves the embedding and the row order alone",
+              np.array_equal(fixed.obsm["X_emb"], emb[rows]) and list(fixed.obs_names) == list(sc_obs.index))
+        card = json.loads((out / "embed.json").read_text())
+        check("embed.json records the restored columns",
+              card["files"]["sc_test.h5ad"]["obs_restored"] == ["pseudobulk_id"])
+
+
 def check_splits() -> None:
     print("\n-- embed_splits.py --")
     if not _cancerfoundation_importable():
@@ -365,6 +411,9 @@ def check_splits() -> None:
         check("test file holds exactly the test rows", set(test_rows.obs_names) == {f"sc_{j}" for j in range(30)})
         check("train subset size", ad.read_h5ad(layout.embedding_file("pca", "bulk", "train_subset")).n_obs == 50)
         check("card names the model", card["model"] == "pca")
+        check("a joint call keeps each modality's own obs columns",
+              "pseudobulk_id" in test_rows.obs.columns
+              and "pseudobulk_id" not in ad.read_h5ad(layout.embedding_file("pca", "bulk", "test")).obs.columns)
 
 
 def main() -> None:
@@ -373,6 +422,7 @@ def main() -> None:
     check_input_modes()
     check_any()
     check_selection()
+    check_obs_kept()
     check_splits()
     finish()
 
