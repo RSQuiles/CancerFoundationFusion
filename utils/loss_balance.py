@@ -201,10 +201,7 @@ def probe(model, datamodule, args) -> Path:
     from utils.warm_start import classify, normalize_key
 
     save_dir = Path(args.save_dir)
-    out_path = save_dir / "loss_balance.json"
-    if out_path.exists():
-        print(f"[calibrate] {out_path} exists: nothing to do (delete it to calibrate again)")
-        return out_path
+    out_path = save_dir / "loss_balance.json"  # pretrain.main returns early when it exists
 
     steps, R = int(args.calibrate_loss_steps), float(args.calibrate_target_share)
     device = torch.device("cuda" if torch.cuda.is_available() and args.gpus != 0 else "cpu")
@@ -242,6 +239,13 @@ def probe(model, datamodule, args) -> Path:
     if off:
         print(f"[calibrate] [WARNING] {off} are off in this config, so they get no suggestion; "
               f"turn every loss on in the calibration model")
+    # The datamodule reads trainer.world_size / global_rank to build its sampler; Lightning
+    # attaches a trainer only during fit, so stand in for one process (one GPU).
+    if getattr(datamodule, "trainer", None) is None:
+        import types
+
+        datamodule.trainer = types.SimpleNamespace(world_size=1, global_rank=0)
+        print("[calibrate] no Lightning trainer: dataloader built for 1 process (world_size 1)")
     print("=" * 100, flush=True)
 
     autocast = (torch.autocast(device_type=device.type, dtype=torch.bfloat16)
