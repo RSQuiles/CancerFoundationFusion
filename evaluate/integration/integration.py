@@ -93,6 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--row-labels", nargs="*", default=None, metavar="MODEL=LABEL",
                    help="Display names of the models in the figure (a mapping in --config)")
     p.add_argument("--title", default=None, help="Figure title (default: 'Integration: <name>')")
+    p.add_argument("--highlight-top", type=int, default=2,
+                   help="Metric tables: shade the top N values of each column, darker = better (0 = no shading; the best stays bold)")
     p.add_argument("--formats", nargs="+", default=["png", "pdf"])
     p.add_argument("--dpi", type=int, default=200)
     return p
@@ -273,7 +275,7 @@ def summarize(links: pd.DataFrame) -> pd.DataFrame:
 
 
 def figure(summary: pd.DataFrame, labels: dict[str, str], scib_meta: dict[str, dict], args):
-    from evaluate._plot_style import Col, draw_metric_table
+    from evaluate._plot_style import Col, draw_metric_table, highlight_note
 
     # Pairs carry no curated tissue (their cells and pseudobulks are labelled "paired"),
     # so their columns rank among all paired candidates; rank_tissue stays in the CSVs.
@@ -298,9 +300,11 @@ def figure(summary: pd.DataFrame, labels: dict[str, str], scib_meta: dict[str, d
                 "nearest (chance = 1/candidates). rank: normalized rank of the own partner among all "
                 "candidates (0 = nearest, 0.5 = chance); in tissue: among candidates of its curated tissue "
                 "only, i.e. sample identity beyond tissue. scIB: aggregate scores of each run "
-                "(batch = modality, label = tissue). n/a: the model lacks a modality.")
+                "(batch = modality, label = tissue). n/a: the model lacks a modality. "
+                + highlight_note(args.highlight_top))
     title = args.title or f"Integration: {args.name}"
-    return draw_metric_table(summary.reset_index(drop=True), row_names, cols, title, footnote)
+    return draw_metric_table(summary.reset_index(drop=True), row_names, cols, title, footnote,
+                             highlight_top=args.highlight_top)
 
 
 def main(argv: list[str] | None = None) -> Path:
@@ -353,6 +357,7 @@ def main(argv: list[str] | None = None) -> Path:
         "analysis": "integration", "models": models, "row_labels": labels, "scib": list(scib_meta),
         "part": args.part, "variant": args.variant, "min_cells": args.min_cells, "label_key": args.label_key,
         "label_filter": filters, "panel_hashes": hashes, "figures": figures,
+        "highlight_top": args.highlight_top,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }, indent=2), encoding="utf-8")
     print(f"wrote {out_dir}")

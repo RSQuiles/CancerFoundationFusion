@@ -77,8 +77,10 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
   (`TransformerModule.paired_contrastive_loss`) is a symmetric InfoNCE over the batch's
   pairs for the same three view pairs: each row's own pair must beat the batch's other
   pairs (cosine, so it cannot be lowered by shrinking the embeddings). It equals `ln(n)`
-  when every similarity is equal; `train/paired_top1` logs how often the own partner is
-  the nearest (bulk <-> pseudobulk). Pair ids are 1-to-1 and drawn without replacement,
+  when every similarity is equal. `train/paired_top1` (`TransformerModule.paired_top1`,
+  monitoring only, logged on every paired batch with either form, so `mse` runs have it
+  too) is how often the own partner is the nearest by cosine (bulk <-> pseudobulk, both
+  directions averaged; chance = 1 / pairs per batch). Pair ids are 1-to-1 and drawn without replacement,
   so no two rows of different pairs are the same sample. `python
   scripts/check_contrastive_loss.py` self-checks it (numpy reference; the method part
   needs torch).
@@ -833,7 +835,7 @@ python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test
   - **Per space group:** `mae_by_bin` (bins: MAE by true bin, tie-aware when the runs have
     ranges, `--bin-width`), `mae_by_target` (other spaces: zeros, then quantiles of the
     non-zero targets) and `metrics_table` (MAE, accuracy for bins, Pearson, Spearman, plus
-    zero AUROC outside bins; best per column shaded).
+    zero AUROC outside bins; top `--highlight-top` per column shaded, see "Metric tables").
   - **Cross-space (`all`):** `space_free_table`, `per_sample_spearman` and
     `rank_mae_by_target` (per-sample percentile ranks, mean rank error by target decile).
     These never show baselines; `--baselines` adds them to the per-space plots only.
@@ -946,8 +948,18 @@ python -m evaluate.integration.integration --name leiden_s1 --models m1 m2 pca_l
     - *scIB bio*: the run with the most modalities.
   - A model without a modality (BulkFormer has no cells) or outside a scIB run (the
     pre-integrated PCA) shows n/a.
+  - Shading: `--highlight-top` (see "Metric tables" below).
 - **Outputs** in `results/integration/<name>/`: `links.csv`, `coverage.csv`, `summary.csv`,
   `manifest.json` (`"models"`, `"row_labels"`, the scIB runs), `integration.{png,pdf}`.
+
+**Metric tables** (`_plot_style.draw_metric_table`: GeneICL `summary_table`, reconstruction
+`metrics_table` / `space_free_table`, the integration summary). In each column the top
+`--highlight-top` values (config `highlight_top`, default 2; 0 = none) are shaded, the 1st
+darkest, opacity `(k - place + 1) / k`; the best is bold. Places use competition ranking
+(`top_ranks`: ties share a place and the next is skipped, 1, 1, 3), count columns are never
+shaded, and the footnote (`highlight_note`) and the manifest (`highlight_top`) state k. Only
+the figures change, so applying it means rerunning the plot steps, not the analyses. The
+scIB results table (`scib_plot.py`) is drawn by scib_metrics and is not affected.
   Config section `integration:`; run in the bulkFM env (`environment: host`).
 
 ### GeneICL benchmark (`evaluate/geneicl/`)
@@ -1004,8 +1016,9 @@ python -m evaluate.geneicl.plot_benchmark --name main [--models unified_v1 pca] 
   with `probe_*.csv` on the suite, in the given order otherwise. `--plots` (default all):
   `heatmap_<metric>` for auroc, auprc, balanced_accuracy, mcc, f1_macro, spearman, pearson,
   r2, r2_pooled_oof (`heatmaps` = all nine), a task x model grid with the best per task in
-  bold and a mean row; `summary_table`, the `compare` summary with the best per column
-  shaded and bold (lowest for the ranks). A metric no row has is skipped and recorded in
+  bold and a mean row; `summary_table`, the `compare` summary with the top
+  `--highlight-top` per column shaded and the best bold (lowest for the ranks; see
+  "Metric tables"). A metric no row has is skipped and recorded in
   the manifest. `--reference` adds GeneICL rows as in `compare`. Each run also writes the
   plotted `per_task.csv` / `summary.csv` and `manifest.json` (`"models"`, so
   `rename_model` rewrites it). Rerunning a name overwrites its figures.

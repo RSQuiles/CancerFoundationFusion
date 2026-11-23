@@ -1149,6 +1149,12 @@ class TransformerModule(nn.Module):
                 pb_embs   = cell_emb[pb_mask]
                 n_pb, d_model = pb_embs.shape
 
+                # Monitoring only, for either paired_loss form: how often the own
+                # partner is the nearest (bulk <-> pb, cosine). Chance = 1 / n pairs.
+                top1 = self.paired_top1(bulk_embs, pb_embs)
+                if top1 is not None:
+                    loss_dict["paired_top1"] = top1
+
                 loss_paired = self._paired_alignment_loss(bulk_embs, pb_embs)
                 sc_means = None
                 has_sc = None
@@ -1186,8 +1192,7 @@ class TransformerModule(nn.Module):
                         views += [("cells", "bulk", sc_means, bulk_embs[has_sc]),
                                   ("cells", "pb", sc_means, pb_embs[has_sc])]
                     loss_paired_infonce = self.paired_contrastive_loss(
-                        views, temperature=self.paired_temperature,
-                        stats=loss_dict if self.paired_loss == "infonce" else None)
+                        views, temperature=self.paired_temperature)
                 if self.paired_loss == "infonce":
                     loss_paired = loss_paired_infonce
                 self._record_term("paired", loss_paired)
@@ -1363,10 +1368,27 @@ class TransformerModule(nn.Module):
         return ((loss_fwd + loss_bwd) / 2).to(embeddings.dtype)
 
     @staticmethod
+    def paired_top1(x: torch.Tensor, y: torch.Tensor) -> Optional[torch.Tensor]:
+        """Share of pairs whose own partner is the most cosine-similar, averaged over both
+        directions (``x -> y`` and ``y -> x``); rows of ``x`` and ``y`` are aligned by pair.
+
+        Monitoring only (no gradient), independent of the paired loss form. ``None`` with
+        fewer than 2 pairs, where it would be trivially 1.
+        """
+        n = x.size(0)
+        if n < 2:
+            return None
+        with torch.no_grad():
+            sim = F.normalize(x.float(), dim=1) @ F.normalize(y.float(), dim=1).t()
+            target = torch.arange(n, device=sim.device)
+            hit_xy = (sim.argmax(dim=1) == target).float().mean()
+            hit_yx = (sim.argmax(dim=0) == target).float().mean()
+            return (hit_xy + hit_yx) / 2
+
+    @staticmethod
     def paired_contrastive_loss(
         views: list,
         temperature: float = 0.1,
-        stats: Optional[dict] = None,
     ) -> torch.Tensor:
         """Symmetric InfoNCE between the views of the pairs of a paired batch.
 
@@ -1380,9 +1402,8 @@ class TransformerModule(nn.Module):
         directions (CLIP style). The loss is the mean over the view pairs with ``n >= 2``.
         It is ``ln(n)`` when every similarity is equal (no information); unrelated random
         embeddings score above that at a low temperature, a learned pairing far below.
-        Scale-invariant, unlike the MSE form. ``stats``,
-        when given, receives ``paired_top1`` (bulk -> pb and pb -> bulk: share of rows
-        whose own partner is the most similar) for monitoring.
+        Scale-invariant, unlike the MSE form. The monitoring metric ``paired_top1`` is
+        computed separately (:meth:`paired_top1`), for either loss form.
         """
         terms = []
         for name_x, name_y, x, y in views:
@@ -1394,11 +1415,6 @@ class TransformerModule(nn.Module):
             sim = (xf @ yf.t()) / temperature
             target = torch.arange(n, device=sim.device)
             terms.append((F.cross_entropy(sim, target) + F.cross_entropy(sim.t(), target)) / 2)
-            if stats is not None and (name_x, name_y) == ("bulk", "pb"):
-                with torch.no_grad():
-                    hit_xy = (sim.argmax(dim=1) == target).float().mean()
-                    hit_yx = (sim.argmax(dim=0) == target).float().mean()
-                    stats["paired_top1"] = ((hit_xy + hit_yx) / 2).detach()
         if not terms:
             ref = views[0][2] if views else None
             return ref.sum() * 0.0 if ref is not None else torch.zeros(())

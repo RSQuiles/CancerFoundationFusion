@@ -78,6 +78,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from evaluate._cli import parse_with_config  # noqa: E402
 from evaluate._plot_style import (  # noqa: E402
+    DEFAULT_HIGHLIGHT_TOP,
     HAIRLINE,
     INK,
     INK_2,
@@ -86,6 +87,7 @@ from evaluate._plot_style import (  # noqa: E402
     SERIES,
     Col,
     draw_metric_table,
+    highlight_note,
     pyplot,
     save,
 )
@@ -180,6 +182,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bin-width", type=int, default=1, help="mae_by_bin: true bins merged per point")
     parser.add_argument("--n-quantiles", type=int, default=10,
                         help="mae_by_target / rank_mae_by_target: quantile groups of the target")
+    parser.add_argument("--highlight-top", type=int, default=DEFAULT_HIGHLIGHT_TOP,
+                        help="Metric tables: shade the top N values of each column, darker = better (0 = no shading; the best stays bold)")
     parser.add_argument("--formats", nargs="+", default=["png", "pdf"], help="Figure file formats")
     parser.add_argument("--dpi", type=int, default=200)
     parser.add_argument("--list", action="store_true", help="Print the available models and plots, then exit")
@@ -483,7 +487,8 @@ def draw_rank_mae_by_target(data: pd.DataFrame, group: Group, args):
 
 def _draw_table(data: pd.DataFrame, group: Group, args, columns: list[Col], what: str, extra: str):
     return draw_metric_table(data, list(data["row"]), columns, _title(group, what, args.plan_id),
-                             "Shaded, bold: best per column (↑ higher is better, ↓ lower). " + _footnote(group, extra))
+                             highlight_note(args.highlight_top) + " " + _footnote(group, extra),
+                             highlight_top=args.highlight_top)
 
 
 def draw_metrics_table(data: pd.DataFrame, group: Group, args):
@@ -616,6 +621,7 @@ def main(argv: list[str] | None = None) -> Path | None:
                             "tie_aware": g.tie_aware, "tie_midpoint_models": g.midpoint_models,
                             "baseline_source": g.baseline_source, "notes": g.notes} for g in groups},
         "baselines": bool(args.baselines), "plots": written, "skipped": skipped,
+        "highlight_top": args.highlight_top,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }, indent=2), encoding="utf-8")
     print(f"wrote {out_dir}")

@@ -42,7 +42,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from evaluate._cli import parse_with_config  # noqa: E402
 from evaluate._plot_style import (  # noqa: E402
-    INK, INK_2, MISSING, MUTED, SEQ_RAMP, SURFACE, Col, draw_metric_table, is_best, pyplot, save,
+    DEFAULT_HIGHLIGHT_TOP, INK, INK_2, MISSING, MUTED, SEQ_RAMP, SURFACE, Col, draw_metric_table,
+    highlight_note, is_best, pyplot, save,
 )
 from evaluate.geneicl import compare as C  # noqa: E402
 from evaluate.geneicl import suite as S  # noqa: E402
@@ -100,6 +101,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plots", nargs="*", default=[],
                         help=f"Plots to draw (default: all): {', '.join(PLOTS)}; or the groups "
                              f"{', '.join(PLOT_GROUPS)}")
+    parser.add_argument("--highlight-top", type=int, default=DEFAULT_HIGHLIGHT_TOP,
+                        help="Metric tables: shade the top N values of each column, darker = better (0 = no shading; the best stays bold)")
     parser.add_argument("--formats", nargs="+", default=["png", "pdf"], help="Figure file formats")
     parser.add_argument("--dpi", type=int, default=200)
     parser.add_argument("--list", action="store_true", help="Print the available models and plots, then exit")
@@ -216,7 +219,7 @@ def plot_heatmap(mat: pd.DataFrame, metric: str, suite: str):
     return fig
 
 
-def plot_summary_table(summary: pd.DataFrame, suite: str):
+def plot_summary_table(summary: pd.DataFrame, suite: str, highlight_top: int = DEFAULT_HIGHLIGHT_TOP):
     present = [tt for tt in C.TASK_TYPES
                if f"n_{tt}_tasks" in summary.columns and (summary[f"n_{tt}_tasks"] > 0).any()]
     cols = [Col(c.key, c.header, c.group.capitalize(), c.best, c.fmt) for c in SUMMARY_COLUMNS
@@ -224,7 +227,8 @@ def plot_summary_table(summary: pd.DataFrame, suite: str):
     return draw_metric_table(
         summary, [_label(r) for r in summary["row"]], cols,
         f"GeneICL {suite}: mean over the tasks every row scored",
-        "Shaded, bold: best per column (↑ higher is better, ↓ lower). Rank: mean per-task rank, 1 = best.")
+        f"{highlight_note(highlight_top)} Rank: mean per-task rank, 1 = best.",
+        highlight_top=highlight_top)
 
 
 # ---- main -------------------------------------------------------------------
@@ -268,7 +272,7 @@ def main(argv: list[str] | None = None) -> Path | None:
             if table.empty:
                 skipped[plot] = "no shared tasks"
                 continue
-            fig = plot_summary_table(summary, args.suite)
+            fig = plot_summary_table(summary, args.suite, args.highlight_top)
         else:
             metric = plot[len("heatmap_"):]
             mat = heatmap_matrix(table, metric, rows)
@@ -283,6 +287,7 @@ def main(argv: list[str] | None = None) -> Path | None:
         "analysis": "geneicl_plot", "suite": args.suite, "name": args.name,
         "models": models, "references": references,
         "plots": written, "skipped": skipped, "n_tasks_dropped": dropped,
+        "highlight_top": args.highlight_top,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }, indent=2), encoding="utf-8")
     print(f"wrote {out_dir}")

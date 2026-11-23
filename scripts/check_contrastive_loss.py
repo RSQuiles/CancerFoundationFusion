@@ -322,17 +322,30 @@ def check_paired_infonce() -> None:
     except ImportError:
         print("  [skip] torch not importable (method vs reference)")
         return
-    fn = load_module_py().TransformerModule.paired_contrastive_loss
+    module_cls = load_module_py().TransformerModule
+    fn = module_cls.paired_contrastive_loss
+    top1 = module_cls.paired_top1
     p = b + 0.3 * rng.normal(size=(n, d))
     c = b[:20] + 0.5 * rng.normal(size=(20, d))
     T = lambda a: torch.tensor(a, dtype=torch.float32)  # noqa: E731
-    stats: dict = {}
     got = float(fn([("bulk", "pb", T(b), T(p)), ("cells", "bulk", T(c), T(b[:20])),
-                    ("cells", "pb", T(c), T(p[:20]))], temperature=t, stats=stats))
+                    ("cells", "pb", T(c), T(p[:20]))], temperature=t))
     ref = _np_paired_infonce([(b, p), (c, b[:20]), (c, p[:20])], t)
     check("method matches the numpy reference (cells view on a subset of pairs)", abs(got - ref) < 1e-4,
           f"{got:.6f} vs {ref:.6f}")
-    check("paired_top1 = 1 for well separated pairs", float(stats["paired_top1"]) == 1.0, str(stats))
+
+    # paired_top1: independent of the loss form, so MSE runs log it too.
+    check("paired_top1 = 1 for well separated pairs", float(top1(T(b), T(p))) == 1.0)
+    shifted = np.roll(p, 1, axis=0)  # every row's nearest is the neighbouring pair's partner
+    check("paired_top1 = 0 when every partner is mismatched", float(top1(T(b), T(shifted))) == 0.0)
+    half = p.copy()
+    half[: n // 2] = np.roll(p[: n // 2], 1, axis=0)
+    h = float(top1(T(b), T(half)))
+    check("paired_top1 averages both directions (half the pairs swapped -> 0.5)", abs(h - 0.5) < 1e-6, f"{h}")
+    check("paired_top1 scale-invariant (cosine)", float(top1(T(7 * b), T(0.1 * p))) == 1.0)
+    check("paired_top1 is None for a single pair", top1(T(b[:1]), T(p[:1])) is None)
+    xg = T(b).requires_grad_(True)
+    check("paired_top1 carries no gradient", not top1(xg, T(p)).requires_grad)
     scaled = float(fn([("bulk", "pb", T(3 * b), T(0.2 * p))], temperature=t))
     check("method scale-invariant", abs(scaled - float(fn([("bulk", "pb", T(b), T(p))], temperature=t))) < 1e-4)
     one = fn([("bulk", "pb", T(b[:1]).requires_grad_(True), T(p[:1]))], temperature=t)

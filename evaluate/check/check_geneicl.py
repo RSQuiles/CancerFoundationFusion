@@ -307,6 +307,18 @@ def check_plot(tmp: Path, layout: ExperimentLayout) -> None:
         np.array([0.5, np.nan, 0.5, 0.2]), "max").tolist() == [True, False, True, False])
     check("best of a rank is the lowest",
           plot_benchmark.is_best(np.array([2.0, 1.5]), "min").tolist() == [False, True])
+    from evaluate._plot_style import highlight_note, top_ranks
+
+    check("top 2 places, NaN unranked", top_ranks(np.array([0.9, 0.5, 0.7, np.nan]), "max", 2).tolist()
+          == [1, 0, 2, 0])
+    check("tied winners share 1st and use up the 2nd place (competition ranking)",
+          top_ranks(np.array([0.9, 0.9, 0.7]), "max", 2).tolist() == [1, 1, 0])
+    check("lower is better ranks ascending", top_ranks(np.array([3.0, 1.0, 2.0]), "min", 3).tolist() == [3, 1, 2])
+    check("count columns and k = 0 are never shaded",
+          not top_ranks(np.array([1.0, 2.0]), None, 2).any() and not top_ranks(np.array([1.0, 2.0]), "max", 0).any())
+    check("top 1 equals the best mask", (top_ranks(np.array([0.5, np.nan, 0.5, 0.2]), "max", 1) == 1).tolist()
+          == plot_benchmark.is_best(np.array([0.5, np.nan, 0.5, 0.2]), "max").tolist())
+    check("footnote names k", "top 3" in highlight_note(3) and "best per column" in highlight_note(1))
     check("unknown plot refused",
           raises(lambda: plot_benchmark.main(root + ["--name", "x", "--plots", "violin"]), SystemExit))
     check("model without results refused",

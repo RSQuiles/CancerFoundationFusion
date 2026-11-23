@@ -1,8 +1,8 @@
 """Shared look of the comparison figures (GeneICL benchmark, reconstruction).
 
 One palette (the dataviz reference: a one-hue blue ramp for magnitude, recessive ink),
-the matplotlib setup, saving in several formats, and a metric table that shades the best
-model of each column. Import matplotlib lazily through ``pyplot()``.
+the matplotlib setup, saving in several formats, and a metric table that shades the top
+models of each column (darker = better). Import matplotlib lazily through ``pyplot()``.
 """
 
 from __future__ import annotations
@@ -21,6 +21,10 @@ MUTED = "#898781"
 HAIRLINE = "#e1e0d9"
 MISSING = "#f0efec"
 BEST_FILL = "#cde2fb"
+# Metric tables shade the top k of each column with this fill, fading with the place:
+# opacity (k - place + 1) / k, so with k = 2 the 1st is TOP_FILL and the 2nd about BEST_FILL.
+TOP_FILL = SEQ_RAMP[1]
+DEFAULT_HIGHLIGHT_TOP = 2
 # Categorical slots in fixed order (dataviz reference palette, light mode): models in a
 # line or box plot take them by position, never cycled; baselines use MUTED.
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
@@ -65,6 +69,37 @@ def is_best(values: np.ndarray, best: str) -> np.ndarray:
     return finite & np.isclose(values, target, rtol=0, atol=1e-12)
 
 
+def top_ranks(values: np.ndarray, best: str | None, k: int) -> np.ndarray:
+    """Place of each finite value (1 = best) when within the top ``k``, else 0.
+
+    Competition ranking: tied values share a place and the next place is skipped
+    (1, 1, 3), so ties never shade more than ``k`` places' worth of cells. Ties use the
+    same tolerance as :func:`is_best`. NaN, ``best=None`` (a plain count) and ``k <= 0``
+    give 0 everywhere.
+    """
+    values = np.asarray(values, dtype=float)
+    out = np.zeros(values.shape, dtype=int)
+    if best is None or k <= 0:
+        return out
+    finite = np.isfinite(values)
+    for i in np.flatnonzero(finite):
+        v = values[i]
+        better = values[finite] > v + 1e-12 if best == "max" else values[finite] < v - 1e-12
+        place = int(better.sum()) + 1
+        if place <= k:
+            out[i] = place
+    return out
+
+
+def highlight_note(k: int) -> str:
+    """The footnote sentence explaining the shading of :func:`draw_metric_table`."""
+    if k <= 0:
+        return "Bold: best per column (↑ higher is better, ↓ lower)."
+    if k == 1:
+        return "Shaded, bold: best per column (↑ higher is better, ↓ lower)."
+    return f"Shaded: top {k} per column, darker = better; bold: best (↑ higher is better, ↓ lower)."
+
+
 @dataclass(frozen=True)
 class Col:
     """One table column: ``key`` in the frame, its header, the group drawn above it,
@@ -78,9 +113,12 @@ class Col:
 
 
 def draw_metric_table(frame: pd.DataFrame, labels: list[str], columns: list[Col], title: str,
-                      footnote: str, label_header: str = "Model"):
-    """A table of ``frame`` (one row per label), the best value of each column shaded and
-    bold. Columns absent from ``frame`` or all-NaN are left out; groups keep their order."""
+                      footnote: str, label_header: str = "Model",
+                      highlight_top: int = DEFAULT_HIGHLIGHT_TOP):
+    """A table of ``frame`` (one row per label). In each column the top ``highlight_top``
+    values are shaded, the fill fading with the place (:func:`top_ranks`; 0 = no shading),
+    and the best is bold. Columns absent from ``frame`` or all-NaN are left out; groups
+    keep their order. Put :func:`highlight_note` in the footnote."""
     from matplotlib.patches import Rectangle
 
     plt = pyplot()
@@ -118,7 +156,9 @@ def draw_metric_table(frame: pd.DataFrame, labels: list[str], columns: list[Col]
                 fontsize=8, color=INK_2, fontweight="bold")
     ax.plot([0, total_w], [row_h * 2] * 2, color=MUTED, linewidth=1.0)
 
+    k = max(0, int(highlight_top))
     best_masks = {c.key: is_best(frame[c.key].to_numpy(float), c.best) for c in cols if c.best}
+    places = {c.key: top_ranks(frame[c.key].to_numpy(float), c.best, k) for c in cols if c.best}
     for r in range(n):
         y = row_h * (header_rows + r)
         ax.text(0.08, y + row_h / 2, labels[r], ha="left", va="center", fontsize=8.5, color=INK)
@@ -126,9 +166,10 @@ def draw_metric_table(frame: pd.DataFrame, labels: list[str], columns: list[Col]
             v = frame[c.key].iloc[r]
             x0, x1 = xs[1 + i], xs[2 + i]
             best = bool(c.best and best_masks[c.key][r])
-            if best:
+            place = int(places[c.key][r]) if c.best else 0
+            if place:
                 ax.add_patch(Rectangle((x0 + 0.03, y + 0.03), x1 - x0 - 0.06, row_h - 0.06,
-                                       facecolor=BEST_FILL, edgecolor="none"))
+                                       facecolor=TOP_FILL, alpha=(k - place + 1) / k, edgecolor="none"))
             if pd.isna(v):
                 text, color = "n/a", MUTED
             elif c.best is None:
