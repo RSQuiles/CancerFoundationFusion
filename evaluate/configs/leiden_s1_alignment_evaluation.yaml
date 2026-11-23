@@ -4,6 +4,9 @@
 # The loss weights were calibrated (align_calib, checkpoints/align_calib/loss_balance.json):
 # each term pulls on the backbone with the same share of the reconstruction gradient at the
 # parent, so the runs differ in what they align, not in how hard they push.
+# Training batches: 96 rows (38 bulk, 38 pseudobulk, 20 cells; ~5 rows per shared tissue per
+# domain), flex attention + gradient checkpointing; the parent trained at 64 rows with mha,
+# so every effect is read against align_ctrl.
 #   align_ctrl, align_ctrl_s1   no alignment loss (seed 0 / 1): reference and noise floor
 #   align_mmd                   marginal (MMD)
 #   align_contrastive           class-conditional, tissue InfoNCE

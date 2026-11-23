@@ -88,6 +88,19 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
     `leiden_s1_alignment_test.json`, launched first as a test (`base_from` the main one).
 
   The loss weights are calibrated by `align_calib` (see "Calibrating loss weights").
+  - **Batches** (every run, controls included): 96 rows = 38 bulk + 38 pseudobulk + 20
+    cells (`bulk_ratio`/`pb_ratio` 0.4); the class-aware sampler puts 80% of bulk and
+    pseudobulk on 6 shared tissues, about 5 rows per tissue per domain, so contrastive and
+    CDD rest on more than 2 to 3 rows. Aggregation runs and `align_calib` add 4 cells per
+    pseudobulk (about 248 rows).
+  - **Memory:** `mha` builds dense `[B*heads, L, L]` tensors, which do not fit at that size
+    even with `--grad-checkpoint`, so the ablation uses `--attn-impl flex` (same weights and
+    inference; no attention-weight dropout in training) plus `--grad-checkpoint`. The parent
+    trained at 64 rows with `mha`: read effects against `align_ctrl`.
+  - **Recalibrate after any sampler or batch change** (delete
+    `checkpoints/align_calib/loss_balance.json`). The probe prints, for the first normal and
+    the first paired batch, the row count and the peak GPU memory, and names the settings to
+    lower on an out-of-memory error.
   Every run logs the alignment losses it does not train on. The evaluation config is
   `evaluate/configs/leiden_s1_alignment_evaluation.yaml`.
 - `--cdd`: Contrastive Domain Discrepancy (class-conditional MMD between pseudobulk and

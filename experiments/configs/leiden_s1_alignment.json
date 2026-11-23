@@ -18,6 +18,12 @@
     "  3. if align_combo trains fine, launch this config (align_calib only re-reads its json).",
     "Each weight gives its term calibrate_target_share x the reconstruction gradient on the",
     "backbone at the parent; a combination applies the sum of the single-run pressures.",
+    "Batches (every run, controls included): 96 rows = 38 bulk + 38 pseudobulk + 20 cells; the",
+    "class-aware sampler puts 80% of bulk and pseudobulk on 6 shared tissues (~5 rows per tissue",
+    "per domain, ~8 free slots each). Aggregation runs and align_calib add 4 cells per pseudobulk",
+    "(~248 rows), so attention is flex (linear in L; same weights, no attention-weight dropout in",
+    "training) with grad_checkpoint. The parent trained at 64 rows with mha: read effects",
+    "against align_ctrl. Any sampler change needs a new calibration (delete loss_balance.json).",
     "Paired runs: paired_sampling also draws a paired batch every 10 steps (the paired loss is",
     "bound to it), so their batches differ from the control's on those steps.",
     "Evaluation: evaluate/configs/leiden_s1_alignment_evaluation.yaml."
@@ -67,21 +73,22 @@
         "tissue_general"
       ],
       "condition_encoders": [],
-      "bulk_ratio": 0.35,
-      "pb_ratio": 0.35,
+      "bulk_ratio": 0.4,
+      "pb_ratio": 0.4,
       "precomputed_pb": true,
       "pb_label": "pseudobulk",
       "pb_group_column": "tissue_general",
       "class_aware": true,
-      "class_aware_bulk_frac": 0.6,
-      "class_aware_pb_frac": 0.6,
+      "class_aware_bulk_frac": 0.8,
+      "class_aware_pb_frac": 0.8,
       "class_exclude_labels": [
         "unknown",
         "paired",
         "cell line",
         "in vitro",
         "xenograft"
-      ]
+      ],
+      "class_aware_n_classes": 6
     },
     "model": {
       "nlayers": 8,
@@ -91,7 +98,7 @@
       "lr": 0.0001,
       "warmup_ratio_or_step": 1000,
       "max_seq_len": 1200,
-      "batch_size": 64,
+      "batch_size": 96,
       "input_style": "binned",
       "n_bins": 51,
       "binning_method": "midrank",
@@ -99,7 +106,9 @@
       "training_tasks": "both",
       "do_mvc": true,
       "where_condition": "none",
-      "gen_method": "theirs"
+      "gen_method": "theirs",
+      "attn_impl": "flex",
+      "grad_checkpoint": true
     },
     "features": {
       "unified": true,
@@ -127,7 +136,7 @@
           "paired_sampling": true,
           "paired_every_n": 10,
           "pb_id_column": "pseudobulk_id",
-          "n_sc_per_pseudobulk": 5
+          "n_sc_per_pseudobulk": 4
         },
         "features": {
           "mmd": true,
@@ -204,7 +213,7 @@
       "overrides": {
         "data": {
           "pb_id_column": "pseudobulk_id",
-          "n_sc_per_pseudobulk": 5
+          "n_sc_per_pseudobulk": 4
         },
         "features": {
           "agg_consistency": true,
@@ -224,7 +233,7 @@
       "overrides": {
         "data": {
           "pb_id_column": "pseudobulk_id",
-          "n_sc_per_pseudobulk": 5
+          "n_sc_per_pseudobulk": 4
         },
         "features": {
           "agg_consistency": true,
@@ -244,7 +253,7 @@
           "paired_sampling": true,
           "paired_every_n": 10,
           "pb_id_column": "pseudobulk_id",
-          "n_sc_per_pseudobulk": 5
+          "n_sc_per_pseudobulk": 4
         },
         "features": {
           "mmd": true,
@@ -270,7 +279,9 @@
       "--cpus-per-task=4",
       "--mem-per-cpu=16G"
     ],
-    "environment": {},
+    "environment": {
+      "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"
+    },
     "job_name_prefix": "ufm",
     "project_root": "/cluster/work/boeva/rquiles/CancerFoundationFusion",
     "singularity_image": "/cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif",

@@ -181,6 +181,18 @@ def _to_device(obj, device):
     return obj
 
 
+def _batch_rows(batch) -> int:
+    """Rows of a collated batch: the first dimension of its gene-id tensor."""
+    import torch
+
+    for key in ("gene", "genes", "pcpt_gene", "input_gene_ids"):
+        value = batch.get(key) if isinstance(batch, dict) else None
+        if isinstance(value, torch.Tensor):
+            return int(value.shape[0])
+    mod = batch.get("conditions", {}).get("modality") if isinstance(batch, dict) else None
+    return int(mod.shape[0]) if isinstance(mod, torch.Tensor) else -1
+
+
 def _grad_norm(term, params) -> float:
     import torch
 
@@ -233,6 +245,10 @@ def probe(model, datamodule, args) -> Path:
     print(f"[calibrate] alignment terms on: {[t for t, on in active.items() if on] or 'none'}; "
           f"off (not measured): {[t for t, on in active.items() if not on] or 'none'}")
     print(f"[calibrate] current weights: {weights}")
+    print(f"[calibrate] memory settings: attn_impl={getattr(args, 'attn_impl', None)}, "
+          f"grad_checkpoint={getattr(args, 'grad_checkpoint', None)}, batch_size={args.batch_size} "
+          f"(bulk_ratio {getattr(args, 'bulk_ratio', None)}, pb_ratio {getattr(args, 'pb_ratio', None)}), "
+          f"n_sc_per_pseudobulk={getattr(args, 'n_sc_per_pseudobulk', None)}")
     print(f"[calibrate] excluded class codes {core.class_exclude_codes} "
           f"({args.class_exclude_labels}); target share R = {R}")
     off = [t for t, on in active.items() if not on]
@@ -251,6 +267,7 @@ def probe(model, datamodule, args) -> Path:
     autocast = (torch.autocast(device_type=device.type, dtype=torch.bfloat16)
                 if str(args.precision).startswith("bf16") and device.type == "cuda" else None)
     records: list[dict] = []
+    reported = {False: False, True: False}  # first normal / first paired batch: memory line
     started = time.perf_counter()
     loader = iter(datamodule.train_dataloader())
     for step in range(steps):
@@ -263,25 +280,45 @@ def probe(model, datamodule, args) -> Path:
         paired = batch.get("is_paired_batch", False)
         paired = bool(paired.item()) if isinstance(paired, torch.Tensor) else bool(paired)
 
-        core.loss_terms = {}
-        if autocast is not None:
-            with autocast:
+        n_rows = _batch_rows(batch)
+        if device.type == "cuda" and not reported[paired]:
+            torch.cuda.reset_peak_memory_stats(device)
+        try:
+            core.loss_terms = {}
+            if autocast is not None:
+                with autocast:
+                    core(batch, use_cell_embedding=True, apply_dat=False)
+            else:
                 core(batch, use_cell_embedding=True, apply_dat=False)
-        else:
-            core(batch, use_cell_embedding=True, apply_dat=False)
-        terms, core.loss_terms = core.loss_terms, None
+            terms, core.loss_terms = core.loss_terms, None
 
-        recon = w_rec * (terms.get("expr", 0.0) + w_mvc * terms.get("mvc", 0.0) + terms.get("gen", 0.0))
-        rec: dict[str, Any] = {"paired": paired, "recon_grad": _grad_norm(recon, backbone), "terms": {}}
-        for name, value in terms.items():
-            if not (isinstance(value, torch.Tensor) and value.requires_grad):
-                continue  # a skipped term returns a constant zero
-            if name in ALIGN_TERMS and float(value.detach()) == 0.0:
-                continue  # no anchor / class in this batch: the term did not act
-            rec["terms"][name] = {"loss": float(value.detach().float()), "grad": _grad_norm(value, backbone)}
+            recon = w_rec * (terms.get("expr", 0.0) + w_mvc * terms.get("mvc", 0.0) + terms.get("gen", 0.0))
+            rec: dict[str, Any] = {"paired": paired, "rows": n_rows, "recon_grad": _grad_norm(recon, backbone),
+                                   "terms": {}}
+            for name, value in terms.items():
+                if not (isinstance(value, torch.Tensor) and value.requires_grad):
+                    continue  # a skipped term returns a constant zero
+                if name in ALIGN_TERMS and float(value.detach()) == 0.0:
+                    continue  # no anchor / class in this batch: the term did not act
+                rec["terms"][name] = {"loss": float(value.detach().float()), "grad": _grad_norm(value, backbone)}
+        except torch.OutOfMemoryError as exc:
+            raise torch.OutOfMemoryError(
+                f"[calibrate] out of GPU memory on a {'paired' if paired else 'normal'} batch of {n_rows} rows "
+                f"(batch_size {args.batch_size}, n_sc_per_pseudobulk {getattr(args, 'n_sc_per_pseudobulk', None)}, "
+                f"attn_impl {getattr(args, 'attn_impl', None)}, grad_checkpoint "
+                f"{getattr(args, 'grad_checkpoint', None)}). Lower n_sc_per_pseudobulk, then batch_size "
+                f"(keep the ratios); the training runs use the same batches. {exc}") from exc
         records.append(rec)
         del terms, recon
         model.zero_grad(set_to_none=True)
+
+        if device.type == "cuda" and not reported[paired]:
+            reported[paired] = True
+            peak = torch.cuda.max_memory_allocated(device) / 2**30
+            total = torch.cuda.get_device_properties(device).total_memory / 2**30
+            print(f"[calibrate] first {'paired' if paired else 'normal'} batch: {n_rows} rows; peak GPU memory "
+                  f"{peak:.1f} of {total:.1f} GiB (forward + every gradient of the probe; training needs "
+                  f"one backward, so a little less)", flush=True)
 
         if (step + 1) % 25 == 0 or step == 0 or step + 1 == steps:
             seen = {t: sum(t in r["terms"] for r in records) for t in ALIGN_TERMS if active[t]}
