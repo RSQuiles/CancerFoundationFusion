@@ -23,9 +23,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+import numpy as np
+import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -75,6 +79,21 @@ def _source_obs(layout: ExperimentLayout, modality: str, split: str, cache: dict
     return cache[key]
 
 
+_UNIQUE_SUFFIX = re.compile(r"-\d+$")
+
+
+def source_names(names, source_index) -> tuple[pd.Index, int]:
+    """The source obs name of each row: the name itself, else the name without the ``-<n>``
+    suffix anndata's ``obs_names_make_unique`` added when ``embed_splits`` pooled
+    modalities sharing a name (e.g. a pair's bulk and pseudobulk). Returns the names and
+    how many needed the stripped form."""
+    names = pd.Index(names).astype(str)
+    found = names.isin(source_index)
+    stripped = pd.Index([_UNIQUE_SUFFIX.sub("", n) for n in names])
+    use = ~found & stripped.isin(source_index)
+    return pd.Index(np.where(use, stripped, names)), int(use.sum())
+
+
 def restore_file(path: Path, entry: dict, layout: ExperimentLayout, columns: list[str] | None,
                  dry_run: bool, cache: dict) -> list[str]:
     """Add the missing source columns to one embedding file; returns the columns added."""
@@ -92,19 +111,23 @@ def restore_file(path: Path, entry: dict, layout: ExperimentLayout, columns: lis
         print(f"  {path.name}: nothing missing")
         return []
 
-    pos = src_obs.index.get_indexer(adata.obs_names)
+    keys, n_suffixed = source_names(adata.obs_names, src_obs.index)
+    pos = src_obs.index.get_indexer(keys)
     unmatched = int((pos < 0).sum())
     rate = unmatched / max(1, adata.n_obs)
     print(f"  {path.name}: add {wanted} from {src} "
-          f"({adata.n_obs - unmatched}/{adata.n_obs} rows matched)")
+          f"({adata.n_obs - unmatched}/{adata.n_obs} rows matched"
+          + (f", {n_suffixed} of them by their name without the make-unique suffix" if n_suffixed else "")
+          + ")")
     if rate > MAX_UNMATCHED:
-        raise SystemExit(f"Error: {path.name}: {unmatched} of {adata.n_obs} rows are not in {src}; "
+        raise SystemExit(f"Error: {path.name}: {unmatched} of {adata.n_obs} rows are not in {src}, "
+                         f"e.g. {list(adata.obs_names[pos < 0][:5])}; "
                          "is this the source the file was embedded from?")
     if dry_run:
         return wanted
 
     for col in wanted:  # source dtype kept (categoricals stay categorical); unmatched rows NaN
-        adata.obs[col] = src_obs[col].reindex(adata.obs_names).values
+        adata.obs[col] = src_obs[col].reindex(keys).values
     tmp = path.with_suffix(".restore_tmp.h5ad")
     adata.write_h5ad(tmp)
     os.replace(tmp, path)

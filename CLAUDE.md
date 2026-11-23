@@ -551,8 +551,9 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
     pseudobulk files (bulk has none), which leaves the integration `pb_cells` edge and
     `plot_alignment --cell-means` with nothing to link. Repair them without re-embedding:
     `python -m embed.restore_obs --model M ... [--variant V] [--dry-run]`.
-    - It adds the missing obs columns from the split source, matched by obs name (more than
-      0.1% unmatched rows stops it). Only a fixed set by default (`DEFAULT_COLUMNS`: the
+    - It adds the missing obs columns from the split source, matched by obs name, falling
+      back to the name without the `-<n>` suffix `obs_names_make_unique` gave rows whose
+      name another modality also had (more than 0.1% unmatched rows stops it). Only a fixed set by default (`DEFAULT_COLUMNS`: the
       link keys `pseudobulk_id`, `paired` and the labels the evaluation reads,
       `tissue_general`, `tissue_label_source`, `tissue_noncurated`, `cell_type`, `assay`,
       `dataset_id`, `donor_id`; ones the source lacks are skipped). `--columns` names others,

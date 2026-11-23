@@ -382,6 +382,9 @@ def check_obs_kept() -> None:
               "qc_note" not in fixed.obs.columns)
         check("restore_obs leaves the embedding and the row order alone",
               np.array_equal(fixed.obsm["X_emb"], emb[rows]) and list(fixed.obs_names) == list(sc_obs.index))
+        keys, n_suffixed = restore_obs.source_names(["a", "b-1", "c-1", "zz-1"], pd.Index(["a", "b", "c-1"]))
+        check("names made unique by embed_splits match their source name; exact names win",
+              list(keys) == ["a", "b", "c-1", "zz-1"] and n_suffixed == 1)
         card = json.loads((out / "embed.json").read_text())
         check("embed.json records the restored columns",
               card["files"]["sc_test.h5ad"]["obs_restored"] == ["pseudobulk_id"])
