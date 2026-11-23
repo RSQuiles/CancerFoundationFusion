@@ -282,6 +282,7 @@ def _write_split_root(tmp: str) -> ExperimentLayout:
         a.obs = a.obs.drop(columns=["modality"])
         if mod == "sc":  # a column only one modality has (as pseudobulk_id is not in bulk)
             a.obs["pseudobulk_id"] = [f"pb{j // 4}" for j in range(a.n_obs)]
+            a.obs["qc_note"] = "ok"  # not a column restore_obs adds by default
         raw = layout.raw_h5ad(mod)
         raw.parent.mkdir(parents=True)
         a.write_h5ad(raw)
@@ -377,6 +378,8 @@ def check_obs_kept() -> None:
         check("restore_obs adds the source values row by row",
               fixed.obs["pseudobulk_id"].astype(str).tolist()
               == raw.obs.loc[fixed.obs_names, "pseudobulk_id"].astype(str).tolist())
+        check("restore_obs adds only the default columns (not every source column)",
+              "qc_note" not in fixed.obs.columns)
         check("restore_obs leaves the embedding and the row order alone",
               np.array_equal(fixed.obsm["X_emb"], emb[rows]) and list(fixed.obs_names) == list(sc_obs.index))
         card = json.loads((out / "embed.json").read_text())

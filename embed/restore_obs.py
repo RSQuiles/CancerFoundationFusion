@@ -8,8 +8,10 @@ nothing to link on.
 
 For each ``<modality>_<part>.h5ad`` of a model (or one variant), this reads the split's
 source h5ad (``split.json``, the file ``embed_splits`` read, recorded per file in
-``embed.json``), takes the source obs columns the file lacks for the file's rows (matched
-by obs name), and rewrites the file (obs + obsm only; small) through a temporary file.
+``embed.json``), takes the wanted source obs columns the file lacks for the file's rows
+(matched by obs name), and rewrites the file (obs + obsm only; small) through a temporary
+file. Wanted = ``DEFAULT_COLUMNS`` (the link keys and the labels the evaluation reads),
+``--columns`` to name others, ``--all-columns`` for every source column.
 Existing columns and the embedding are untouched; ``embed.json`` records ``obs_restored``.
 
     python -m embed.restore_obs --model unified_baseline pca_leiden_s1 --dry-run
@@ -32,6 +34,14 @@ if str(PROJECT_ROOT) not in sys.path:
 from experiments.layout import ExperimentLayout, canonical_modality  # noqa: E402
 
 EMBED_CARD = "embed.json"
+# What the evaluation reads from an embedding's obs, beyond what every modality has:
+# the link keys (integration, plot_alignment --cell-means / --connect-pairs) and the
+# label and filter columns of the figures and scIB. A column the source lacks is skipped.
+DEFAULT_COLUMNS = (
+    "pseudobulk_id", "paired",                                          # link keys
+    "tissue_general", "tissue_label_source", "tissue_noncurated",       # tissue labels + curation
+    "cell_type", "assay", "dataset_id", "donor_id",                     # figure / scIB labels
+)
 # A name made unique by embed_splits (obs_names_make_unique) is not in the source; a few
 # are tolerated (left NaN), more mean the file does not belong to this source.
 MAX_UNMATCHED = 0.001
@@ -42,8 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--root", type=Path, default=None, help="Experiments root")
     p.add_argument("--model", nargs="+", required=True, help="Model names (embeddings/<model>/)")
     p.add_argument("--variant", default=None, help="Embedding variant (default: the joint-panel files)")
-    p.add_argument("--columns", nargs="*", default=None,
-                   help="Only these source columns (default: every column the file lacks)")
+    cols = p.add_mutually_exclusive_group()
+    cols.add_argument("--columns", nargs="+", default=None,
+                      help=f"Source columns to add when missing (default: {' '.join(DEFAULT_COLUMNS)})")
+    cols.add_argument("--all-columns", action="store_true",
+                      help="Add every source obs column the file lacks")
     p.add_argument("--dry-run", action="store_true", help="Report what would be added; write nothing")
     return p
 
@@ -75,10 +88,6 @@ def restore_file(path: Path, entry: dict, layout: ExperimentLayout, columns: lis
     adata = ad.read_h5ad(path)
     wanted = [c for c in (columns if columns is not None else src_obs.columns)
               if c in src_obs.columns and c not in adata.obs.columns]
-    if columns:
-        unknown = [c for c in columns if c not in src_obs.columns]
-        if unknown:
-            print(f"  [warn] {path.name}: not in the source obs: {unknown}")
     if not wanted:
         print(f"  {path.name}: nothing missing")
         return []
@@ -105,6 +114,8 @@ def restore_file(path: Path, entry: dict, layout: ExperimentLayout, columns: lis
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     layout = ExperimentLayout.from_root(args.root)
+    columns = None if args.all_columns else list(args.columns or DEFAULT_COLUMNS)
+    print(f"columns to add when missing: {'every source column' if columns is None else columns}")
     cache: dict = {}
     for model in args.model:
         out_dir = layout.embedding_dir(model, args.variant)
@@ -119,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
             path = out_dir / name
             if not path.exists():
                 continue
-            added = restore_file(path, entry, layout, args.columns, args.dry_run, cache)
+            added = restore_file(path, entry, layout, columns, args.dry_run, cache)
             if added and not args.dry_run:
                 entry["obs_restored"] = sorted(set(entry.get("obs_restored", [])) | set(added))
                 entry["obs_restored_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
