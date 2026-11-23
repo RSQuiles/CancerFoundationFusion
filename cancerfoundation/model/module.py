@@ -181,6 +181,10 @@ class TransformerModule(nn.Module):
         # Auxiliary losses to compute + log for monitoring only (no gradient). Logged
         # under train/loss_<name>_monitor when the corresponding loss is disabled.
         self.monitor_losses = set(monitor_losses or ())
+        # Loss-weight calibration (utils/loss_balance.py): when set to a dict, forward
+        # stores each term's raw, unweighted, undetached loss here. Runtime only, never
+        # an __init__ argument, so checkpoints are unaffected.
+        self.loss_terms: Optional[dict] = None
 
         # Contrastive Domain Discrepancy (CAN) configuration; the class label settings
         # are shared with the contrastive loss.
@@ -899,6 +903,7 @@ class TransformerModule(nn.Module):
             )
             loss = self.weight_reconstruction * loss_expr
             loss_dict["loss_expr"] = loss_expr * self.weight_reconstruction
+            self._record_term("expr", loss_expr)
 
             if self.do_mvc:
                 mvc_preds_for_gen = output_dict["mvc_output"][:, pcpt_gene.shape[1] :]
@@ -907,6 +912,7 @@ class TransformerModule(nn.Module):
                 )
                 loss = loss + self.weight_reconstruction * self.weight_mvc * loss_mvc
                 loss_dict["loss_mvc"] = loss_mvc * self.weight_mvc * self.weight_reconstruction
+                self._record_term("mvc", loss_mvc)
 
             # The cell-embedding-conditioned pass contributes to `loss` only through
             # the `use_cell_embedding` factor below, which CancerFoundation keeps at
@@ -929,6 +935,7 @@ class TransformerModule(nn.Module):
                 loss_gen = self.criterion(preds, gen_expr_target, positions_to_match)
                 loss = loss + use_cell_embedding * self.weight_reconstruction * loss_gen
                 loss_dict["loss_gen"] = loss_gen * self.weight_reconstruction
+                self._record_term("gen", loss_gen)
             # else: no `loss_gen` key. Logging a 0 here would draw a flat line in
             # W&B that looks like a converged loss rather than an absent one.
 
@@ -968,6 +975,7 @@ class TransformerModule(nn.Module):
             )
             loss = self.weight_reconstruction * loss_expr
             loss_dict["loss_expr"] = loss_expr * self.weight_reconstruction
+            self._record_term("expr", loss_expr)
 
             if self.do_mvc:
                 loss_mvc = self.criterion(
@@ -975,6 +983,7 @@ class TransformerModule(nn.Module):
                 )
                 loss = loss + self.weight_reconstruction * self.weight_mvc * loss_mvc
                 loss_dict["loss_mvc"] = loss_mvc * self.weight_reconstruction* self.weight_mvc
+                self._record_term("mvc", loss_mvc)
 
         # Resolve paired-batch flag before any loss blocks that branch on it
         is_paired_batch = tensors.get("is_paired_batch", False)
@@ -1040,6 +1049,7 @@ class TransformerModule(nn.Module):
                 min_class_count=self.class_min_count,
                 stats=loss_dict,
             )
+            self._record_term("contrastive", loss_contrastive)
             if self.contrastive:
                 loss = loss + self.weight_contrastive * loss_contrastive
                 loss_dict["loss_contrastive"] = loss_contrastive.detach() * self.weight_contrastive
@@ -1065,6 +1075,7 @@ class TransformerModule(nn.Module):
             ), "Embeddings and modalities tensors must have the same batch size"
 
             loss_mmd = self.modality_mmd_loss(embeddings, modalities)
+            self._record_term("mmd", loss_mmd)
             if self.mmd:
                 w_mmd = self._mmd_w if self.cdd else self.weight_mmd
                 loss = loss + w_mmd * loss_mmd
@@ -1104,6 +1115,7 @@ class TransformerModule(nn.Module):
                 exclude_class_codes=self.class_exclude_codes,
                 stats=loss_dict,
             )
+            self._record_term("cdd", loss_cdd)
             if self.cdd and self._cdd_w > 0:
                 loss = loss + self._cdd_w * loss_cdd
                 loss_dict["loss_cdd"] = loss_cdd.detach() * self._cdd_w
@@ -1153,6 +1165,7 @@ class TransformerModule(nn.Module):
                         loss_paired = loss_paired + loss_paired_sc
                         # loss_dict["paired_alignment_loss_sc"] = loss_paired_sc.detach() * self.weight_paired
 
+                self._record_term("paired", loss_paired)
                 if self.paired_alignment:
                     loss = loss + self.weight_paired * loss_paired
                     loss_dict["paired_alignment_loss"] = loss_paired.detach() * self.weight_paired
@@ -1214,6 +1227,10 @@ class TransformerModule(nn.Module):
                 loss_agg = loss_agg + F.mse_loss(pb_embedding, sc_embedding_agg)
 
             if sc_assignment:
+                # Mean over the batch's pseudobulks (it was a sum), so the weight does not
+                # scale with how many pseudobulks a batch holds.
+                loss_agg = loss_agg / len(sc_assignment)
+                self._record_term("agg", loss_agg)
                 if self.aggregation:
                     loss = loss + self.weight_agg * loss_agg
                     loss_dict["loss_agg"] = loss_agg.detach() * self.weight_agg
@@ -1224,6 +1241,11 @@ class TransformerModule(nn.Module):
 
         loss_dict["total_loss"] = loss
         return loss_dict
+
+    def _record_term(self, name: str, value: torch.Tensor) -> None:
+        """Keep a loss term for the loss-weight probe (``self.loss_terms`` is a dict then)."""
+        if self.loss_terms is not None:
+            self.loss_terms[name] = value
 
     def modality_contrastive_loss(
         self,

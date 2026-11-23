@@ -86,6 +86,7 @@ def load_launch_config(
     """Load a launch configuration from JSON (or YAML if PyYAML is installed)."""
     config_path = Path(config_path)
     raw = _read_config_file(config_path)
+    raw = _inherit_base(raw, config_path)
 
     if "output_dir" in raw:
         raise ValueError(
@@ -182,6 +183,31 @@ def load_launch_config(
         model_config_path=model_config_path,
         config_path=config_path.resolve(),
     )
+
+
+INHERITED_KEYS = ("base_config", "model_config_path", "base_overrides", "slurm",
+                  "experiments_root", "train_entrypoint")
+
+
+def _inherit_base(raw: dict[str, Any], config_path: Path, _seen: tuple = ()) -> dict[str, Any]:
+    """``"base_from": "<launch config>"``: take its base config, overrides, SLURM settings,
+    root and entrypoint wherever this config does not set them, so a small config (e.g. one
+    test model) shares one source of truth with the full one. Its models are not taken."""
+    ref = raw.get("base_from")
+    if not ref:
+        return raw
+    parent_path = Path(ref) if Path(ref).is_absolute() else (config_path.parent / ref).resolve()
+    if parent_path in _seen:
+        raise ValueError(f"{config_path}: base_from cycle through {parent_path}")
+    parent = _inherit_base(_read_config_file(parent_path), parent_path, _seen + (parent_path,))
+    merged = dict(raw)
+    for key in INHERITED_KEYS:
+        if key not in merged and key in parent:
+            value = parent[key]
+            if key == "model_config_path" and not Path(value).is_absolute():
+                value = str((parent_path.parent / value).resolve())
+            merged[key] = value
+    return merged
 
 
 def _read_config_file(config_path: Path) -> dict[str, Any]:

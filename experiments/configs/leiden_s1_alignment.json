@@ -3,12 +3,21 @@
   "_comment": [
     "Alignment-loss ablation, warm-started from unified_baseline (leiden_s1_baselines.json).",
     "Every run: same parent weights, 50k steps (epoch_size 10000 x 5 epochs), fresh LR schedule,",
-    "class-aware sampler, and MMD / contrastive / CDD logged (monitor_losses), so each run also",
-    "shows what its loss does to the alignment terms it does not train on.",
+    "class-aware sampler, and the alignment losses it does not train on logged (monitor_losses).",
     "Runs: align_ctrl (+ seed 1 for the noise floor), one per alignment level",
-    "(mmd = marginal, contrastive / cdd = class-conditional, paired = instance), a combination,",
-    "and a batch-matched pair for aggregation consistency (pseudobulk <-> its own cells):",
-    "align_agg_ctrl draws the same cells but loss_weight_agg 0 only logs the loss.",
+    "(mmd = marginal, contrastive / cdd = class-conditional, paired = instance), the aggregation",
+    "pair (align_agg_ctrl draws the same cells, loss_weight_agg 0 only logs the loss), and",
+    "align_combo_agg (MMD + contrastive + paired + aggregation). align_combo (the same without",
+    "the aggregation loss, cells drawn) is in leiden_s1_alignment_test.json, launched first.",
+    "Loss weights (base_config.features) are calibrated, not guessed. Order of launches:",
+    "  1. --only align_calib: the loss-weight probe (trainer.calibrate_loss_steps), writes",
+    "  (the loss_weight_* values now in the file are placeholders: 1, CDD 0.3);",
+    "     checkpoints/align_calib/loss_balance.json and prints the weights to paste below;",
+    "  2. paste them into base_config.features (loss_weight_*), then",
+    "     python -m experiments.launch --config experiments/configs/leiden_s1_alignment_test.json;",
+    "  3. if align_combo trains fine, launch this config (align_calib only re-reads its json).",
+    "Each weight gives its term calibrate_target_share x the reconstruction gradient on the",
+    "backbone at the parent; a combination applies the sum of the single-run pressures.",
     "Paired runs: paired_sampling also draws a paired batch every 10 steps (the paired loss is",
     "bound to it), so their batches differ from the control's on those steps.",
     "Evaluation: evaluate/configs/leiden_s1_alignment_evaluation.yaml."
@@ -36,14 +45,27 @@
       "init_from": {
         "model": "unified_baseline",
         "checkpoint": "last",
-        "include": ["backbone", "decoders", "conditions"]
-      }
+        "include": [
+          "backbone",
+          "decoders",
+          "conditions"
+        ]
+      },
+      "calibrate_target_share": 0.3
     },
     "data": {
-      "train_path": {"mix": "sc_bulk_pb_leiden_s1"},
-      "zero_percentages": [0.2, 0.4, 0.6],
+      "train_path": {
+        "mix": "sc_bulk_pb_leiden_s1"
+      },
+      "zero_percentages": [
+        0.2,
+        0.4,
+        0.6
+      ],
       "epoch_size": 10000,
-      "conditions": ["tissue_general"],
+      "conditions": [
+        "tissue_general"
+      ],
       "condition_encoders": [],
       "bulk_ratio": 0.35,
       "pb_ratio": 0.35,
@@ -53,7 +75,13 @@
       "class_aware": true,
       "class_aware_bulk_frac": 0.6,
       "class_aware_pb_frac": 0.6,
-      "class_exclude_labels": ["unknown", "paired", "cell line", "in vitro", "xenograft"]
+      "class_exclude_labels": [
+        "unknown",
+        "paired",
+        "cell line",
+        "in vitro",
+        "xenograft"
+      ]
     },
     "model": {
       "nlayers": 8,
@@ -75,29 +103,77 @@
     },
     "features": {
       "unified": true,
-      "monitor_losses": ["mmd", "contrastive", "cdd"]
+      "monitor_losses": [
+        "mmd",
+        "contrastive",
+        "cdd"
+      ],
+      "loss_weight_mmd": 1.0,
+      "loss_weight_contrastive": 1.0,
+      "loss_weight_cdd": 0.3,
+      "loss_weight_paired": 1.0,
+      "loss_weight_agg": 1.0
     }
   },
   "base_overrides": {},
   "models": [
+    {
+      "name": "align_calib",
+      "overrides": {
+        "trainer": {
+          "calibrate_loss_steps": 300
+        },
+        "data": {
+          "paired_sampling": true,
+          "paired_every_n": 10,
+          "pb_id_column": "pseudobulk_id",
+          "n_sc_per_pseudobulk": 5
+        },
+        "features": {
+          "mmd": true,
+          "contrastive_training": true,
+          "cdd": true,
+          "cdd_warmup_steps": 0,
+          "agg_consistency": true,
+          "agg_fn": "mean",
+          "monitor_losses": []
+        }
+      }
+    },
     {
       "name": "align_ctrl",
       "overrides": {}
     },
     {
       "name": "align_ctrl_s1",
-      "overrides": {"trainer": {"seed": 1}}
+      "overrides": {
+        "trainer": {
+          "seed": 1
+        }
+      }
     },
     {
       "name": "align_mmd",
       "overrides": {
-        "features": {"mmd": true, "monitor_losses": ["contrastive", "cdd"]}
+        "features": {
+          "mmd": true,
+          "monitor_losses": [
+            "contrastive",
+            "cdd"
+          ]
+        }
       }
     },
     {
       "name": "align_contrastive",
       "overrides": {
-        "features": {"contrastive_training": true, "monitor_losses": ["mmd", "cdd"]}
+        "features": {
+          "contrastive_training": true,
+          "monitor_losses": [
+            "mmd",
+            "cdd"
+          ]
+        }
       }
     },
     {
@@ -105,46 +181,79 @@
       "overrides": {
         "features": {
           "cdd": true,
-          "cdd_warmup_steps": 1000,
+          "cdd_warmup_steps": 0,
           "cdd_ramp_steps": 1000,
-          "loss_weight_cdd": 0.3,
-          "monitor_losses": ["mmd", "contrastive"]
+          "monitor_losses": [
+            "mmd",
+            "contrastive"
+          ]
         }
       }
     },
     {
       "name": "align_paired",
       "overrides": {
-        "data": {"paired_sampling": true, "paired_every_n": 10}
-      }
-    },
-    {
-      "name": "align_combo",
-      "overrides": {
-        "data": {"paired_sampling": true, "paired_every_n": 10},
-        "features": {"mmd": true, "contrastive_training": true, "monitor_losses": ["cdd"]}
+        "data": {
+          "paired_sampling": true,
+          "paired_every_n": 10
+        }
       }
     },
     {
       "name": "align_agg_ctrl",
       "overrides": {
-        "data": {"pb_id_column": "pseudobulk_id", "n_sc_per_pseudobulk": 5},
+        "data": {
+          "pb_id_column": "pseudobulk_id",
+          "n_sc_per_pseudobulk": 5
+        },
         "features": {
           "agg_consistency": true,
           "agg_fn": "mean",
           "loss_weight_agg": 0.0,
-          "monitor_losses": ["mmd", "contrastive", "cdd", "aggregation"]
+          "monitor_losses": [
+            "mmd",
+            "contrastive",
+            "cdd",
+            "aggregation"
+          ]
         }
       }
     },
     {
       "name": "align_agg",
       "overrides": {
-        "data": {"pb_id_column": "pseudobulk_id", "n_sc_per_pseudobulk": 5},
+        "data": {
+          "pb_id_column": "pseudobulk_id",
+          "n_sc_per_pseudobulk": 5
+        },
         "features": {
           "agg_consistency": true,
           "agg_fn": "mean",
-          "monitor_losses": ["mmd", "contrastive", "cdd"]
+          "monitor_losses": [
+            "mmd",
+            "contrastive",
+            "cdd"
+          ]
+        }
+      }
+    },
+    {
+      "name": "align_combo_agg",
+      "overrides": {
+        "data": {
+          "paired_sampling": true,
+          "paired_every_n": 10,
+          "pb_id_column": "pseudobulk_id",
+          "n_sc_per_pseudobulk": 5
+        },
+        "features": {
+          "mmd": true,
+          "contrastive_training": true,
+          "agg_consistency": true,
+          "agg_fn": "mean",
+          "monitor_losses": [
+            "cdd"
+          ]
         }
       }
     }

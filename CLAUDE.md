@@ -72,17 +72,22 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
   (0.1). Skipped on paired batches; use `--class-aware` so batches hold matching tissues.
   `python scripts/check_contrastive_loss.py` self-checks it (part 2 needs torch).
 - `--agg-consistency`: the MSE between each pseudobulk's CLS embedding and the mean
-  embedding of its own cells. The sampler draws `--n-sc-per-pseudobulk` constituent cells
+  embedding of its own cells, averaged over the batch's pseudobulks (it was a sum, so its
+  weight scaled with how many a batch held). The sampler draws `--n-sc-per-pseudobulk` constituent cells
   per pseudobulk into the batch, and those cells are trained on too. With
   `--loss-weight-agg 0` the cells are still drawn but the loss is not trained on. Add
   `aggregation` to `--monitor-losses` to log its raw value. That makes a batch-matched
   control (`align_agg_ctrl` in `experiments/configs/leiden_s1_alignment.json`).
-- **Alignment ablation:** `experiments/configs/leiden_s1_alignment.json` warm-starts nine
+- **Alignment ablation:** `experiments/configs/leiden_s1_alignment.json` warm-starts ten
   runs from `unified_baseline`:
   - two controls (seeds 0 and 1, the noise floor);
-  - one run each for MMD, contrastive, CDD and paired, plus a combination;
-  - the aggregation pair.
+  - one run each for MMD, contrastive, CDD (no warmup, 1000-step ramp) and paired;
+  - the aggregation pair;
+  - `align_combo_agg` (MMD + contrastive + paired + aggregation), and `align_combo` (the
+    same with the aggregation loss only logged, cells still drawn) in
+    `leiden_s1_alignment_test.json`, launched first as a test (`base_from` the main one).
 
+  The loss weights are calibrated by `align_calib` (see "Calibrating loss weights").
   Every run logs the alignment losses it does not train on. The evaluation config is
   `evaluate/configs/leiden_s1_alignment_evaluation.yaml`.
 - `--cdd`: Contrastive Domain Discrepancy (class-conditional MMD between pseudobulk and
@@ -302,6 +307,37 @@ names are an error, and an existing model directory is refused unless
 `resume_from_checkpoint` is set. A dry run never submits: it prints the `sbatch` line and
 writes a placeholder `dry_run.ckpt` plus a card flagged `dry_run`, which does not block a
 later real launch. The SLURM image, binds and project path are config keys under `slurm`.
+
+- **`base_from`:** a launch config may set `"base_from": "<other launch config>"` to take
+  its `base_config` (or `model_config_path`), `base_overrides`, `slurm`,
+  `experiments_root` and `train_entrypoint` wherever it does not set them; its models are
+  not taken. A small config (one test model) then shares one source of truth with the full
+  one.
+
+### Calibrating loss weights (`utils/loss_balance.py`)
+`--calibrate-loss-steps N` (config `trainer.calibrate_loss_steps`) turns `pretrain.py`
+into a probe: it builds the store, sampler and warm start exactly as for training, then,
+instead of training, measures over N batches each loss term's gradient norm on the shared
+backbone (`utils.warm_start` group `backbone`) against reconstruction's
+(`w_rec * (expr + w_mvc * mvc + gen)`, `use_cell_embedding` on, CDD at full weight).
+- **Rule:** `ratio_k = ||g_k|| / ||g_recon||` per batch (raw term, weight 1); suggested
+  weight `w_k = R / median(ratio_k)`, R = `--calibrate-target-share` (0.3). At the parent
+  every alignment term then pulls with R times reconstruction, on the batches where it acts
+  (the paired loss on its paired batches). A combination applies the sum of the single-run
+  pressures. The alignment losses shrink as they are optimized, so R is a starting share.
+- **Verbose:** the setup (backbone size, active terms, current weights, excluded class
+  codes), progress every 25 batches with running median ratios, then a table per term
+  (batches seen, loss, ratio median and IQR, weight now, share now, suggested) and one line
+  per decision (`ratio x -> R / x = w`), with flags for terms seen in fewer than 10 batches,
+  never computed (weight kept) or varying across batches (IQR/median > 1).
+- **Output:** `checkpoints/<name>/loss_balance.json` (every statistic and the snippet) and
+  a printed `features` snippet to paste. No optimizer step, no W&B run; an existing json is
+  not recomputed (delete it to calibrate again). The module records the raw terms through
+  the runtime attribute `TransformerModule.loss_terms` (not an `__init__` argument).
+- **Turn every loss on** in the calibration model; a term that is off gets no suggestion.
+  `align_calib` in `leiden_s1_alignment.json` does that (300 batches, about 30 paired).
+- `python scripts/check_loss_balance.py` self-checks the arithmetic and `base_from`
+  offline (numpy).
 
 ### Renaming a model
 ```bash

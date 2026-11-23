@@ -203,6 +203,12 @@ def main(input_args=None):
     else:
         args = input_args
 
+    if args.calibrate_loss_steps > 0:
+        done = Path(args.save_dir) / "loss_balance.json"
+        if done.exists():
+            print(f"[calibrate] {done} exists: nothing to do (delete it to calibrate again)")
+            return str(done)
+
     # Resuming: read where the checkpoint stopped before anything is built, so a run that
     # has nothing left to train fails here rather than after loading the data.
     resume_path = resolve_checkpoint(args.resume_from_checkpoint, args.save_dir)
@@ -544,6 +550,12 @@ def main(input_args=None):
             "global_step": warm_start["from"]["global_step"],
         },
     )
+
+    if args.calibrate_loss_steps > 0:
+        # Loss-weight probe: measure, suggest, write loss_balance.json; train nothing.
+        from utils.loss_balance import probe
+
+        return str(probe(model, datamodule, args))
 
     trainer = train_model(
         model=model,

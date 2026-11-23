@@ -540,6 +540,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--calibrate-loss-steps",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "Loss-weight probe instead of training (utils/loss_balance.py): build the model and "
+            "data as for training (warm start included), measure each loss term's gradient on "
+            "the backbone vs reconstruction over N batches, write <save_dir>/loss_balance.json "
+            "and print suggested weights. No optimizer step. 0 = train normally."
+        ),
+    )
+    parser.add_argument(
+        "--calibrate-target-share",
+        type=float,
+        default=0.3,
+        metavar="R",
+        help=(
+            "Share of the reconstruction gradient each alignment term should get at the "
+            "parent: suggested weight = R / median(||g_term|| / ||g_recon||)."
+        ),
+    )
+
+    parser.add_argument(
         "--ckpt-every-n-steps",
         type=int,
         default=None,

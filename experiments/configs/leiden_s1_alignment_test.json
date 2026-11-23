@@ -1,0 +1,37 @@
+{
+  "launch_name": "leiden_s1_alignment_test",
+  "_comment": [
+    "align_combo alone, launched before the rest of leiden_s1_alignment.json to test the",
+    "calibrated weights on the cluster. Same base config as that file (base_from): paste",
+    "the weights there. MMD + contrastive + paired; each pseudobulk also draws 5 of its",
+    "cells with loss_weight_agg 0 (aggregation only logged), so align_combo vs",
+    "align_combo_agg differ only in the aggregation loss."
+  ],
+  "base_from": "leiden_s1_alignment.json",
+  "dry_run": false,
+  "models": [
+    {
+      "name": "align_combo",
+      "overrides": {
+        "data": {
+          "paired_sampling": true,
+          "paired_every_n": 10,
+          "pb_id_column": "pseudobulk_id",
+          "n_sc_per_pseudobulk": 5
+        },
+        "features": {
+          "mmd": true,
+          "contrastive_training": true,
+          "agg_consistency": true,
+          "agg_fn": "mean",
+          "loss_weight_agg": 0.0,
+          "monitor_losses": [
+            "cdd",
+            "aggregation"
+          ]
+        }
+      }
+    }
+  ],
+  "downstream_tasks": []
+}
