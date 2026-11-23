@@ -101,7 +101,8 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
     `checkpoints/align_calib/loss_balance.json`). The probe prints, for the first normal and
     the first paired batch, the row count and the peak GPU memory, and names the settings to
     lower on an out-of-memory error.
-  Every run logs the alignment losses it does not train on. The evaluation config is
+  MMD, contrastive and CDD (trained or monitored) skip paired batches; only the paired
+  loss acts there. Every run logs the alignment losses it does not train on. The evaluation config is
   `evaluate/configs/leiden_s1_alignment_evaluation.yaml`.
 - `--cdd`: Contrastive Domain Discrepancy (class-conditional MMD between pseudobulk and
   bulk, keyed on `--class-column`), **fully supervised on the given labels**: a tissue

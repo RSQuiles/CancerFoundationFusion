@@ -1059,15 +1059,16 @@ class TransformerModule(nn.Module):
         # MMD alignment loss: distribution-level matching of the real-bulk and
         # pseudobulk embedding marginals via a mixture-of-RBF-kernels MMD. A
         # non-adversarial complement/alternative to DAT that matches the whole
-        # distribution rather than just the means. Marginal-only, so — unlike the
-        # contrastive loss — it does not conflict with 1-to-1 pairing and runs on
-        # paired and unpaired batches alike.
+        # distribution rather than just the means. Skipped on paired batches, like the
+        # contrastive and CDD losses: those batches hold only the paired datasets' rows,
+        # so their bulk and pseudobulk clouds are not the marginals MMD should match,
+        # and the paired alignment loss already acts on them.
         # When CDD is enabled, the MMD weight follows the handover schedule set by the
         # LightningModule (full during CDD warmup to pull the clouds together, then
         # decaying to cdd_mmd_final_weight as CDD ramps in). Without CDD it is the
         # plain configured weight.
         want_mmd = self.mmd or "mmd" in self.monitor_losses
-        if want_mmd and not skip_unified_losses:
+        if want_mmd and not is_paired_batch and not skip_unified_losses:
             embeddings = output_dict["embeddings"]
             modalities = tensors["conditions"]["modality"]
             assert len(embeddings) == len(
