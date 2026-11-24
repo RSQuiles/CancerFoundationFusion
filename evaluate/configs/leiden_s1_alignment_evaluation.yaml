@@ -97,14 +97,14 @@ tasks:
         args:
           variant: own_panel
           parts: [test]
-      embed_parent:             # only if unified_baseline was embedded before curating
-        script: embed_splits
-        enabled: false
-        foreach:
-          model: [unified_baseline]
-          modalities: [[sc, bulk, pseudobulk]]
-        args:
-          parts: [test]
+      # embed_parent:             # only if unified_baseline was embedded before curating
+        # script: embed_splits
+        # enabled: false
+        # foreach:
+          # model: [unified_baseline]
+          # modalities: [[sc, bulk, pseudobulk]]
+        # args:
+          # parts: [test]
 
   # ---- 2. representation figures (CPU) -------------------------------------------------
   representation:

@@ -1,0 +1,196 @@
+Environment: conda 'bulkFM' (/cluster/apps/biomed/boeva/rquiles/conda/envs/bulkFM/bin/python)
+--stores-only: reusing the splits in /cluster/work/boeva/rquiles/unifiedFM_experiments/data/*/splits/leiden_s1; stores: mix single_cell bulk pseudobulk
+
+================================================================================
+[1] joint store sc_bulk_pb_leiden_s1    (2026-11-20 17:19:55)
+================================================================================
+  single_cell.h5ad: 1316428 rows from leiden_s1/train
+  BULK_pretraining.h5ad: 578402 rows from leiden_s1/train
+  pseudobulk.h5ad: 18241 rows from leiden_s1/train
+Building the gene vocabulary (intersection of 3 source(s))
+[1/3] single_cell.h5ad: 1316428 rows, 13004/13004 genes in the vocabulary
+  5 transient file(s) of at most 500,000,000 entries, int32 indices
+[2/3] BULK_pretraining.h5ad: 578402 rows, 13004/13004 genes in the vocabulary
+  13 transient file(s) of at most 500,000,000 entries, int32 indices
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 4.89432e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 3.92777e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 5.24133e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.45158e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.10615e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 6.65008e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 3.40306e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.38041e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 5.09295e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 4.29328e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 6.94702e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.82755e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 3.24274e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+[3/3] pseudobulk.h5ad: 18241 rows, 13004/13004 genes in the vocabulary
+  1 transient file(s) of at most 500,000,000 entries, int32 indices
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.1986e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+Exporting files...
+Store verified: 88 rows identical to their source
+Store written to /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pipeline_ready/sc_bulk_pb_leiden_s1 (1913071 rows, 13004 genes in the vocabulary)
+Done.
+
+================================================================================
+[2] single_cell store (train part, joint vocabulary)    (2026-11-20 17:42:34)
+================================================================================
+Reading gene vocabulary /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pipeline_ready/sc_bulk_pb_leiden_s1/vocab.json
+[1/1] single_cell.h5ad: 1316428 rows, 13004/13004 genes in the vocabulary
+  5 transient file(s) of at most 500,000,000 entries, int32 indices
+Exporting files...
+Store verified: 60 rows identical to their source
+Store written to /cluster/work/boeva/rquiles/unifiedFM_experiments/data/single_cell/pipeline_ready/leiden_s1 (1316428 rows, 13004 genes in the vocabulary)
+Conversion completed successfully.
+
+================================================================================
+[3] bulk store (train part, joint vocabulary)    (2026-11-20 17:49:04)
+================================================================================
+Reading gene vocabulary /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pipeline_ready/sc_bulk_pb_leiden_s1/vocab.json
+[1/1] BULK_pretraining.h5ad: 578402 rows, 13004/13004 genes in the vocabulary
+  13 transient file(s) of at most 500,000,000 entries, int32 indices
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 4.89432e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 3.92777e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 5.24133e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.45158e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.10615e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 6.65008e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 3.40306e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.38041e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 5.09295e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 4.29328e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 6.94702e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.82755e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 3.24274e+07)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+Exporting files...
+Store verified: 76 rows identical to their source
+Store written to /cluster/work/boeva/rquiles/unifiedFM_experiments/data/bulk/pipeline_ready/leiden_s1 (578402 rows, 13004 genes in the vocabulary)
+Conversion completed successfully.
+
+================================================================================
+[4] pseudobulk store (train part, joint vocabulary)    (2026-11-20 18:04:20)
+================================================================================
+Reading gene vocabulary /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pipeline_ready/sc_bulk_pb_leiden_s1/vocab.json
+[1/1] pseudobulk.h5ad: 18241 rows, 13004/13004 genes in the vocabulary
+  1 transient file(s) of at most 500,000,000 entries, int32 indices
+/cluster/work/boeva/rquiles/CancerFoundationFusion/data_preprocess/bulk_sc_data_preprocessing.py:192: UserWarning: Values above 16777216 are not exact in float32 (max 1.1986e+08)
+  warnings.warn(f"Values above {FLOAT32_EXACT} are not exact in float32 (max {np.abs(X.data).max():.6g})")
+Exporting files...
+Store verified: 52 rows identical to their source
+Store written to /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pseudobulk/pipeline_ready/leiden_s1 (18241 rows, 13004 genes in the vocabulary)
+Conversion completed successfully.
+
+================================================================================
+[5] losses supported by sc_bulk_pb_leiden_s1 (report only)    (2026-11-20 18:06:02)
+================================================================================
+Store: /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pipeline_ready/sc_bulk_pb_leiden_s1
+Losses: reconstruction, mmd, dat, contrastive, cdd, class_aware, aggregation, paired | pseudobulk source: precomputed
+
+== store
+  [OK]   vocab.json, mapping.json, obs.parquet and mem.map/ present in /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pipeline_ready/sc_bulk_pb_leiden_s1
+         vocabulary: 13006 tokens
+  [WARN] no store.json; 1913071 rows (cannot compare with the store's own count)
+
+== reconstruction
+         obs columns: tissue_general, tissue_label_source, paired, pseudobulk_id, modality
+  [OK]   condition 'tissue_general': 81 categories
+
+== unified mode (--unified)
+         'modality' categories: {'bulk': 0, 'pseudobulk': 1, 'sc': 2}
+  [OK]   578402 'bulk' rows
+  [OK]   1316428 'sc' rows
+  [OK]   18241 precomputed 'pseudobulk' rows
+
+== pseudobulk source (precomputed)
+  [OK]   18241 precomputed pseudobulk rows
+  [OK]   69 'tissue_general' groups in the source
+
+== mmd (precomputed)
+  [OK]   22 bulk and 22 pseudobulk rows per batch of 64
+
+== dat (precomputed)
+  [OK]   22 bulk and 22 pseudobulk rows per batch of 64
+  [OK]   modality discriminator: bulk vs pseudobulk
+
+== contrastive (precomputed)
+         train with 'tissue_general' in --conditions (label only: leave it out of --condition-encoders)
+  [OK]   50 class(es) shared by bulk and source (>= 2 rows each): abdomen, adipose tissue, adrenal gland, bladder organ, blood, bone marrow, brain, breast (+42 more)
+         bulk rows in shared classes: 167509/578402 (29%); excluded labels: 204628; bulk-only classes: 11 (cell line, circulatory system, hematopoietic system, in vitro, knee (+6 more))
+  [WARN] less than half of the bulk rows can get a class-conditional signal
+         contrastive needs same-class partners in each batch: use --class-aware
+
+== cdd (precomputed)
+         train with 'tissue_general' in --conditions (label only: leave it out of --condition-encoders)
+  [OK]   50 class(es) shared by bulk and source (>= 2 rows each): abdomen, adipose tissue, adrenal gland, bladder organ, blood, bone marrow, brain, breast (+42 more)
+         bulk rows in shared classes: 167509/578402 (29%); excluded labels: 204628; bulk-only classes: 11 (cell line, circulatory system, hematopoietic system, in vitro, knee (+6 more))
+  [WARN] less than half of the bulk rows can get a class-conditional signal
+
+== class_aware sampling (precomputed)
+  [OK]   50 class(es) shared by bulk and source (>= 2 rows each): abdomen, adipose tissue, adrenal gland, bladder organ, blood, bone marrow, brain, breast (+42 more)
+         bulk rows in shared classes: 167509/578402 (29%); excluded labels: 204628; bulk-only classes: 11 (cell line, circulatory system, hematopoietic system, in vitro, knee (+6 more))
+  [WARN] less than half of the bulk rows can get a class-conditional signal
+         batch 64: 22 bulk (13 matched, 9 free), 22 pseudobulk (13 matched, 9 free) over K=6 tissues -> 2-3 pseudobulk and 2-3 bulk per tissue
+         K lowered from 8 to 6 so every tissue has >= --class-min-count 2 rows in both domains
+         source rows outside the shared classes (reconstruction only): 404/18241 (2%); drawn by the 9 free pseudobulk slots per batch
+  [OK]   enough rows per tissue for --class-min-count
+
+== aggregation (precomputed)
+  [WARN] 17999/18241 precomputed pseudobulks have constituent cells in the store
+         cells per linked pseudobulk: median 30, min 20
+  [WARN] 1 'tissue_general' groups lose every pseudobulk with aggregation on: paired
+
+== paired
+         pair ids: 241 on pseudobulk rows, 241 on bulk rows
+  [OK]   241 pseudobulk-bulk pairs
+  [WARN] 5 pair ids have several bulk rows (only the last is used)
+  [OK]   241 pairs also have matched single cells (used in the paired SC term)
+
+== summary
+  reconstruction  READY
+  mmd             precomputed: READY
+  dat             precomputed: READY
+  contrastive     precomputed: READY (warnings)
+  cdd             precomputed: READY (warnings)
+  class_aware     precomputed: READY (warnings)
+  aggregation     precomputed: READY (warnings)
+  paired          READY (warnings)
+
+Every requested loss is ready in at least one source mode.
+
+================================================================================
+[6] store sizes (for the step budget in experiments/configs/leiden_s1_baselines.json)    (2026-11-20 18:06:03)
+================================================================================
+  /cluster/work/boeva/rquiles/unifiedFM_experiments/data/single_cell/pipeline_ready/leiden_s1: 1316428 rows
+  /cluster/work/boeva/rquiles/unifiedFM_experiments/data/bulk/pipeline_ready/leiden_s1: 578402 rows
+  /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pseudobulk/pipeline_ready/leiden_s1: 18241 rows
+  /cluster/work/boeva/rquiles/unifiedFM_experiments/data/pipeline_ready/sc_bulk_pb_leiden_s1: 1913071 rows
+
+Done (2026-11-20 18:06:04).

@@ -58,7 +58,7 @@
       "ckpt_every_n_steps": 10000,
       "save_every": true,
       "resume_from_checkpoint": "last",
-      "resume_mode": "exact",
+      "resume_mode": "continue",
       "init_from": {
         "model": "unified_baseline",
         "checkpoint": "last",
@@ -99,7 +99,7 @@
         "in vitro",
         "xenograft"
       ],
-      "class_aware_n_classes": 8,
+      "class_aware_n_classes": 6,
       "n_sc_per_pseudobulk": 4
     },
     "model": {
@@ -110,7 +110,7 @@
       "lr": 0.0001,
       "warmup_ratio_or_step": 1000,
       "max_seq_len": 1200,
-      "batch_size": 128,
+      "batch_size": 96,
       "input_style": "binned",
       "n_bins": 51,
       "binning_method": "midrank",
@@ -129,50 +129,18 @@
         "contrastive",
         "cdd"
       ],
-      "loss_weight_mmd": 1.0,
-      "loss_weight_contrastive": 1.0,
-      "loss_weight_cdd": 0.3,
-      "loss_weight_paired": 1.0,
-      "loss_weight_agg": 1.0,
-      "paired_loss": "infonce",
+      "loss_weight_mmd": 18.0,
+      "loss_weight_contrastive": 4.1,
+      "loss_weight_cdd": 21.0,
+      "loss_weight_agg": 4.8,
       "paired_temperature": 0.1
     }
   },
   "base_overrides": {},
   "models": [
     {
-      "name": "align_calib",
-      "overrides": {
-        "trainer": {
-          "calibrate_loss_steps": 300
-        },
-        "data": {
-          "paired_sampling": true,
-          "paired_every_n": 10,
-          "pb_id_column": "pseudobulk_id"
-        },
-        "features": {
-          "mmd": true,
-          "contrastive_training": true,
-          "cdd": true,
-          "cdd_warmup_steps": 0,
-          "agg_consistency": true,
-          "agg_fn": "mean",
-          "monitor_losses": []
-        }
-      }
-    },
-    {
       "name": "align_ctrl",
       "overrides": {}
-    },
-    {
-      "name": "align_ctrl_s1",
-      "overrides": {
-        "trainer": {
-          "seed": 1
-        }
-      }
     },
     {
       "name": "align_mmd",
@@ -203,7 +171,7 @@
       "overrides": {
         "features": {
           "cdd": true,
-          "cdd_warmup_steps": 0,
+          "cdd_warmup_steps": 1000,
           "cdd_ramp_steps": 1000,
           "monitor_losses": [
             "mmd",
@@ -217,7 +185,11 @@
       "overrides": {
         "data": {
           "paired_sampling": true,
-          "paired_every_n": 10
+          "paired_every_n": 5
+        },
+        "features":{
+          "paired_loss": "infonce",
+          "loss_weight_paired": 4.0
         }
       }
     },
@@ -226,11 +198,11 @@
       "overrides": {
         "data": {
           "paired_sampling": true,
-          "paired_every_n": 10
+          "paired_every_n": 5
         },
         "features": {
           "paired_loss": "mse",
-          "loss_weight_paired": 1.0
+          "loss_weight_paired": 1.3
         }
       }
     },
@@ -271,7 +243,7 @@
       }
     },
     {
-      "name": "align_combo_agg",
+      "name": "align_combo",
       "overrides": {
         "data": {
           "paired_sampling": true,
@@ -281,11 +253,9 @@
         "features": {
           "mmd": true,
           "contrastive_training": true,
+          "cdd": true,
           "agg_consistency": true,
-          "agg_fn": "mean",
-          "monitor_losses": [
-            "cdd"
-          ]
+          "agg_fn": "mean"
         }
       }
     }
@@ -295,7 +265,7 @@
     "enabled": true,
     "python_executable": "python",
     "sbatch_args": [
-      "--time=72:00:00",
+      "--time=24:00:00",
       "--partition=gpu",
       "--ntasks-per-node=1",
       "--gres=gpu:rtx4090:1",
