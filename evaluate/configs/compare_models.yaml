@@ -213,6 +213,15 @@ tasks:
           cell_means: true
           link_col: pseudobulk_id
           title: "{model}: modality alignment ({counts})"
+      alignment_pb_cells_selected:   # pseudobulks with their own cells (same rows for every model)
+        script: alignment
+        environment: container
+        args:
+          models: [unified_baseline, align_ctrl, align_agg_ctrl, align_agg]
+          pb_cells: true
+          filter: ["tissue_label_source=cellxgene,archs4"]
+          color: [pseudobulk_id, tissue_general]
+          title: "{model}: pseudobulks and their own cells ({counts})"
       umap_bulk_pb_selected:    # each modality on its own-panel embedding
         script: umap
         environment: container

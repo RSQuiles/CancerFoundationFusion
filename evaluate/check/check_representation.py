@@ -161,6 +161,59 @@ def check_alignment() -> None:
               ExperimentLayout(Path(tmp)).alignment_dir(MODEL).joinpath("alignment_test.png").exists())
 
 
+def check_pb_cells() -> None:
+    """plot_alignment --pb-cells: pseudobulks of several tissues with their own cells."""
+    print("\n-- plot_alignment --pb-cells --")
+    import anndata as ad
+
+    with tempfile.TemporaryDirectory() as tmp:
+        layout = ExperimentLayout(Path(tmp))
+        rng = np.random.default_rng(1)
+        # tissue A: 5 pseudobulks, B: 4 (one with only 4 cells), C: 2, plus an unknown one
+        pbs = [("A", i, 20) for i in range(5)] + [("B", i, 20) for i in range(4)] + [("B", 4, 4)] \
+            + [("C", i, 20) for i in range(2)] + [("unknown", 0, 20)]
+        pb_obs = pd.DataFrame({"pseudobulk_id": [f"pb:{t}{i}" for t, i, _ in pbs],
+                               "tissue_general": [t for t, _, _ in pbs], "modality": "pseudobulk"},
+                              index=[f"pb_{t}{i}" for t, i, _ in pbs])
+        cells = [(f"pb:{t}{i}", t) for t, i, n in pbs for _ in range(n)]
+        sc_obs = pd.DataFrame({"pseudobulk_id": [k for k, _ in cells], "tissue_general": [t for _, t in cells],
+                               "modality": "sc"}, index=[f"c{j}" for j in range(len(cells))])
+        files = {}
+        for mod, obs in (("sc", sc_obs), ("pseudobulk", pb_obs)):
+            path = layout.embedding_file(MODEL, mod, "test")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            ad.AnnData(obs=obs, obsm={"X_emb": rng.normal(size=(len(obs), 8)).astype(np.float32)}).write_h5ad(path)
+            files[path.name] = {"panel_hash": "same"}
+        layout.embed_card(MODEL).write_text(json.dumps({"model": MODEL, "files": files}), encoding="utf-8")
+
+        args = ["--root", tmp, "--models", MODEL, "--pb-cells", "--pb-tissues", "3", "--pb-per-tissue", "4",
+                "--cells-per-pb", "8", "--pb-min-cells", "10"]
+        plot_alignment.main(args)
+        out = layout.alignment_dir(MODEL)
+        coords = pd.read_parquet(out / "alignment_test_pb_cells.parquet")
+        sel = json.loads((out / "alignment_test_pb_cells.selection.json").read_text())
+        check("figure, coordinates and selection written",
+              (out / "alignment_test_pb_cells.png").exists() and len(coords))
+        check("only tissues with enough eligible pseudobulks (A, B), 4 each",
+              sel["tissues"] == ["A", "B"] and len(sel["keys"]) == 8)
+        check("a pseudobulk with too few cells or no tissue is never chosen",
+              "pb:B4" not in sel["keys"] and "pb:unknown0" not in sel["keys"])
+        counts = coords["modality"].value_counts().to_dict()
+        check("rows: 8 pseudobulks, 8 cells each, one star each",
+              counts == {"sc": 64, "pseudobulk": 8, "cell_mean": 8})
+        check("every row carries its pseudobulk's tissue",
+              set(coords["tissue_general"]) == {"A", "B"})
+        plot_alignment.main(args)
+        check("the same selection on a rerun",
+              json.loads((out / "alignment_test_pb_cells.selection.json").read_text()) == sel)
+
+        sc_path = layout.embedding_file(MODEL, "sc", "test")
+        a = ad.read_h5ad(sc_path)
+        a.obs = a.obs.drop(columns=["pseudobulk_id"])
+        a.write_h5ad(sc_path)
+        check("a file without the link column is refused", raises(lambda: plot_alignment.main(args), SystemExit))
+
+
 def check_titles_labels() -> None:
     print("\n-- titles and labels --")
     import matplotlib
@@ -301,6 +354,7 @@ def main() -> None:
     check_pca()
     check_variant()
     check_alignment()
+    check_pb_cells()
     check_titles_labels()
     finish()
 

@@ -15,6 +15,15 @@ over every loaded cell before the subsample and fitted with the UMAP, so it sits
 pseudobulk; with ``--connect-pairs``, each bulk point is joined to its pair's pseudobulk,
 which draws the chain cells -> pseudobulk -> bulk when the link is ``paired``.
 
+``--pb-cells`` is a figure of its own: ``--pb-tissues`` tissues (default 6), each with
+``--pb-per-tissue`` pseudobulks (4) that have >= ``--pb-min-cells`` cells (10), each with up to
+``--cells-per-pb`` of its own cells (50) and its cell-mean star (the mean of ALL its cells,
+as ``integration.py``'s pb_cells edge measures it), in one UMAP over those rows only,
+coloured by ``--link-col`` and tissue. It shows whether a pseudobulk sits in the cloud of
+its own cells rather than only among same-tissue samples. The selection
+(``select_pb_cells``) depends only on obs and ``--seed``, so every model shows the same
+pseudobulks and cells; it is written as ``<stem>.selection.json``.
+
 The three files must come from one gene panel (``embed_splits.py`` embeds them together);
 mismatched ``panel_hash`` values in ``embed.json`` are refused, since a per-modality
 panel separates modalities by construction.
@@ -23,7 +32,8 @@ panel separates modalities by construction.
         --per-modality sc=5000 bulk=all pseudobulk=all --stratify-by tissue_general \\
         --filter tissue_general=lung --connect-pairs --color modality tissue_general paired
 
-Writes ``results/representation/_alignment/<model>/alignment_<part>[_<tag>].{png,parquet}``.
+Writes ``results/representation/_alignment/<model>/alignment_<part>[_paired|_pb_cells][_<tag>].{png,parquet}``
+(plus ``.selection.json`` with ``--pb-cells``).
 """
 
 from __future__ import annotations
@@ -86,6 +96,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--link-col", default="pseudobulk_id",
                         help="obs column linking cells to their pseudobulk (pseudobulk_id) or pair (paired)")
     parser.add_argument("--min-cells", type=int, default=5, help="Cells a key needs for its star")
+    pb = parser.add_argument_group(
+        "pseudobulks with their cells (--pb-cells)",
+        "A few pseudobulks per tissue, each with a subset of its own cells and their mean, in "
+        "one UMAP fitted on those rows only. The selection depends only on obs and --seed, so "
+        "every model shows the same pseudobulks and cells.")
+    pb.add_argument("--pb-cells", action="store_true",
+                    help="This mode (modalities sc + pseudobulk; no stratified subsample)")
+    pb.add_argument("--pb-tissues", type=int, default=6, help="Tissues shown")
+    pb.add_argument("--pb-per-tissue", type=int, default=4, help="Pseudobulks per tissue")
+    pb.add_argument("--cells-per-pb", type=int, default=50,
+                    help="Cells drawn per pseudobulk (all of them when it has fewer)")
+    pb.add_argument("--pb-min-cells", type=int, default=10,
+                    help="Cells (in the sc file, after --filter) a pseudobulk needs to be chosen")
+    pb.add_argument("--pb-label-key", default="tissue_general",
+                    help="obs column with the tissue the pseudobulks are grouped by")
     parser.add_argument("--color", nargs="+", default=None,
                         help="obs columns to colour by (default: modality tissue_general paired; "
                              "with --paired-only: paired)")
@@ -183,6 +208,112 @@ def link_segments(coords: np.ndarray, obs: pd.DataFrame, key: pd.Series, pairs: 
     return segments
 
 
+# Labels that name no tissue: such pseudobulks are never chosen in --pb-cells.
+NON_TISSUE_LABELS = {"unknown", "nan", "none", "", "paired"}
+
+
+def select_pb_cells(sc_obs: pd.DataFrame, pb_obs: pd.DataFrame, link_col: str, label_key: str,
+                    n_tissues: int, per_tissue: int, cells_per_pb: int, min_cells: int,
+                    seed: int) -> dict:
+    """The pseudobulks and cells of a ``--pb-cells`` figure; pandas only.
+
+    Eligible pseudobulks have a tissue in ``label_key`` (not unknown / paired / empty) and
+    at least ``min_cells`` cells in ``sc_obs`` linked by ``link_col``. Tissues with at
+    least ``per_tissue`` eligible pseudobulks are ranked by how many they have (ties by
+    name); the first ``n_tissues`` are kept. Per tissue ``per_tissue`` pseudobulks, per
+    pseudobulk ``min(cells_per_pb, available)`` cells, both drawn with ``seed``.
+
+    Returns ``{"tissues", "keys" (key -> tissue), "pb_rows", "cell_rows",
+    "cells_per_key" (drawn), "cells_available"}``; raises ValueError when no tissue
+    qualifies or a file lacks ``link_col``.
+    """
+    for name, obs in (("sc", sc_obs), ("pseudobulk", pb_obs)):
+        if link_col not in obs.columns:
+            raise ValueError(f"the {name} embedding has no '{link_col}' column (joint-panel files made "
+                             "before the obs fix: run python -m embed.restore_obs --model <model>)")
+    if label_key not in pb_obs.columns:
+        raise ValueError(f"the pseudobulk embedding has no '{label_key}' column")
+    rng = np.random.default_rng(seed)
+    cell_key = link_keys(sc_obs[link_col])
+    n_cells = cell_key.dropna().value_counts()
+
+    pb_key = link_keys(pb_obs[link_col])
+    tissue = pb_obs[label_key].astype(object)
+    ok_tissue = tissue.notna() & ~tissue.astype(str).str.strip().str.lower().isin(NON_TISSUE_LABELS)
+    pb = pd.DataFrame({"key": pb_key, "tissue": tissue}, index=pb_obs.index)[pb_key.notna() & ok_tissue]
+    pb = pb[~pb["key"].duplicated()]                       # one pseudobulk row per key
+    pb = pb[pb["key"].map(n_cells).fillna(0) >= min_cells]
+    per = pb.groupby("tissue")["key"].nunique()
+    per = per[per >= per_tissue]
+    if per.empty:
+        raise ValueError(f"no tissue has {per_tissue} pseudobulks with >= {min_cells} cells "
+                         "(lower --pb-per-tissue or --pb-min-cells)")
+    ranked = sorted(per.index, key=lambda t: (-per[t], str(t)))
+    tissues = ranked[:n_tissues]
+    if len(tissues) < n_tissues:
+        print(f"  [note] only {len(tissues)} tissues have {per_tissue} eligible pseudobulks")
+
+    keys: dict[str, str] = {}
+    pb_rows: list[str] = []
+    for t in tissues:
+        cand = pb[pb["tissue"] == t].sort_values("key")
+        chosen = cand.iloc[np.sort(rng.choice(len(cand), size=per_tissue, replace=False))]
+        for name, row in chosen.iterrows():
+            keys[row["key"]] = t
+            pb_rows.append(name)
+
+    cell_rows: list[str] = []
+    drawn: dict[str, int] = {}
+    for key in keys:
+        names = sc_obs.index[(cell_key == key).to_numpy()]
+        take = min(cells_per_pb, len(names))
+        pick = names[np.sort(rng.choice(len(names), size=take, replace=False))]
+        cell_rows.extend(pick)
+        drawn[key] = take
+    return {"tissues": [str(t) for t in tissues], "keys": {k: str(v) for k, v in keys.items()},
+            "pb_rows": [str(r) for r in pb_rows], "cell_rows": [str(r) for r in cell_rows],
+            "cells_per_key": drawn, "cells_available": {k: int(n_cells[k]) for k in keys}}
+
+
+def collect_pb_cells(layout: ExperimentLayout, model: str, args, filters) -> tuple:
+    """Rows of a ``--pb-cells`` figure: the chosen pseudobulks, their drawn cells and one
+    cell-mean star each (the mean over ALL the pseudobulk's cells after --filter, as in
+    integration.py's pb_cells edge)."""
+    import anndata as ad
+
+    labels = [MOD_SC, MOD_PB]
+    files = [layout.embedding_file(model, m, args.part, args.variant) for m in labels]
+    hashes = panel_hashes(layout, model, [f for f in files if f.exists()], args.variant)
+    if len({h for h in hashes.values() if h is not None}) > 1 and not args.allow_mixed_panels:
+        raise SystemExit(f"[{model}] the modalities were embedded with different gene panels {hashes}; "
+                         "pass --allow-mixed-panels to plot anyway")
+    data = {}
+    for label in labels:
+        adata = load_embedding(layout, model, label, args.part, args.variant)
+        adata.obs[MODALITY_COL] = label
+        data[label] = adata[filter_mask(adata.obs, filters, label=f"{label}_{args.part}")].copy()
+    try:
+        sel = select_pb_cells(data[MOD_SC].obs, data[MOD_PB].obs, args.link_col, args.pb_label_key,
+                              args.pb_tissues, args.pb_per_tissue, args.cells_per_pb, args.pb_min_cells,
+                              args.seed)
+    except ValueError as exc:
+        raise SystemExit(f"[{model}] --pb-cells: {exc}") from exc
+    means = cell_mean_rows(data[MOD_SC], args.link_col, args.pb_min_cells,
+                           [*args.color, args.pb_label_key])
+    if means is not None:
+        means = means[means.obs[args.link_col].astype(str).isin(sel["keys"]).to_numpy()].copy()
+        means.obs[args.pb_label_key] = means.obs[args.link_col].map(sel["keys"])
+    pb = data[MOD_PB][sel["pb_rows"]].copy()
+    cells = data[MOD_SC][sel["cell_rows"]].copy()
+    cells.obs[args.pb_label_key] = link_keys(cells.obs[args.link_col]).map(sel["keys"]).to_numpy()
+    print(f"  {len(sel['tissues'])} tissues x {args.pb_per_tissue} pseudobulks: {sel['tissues']}; "
+          f"{cells.n_obs} cells (median {int(np.median(list(sel['cells_per_key'].values())))} per pseudobulk)")
+    combined = ad.concat([pb, cells] + ([means] if means is not None else []),
+                         join="outer", merge="same", label=None)
+    combined.obs_names_make_unique()
+    return combined, hashes, sel
+
+
 def collect(layout: ExperimentLayout, model: str, args, filters) -> tuple:
     import anndata as ad
 
@@ -233,19 +364,27 @@ def collect(layout: ExperimentLayout, model: str, args, filters) -> tuple:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_with_config(build_parser(), "alignment", argv)
+    if args.pb_cells and args.paired_only:
+        sys.exit("Error: --pb-cells and --paired-only are separate figures; give one")
     if args.color is None:
-        args.color = [args.paired_col] if args.paired_only else ["modality", "tissue_general", args.paired_col]
+        args.color = ([args.link_col, args.pb_label_key] if args.pb_cells
+                      else [args.paired_col] if args.paired_only
+                      else ["modality", "tissue_general", args.paired_col])
     if not args.models:
         sys.exit("Error: give --models")
     filters = parse_filter_specs(args.filter)
     tag = filter_tag(filters)
-    suffix = ("_paired" if args.paired_only else "") + (f"_{tag}" if tag else "")
+    suffix = ("_paired" if args.paired_only else "_pb_cells" if args.pb_cells else "") + (f"_{tag}" if tag else "")
     layout = ExperimentLayout.from_root(args.root)
     labels = parse_mapping(args.labels)
 
     for model in args.models:
-        print(f"[{model}] alignment of {args.part}")
-        combined, _ = collect(layout, model, args, filters)
+        print(f"[{model}] alignment of {args.part}" + (" (pseudobulks with their cells)" if args.pb_cells else ""))
+        selection = None
+        if args.pb_cells:
+            combined, _, selection = collect_pb_cells(layout, model, args, filters)
+        else:
+            combined, _ = collect(layout, model, args, filters)
         coords = compute_umap(combined.obsm[EMB_KEY], args.n_neighbors, args.min_dist, args.seed)
 
         obs = combined.obs.copy()
@@ -261,7 +400,9 @@ def main(argv: list[str] | None = None) -> None:
             obs[args.paired_col] = pairs.fillna("unpaired")
             highlight[args.paired_col] = pairs.notna().to_numpy()
             print(f"  {int(pairs.notna().sum())} paired rows across {pairs.nunique()} pairs")
-        if args.cell_means:
+        if args.pb_cells:                 # each star -> its pseudobulk
+            segments = link_segments(coords, obs, link, pairs, False)
+        elif args.cell_means:
             segments = link_segments(coords, obs, link, pairs, args.connect_pairs)
         else:
             segments = pair_segments(coords, obs, pairs) if args.connect_pairs else None
@@ -272,15 +413,34 @@ def main(argv: list[str] | None = None) -> None:
         title = format_title(args.title, default, model=model, part=args.part, counts=count_text,
                              modalities=", ".join(str(k) for k in counts), filter=tag,
                              variant=args.variant or "")
+        if args.pb_cells:
+            # pair ids would only add a grey panel here; the link column is a category
+            highlight = {}
+            if args.link_col in obs.columns:
+                obs[args.link_col] = link.astype(object).to_numpy()
         fig = draw_umap_panels(coords, obs, args.color, modality_col=MODALITY_COL,
                                skip_unknown=args.skip_unknown, title=title,
                                segments=segments, highlight=highlight, labels=labels,
                                max_legend_entries=args.max_legend_entries,
-                               marker_style="paired" if args.paired_only else None)
+                               marker_style="paired" if (args.paired_only or args.pb_cells) else None)
+        if args.pb_cells:
+            fig.text(0.01, 0.005, "Triangles: pseudobulks; dots: a sample of their own cells "
+                     f"(at most {args.cells_per_pb}); stars: the mean of ALL their cells in the file "
+                     "(as integration.py's pb_cells edge), joined to their pseudobulk.",
+                     fontsize=7, color="#898781", ha="left", va="bottom")
         out_dir = args.out_dir or layout.alignment_dir(model, args.variant)
         stem = out_dir / f"alignment_{args.part}{suffix}"
         save_figure(fig, stem.with_suffix(".png"), dpi=args.dpi)
         save_coords(obs, coords, stem.with_suffix(".parquet"))
+        if selection is not None:
+            import json
+
+            stem.with_suffix(".selection.json").write_text(json.dumps({
+                "link_col": args.link_col, "label_key": args.pb_label_key, "seed": args.seed,
+                "pb_tissues": args.pb_tissues, "pb_per_tissue": args.pb_per_tissue,
+                "cells_per_pb": args.cells_per_pb, "pb_min_cells": args.pb_min_cells,
+                "filter": args.filter, **selection}, indent=2), encoding="utf-8")
+            print(f"  selection -> {stem.with_suffix('.selection.json')}")
 
 
 if __name__ == "__main__":

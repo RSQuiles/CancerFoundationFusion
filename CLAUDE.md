@@ -714,6 +714,21 @@ plus obs. `plot_alignment` fits ONE UMAP over all modalities and refuses files w
   - With `--connect-pairs`, each bulk point is joined to its pair's pseudobulk, so
     `--link-col paired --paired-only` draws the chain cells mean -> pseudobulk -> bulk
     (`alignment_test_paired.png`).
+- **Pseudobulks with their cells** (`plot_alignment --pb-cells`): sample identity at the
+  pseudobulk level, the figure counterpart of the integration `pb_cells` edge.
+  - **Contents:** `--pb-tissues` tissues (6), each with `--pb-per-tissue` pseudobulks (4)
+    that have at least `--pb-min-cells` cells (10, after `--filter`). Each pseudobulk
+    comes with up to `--cells-per-pb` of its own cells (50) and its star.
+  - **The star** is the mean of ALL its cells in the file, as the metric measures it, and
+    is joined to its pseudobulk.
+  - **UMAP and panels:** one UMAP over those rows only, colored by `--link-col`
+    (`pseudobulk_id`) and tissue (`--pb-label-key`), with the `paired` marker style.
+  - **Selection** (`select_pb_cells`, pandas only): tissues with the most eligible
+    pseudobulks first. Pseudobulks without a tissue (unknown, `paired`) are never chosen.
+    The choice depends only on obs and `--seed`, so every model shows the same rows.
+  - **Output:** `alignment_<part>_pb_cells[_<tag>].{png,parquet}` plus `.selection.json`.
+  - **Refused** when a file lacks the link column (run `embed.restore_obs`) or when no
+    tissue qualifies.
 - **PCA** (`plot_pca.py`, `plot_pca.sh`, config block `pca:`): the same inputs, filter,
   subsample, colours, titles and labels as `plot_umap`, but a PCA (centred, not scaled)
   fitted on the plotted rows, drawing `--components` (default PC1 vs PC2) with the

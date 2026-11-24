@@ -200,6 +200,16 @@ tasks:
           cell_means: true
           link_col: paired
           title: "{model}: test pairs, cells mean -> pseudobulk -> bulk ({counts})"
+      # A few curated-tissue pseudobulks per tissue with their own cells and cell means
+      # -> alignment_test_pb_cells_<filter>.png; the same pseudobulks for every model.
+      alignment_pb_cells:
+        script: alignment
+        args:
+          models: *align_models
+          pb_cells: true
+          filter: ["tissue_label_source=cellxgene,archs4"]
+          color: [pseudobulk_id, tissue_general]
+          title: "{model}: pseudobulks and their own cells ({counts})"
 
   # ---- 3. integration: scIB (bulkFM env: scib_metrics) + link metrics ------------------
   # scIB -> results/scib_benchmark/<name>/; the summary -> results/integration/<name>/.
