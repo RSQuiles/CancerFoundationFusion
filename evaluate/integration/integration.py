@@ -88,8 +88,13 @@ def build_parser() -> argparse.ArgumentParser:
                    metavar="COL=V1,V2",
                    help="Rows whose label counts as curated (others give no tissue). Never removes rows "
                         "from the link metrics; empty = every known label counts")
-    p.add_argument("--scib-runs", nargs="*", default=[], metavar="NAME",
-                   help="scIB analyses (results/scib_benchmark/<name>/) whose aggregates join the summary")
+    p.add_argument("--scib-runs", nargs="*", default=[], metavar="NAME|GROUP=NAME1,NAME2",
+                   help="scIB analyses (results/scib_benchmark/<name>/) whose aggregates join the summary. "
+                        "GROUP=NAME1,NAME2 merges runs made over different models into one column group: "
+                        "each model takes its values from the first run listing it")
+    p.add_argument("--links-from", nargs="*", default=[], metavar="NAME",
+                   help="Reuse the link metrics of earlier analyses (results/integration/<name>/links.csv) "
+                        "instead of reading embeddings: each model from the first analysis that has it")
     p.add_argument("--row-labels", nargs="*", default=None, metavar="MODEL=LABEL",
                    help="Display names of the models in the figure (a mapping in --config)")
     p.add_argument("--title", default=None, help="Figure title (default: 'Integration: <name>')")
@@ -244,24 +249,111 @@ def model_links(data: dict[str, tuple[np.ndarray, pd.DataFrame]], label_key: str
 # ---------------------------------------------------------------------------- scIB
 
 
-def scib_aggregates(layout: ExperimentLayout, names: list[str]) -> tuple[pd.DataFrame, dict[str, dict]]:
-    """``(frame indexed by model with scib_<name>_<batch|bio|total>, {name: meta})``."""
+def parse_scib_specs(specs: list[str]) -> dict[str, list[str]]:
+    """``NAME`` -> {NAME: [NAME]}; ``GROUP=A,B`` -> {GROUP: [A, B]} (order kept)."""
+    out: dict[str, list[str]] = {}
+    for spec in specs:
+        group, eq, runs = spec.partition("=")
+        names = [r.strip() for r in runs.split(",") if r.strip()] if eq else [group]
+        if not group or not names:
+            raise SystemExit(f"Error: --scib-runs entry {spec!r}: expected NAME or GROUP=NAME1,NAME2")
+        if group in out:
+            raise SystemExit(f"Error: --scib-runs group {group!r} given twice")
+        out[group] = names
+    return out
+
+
+def _read_scib(layout: ExperimentLayout, name: str):
+    """``(frame of the batch / bio / total aggregates, meta)`` of one scIB run, or None."""
     from evaluate.integration.scib_plot import METRIC_TYPE, read_results
 
+    out_dir = layout.scib_dir(name)
+    path = out_dir / "scib.csv"
+    if not path.exists():
+        print(f"  [warn] {path} not found; scIB '{name}' left out of the summary")
+        return None
+    df = read_results(path).drop(index=METRIC_TYPE)
+    meta_path = out_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    frame = pd.DataFrame({k: pd.to_numeric(df[v], errors="coerce")
+                          for k, v in SCIB_AGGREGATES.items() if v in df.columns}, index=df.index)
+    return frame, meta
+
+
+def scib_aggregates(layout: ExperimentLayout, specs: list[str]) -> tuple[pd.DataFrame, dict[str, dict]]:
+    """``(frame indexed by model with scib_<group>_<batch|bio|total>, {group: meta})``.
+
+    A group merges scIB runs made over different model sets (e.g. the baselines' and an
+    ablation's run on the same modalities): each model takes its values from the first
+    run listing it. Models in several runs are compared across them, and so are the runs'
+    row counts: a difference means the runs kept different rows (scIB keeps only the rows
+    every model of a run embedded), so scores from different runs are not strictly
+    comparable; both cases are warned about and recorded in the meta.
+    """
     frames, metas = [], {}
-    for name in names:
-        out_dir = layout.scib_dir(name)
-        path = out_dir / "scib.csv"
-        if not path.exists():
-            print(f"  [warn] {path} not found; scIB '{name}' left out of the summary")
+    for group, names in parse_scib_specs(specs).items():
+        parts = []
+        for name in names:
+            got = _read_scib(layout, name)
+            if got is not None:
+                parts.append((name, got[0], got[1]))
+        if not parts:
             continue
-        df = read_results(path).drop(index=METRIC_TYPE)
-        meta_path = out_dir / "meta.json"
-        metas[name] = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-        cols = {f"scib_{name}_{k}": pd.to_numeric(df[v], errors="coerce")
-                for k, v in SCIB_AGGREGATES.items() if v in df.columns}
-        frames.append(pd.DataFrame(cols, index=df.index))
+        merged = parts[0][1].copy()
+        max_diff = 0.0
+        for name, frame, _ in parts[1:]:
+            shared = merged.index.intersection(frame.index)
+            if len(shared):
+                cols = merged.columns.intersection(frame.columns)
+                diff = (merged.loc[shared, cols] - frame.loc[shared, cols]).abs().max().max()
+                if pd.notna(diff):
+                    max_diff = max(max_diff, float(diff))
+                    if diff > 1e-4:
+                        print(f"  [warn] scIB group '{group}': {list(shared)} differ between "
+                              f"{parts[0][0]} and {name} (max |diff| {diff:.4f}); the first run's values are used")
+            merged = pd.concat([merged, frame.loc[frame.index.difference(merged.index)]])
+        rows = {name: meta.get("n_rows") for name, _, meta in parts}
+        if len({r for r in rows.values() if r is not None}) > 1:
+            print(f"  [warn] scIB group '{group}': the runs kept different numbers of rows {rows}; "
+                  "scores of models from different runs are not strictly comparable")
+        meta = dict(parts[0][2])
+        meta.update(runs=[name for name, _, _ in parts], n_rows_per_run=rows, max_shared_model_diff=max_diff,
+                    run_of_model={m: next(n for n, f, _ in parts if m in f.index) for m in merged.index})
+        metas[group] = meta
+        frames.append(merged.add_prefix(f"scib_{group}_"))
     return (pd.concat(frames, axis=1) if frames else pd.DataFrame()), metas
+
+
+def links_from(layout: ExperimentLayout, names: list[str], models: list[str]):
+    """Link metrics of ``models`` from earlier analyses; nothing is recomputed.
+
+    Returns ``(links, coverage, sources, manifests)``: each model's rows come from the
+    first analysis in ``names`` whose ``links.csv`` has it."""
+    loaded, manifests = [], {}
+    for name in names:
+        out_dir = layout.integration_dir(name)
+        path = out_dir / "links.csv"
+        if not path.exists():
+            print(f"  [warn] {path} not found; '{name}' not used")
+            continue
+        cov_path, man_path = out_dir / "coverage.csv", out_dir / "manifest.json"
+        loaded.append((name, pd.read_csv(path),
+                       pd.read_csv(cov_path) if cov_path.exists() else pd.DataFrame(columns=["model"])))
+        manifests[name] = json.loads(man_path.read_text(encoding="utf-8")) if man_path.exists() else {}
+    links, cov, sources = [], [], {}
+    for model in models:
+        for name, lk, cv in loaded:
+            if (lk["model"] == model).any():
+                links.append(lk[lk["model"] == model])
+                cov.append(cv[cv["model"] == model])
+                sources[model] = name
+                break
+        else:
+            print(f"  [warn] {model}: in none of {names}; its link metrics are n/a")
+    links = (pd.concat(links, ignore_index=True) if links
+             else pd.DataFrame(columns=["model", "edge", "direction", "top1", "rank", "rank_tissue"]))
+    cov = pd.concat(cov, ignore_index=True) if cov else pd.DataFrame()
+    return links, cov, sources, manifests
 
 
 def scib_header(name: str, meta: dict) -> str:
@@ -345,7 +437,8 @@ def main(argv: list[str] | None = None) -> Path:
 
     all_links, all_cov, hashes = [], [], {}
     missing: dict[str, dict[str, list[str]]] = {}
-    for model in models:
+    sources: dict[str, str] = {}
+    for model in ([] if args.links_from else models):
         print(f"[{model}]")
         data = {}
         for mod in (MOD_SC, MOD_PB, MOD_BULK):
@@ -367,8 +460,19 @@ def main(argv: list[str] | None = None) -> Path:
         all_links += [{"model": model, **r} for r in links]
         all_cov += [{"model": model, **r} for r in cov]
 
-    links = pd.DataFrame(all_links)
-    summary = summarize(links)
+    if args.links_from:
+        print(f"link metrics reused from {args.links_from} (no embeddings read)")
+        links, cov_frame, sources, manifests = links_from(layout, args.links_from, models)
+        for model, name in sources.items():
+            man = manifests.get(name, {})
+            hashes[model] = (man.get("panel_hashes") or {}).get(model)
+            if model in (man.get("missing_link_columns") or {}):
+                missing[model] = man["missing_link_columns"][model]
+            print(f"  [{model}] from {name}")
+        all_cov = cov_frame.to_dict("records")
+    else:
+        links = pd.DataFrame(all_links)
+    summary = summarize(links).reindex(models)
     scib, scib_meta = scib_aggregates(layout, args.scib_runs)
     if not scib.empty:
         summary = summary.join(scib, how="left")
@@ -389,6 +493,8 @@ def main(argv: list[str] | None = None) -> Path:
         "part": args.part, "variant": args.variant, "min_cells": args.min_cells, "label_key": args.label_key,
         "label_filter": filters, "panel_hashes": hashes, "figures": figures,
         "highlight_top": args.highlight_top, "missing_link_columns": missing,
+        "links_from": sources if args.links_from else None,
+        "scib_runs": {g: m.get("runs") for g, m in scib_meta.items()},
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }, indent=2), encoding="utf-8")
     print(f"wrote {out_dir}")

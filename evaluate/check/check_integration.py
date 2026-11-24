@@ -187,8 +187,60 @@ def check_integration_run(tmp: str) -> None:
           out == layout.integration_dir("links") and (out / "integration.png").exists())
 
 
+def check_reuse(tmp: str) -> None:
+    """--links-from and grouped --scib-runs: a summary from saved results only (no anndata)."""
+    print("\n-- summary from saved results (compare_models) --")
+    layout = ExperimentLayout(Path(tmp))
+
+    def links(models, top1):
+        rows = []
+        for m in models:
+            for d in ("cells->pb", "pb->cells"):
+                rows.append({"model": m, "edge": "pb_cells", "direction": d, "n_queries": 10,
+                             "top1": top1[m], "rank": 0.1, "rank_tissue": 0.3})
+        return pd.DataFrame(rows)
+
+    for name, models, top1 in [("base", ["b1", "parent"], {"b1": 0.2, "parent": 0.4}),
+                               ("abl", ["parent", "a1"], {"parent": 0.9, "a1": 0.5})]:
+        out = layout.integration_dir(name)
+        out.mkdir(parents=True)
+        links(models, top1).to_csv(out / "links.csv", index=False)
+        pd.DataFrame({"model": models, "edge": "pb_cells"}).to_csv(out / "coverage.csv", index=False)
+        (out / "manifest.json").write_text(json.dumps({"panel_hashes": {m: {"sc": "h"} for m in models}}))
+
+    def scib(name, rows: dict, n_rows):
+        out = layout.scib_dir(name)
+        out.mkdir(parents=True)
+        df = pd.DataFrame(rows, index=["Batch correction", "Bio conservation", "Total"]).T
+        meta_row = pd.DataFrame([["Aggregate score"] * 3], columns=df.columns, index=["Metric Type"])
+        pd.concat([df, meta_row]).to_csv(out / "scib.csv")
+        (out / "meta.json").write_text(json.dumps({"modalities": ["bulk", "pseudobulk"], "n_rows": n_rows}))
+
+    scib("s_base", {"b1": [0.1, 0.5, 0.34], "parent": [0.2, 0.5, 0.38]}, 100)
+    scib("s_abl", {"parent": [0.2, 0.5, 0.38], "a1": [0.3, 0.6, 0.48]}, 100)
+    integration.main(["--root", tmp, "--name", "cmp", "--models", "b1", "parent", "a1", "--links-from", "base", "abl",
+                      "--scib-runs", "bp=s_base,s_abl", "--formats", "png"])
+    out = layout.integration_dir("cmp")
+    summary = pd.read_csv(out / "summary.csv", index_col=0)
+    check("rows in the given model order", list(summary.index) == ["b1", "parent", "a1"])
+    check("link metrics reused, a shared model from the first analysis",
+          summary.loc["parent", "pb_cells_top1"] == 0.4 and summary.loc["a1", "pb_cells_top1"] == 0.5)
+    check("scIB group merges both runs into one column",
+          summary.loc["b1", "scib_bp_batch"] == 0.1 and summary.loc["a1", "scib_bp_batch"] == 0.3)
+    man = json.loads((out / "manifest.json").read_text())
+    check("manifest records where each model's links and scIB runs came from",
+          man["links_from"] == {"b1": "base", "parent": "base", "a1": "abl"}
+          and man["scib_runs"] == {"bp": ["s_base", "s_abl"]})
+    check("figure written", (out / "integration.png").exists())
+    check("plain NAME and GROUP=A,B specs parse",
+          integration.parse_scib_specs(["x", "g=a, b"]) == {"x": ["x"], "g": ["a", "b"]})
+    check("a malformed spec is refused", raises(lambda: integration.parse_scib_specs(["g="]), SystemExit))
+
+
 def main() -> None:
     check_link_metrics()
+    with tempfile.TemporaryDirectory() as tmp:
+        check_reuse(tmp)
     try:
         import anndata  # noqa: F401
     except ImportError:

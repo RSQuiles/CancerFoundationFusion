@@ -1,0 +1,225 @@
+# Cross-experiment comparison: figures and tables over models from SEVERAL evaluations
+# (here the leiden_s1 baselines and the leiden_s1 alignment ablation), built only from
+# results already on disk. Nothing is embedded, trained, probed or scored again:
+#   - reconstruction: compare / plot read results/reconstruction/<model>/<plan>[_mvc]/
+#     (written by each evaluation's cf_gen / cf_mvc / bulkformer steps);
+#   - GeneICL: compare / plot read results/geneicl_benchmark/<model>/probe_*.csv;
+#   - integration: the link metrics are taken from the earlier analyses' links.csv
+#     (--links-from) and the scIB aggregates from their scib.csv, with runs of the two
+#     evaluations merged per modality set (GROUP=RUN1,RUN2). No embedding is read.
+#
+#   python -m evaluate.run_evaluation --config evaluate/configs/compare_models.yaml --list
+#   python -m evaluate.run_evaluation --config evaluate/configs/compare_models.yaml [--only reconstruction]
+# Every step is CPU-only and fast: run it on a login or compute node (bulkFM env for the
+# coordinator), no sbatch / GPU needed.
+#
+# Prerequisites (the inputs these steps read):
+#   - leiden_s1_baselines_evaluation.yaml and leiden_s1_alignment_evaluation.yaml have run
+#     their reconstruction (cf_gen, cf_mvc, bulkformer), geneicl (geneicl_probe), scIB and
+#     integration.summary steps;
+#   - the baselines' integration.summary was rerun after `python -m embed.restore_obs`,
+#     else its models have no pseudobulk-vs-cells columns (the alignment runs are embedded
+#     with the fixed embed_splits and have them).
+#
+# Making it yours / adding figures:
+#   - the model lists are written ONCE under `definitions` (YAML anchors, ignored by the
+#     coordinator) and referenced with *aliases below; edit them there. YAML cannot join
+#     lists, so a list mixing two sets is written out in full;
+#   - every step writes under its own `name` (results/<task>/_plots/.../<name>/, ...),
+#     so a new comparison is a new step (or a copy of a block) with another name and
+#     model list; existing figures are never touched;
+#   - line plots take at most 8 rows (the palette): reconstruction draws the tables for
+#     any number of rows and skips its line plots above 8 (listed in its manifest), so
+#     the "all" comparison gives tables and the "focus" one (<= 8 rows) the line plots;
+#   - templates for other figures (UMAPs, alignment plots) are at the end, disabled:
+#     those DO compute (a UMAP), but only from existing embeddings.
+
+project_root: /cluster/work/boeva/rquiles/CancerFoundationFusion
+
+shared:
+  root: /cluster/work/boeva/rquiles/unifiedFM_experiments
+
+default_environment: host
+environments:
+  container:                # bionemo image (only the disabled representation templates)
+    command: [singularity, run, --nv,
+              --pwd, /cluster/work/boeva/rquiles/CancerFoundationFusion,
+              --bind, "/cluster/work/boeva/rquiles,/cluster/work/boeva/eheiss,/cluster/work/boeva/bulkFM",
+              /cluster/customapps/biomed/boeva/rquiles/bionemo-framework_v1.sif,
+              python, -u]
+  geneicl:                  # GeneICL's eval env (compare / plot_benchmark read its result CSVs)
+    setup: |
+      source ~/.bashrc
+      conda activate geneicl || exit 1
+      export GENEICL_PYTHON="$(command -v python)"
+  host: {}                  # the coordinator's env (bulkFM: pandas, matplotlib, plottable)
+
+# ---- model lists and labels (edit here) -----------------------------------------------
+definitions:
+  # Every CancerFoundation model: the four baselines, then the alignment stage-1 runs.
+  cf_models: &cf_models [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline,
+                         align_ctrl, align_mmd, align_contrastive, align_cdd, align_paired,
+                         align_paired_mse, align_agg_ctrl, align_agg]
+  # The same rows scored with the MVC decoder (from the CLS embedding alone).
+  cf_models_mvc: &cf_models_mvc [sc_baseline@mvc, bulk_baseline@mvc, bulk_sc_baseline@mvc,
+                                 unified_baseline@mvc, align_ctrl@mvc, align_mmd@mvc,
+                                 align_contrastive@mvc, align_cdd@mvc, align_paired@mvc,
+                                 align_paired_mse@mvc, align_agg_ctrl@mvc, align_agg@mvc]
+  # Reconstruction rows: every CF model (gen head) + BulkFormer (its run is named bulkformer).
+  recon_all: &recon_all [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline,
+                         align_ctrl, align_mmd, align_contrastive, align_cdd, align_paired,
+                         align_paired_mse, align_agg_ctrl, align_agg, bulkformer]
+  # At most 8 rows, for the line plots: edit to the models worth seeing as curves.
+  recon_focus: &recon_focus [bulk_sc_baseline, unified_baseline, bulkformer, align_ctrl,
+                             align_contrastive, align_paired, align_paired_mse, align_agg]
+  recon_focus_mvc: &recon_focus_mvc [bulk_sc_baseline@mvc, unified_baseline@mvc, align_ctrl@mvc,
+                                     align_contrastive@mvc, align_paired@mvc, align_paired_mse@mvc,
+                                     align_agg@mvc]
+  plans: &plans [sc:leiden_s1:test:r25, bulk:leiden_s1:test:r25, pseudobulk:leiden_s1:test:r25]
+  # Integration rows: CF models + the baselines' PCA and BulkFormer embeddings (their names
+  # under embeddings/), in table order.
+  integration_models: &integration_models [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline,
+                                           align_ctrl, align_mmd, align_contrastive, align_cdd,
+                                           align_paired, align_paired_mse, align_agg_ctrl, align_agg,
+                                           bulkformer_leiden_s1, pca_leiden_s1]
+  # GeneICL rows: CF models + the pca and bulkformer probes.
+  geneicl_models: &geneicl_models [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline,
+                                   align_ctrl, align_mmd, align_contrastive, align_cdd, align_paired,
+                                   align_paired_mse, align_agg_ctrl, align_agg, pca, bulkformer]
+  row_labels: &row_labels
+    sc_baseline: "sc only"
+    bulk_baseline: "bulk only"
+    bulk_sc_baseline: "sc + bulk"
+    unified_baseline: "sc + bulk + pb (parent)"
+    align_ctrl: "align: control"
+    align_mmd: "align: + MMD"
+    align_contrastive: "align: + contrastive"
+    align_cdd: "align: + CDD"
+    align_paired: "align: + paired (InfoNCE)"
+    align_paired_mse: "align: + paired (MSE)"
+    align_agg_ctrl: "align: agg control"
+    align_agg: "align: + aggregation"
+    bulkformer_leiden_s1: "BulkFormer"
+    pca_leiden_s1: "PCA"
+
+tasks:
+  # ---- 1. reconstruction -> results/reconstruction/_compare|_plots/<plan>/<name>/ ----------
+  reconstruction:
+    steps:
+      compare_all:              # every model, gen head + BulkFormer: table.csv per plan
+        script: compare
+        foreach: {plan: *plans}
+        args: &recon_all_args
+          name: baselines_vs_alignment
+          models: *recon_all
+          baselines: true
+      compare_all_mvc:
+        script: compare
+        foreach: {plan: *plans}
+        args: &recon_all_mvc_args
+          name: baselines_vs_alignment_mvc
+          models: *cf_models_mvc
+          baselines: true
+      plot_all:                 # tables for all rows (line plots skipped: > 8 rows)
+        script: reconstruction_plot
+        foreach: {plan: *plans}
+        args: *recon_all_args
+      plot_all_mvc:
+        script: reconstruction_plot
+        foreach: {plan: *plans}
+        args: *recon_all_mvc_args
+      plot_focus:               # <= 8 rows: every figure, line plots included
+        script: reconstruction_plot
+        foreach: {plan: *plans}
+        args:
+          name: baselines_vs_alignment_focus
+          models: *recon_focus
+          baselines: true
+      plot_focus_mvc:
+        script: reconstruction_plot
+        foreach: {plan: *plans}
+        args:
+          name: baselines_vs_alignment_focus_mvc
+          models: *recon_focus_mvc
+          baselines: true
+
+  # ---- 2. integration -> results/integration/<name>/ -------------------------------------
+  integration:
+    steps:
+      summary:
+        script: integration
+        args:
+          name: baselines_vs_alignment
+          models: *integration_models
+          # Link metrics reused, never recomputed: each model from the first analysis that
+          # has it (unified_baseline and PCA are in both; the baselines' values are used).
+          links_from: [leiden_s1_baselines, leiden_s1_alignment]
+          # scIB aggregates: one column group per modality set, merging the two evaluations'
+          # runs (each model from the first run listing it). The log warns when shared
+          # models (unified_baseline, PCA) score differently in the two runs or the runs
+          # kept different rows (e.g. BulkFormer's dropped rows in the baselines' bulk-pb).
+          # sc-bulk exists for the baselines only: the alignment runs show n/a there.
+          scib_runs:
+            - "sc_pb=leiden_s1_sc_pb,leiden_s1_alignment_sc_pb"
+            - "sc_bulk=leiden_s1_sc_bulk"
+            - "bulk_pb=leiden_s1_bulk_pb,leiden_s1_alignment_bulk_pb"
+            - "all=leiden_s1_all,leiden_s1_alignment_all"
+          row_labels: *row_labels
+          min_cells: 5          # as in the source analyses (footnote only here)
+          title: "Integration: leiden_s1 baselines and alignment runs"
+
+  # ---- 3. GeneICL benchmark -> results/geneicl_benchmark/_compare|_plots/<name>/ -----------
+  geneicl:
+    shared:
+      geneicl_repo: /cluster/work/boeva/rquiles/Codebases/GeneICL
+      suite: benchmark
+    steps:
+      geneicl_compare:
+        environment: geneicl
+        args:
+          name: baselines_vs_alignment
+          models: *geneicl_models
+          reference: [scfoundation, en]
+      geneicl_plot:
+        environment: geneicl
+        args:
+          name: baselines_vs_alignment
+          models: *geneicl_models
+          reference: [scfoundation, en]
+          formats: [png, pdf]
+
+  # ---- templates: other figures from existing embeddings (disabled; --only runs them) -----
+  # These compute a UMAP (CPU, minutes per model) but embed nothing. Copy a step, set the
+  # models, and run it with --only representation.<step>.
+  representation:
+    enabled: false
+    shared:
+      part: test
+      stratify_by: [tissue_general]
+      stratify_mode: proportional
+      unknown_frac: 0.05
+      cap_labels: {paired: 0.1, "cell line": 0.1, "in vitro": 0.05, xenograft: 0.05}
+      skip_unknown: true
+      labels: {tissue_general: Tissue, modality: Modality, paired: Pair}
+    steps:
+      alignment_selected:       # joint UMAP of the three modalities, with cell means
+        script: alignment
+        environment: container
+        args:
+          models: [unified_baseline, align_ctrl, align_contrastive, align_paired]
+          per_modality: ["sc=5000", "bulk=all", "pseudobulk=all"]
+          color: [modality, tissue_general, paired]
+          connect_pairs: true
+          cell_means: true
+          link_col: pseudobulk_id
+          title: "{model}: modality alignment ({counts})"
+      umap_bulk_pb_selected:    # each modality on its own-panel embedding
+        script: umap
+        environment: container
+        foreach: {modality: [bulk, pseudobulk]}
+        args:
+          models: [unified_baseline, align_ctrl, align_contrastive, align_paired]
+          variant: own_panel
+          subsample: 20000
+          color: [tissue_general]
+          title: "{model}: {modality_name} ({part})"

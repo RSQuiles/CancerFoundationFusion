@@ -682,6 +682,17 @@ then their steps). The per-script configs and `.sh` wrappers stay for standalone
   prints the commands.
 - `embed/embed_splits.py` reads `--config` too (section `embed_splits`), so embeddings
   can be a step.
+- **`definitions:`** (top level) is never read: it holds YAML anchors (model lists,
+  labels) that the tasks reference with aliases.
+- **Cross-evaluation figures** (`evaluate/configs/compare_models.yaml`): comparisons over
+  the models of several evaluations, built from results already on disk.
+  - Reconstruction: `compare` / `reconstruction_plot` with an "all" set (tables) and a
+    "focus" set of up to 8 models (line plots).
+  - GeneICL: `geneicl_compare` / `geneicl_plot`.
+  - Integration: `integration --links-from ... --scib-runs GROUP=...`.
+  - Every output has its own `name` (`baselines_vs_alignment*`). A new figure is a new
+    step with another name and model list; UMAP and alignment templates are included,
+    disabled.
 - `python -m evaluate.check.check_run_evaluation` self-checks it offline (fake steps).
 
 ### Representation figures (new `evaluate/`)
@@ -970,6 +981,13 @@ python -m evaluate.integration.integration --name leiden_s1 --models m1 m2 pca_l
     - An edge n/a for every model is named in the figure footnote, since its columns drop
       out of the table.
   - Shading: `--highlight-top` (see "Metric tables" below).
+  - **From saved results only** (`--links-from NAME ...`): the link metrics are read from
+    earlier analyses' `links.csv`, with no embedding read. Each model's rows come from the
+    first analysis that has it. **Grouped scIB runs** (`--scib-runs GROUP=RUN1,RUN2`) merge
+    runs made over different model sets into one column group. Each model takes its values
+    from the first run listing it, and the log warns when models in several runs differ
+    or the runs kept different row counts. The manifest records `links_from` and
+    `scib_runs`.
 - **Outputs** in `results/integration/<name>/`: `links.csv`, `coverage.csv`, `summary.csv`,
   `manifest.json` (`"models"`, `"row_labels"`, the scIB runs), `integration.{png,pdf}`.
 

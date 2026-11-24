@@ -21,6 +21,8 @@ Config::
       container: {command: [singularity, run, --nv, ..., image.sif, python, -u]}
       bulkFM:    {setup: "source ~/.bashrc; conda activate bulkFM || exit 1"}
       host:      {}                                # `python` on PATH
+    definitions:                                   # ignored; holds YAML anchors (&name) for the tasks
+      models: &models [a, b]
     tasks:                                         # run in this order
       <task>:
         enabled: true
@@ -104,7 +106,9 @@ SCRIPTS: dict[str, str] = {
     "embed_splits": "embed.embed_splits",
 }
 
-TOP_KEYS = {"project_root", "shared", "environments", "default_environment", "tasks"}
+# "definitions" is never read: it holds YAML anchors (model lists, labels) that the tasks
+# reference with aliases, so a list is written once (evaluate/configs/compare_models.yaml).
+TOP_KEYS = {"project_root", "shared", "environments", "default_environment", "tasks", "definitions"}
 ENV_KEYS = {"command", "setup", "python", "env"}
 TASK_KEYS = {"enabled", "shared", "steps"}
 STEP_KEYS = {"script", "module", "environment", "args", "foreach", "drop", "argv", "pass_as",
