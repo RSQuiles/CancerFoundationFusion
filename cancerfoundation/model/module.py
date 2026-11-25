@@ -1019,6 +1019,7 @@ class TransformerModule(nn.Module):
         # Domain adversarial training
         if self.do_dat and apply_dat and not skip_unified_losses:
             if self.conditions:
+                dat_terms = []  # raw condition losses, for the loss-weight probe
                 modality = conditions_batch.get("modality")
                 for condition in self.grad_reverse_discriminators:
                     cond_preds = output_dict["condition_output"].get(condition)
@@ -1048,6 +1049,11 @@ class TransformerModule(nn.Module):
 
                     loss += self.weight_dat * condition_loss / len(self.grad_reverse_discriminators)
                     loss_dict["condition_" + condition] = condition_loss.detach() / len(self.grad_reverse_discriminators) * self.weight_dat
+                    dat_terms.append(condition_loss / len(self.grad_reverse_discriminators))
+                if dat_terms:
+                    # Unweighted. Its gradient reaches the backbone through the gradient
+                    # reversal layer (sign flipped, times dat_scale).
+                    self._record_term("dat", torch.stack(dat_terms).sum())
 
         # Contrastive loss: tissue-aware cross-modal InfoNCE. Bulk and pseudobulk of the
         # same class (class_column) are positives, other classes negatives; single cells

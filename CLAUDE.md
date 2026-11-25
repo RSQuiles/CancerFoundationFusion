@@ -385,7 +385,13 @@ backbone (`utils.warm_start` group `backbone`) against reconstruction's
   not recomputed (delete it to calibrate again). The module records the raw terms through
   the runtime attribute `TransformerModule.loss_terms` (not an `__init__` argument).
 - **Turn every loss on** in the calibration model; a term that is off gets no suggestion.
-  `align_calib` in `leiden_s1_alignment.json` does that (300 batches, about 30 paired).
+  `align_calib_all` in `leiden_s1_alignment.json` does that (300 batches, a paired batch
+  every 5), including DAT.
+- **DAT** (`dat`, weight `loss_weight_dat`): the discriminators start untrained after a
+  warm start, so with `--do-dat` the probe first trains them alone for
+  `--calibrate-dat-steps` batches (100) on the frozen model (`_train_discriminators`, only
+  their parameters move), then measures the reversed gradient on the backbone like any
+  other term. It prints the discriminator's `modality_confidence` before and after.
 - `python scripts/check_loss_balance.py` self-checks the arithmetic and `base_from`
   offline (numpy).
 

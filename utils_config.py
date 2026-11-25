@@ -561,6 +561,17 @@ def build_parser() -> argparse.ArgumentParser:
             "parent: suggested weight = R / median(||g_term|| / ||g_recon||)."
         ),
     )
+    parser.add_argument(
+        "--calibrate-dat-steps",
+        type=int,
+        default=100,
+        metavar="N",
+        help=(
+            "With --do-dat: batches the probe first trains the (fresh) DAT discriminators on "
+            "the frozen model, so DAT's reversed gradient is measured against a trained "
+            "adversary rather than a random one. Only the discriminators move."
+        ),
+    )
 
     parser.add_argument(
         "--ckpt-every-n-steps",

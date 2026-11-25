@@ -99,9 +99,14 @@ def check_suggest() -> None:
     report = format_report(res)
     check("report lists every term and the rule", all(k in report for k in true_ratio) and "R / median" in report)
     snippet = json.loads(config_snippet(res))
-    check("snippet holds the five launch-config keys",
+    check("snippet holds the six launch-config keys (dat kept at its weight when not probed)",
           set(snippet) == {"loss_weight_mmd", "loss_weight_contrastive", "loss_weight_cdd",
-                           "loss_weight_paired", "loss_weight_agg"})
+                           "loss_weight_paired", "loss_weight_agg", "loss_weight_dat"})
+    dat_records = [{**r, "terms": {**r["terms"], **({"dat": {"loss": 0.69, "grad": r["recon_grad"] * 0.15}}
+                                                    if not r["paired"] else {})}} for r in records]
+    d = suggest_weights(dat_records, {**weights, "dat": 10.0}, 0.3)["terms"]["dat"]
+    check("dat calibrated like the other terms (ratio 0.15 -> weight 2)",
+          abs(d["suggested_weight"] - 2.0) < 0.1 and d["config_key"] == "loss_weight_dat")
     print(report)
 
 

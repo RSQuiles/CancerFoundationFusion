@@ -42,6 +42,7 @@ ALIGN_TERMS = {
     "cdd": ("loss_weight_cdd", "weight_cdd"),
     "paired": ("loss_weight_paired", "weight_paired"),
     "agg": ("loss_weight_agg", "weight_agg"),
+    "dat": ("loss_weight_dat", "weight_dat"),
     # The paired form the probed model does NOT train on (mse <-> infonce), measured on the
     # same paired batches, so one probe calibrates both. Its weight is a per-run override of
     # loss_weight_paired for runs that switch paired_loss; never part of the shared snippet.
@@ -59,6 +60,8 @@ NOTES = {
               "or MSE pb<->bulk + cells mean<->bulk/pb (mse)",
     "agg": "pseudobulk vs mean of its sampled cells: symmetric InfoNCE over the batch's pseudobulks "
            "(agg_loss infonce) or MSE (mse)",
+    "dat": "adversarial bulk vs pseudobulk discriminator on CLS, through gradient reversal; measured "
+           "against a discriminator first trained on the frozen parent (the strongest adversary at the start)",
     "paired_alt": "the other paired form (not trained here): loss_weight_paired for runs that switch paired_loss",
     "agg_alt": "the other aggregation form (not trained here): loss_weight_agg for runs that switch agg_loss",
 }
@@ -239,6 +242,63 @@ def _grad_norm(term, params) -> float:
     return math.sqrt(total)
 
 
+def _train_discriminators(core, next_batch, n_steps: int, autocast) -> None:
+    """Train the DAT discriminators alone on the frozen model for ``n_steps`` batches.
+
+    A warm-started model gets fresh discriminators (the parent had none, or ``heads`` is not
+    in ``init_from``), and the gradient a random discriminator sends back through the
+    reversal layer says nothing about DAT's pull. Training it first on the parent's
+    embeddings gives the adversary DAT faces at the start of training. Only the
+    discriminator parameters move (AdamW, lr 1e-3); every other parameter is frozen for
+    this phase and restored afterwards, and the probe takes no other step.
+    """
+    import torch
+
+    discs = getattr(core, "grad_reverse_discriminators", None)
+    if discs is None or n_steps <= 0:
+        return
+    disc_params = list(discs.parameters())
+    disc_ids = {id(p) for p in disc_params}
+    frozen = [p for p in core.parameters() if p.requires_grad and id(p) not in disc_ids]
+    for p in frozen:
+        p.requires_grad_(False)
+    opt = torch.optim.AdamW(disc_params, lr=1e-3)
+    conf_key = None
+    first, last = [], []
+    print(f"[calibrate] DAT: training the discriminators alone for {n_steps} batches on the frozen "
+          f"model (backbone unchanged), so DAT is measured against a trained adversary", flush=True)
+    try:
+        for step in range(n_steps):
+            batch = next_batch()
+            core.loss_terms = {}
+            if autocast is not None:
+                with autocast:
+                    out = core(batch, use_cell_embedding=True, apply_dat=True)
+            else:
+                out = core(batch, use_cell_embedding=True, apply_dat=True)
+            terms, core.loss_terms = core.loss_terms, None
+            term = terms.get("dat")
+            if term is None or not term.requires_grad:
+                continue
+            opt.zero_grad(set_to_none=True)
+            term.float().backward()
+            opt.step()
+            conf_key = conf_key or next((k for k in out if k.endswith("_confidence")), None)
+            if conf_key:
+                (first if step < 10 else last).append(float(out[conf_key]))
+                last[:] = last[-10:]
+            if (step + 1) % 25 == 0 or step + 1 == n_steps:
+                print(f"[calibrate] DAT discriminator {step + 1}/{n_steps}: loss {float(term.detach()):.4f}"
+                      + (f", {conf_key} {float(out[conf_key]):.3f}" if conf_key else ""), flush=True)
+    finally:
+        for p in frozen:
+            p.requires_grad_(True)
+        core.zero_grad(set_to_none=True)
+    if first and last:
+        print(f"[calibrate] DAT: {conf_key} {sum(first) / len(first):.3f} (first 10) -> "
+              f"{sum(last) / len(last):.3f} (last 10); 0.5 = cannot tell the domains apart", flush=True)
+
+
 def probe(model, datamodule, args) -> Path:
     """Measure every loss term's backbone gradient on ``args.calibrate_loss_steps`` batches.
 
@@ -272,7 +332,8 @@ def probe(model, datamodule, args) -> Path:
     weights = {t: float(getattr(core, attr)) for t, (_, attr) in ALIGN_TERMS.items()}
     active = {"mmd": core.mmd, "contrastive": core.contrastive, "cdd": core.cdd,
               "paired": core.paired_alignment, "agg": core.aggregation,
-              "paired_alt": core.paired_alignment, "agg_alt": core.aggregation}
+              "paired_alt": core.paired_alignment, "agg_alt": core.aggregation,
+              "dat": bool(getattr(core, "do_dat", False))}
     paired_forms = {"trained": core.paired_loss,
                     "alt": "mse" if core.paired_loss == "infonce" else "infonce"}
     agg_form = getattr(core, "agg_loss", "mse")
@@ -313,13 +374,21 @@ def probe(model, datamodule, args) -> Path:
     reported = {False: False, True: False}  # first normal / first paired batch: memory line
     started = time.perf_counter()
     loader = iter(datamodule.train_dataloader())
-    for step in range(steps):
+
+    def next_batch():
+        nonlocal loader
         try:
-            batch = next(loader)
+            b = next(loader)
         except StopIteration:
             loader = iter(datamodule.train_dataloader())
-            batch = next(loader)
-        batch = _to_device(batch, device)
+            b = next(loader)
+        return _to_device(b, device)
+
+    if active["dat"]:
+        _train_discriminators(core, next_batch, int(getattr(args, "calibrate_dat_steps", 100)), autocast)
+
+    for step in range(steps):
+        batch = next_batch()
         paired = batch.get("is_paired_batch", False)
         paired = bool(paired.item()) if isinstance(paired, torch.Tensor) else bool(paired)
 
@@ -330,9 +399,9 @@ def probe(model, datamodule, args) -> Path:
             core.loss_terms = {}
             if autocast is not None:
                 with autocast:
-                    core(batch, use_cell_embedding=True, apply_dat=False)
+                    core(batch, use_cell_embedding=True, apply_dat=active["dat"])
             else:
-                core(batch, use_cell_embedding=True, apply_dat=False)
+                core(batch, use_cell_embedding=True, apply_dat=active["dat"])
             terms, core.loss_terms = core.loss_terms, None
 
             recon = w_rec * (terms.get("expr", 0.0) + w_mvc * terms.get("mvc", 0.0) + terms.get("gen", 0.0))

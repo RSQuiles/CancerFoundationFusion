@@ -44,6 +44,26 @@
     "is a placeholder: first launch --only align_calib_agg_infonce (a probe with only that term on;",
     "the shared weights above stay as calibrated) and set the 'agg' suggestion it prints",
     "(loss_weight_agg) in align_agg_infonce's overrides, then --only align_agg_infonce.",
+    "DAT (adversarial, marginal level like MMD): align_dat trains a fresh bulk-vs-pseudobulk",
+    "discriminator on the CLS embedding through a gradient-reversal layer; align_combo_dat is",
+    "paired + aggregation InfoNCE + DAT, like align_combo_cdd / align_combo_contrastive with DAT",
+    "as the third loss. DAT is set explicitly in both (start step 0, every step), since the",
+    "defaults (dat_start_step 50000, dat_interval_steps 3) would leave it off in a 50k-step run.",
+    "loss_weight_dat 10 is a placeholder until align_calib_all has run. Watch",
+    "train/modality_confidence: near 0.5 = the domains are indistinguishable; near 1 = the",
+    "discriminator wins (raise the weight); a collapsing reconstruction = too strong.",
+    "align_calib_all: ONE probe for every loss of this config, at the current batches (96 rows,",
+    "6 tissues, 4 cells per pseudobulk; paired batch every 5 steps here only to see more of them,",
+    "which does not change the per-batch ratio). Terms: mmd, contrastive, cdd, paired (InfoNCE),",
+    "paired_alt (MSE), agg (InfoNCE), agg_alt (MSE) and dat. For DAT the probe first trains the",
+    "fresh discriminator alone for calibrate_dat_steps batches on the frozen parent, then measures",
+    "its reversed gradient. Launch --only align_calib_all, then set: loss_weight_mmd /",
+    "_contrastive / _cdd in base_config.features; loss_weight_paired (InfoNCE) in align_paired and",
+    "the combos, and the 'paired forms' override (MSE) in align_paired_mse; loss_weight_agg",
+    "(InfoNCE) in align_agg_infonce and the combos, and the 'agg forms' override (MSE) in",
+    "align_agg (also base_config, which align_agg uses); loss_weight_dat in align_dat and",
+    "align_combo_dat. A different name from the earlier align_calib, whose loss_balance.json",
+    "would otherwise be re-read instead of recomputed.",
     "Evaluation: evaluate/configs/leiden_s1_alignment_evaluation.yaml."
   ],
   "experiments_root": "/cluster/work/boeva/rquiles/unifiedFM_experiments",
@@ -140,11 +160,44 @@
       "loss_weight_contrastive": 4.1,
       "loss_weight_cdd": 21.0,
       "loss_weight_agg": 4.8,
-      "paired_temperature": 0.1
+      "paired_temperature": 0.1,
+      "agg_temperature": 0.1
     }
   },
   "base_overrides": {},
   "models": [
+    {
+      "name": "align_calib_all",
+      "overrides": {
+        "trainer": {
+          "calibrate_loss_steps": 300,
+          "calibrate_dat_steps": 100
+        },
+        "data": {
+          "paired_sampling": true,
+          "paired_every_n": 5,
+          "pb_id_column": "pseudobulk_id"
+        },
+        "features": {
+          "mmd": true,
+          "contrastive_training": true,
+          "cdd": true,
+          "cdd_warmup_steps": 0,
+          "paired_loss": "infonce",
+          "agg_consistency": true,
+          "agg_fn": "mean",
+          "agg_loss": "infonce",
+          "do_dat": true,
+          "dat_columns": [
+            "modality"
+          ],
+          "dat_scale": 1.0,
+          "dat_start_step": 0,
+          "dat_interval_steps": 1,
+          "monitor_losses": []
+        }
+      }
+    },
     {
       "name": "align_ctrl",
       "overrides": {}
@@ -270,7 +323,27 @@
       }
     },
     {
-      "name": "align_combo_all",
+      "name": "align_dat",
+      "overrides": {
+        "features": {
+          "do_dat": true,
+          "dat_columns": [
+            "modality"
+          ],
+          "dat_scale": 1.0,
+          "dat_start_step": 0,
+          "dat_interval_steps": 1,
+          "loss_weight_dat": 10.0,
+          "monitor_losses": [
+            "mmd",
+            "contrastive",
+            "cdd"
+          ]
+        }
+      }
+    },
+    {
+      "name": "align_combo_cdd",
       "overrides": {
         "data": {
           "paired_sampling": true,
@@ -278,13 +351,71 @@
           "pb_id_column": "pseudobulk_id"
         },
         "features": {
-          "mmd": true,
-          "contrastive_training": true,
           "cdd": true,
           "agg_consistency": true,
           "agg_fn": "mean",
+          "agg_loss": "infonce",
+          "loss_weight_agg": 4.0,
           "paired_loss": "infonce",
-          "loss_weight_paired": 4.0
+          "loss_weight_paired": 4.0,
+          "monitor_losses": [
+            "mmd",
+            "contrastive"
+          ]
+        }
+      }
+    },
+    {
+      "name": "align_combo_contrastive",
+      "overrides": {
+        "data": {
+          "paired_sampling": true,
+          "paired_every_n": 10,
+          "pb_id_column": "pseudobulk_id"
+        },
+        "features": {
+          "contrastive_training": true,
+          "agg_consistency": true,
+          "agg_fn": "mean",
+          "agg_loss": "infonce",
+          "loss_weight_agg": 4.0,
+          "paired_loss": "infonce",
+          "loss_weight_paired": 4.0,
+          "monitor_losses": [
+            "mmd",
+            "cdd"
+          ]
+        }
+      }
+    },
+    {
+      "name": "align_combo_dat",
+      "overrides": {
+        "data": {
+          "paired_sampling": true,
+          "paired_every_n": 10,
+          "pb_id_column": "pseudobulk_id"
+        },
+        "features": {
+          "do_dat": true,
+          "dat_columns": [
+            "modality"
+          ],
+          "dat_scale": 1.0,
+          "dat_start_step": 0,
+          "dat_interval_steps": 1,
+          "loss_weight_dat": 10.0,
+          "agg_consistency": true,
+          "agg_fn": "mean",
+          "agg_loss": "infonce",
+          "loss_weight_agg": 4.0,
+          "paired_loss": "infonce",
+          "loss_weight_paired": 4.0,
+          "monitor_losses": [
+            "mmd",
+            "contrastive",
+            "cdd"
+          ]
         }
       }
     }
