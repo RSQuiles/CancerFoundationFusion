@@ -562,6 +562,12 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
       (`frac_col * n`), filled in `--keep-linked` order, so pseudobulks never crowd out
       the pairs.
     - Numbers alone keep the old behaviour exactly: one shared budget, one order.
+    - **`--linked-exclusive`** (true, or `COL=BOOL`): an exclusive column's keys not kept
+      are left out of every modality (pairs: all modalities or none). A non-exclusive
+      column's other keys stay ordinary rows (a modality taken in full keeps them, the fill
+      may draw them); only a kept key's rows beyond `--linked-per-key` are left out
+      (`utils.sampling.linked_exclusions`). Without it, keeping 600 pseudobulks cut the
+      pseudobulk file from 2035 rows to 635 and the fill lost every other pseudobulk's cells.
     - The `[keep-linked]` line and `embed.json` (`linked_keys.per_link`) give the keys and
       rows per column.
   - **The leiden_s1 configs** (baselines and alignment, which must stay identical because
@@ -570,11 +576,12 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
     - 30000 rows, proportional, 5% unknown, 10% caps on `paired` and `cell line`, 5% on
       `in vitro` and `xenograft`;
     - `keep_linked: [paired:0, pseudobulk_id:0,-1]`, `linked_frac: {paired: 0.06,
-      pseudobulk_id: 0.30}`, `linked_per_key: {paired: 50, pseudobulk_id: 15}`, `budget`.
+      pseudobulk_id: 0.30}`, `linked_per_key: {paired: 50, pseudobulk_id: 15}`, `budget`,
+      `linked_exclusive: {paired: true, pseudobulk_id: false}`.
 
     That gives all 35 test pairs (up to 50 cells each), about 600 test pseudobulks with 15
-    cells each (for the integration `pb_cells` edge, `min_cells: 15`), and about 19000
-    non-linked cells. A pseudobulk's 30 stored cells are a sample of the ~1000 it was made
+    cells each (for the integration `pb_cells` edge, `min_cells: 15`), about 19000
+    fill cells (some from the other pseudobulks), and all 2035 test pseudobulks. A pseudobulk's 30 stored cells are a sample of the ~1000 it was made
     from, so 15-cell means over many pseudobulks beat 30-cell means over few.
   - The defaults draw exactly the rows they drew before. The plot scripts take
     `--stratify-mode` and `--unknown-frac` for their own subsample.

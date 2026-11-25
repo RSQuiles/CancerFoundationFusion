@@ -410,6 +410,51 @@ def parse_per_link(value, cast=float, name: str = "value"):
     return {str(col): cast(v) for col, v in items}
 
 
+def parse_bool(value) -> bool:
+    """``True``/``False``, ``1``/``0`` or the strings true/false, yes/no, 1/0 (any case)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("true", "yes", "1"):
+        return True
+    if text in ("false", "no", "0"):
+        return False
+    raise ValueError(f"expected a boolean, got {value!r}")
+
+
+def linked_exclusions(
+    obs: pd.DataFrame,
+    link_specs: Iterable[str],
+    keep: Iterable[str] | None,
+    exclusive: bool | Mapping[str, bool] = True,
+) -> pd.Index:
+    """The linked rows of ``obs`` to pass as ``exclude`` to ``stratified_subsample``.
+
+    ``keep`` holds the rows ``select_linked_rows`` chose. For an **exclusive** link column
+    (the default, and the right rule for pairs) every row of it not in ``keep`` is
+    excluded, so a key enters every modality or none. For a **non-exclusive** column
+    (``exclusive={"pseudobulk_id": False}``) only the rows of its selected keys that are
+    not in ``keep`` (the ones beyond ``per_key``) are excluded: the other keys' rows are
+    ordinary rows, kept by a modality taken in full and drawable by the random fill.
+    ``exclusive`` is one boolean or one per column (a missing column counts as exclusive).
+    """
+    keys = row_link_keys(obs, link_specs).dropna()
+    if keys.empty:
+        return keys.index
+    kept = keys.index.isin(list(keep)) if keep is not None else np.zeros(len(keys), dtype=bool)
+    cols = keys.str.split(":", n=1).str[0]
+    if isinstance(exclusive, Mapping):
+        excl = cols.map(lambda c: bool(exclusive.get(c, True))).to_numpy(dtype=bool)
+    else:
+        excl = np.full(len(keys), bool(exclusive))
+    selected_keys = set(keys[kept])
+    of_selected = keys.isin(selected_keys).to_numpy()
+    out = ~kept & (excl | of_selected)
+    return keys.index[out]
+
+
 def select_linked_rows(
     pools: dict[str, pd.DataFrame],
     budgets: dict[str, int | None],

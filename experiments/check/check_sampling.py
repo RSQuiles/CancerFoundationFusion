@@ -276,6 +276,41 @@ def check_per_link() -> None:
         and parse_per_link({"paired": "50"}, int) == {"paired": 50})
     chk("a malformed entry is refused", raises(lambda: parse_per_link(["paired=0.1", "oops"])))
 
+    # which linked rows the random fill may not draw (linked_exclusions)
+    from utils.sampling import linked_exclusions, parse_bool, row_link_keys
+
+    keep_sc = kept["sc"]
+    old = row_link_keys(sc, specs).dropna().index
+    old = old[~old.isin(keep_sc)]
+    chk("exclusive=True (default) excludes every linked row not kept, as before",
+        set(linked_exclusions(sc, specs, keep_sc)) == set(old))
+    mixed = linked_exclusions(sc, specs, keep_sc, {"paired": True, "pseudobulk_id": False})
+    ex = sc.loc[mixed]
+    kept_pbs = set(pb_rows["pseudobulk_id"])
+    chk("non-exclusive pseudobulks: only the kept ones' rows beyond the cap (200 x 15) are excluded",
+        set(ex.loc[ex["paired"] == 0, "pseudobulk_id"]) == kept_pbs
+        and int((ex["paired"] == 0).sum()) == len(kept_pbs) * (per_pb - 15))
+    chk("non-exclusive pseudobulks: pair rows not kept stay excluded (exclusive pairs)",
+        int((ex["paired"] > 0).sum()) == n_pairs * (per_pair - 50))
+    pb_ex = linked_exclusions(pb, specs, kept["pseudobulk"], {"paired": True, "pseudobulk_id": False})
+    full_pb = stratified_subsample(pb, None, ["tissue"], keep=kept["pseudobulk"], exclude=pb_ex)
+    chk("a modality taken in full keeps every pseudobulk when they are non-exclusive",
+        len(pb_ex) == 0 and len(full_pb) == n_pb)
+    strict_pb = stratified_subsample(pb, None, ["tissue"], keep=kept["pseudobulk"],
+                                     exclude=linked_exclusions(pb, specs, kept["pseudobulk"]))
+    chk("... and only the kept ones when exclusive", len(strict_pb) == 200)
+    fill = stratified_subsample(sc, 10000, ["tissue"], keep=keep_sc, exclude=mixed, seed=0)
+    drawn = sc.loc[fill]
+    other = drawn[(drawn["paired"] == 0) & (drawn["pseudobulk_id"] != "0")
+                  & ~drawn["pseudobulk_id"].isin(kept_pbs)]
+    chk("the fill may draw cells of pseudobulks not kept; kept ones keep exactly 15",
+        len(other) > 0 and set(drawn[drawn["pseudobulk_id"].isin(kept_pbs)]
+                               .groupby("pseudobulk_id").size()) == {15} and len(fill) == 10000)
+    chk("parse_bool and a per-column boolean mapping",
+        parse_bool("false") is False and parse_bool("Yes") is True and parse_bool(0) is False
+        and parse_per_link(["paired=true", "pseudobulk_id=false"], parse_bool)
+        == {"paired": True, "pseudobulk_id": False} and raises(lambda: parse_bool("maybe")))
+
 
 def check_caps() -> None:
     print("\n-- label caps, pairs that form their own stratum --")

@@ -81,15 +81,18 @@ tasks:
       #   - test pseudobulks with 15 of their cells each (<= 30% = 9000 cells, ~600 of the
       #     2000): the stored 30 cells are already a sample of the ~1000 a pseudobulk was
       #     made from, so 15-cell means over many pseudobulks beat 30-cell means over few.
-      # Linked cells not kept are left out of the random fill (a pseudobulk has 15 cells or
-      # none), and the fill (~19000 non-linked cells) keeps the tissue mix. Bulk and
-      # pseudobulk test parts are below 30000, so they are complete either way.
+      # Pairs are exclusive: a pair not kept is left out of every modality. Pseudobulks are
+      # not (linked_exclusive false): only a kept pseudobulk's cells beyond its 15 are left
+      # out, so the pseudobulk file keeps all 2035 test rows and the fill (~19000 cells) may
+      # draw cells of the other pseudobulks, keeping the tissue mix of the test split. Bulk
+      # and pseudobulk test parts are below 30000, so they are complete.
       stratify_mode: proportional
       unknown_frac: 0.05
       cap_labels: {paired: 0.1, "cell line": 0.1, "in vitro": 0.05, xenograft: 0.05}
       keep_linked: ["paired:0", "pseudobulk_id:0,-1"]
       linked_frac: {paired: 0.06, pseudobulk_id: 0.30}
       linked_per_key: {paired: 50, pseudobulk_id: 15}
+      linked_exclusive: {paired: true, pseudobulk_id: false}
       linked_quota: budget
     steps:
       cf_joint:

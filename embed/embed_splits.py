@@ -53,7 +53,7 @@ from embed.embed import (  # noqa: E402
 )
 from experiments.layout import EMBEDDING_PARTS, ExperimentLayout, canonical_modality  # noqa: E402
 from utils.sampling import (  # noqa: E402
-    STRATIFY_MODES, parse_label_caps, row_link_keys, select_linked_rows, stratified_subsample,
+    STRATIFY_MODES, linked_exclusions, parse_label_caps, select_linked_rows, stratified_subsample,
 )
 
 PART_COL = "_embed_part"
@@ -114,6 +114,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--linked-per-key", nargs="+", default=None, metavar="N|COL=N",
                         help="With --keep-linked: at most this many rows per link key (e.g. cells per pair); "
                              "COL=N per link column (e.g. paired=50 pseudobulk_id=15).")
+    parser.add_argument("--linked-exclusive", nargs="+", default=True, metavar="BOOL|COL=BOOL",
+                        help="With --keep-linked: true (default) = rows of link keys not kept are excluded "
+                             "from every modality, so a key enters all modalities or none (pairs). false = "
+                             "only the kept keys' rows beyond --linked-per-key are excluded; other keys' rows "
+                             "are ordinary rows (e.g. pseudobulk_id=false keeps every test pseudobulk). "
+                             "COL=BOOL per link column (a mapping in YAML).")
     parser.add_argument("--linked-quota", default="budget", choices=["budget", "stratum"],
                         help="With --keep-linked: budget = pairs bounded only by --linked-frac (their rows "
                              "still count toward their stratum, which may then exceed its quota); stratum = "
@@ -142,15 +148,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--split is required")
     if args.embedder is None and (args.name or args.option):
         parser.error("--name and --option only apply with --embedder")
-    from utils.sampling import parse_link_spec, parse_per_link
+    from utils.sampling import parse_bool, parse_link_spec, parse_per_link
 
     try:
         args.linked_frac = parse_per_link(args.linked_frac, float, "--linked-frac")
         args.linked_per_key = parse_per_link(args.linked_per_key, int, "--linked-per-key")
+        args.linked_exclusive = (args.linked_exclusive if isinstance(args.linked_exclusive, bool)
+                                 else parse_per_link(args.linked_exclusive, parse_bool, "--linked-exclusive"))
     except ValueError as exc:
         parser.error(str(exc))
     cols = {parse_link_spec(s)[0] for s in args.keep_linked}
-    for opt, value in (("--linked-frac", args.linked_frac), ("--linked-per-key", args.linked_per_key)):
+    for opt, value in (("--linked-frac", args.linked_frac), ("--linked-per-key", args.linked_per_key),
+                       ("--linked-exclusive", args.linked_exclusive)):
         if isinstance(value, dict) and set(value) - cols:
             parser.error(f"{opt}: {sorted(set(value) - cols)} not among the --keep-linked columns {sorted(cols)}")
     return args
@@ -212,7 +221,10 @@ def linked_test_rows(layout: ExperimentLayout, args) -> tuple[dict, dict]:
     print(f"  [keep-linked] {info['keys_accepted']} of {info['keys_available']} link keys kept; "
           f"rows per modality: {info['rows']}")
     for col, c in info.get("per_link", {}).items():
-        print(f"  [keep-linked]   {col}: {c['keys_accepted']} of {c['keys_available']} keys, rows {c['rows']}")
+        excl = (args.linked_exclusive.get(col, True) if isinstance(args.linked_exclusive, dict)
+                else args.linked_exclusive)
+        print(f"  [keep-linked]   {col}: {c['keys_accepted']} of {c['keys_available']} keys, rows {c['rows']}"
+              f" ({'exclusive' if excl else 'non-exclusive: other keys stay ordinary rows'})")
     return kept, info
 
 
@@ -242,10 +254,12 @@ def collect_rows(layout: ExperimentLayout, args, label: str, keep=None):
         selected = {}
         if "test" in args.parts:
             test_obs = obs[obs.index.isin(lists["test"])]
-            # With --keep-linked, linked rows enter only through the joint selection (keep):
-            # the others are excluded, so the per-key cap holds and no pair appears in one
-            # modality but not in another.
-            linked_rows = (row_link_keys(test_obs, args.keep_linked).dropna().index
+            # With --keep-linked, the kept keys' rows enter through the joint selection (keep)
+            # and their rows beyond the per-key cap are excluded. Rows of keys not kept are
+            # excluded too for an exclusive column (no pair appears in one modality only);
+            # for a non-exclusive one (pseudobulk_id) they stay ordinary rows, so a modality
+            # taken in full keeps them and the random fill may draw them.
+            linked_rows = (linked_exclusions(test_obs, args.keep_linked, keep, args.linked_exclusive)
                            if args.keep_linked else None)
             selected["test"] = stratified_subsample(
                 test_obs, _size(args.test_subset), strata, seed=args.seed, mode=args.stratify_mode,
@@ -379,6 +393,7 @@ def main(argv: list[str] | None = None) -> None:
         "linked_quota": args.linked_quota if args.keep_linked else None,
         "linked_frac": args.linked_frac if args.keep_linked else None,
         "linked_per_key": args.linked_per_key if args.keep_linked else None,
+        "linked_exclusive": args.linked_exclusive if args.keep_linked else None,
         "linked_keys": ({"accepted": linked_info["keys_accepted"], "available": linked_info["keys_available"],
                          "rows": linked_info["rows"], "modalities": list(linked_info["rows"]),
                          "per_link": linked_info.get("per_link")}
