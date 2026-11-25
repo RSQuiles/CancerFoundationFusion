@@ -2429,9 +2429,11 @@ class AdversarialDiscriminator(nn.Module):
         """
         if not self.no_invert_dat:
             if self.ramped:
-                # value x; gradient to the encoder -scale * rev_factor
+                # value exactly x (grad_reverse(x) - x.detach() is exactly 0 in the
+                # forward), gradient to the encoder -scale * rev_factor
                 f = self.rev_factor.to(x.dtype)
-                x = f * grad_reverse(x, scale=self.scale) + (1 - f) * x.detach()
+                base = x.detach()
+                x = base + f * (grad_reverse(x, scale=self.scale) - base)
             else:
                 x = grad_reverse(x, scale=self.scale)
         for layer in self._decoder:

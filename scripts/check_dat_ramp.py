@@ -58,7 +58,7 @@ def main() -> None:
     out0, gx0, gw0 = grads(False, 1.0)
     for f in (1.0, 0.3, 0.0):
         out, gx, gw = grads(True, f)
-        check(f"factor {f}: same logits", torch.allclose(out, out0))
+        check(f"factor {f}: same logits (exactly)", torch.equal(out, out0))
         check(f"factor {f}: encoder gradient = factor x plain", torch.allclose(gx, f * gx0, atol=1e-6))
         check(f"factor {f}: discriminator gradient unchanged", torch.allclose(gw, gw0))
     check("rev_factor is not saved in the state_dict", "rev_factor" not in disc.state_dict())
