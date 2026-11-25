@@ -474,6 +474,7 @@ def main(input_args=None):
         dat_scale=args.dat_scale,
         dat_start_step=args.dat_start_step,
         dat_interval_steps=args.dat_interval_steps,
+        dat_ramp_steps=getattr(args, "dat_ramp_steps", 0),
         normalise_bins=args.normalise_bins,
         where_condition=args.where_condition,
         gen_method=args.gen_method,

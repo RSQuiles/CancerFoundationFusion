@@ -14,6 +14,27 @@ from functools import partial, lru_cache
 # into the fused kernel. Done here rather than via --compile, which wraps the whole
 # module (graph breaks) and defaults to dynamic shapes (unsupported by flex).
 # dynamic=False => one compile per distinct sequence length.
+#
+# Every new input shape (rows x length), grad mode or global state (e.g. torch's thread
+# count) costs one compile. Past dynamo's recompile limit (8 by default) flex_attention
+# silently runs eagerly, i.e. the dense reference that builds the full [B, H, L, L] score
+# matrix, which ran a calibration probe out of memory after ~80 batches. So the limit is
+# raised, and reaching it raises an error instead of falling back to dense attention.
+_FLEX_RECOMPILE_LIMIT = 256
+
+
+def _raise_dynamo_recompile_limit(limit: int = _FLEX_RECOMPILE_LIMIT) -> None:
+    import torch._dynamo.config as dcfg
+
+    for name in ("recompile_limit", "cache_size_limit", "accumulated_recompile_limit",
+                 "accumulated_cache_size_limit"):
+        if hasattr(dcfg, name) and getattr(dcfg, name) < limit:
+            setattr(dcfg, name, limit)
+    if hasattr(dcfg, "fail_on_recompile_limit_hit"):
+        dcfg.fail_on_recompile_limit_hit = True
+
+
+_raise_dynamo_recompile_limit()
 _flex_attention_compiled = torch.compile(flex_attention, dynamic=False)
 _create_block_mask_compiled = torch.compile(create_block_mask, dynamic=False)
 

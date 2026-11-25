@@ -2412,6 +2412,11 @@ class AdversarialDiscriminator(nn.Module):
         self.out_layer = nn.Linear(d_model, n_cls)
         self.scale = scale
         self.no_invert_dat = no_invert_dat
+        # Ramp of the reversed gradient (``dat_ramp_steps``): a tensor, so updating it each
+        # step does not recompile a compiled model, and non-persistent, so checkpoints are
+        # unchanged. Used only when ``ramped`` is set (by CancerFoundation).
+        self.ramped = False
+        self.register_buffer("rev_factor", torch.ones(()), persistent=False)
 
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass for the discriminator.
@@ -2423,7 +2428,12 @@ class AdversarialDiscriminator(nn.Module):
             Tensor: Output logits of shape [batch_size, n_cls].
         """
         if not self.no_invert_dat:
-            x = grad_reverse(x, scale=self.scale)
+            if self.ramped:
+                # value x; gradient to the encoder -scale * rev_factor
+                f = self.rev_factor.to(x.dtype)
+                x = f * grad_reverse(x, scale=self.scale) + (1 - f) * x.detach()
+            else:
+                x = grad_reverse(x, scale=self.scale)
         for layer in self._decoder:
             x = layer(x)
         return self.out_layer(x)

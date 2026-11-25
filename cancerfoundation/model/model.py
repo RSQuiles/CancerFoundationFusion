@@ -121,6 +121,7 @@ class CancerFoundation(pl.LightningModule):
         attn_impl: str = "mha",
         dat_start_step: int = 0,
         dat_interval_steps: int = 1,
+        dat_ramp_steps: int = 0,
         perturbation: bool = False,
         n_top_genes: int = 1200,
         # Unified FM parameters
@@ -346,6 +347,7 @@ class CancerFoundation(pl.LightningModule):
         self.dat_scale = dat_scale
         self.dat_start_step = dat_start_step
         self.dat_interval_steps = dat_interval_steps
+        self.dat_ramp_steps = dat_ramp_steps
 
         # Balance sampling parameters
         if balance_primary is None and balance_secondary is not None:
@@ -495,6 +497,10 @@ class CancerFoundation(pl.LightningModule):
                 class_column=self.class_column,
                 class_min_count=self.class_min_count,
             )
+        if self.dat_ramp_steps > 0:
+            for disc in (getattr(self.model, "grad_reverse_discriminators", None) or {}).values():
+                if hasattr(disc, "rev_factor"):
+                    disc.ramped = True
         if self.compile_model:
             self.model = torch.compile(self.model)
 
@@ -566,6 +572,23 @@ class CancerFoundation(pl.LightningModule):
         core._cdd_w = self.weight_cdd * t
         core._mmd_w = self.weight_mmd + (self.cdd_mmd_final_weight - self.weight_mmd) * t
 
+    def dat_ramp_factor(self, step: int) -> float:
+        """Share of the reversed DAT gradient at ``step``: 0 -> 1 linearly over
+        ``dat_ramp_steps`` from ``dat_start_step`` (1 without a ramp). The discriminator
+        trains at full strength throughout, so it is no longer random once the encoder
+        feels it."""
+        if self.dat_ramp_steps <= 0:
+            return 1.0
+        return min(max((step - self.dat_start_step + 1) / self.dat_ramp_steps, 0.0), 1.0)
+
+    def _update_dat_ramp(self):
+        core = getattr(self.model, "_orig_mod", self.model)
+        factor = self.dat_ramp_factor(self.global_step)
+        for disc in (getattr(core, "grad_reverse_discriminators", None) or {}).values():
+            if getattr(disc, "ramped", False):
+                disc.rev_factor.fill_(factor)
+        self.log("train/dat_ramp", factor, on_step=True, on_epoch=False)
+
     def on_train_batch_start(self, batch, batch_idx):
         self._update_cdd_schedule()
 
@@ -599,6 +622,8 @@ class CancerFoundation(pl.LightningModule):
             and self.global_step >= self.dat_start_step
             and (self.dat_interval_steps <= 1 or self.global_step % self.dat_interval_steps == 0)
         )
+        if apply_dat and self.dat_ramp_steps > 0:
+            self._update_dat_ramp()
         loss_dict = self.forward(batch, use_cell_embedding=self.use_cell_embedding, apply_dat=apply_dat)
 
         # Log training metrics

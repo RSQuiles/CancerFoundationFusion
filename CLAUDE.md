@@ -127,6 +127,17 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
     even with `--grad-checkpoint`, so the ablation uses `--attn-impl flex` (same weights and
     inference; no attention-weight dropout in training) plus `--grad-checkpoint`. The parent
     trained at 64 rows with `mha`: read effects against `align_ctrl`.
+    Flex is compiled per input shape and state; past dynamo's recompile limit (8) it ran
+    eagerly as dense attention and `align_calib_all` ran out of memory after ~80 batches.
+    `layers.py` raises the limit to 256 and sets `fail_on_recompile_limit_hit`, so a hit is
+    an error, never a silent switch to dense attention.
+  - **DAT** (`align_dat`, `align_combo_dat`): `--dat-ramp-steps N` (here 1000) ramps the
+    gradient reversed into the encoder 0 -> 1 from `--dat-start-step`, while the fresh
+    discriminator (warm starts never copy `heads`) trains at full strength
+    (`AdversarialDiscriminator.rev_factor`, a non-persistent buffer, so no recompiles and no
+    checkpoint change; `train/dat_ramp`). 0 = no ramp. The probe cannot calibrate DAT: its
+    pre-trained discriminator saturates (ratio ~0.009, i.e. weight ~34); weight 10 comes from
+    the early batches (5-11). `python scripts/check_dat_ramp.py` self-checks it (torch).
   - **Recalibrate after any sampler or batch change** (delete
     `checkpoints/align_calib/loss_balance.json`). The probe prints, for the first normal and
     the first paired batch, the row count and the peak GPU memory, and names the settings to

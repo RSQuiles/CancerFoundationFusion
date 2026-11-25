@@ -905,6 +905,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--dat-ramp-steps",
+        type=int,
+        default=0,
+        help=(
+            "Steps over which the gradient DAT reverses into the encoder ramps 0 -> 1 "
+            "(times --dat-scale), from --dat-start-step. The discriminator trains at full "
+            "strength meanwhile, so a fresh one is trained before it pulls on the encoder. "
+            "0 = no ramp (default, backward-compatible)."
+        ),
+    )
+    parser.add_argument(
         "--dat-interval-steps",
         type=int,
         default=3,
