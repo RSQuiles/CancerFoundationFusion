@@ -9,6 +9,7 @@ callers can apply the result to a backed AnnData without loading X. Shared by
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Iterable
 
 import numpy as np
@@ -387,6 +388,28 @@ def row_link_keys(obs: pd.DataFrame, link_specs: Iterable[str]) -> pd.Series:
     return keys
 
 
+def parse_per_link(value, cast=float, name: str = "value"):
+    """A scalar, or one value per link column: ``0.3``, ``"0.3"``, ``{"paired": 0.06}`` or
+    ``["paired=0.06", "pseudobulk_id=0.3"]`` (the CLI form). None stays None."""
+    if value is None or isinstance(value, (int, float)) and not isinstance(value, bool):
+        return None if value is None else cast(value)
+    if isinstance(value, str):
+        value = [value]
+    if isinstance(value, Mapping):
+        items = list(value.items())
+    else:
+        items = []
+        values = list(value)
+        if len(values) == 1 and "=" not in str(values[0]):
+            return cast(values[0])
+        for entry in values:
+            col, eq, v = str(entry).partition("=")
+            if not eq:
+                raise ValueError(f"{name}: expected one number or COL=VALUE entries, got {entry!r}")
+            items.append((col.strip(), v.strip()))
+    return {str(col): cast(v) for col, v in items}
+
+
 def select_linked_rows(
     pools: dict[str, pd.DataFrame],
     budgets: dict[str, int | None],
@@ -396,8 +419,8 @@ def select_linked_rows(
     mode: str = "proportional",
     unknown_frac: float | None = None,
     unknown_labels: Iterable[str] = (),
-    linked_frac: float = 0.25,
-    per_key: int | None = None,
+    linked_frac: float | Mapping[str, float] = 0.25,
+    per_key: int | Mapping[str, int] | None = None,
     seed: int = 0,
     caps: dict | None = None,
     linked_quota: str = "budget",
@@ -424,10 +447,35 @@ def select_linked_rows(
     matters when the pairs make up a stratum of their own (single-cell ``paired``), whose
     balanced or capped quota would otherwise admit only a few pairs. ``"stratum"`` keeps
     the per-stratum condition.
+
+    **Per-link budgets.** ``linked_frac`` and ``per_key`` may also map a link column to its
+    own value (``{"paired": 0.06, "pseudobulk_id": 0.3}``). With a mapping ``linked_frac``,
+    each column's keys have their own budget, ``frac_col * budget`` rows per pool, and the
+    columns are visited in ``link_specs`` order (all pair keys, then all pseudobulk keys),
+    so a later column can never crowd out an earlier one. A row belongs to the first column
+    that links it. A column missing from a mapping gets no budget (``linked_frac``) or no
+    cap (``per_key``). Scalars give the original behaviour exactly: one shared budget and
+    one seeded order over all keys.
     """
     if linked_quota not in ("budget", "stratum"):
         raise ValueError(f"linked_quota must be 'budget' or 'stratum', got {linked_quota!r}")
     link_specs = list(link_specs)
+    cols = [parse_link_spec(s)[0] for s in link_specs]
+    per_link = isinstance(linked_frac, Mapping)
+    for label, value in (("linked_frac", linked_frac), ("per_key", per_key)):
+        if isinstance(value, Mapping) and set(value) - set(cols):
+            raise ValueError(f"{label}: {sorted(set(value) - set(cols))} not among the link columns {cols}")
+
+    def col_of(key: str) -> str:
+        return key.split(":", 1)[0]
+
+    def cap_of(col: str):
+        return per_key.get(col) if isinstance(per_key, Mapping) else per_key
+
+    def frac_of(col: str) -> float:
+        return float(linked_frac.get(col, 0.0)) if per_link else float(linked_frac)
+
+    groups = cols if per_link else ["*"]           # budget groups
     state = {}
     all_keys: set[str] = set()
     for name, obs in pools.items():
@@ -440,20 +488,28 @@ def select_linked_rows(
         rows_by_key: dict[str, list[str]] = {}
         for key, idx in keys.groupby(keys).groups.items():
             names = _hash_rank([str(i) for i in idx], seed)
-            rows_by_key[str(key)] = names[:per_key] if per_key else names
+            cap = cap_of(col_of(str(key)))
+            rows_by_key[str(key)] = names[:cap] if cap else names
         all_keys |= set(rows_by_key)
         state[name] = {
             "full": full,
             "labels": labels.set_axis(obs.index.astype(str)),
             "quota": quotas,
             "used": pd.Series(0, index=quotas.index if quotas is not None else [], dtype="int64"),
-            "budget": None if full else int(np.floor(linked_frac * int(n))),
-            "total": 0,
+            "budget": None if full else {g: int(np.floor(frac_of(g) * int(n))) for g in groups},
+            "total": {g: 0 for g in groups},
             "rows_by_key": rows_by_key,
             "kept": [],
         }
+    if per_link:   # spec by spec, each in its seeded order
+        order = [k for c in cols for k in _hash_rank([k for k in all_keys if col_of(k) == c], seed)]
+    else:
+        order = _hash_rank(all_keys, seed)
     accepted = 0
-    for key in _hash_rank(all_keys, seed):
+    per_col = {c: {"keys_available": sum(col_of(k) == c for k in all_keys), "keys_accepted": 0,
+                   "rows": {name: 0 for name in pools}} for c in cols}
+    for key in order:
+        group = col_of(key) if per_link else "*"
         plan = {}
         fits = True
         for name, st in state.items():
@@ -463,7 +519,7 @@ def select_linked_rows(
             if st["full"]:
                 plan[name] = (rows, None)
                 continue
-            if st["total"] + len(rows) > st["budget"]:
+            if st["total"][group] + len(rows) > st["budget"][group]:
                 fits = False
                 break
             counts = st["labels"].loc[rows].value_counts()
@@ -477,10 +533,12 @@ def select_linked_rows(
         if not fits or not plan:
             continue
         accepted += 1
+        per_col[col_of(key)]["keys_accepted"] += 1
         for name, (rows, counts) in plan.items():
             st = state[name]
             st["kept"].extend(rows)
-            st["total"] += len(rows)
+            st["total"][group] += len(rows)
+            per_col[col_of(key)]["rows"][name] += len(rows)
             if counts is not None:
                 st["used"] = st["used"].add(counts, fill_value=0).astype("int64")
     kept = {name: pd.Index(st["kept"]) for name, st in state.items()}
@@ -490,6 +548,7 @@ def select_linked_rows(
         "keys_available": len(all_keys),
         "keys_accepted": accepted,
         "rows": {name: len(v) for name, v in kept.items()},
+        "per_link": per_col,
     }
     return kept, info
 

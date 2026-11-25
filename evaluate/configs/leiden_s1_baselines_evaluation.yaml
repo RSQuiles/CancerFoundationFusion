@@ -76,21 +76,27 @@ tasks:
   embed:
     shared:
       split: leiden_s1
-      test_subset: 25000          # per modality, stratified; bulk / pb keep all rows if fewer
+      test_subset: 30000          # per modality, stratified; bulk / pb keep all rows if fewer
       stratify_by: [tissue_general]
+      # MUST match the embed block of leiden_s1_alignment_evaluation.yaml.
       # Proportional test subsets (each tissue keeps its share of the data), with caps on
       # the categories that would otherwise dominate: "unknown" at most 5%, single-cell
       # "paired" (the paired datasets) and bulk "cell line" (an ARCHS4 annotation) at most
       # 10% each, "in vitro" and "xenograft" at most 5%; the freed share goes to the other
-      # tissues. Every test pair is kept in all modalities while the pairs fit 25% of a
-      # subset (6250 rows), with up to 100 cells per pair; pair rows may exceed their
-      # stratum's cap (single-cell "paired"), nothing else can.
+      # tissues. Linked single cells, each link column with its own budget, in this order:
+      #   - every test pair in all modalities, up to 50 cells each (<= 6% = 1800 cells);
+      #   - test pseudobulks with 15 of their cells each (<= 30% = 9000 cells, ~600 of the
+      #     2000): the stored 30 cells are already a sample of the ~1000 a pseudobulk was
+      #     made from, so 15-cell means over many pseudobulks beat 30-cell means over few.
+      # Linked cells not kept are left out of the random fill (a pseudobulk has 15 cells or
+      # none); the fill (~19000 non-linked cells) keeps the tissue mix. Linked rows may
+      # exceed their stratum's cap (single-cell "paired"), nothing else can.
       stratify_mode: proportional
       unknown_frac: 0.05
       cap_labels: {paired: 0.1, "cell line": 0.1, "in vitro": 0.05, xenograft: 0.05}
-      keep_linked: ["paired:0"]
-      linked_frac: 0.25
-      linked_per_key: 100
+      keep_linked: ["paired:0", "pseudobulk_id:0,-1"]
+      linked_frac: {paired: 0.06, pseudobulk_id: 0.30}
+      linked_per_key: {paired: 50, pseudobulk_id: 15}
       linked_quota: budget
     steps:
       cf_joint:
@@ -207,6 +213,8 @@ tasks:
         args:
           models: *align_models
           pb_cells: true
+          pb_min_cells: 15          # pseudobulks are kept with 15 test cells
+          cells_per_pb: 15
           filter: ["tissue_label_source=cellxgene,archs4"]
           color: [pseudobulk_id, tissue_general]
           title: "{model}: pseudobulks and their own cells ({counts})"
@@ -324,7 +332,7 @@ tasks:
           name: leiden_s1_baselines
           models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca, *bf_emb]
           label_filter: ["tissue_label_source=cellxgene,archs4"]
-          min_cells: 5
+          min_cells: 15             # pseudobulks are kept with 15 test cells (pairs up to 50)
           scib_runs: [leiden_s1_sc_pb, leiden_s1_sc_bulk, leiden_s1_bulk_pb, leiden_s1_all]
 
   # ---- 4. reconstruction: r25 plans on the three leiden_s1 test parts --------------------

@@ -250,24 +250,6 @@
       }
     },
     {
-      "name": "align_calib_agg_infonce",
-      "overrides": {
-        "trainer": {
-          "calibrate_loss_steps": 300
-        },
-        "data": {
-          "pb_id_column": "pseudobulk_id"
-        },
-        "features": {
-          "agg_consistency": true,
-          "agg_fn": "mean",
-          "agg_loss": "infonce",
-          "agg_temperature": 0.1,
-          "monitor_losses": []
-        }
-      }
-    },
-    {
       "name": "align_agg_infonce",
       "overrides": {
         "data": {
@@ -288,7 +270,7 @@
       }
     },
     {
-      "name": "align_combo",
+      "name": "align_combo_all",
       "overrides": {
         "data": {
           "paired_sampling": true,
@@ -300,7 +282,9 @@
           "contrastive_training": true,
           "cdd": true,
           "agg_consistency": true,
-          "agg_fn": "mean"
+          "agg_fn": "mean",
+          "paired_loss": "infonce",
+          "loss_weight_paired": 4.0
         }
       }
     }

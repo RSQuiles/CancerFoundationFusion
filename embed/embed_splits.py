@@ -107,10 +107,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keep-linked", nargs="*", default=[], metavar="COL[:NOLINK,...]",
                         help="Test part: keep rows linked by these columns (e.g. paired:0), the same "
                              "keys in every modality, within --linked-frac and each stratum's quota.")
-    parser.add_argument("--linked-frac", type=float, default=0.25,
-                        help="With --keep-linked: at most this share of a modality's test subset is linked rows.")
-    parser.add_argument("--linked-per-key", type=int, default=None,
-                        help="With --keep-linked: at most this many rows per link key (e.g. cells per pair).")
+    parser.add_argument("--linked-frac", nargs="+", default=0.25, metavar="FRAC|COL=FRAC",
+                        help="With --keep-linked: at most this share of a modality's test subset is linked "
+                             "rows. COL=FRAC per link column (a mapping in YAML) gives each column its own "
+                             "budget, filled in --keep-linked order (e.g. paired=0.06 pseudobulk_id=0.3).")
+    parser.add_argument("--linked-per-key", nargs="+", default=None, metavar="N|COL=N",
+                        help="With --keep-linked: at most this many rows per link key (e.g. cells per pair); "
+                             "COL=N per link column (e.g. paired=50 pseudobulk_id=15).")
     parser.add_argument("--linked-quota", default="budget", choices=["budget", "stratum"],
                         help="With --keep-linked: budget = pairs bounded only by --linked-frac (their rows "
                              "still count toward their stratum, which may then exceed its quota); stratum = "
@@ -139,6 +142,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--split is required")
     if args.embedder is None and (args.name or args.option):
         parser.error("--name and --option only apply with --embedder")
+    from utils.sampling import parse_link_spec, parse_per_link
+
+    try:
+        args.linked_frac = parse_per_link(args.linked_frac, float, "--linked-frac")
+        args.linked_per_key = parse_per_link(args.linked_per_key, int, "--linked-per-key")
+    except ValueError as exc:
+        parser.error(str(exc))
+    cols = {parse_link_spec(s)[0] for s in args.keep_linked}
+    for opt, value in (("--linked-frac", args.linked_frac), ("--linked-per-key", args.linked_per_key)):
+        if isinstance(value, dict) and set(value) - cols:
+            parser.error(f"{opt}: {sorted(set(value) - cols)} not among the --keep-linked columns {sorted(cols)}")
     return args
 
 
@@ -197,6 +211,8 @@ def linked_test_rows(layout: ExperimentLayout, args) -> tuple[dict, dict]:
     )
     print(f"  [keep-linked] {info['keys_accepted']} of {info['keys_available']} link keys kept; "
           f"rows per modality: {info['rows']}")
+    for col, c in info.get("per_link", {}).items():
+        print(f"  [keep-linked]   {col}: {c['keys_accepted']} of {c['keys_available']} keys, rows {c['rows']}")
     return kept, info
 
 
@@ -364,7 +380,8 @@ def main(argv: list[str] | None = None) -> None:
         "linked_frac": args.linked_frac if args.keep_linked else None,
         "linked_per_key": args.linked_per_key if args.keep_linked else None,
         "linked_keys": ({"accepted": linked_info["keys_accepted"], "available": linked_info["keys_available"],
-                         "rows": linked_info["rows"], "modalities": list(linked_info["rows"])}
+                         "rows": linked_info["rows"], "modalities": list(linked_info["rows"]),
+                         "per_link": linked_info.get("per_link")}
                         if linked_info else None),
         "variant": args.variant,
     })

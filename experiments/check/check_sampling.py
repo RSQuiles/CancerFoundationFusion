@@ -232,6 +232,51 @@ def check_links() -> None:
         and len(sub_sc) == 2000)
 
 
+def check_per_link() -> None:
+    """Per-link budgets: pairs and pseudobulks in one subsample, each with its own share."""
+    print("\n-- per-link budgets (pairs + pseudobulks) --")
+    from utils.sampling import parse_per_link
+
+    rng = np.random.default_rng(2)
+    n_pairs, per_pair, n_pb, per_pb = 30, 60, 400, 30
+    n_free = 30000
+    paired = np.r_[np.repeat(np.arange(1, n_pairs + 1), per_pair), np.zeros(n_pb * per_pb + n_free, dtype=int)]
+    pbid = np.r_[np.full(n_pairs * per_pair, "0"), np.repeat([f"pb{i}" for i in range(n_pb)], per_pb),
+                 np.full(n_free, "0")]
+    sc = pd.DataFrame({"tissue": rng.choice(["lung", "blood", "eye"], len(paired)), "paired": paired,
+                       "pseudobulk_id": pbid}, index=[f"c{i}" for i in range(len(paired))])
+    pb = pd.DataFrame({"tissue": "lung", "paired": 0, "pseudobulk_id": [f"pb{i}" for i in range(n_pb)]},
+                      index=[f"p{i}" for i in range(n_pb)])
+    pools, budgets = {"sc": sc, "pseudobulk": pb}, {"sc": 10000, "pseudobulk": None}
+    specs = ["paired:0", "pseudobulk_id:0,-1"]
+    kept, info = select_linked_rows(pools, budgets, specs, ["tissue"], seed=0,
+                                    linked_frac={"paired": 0.2, "pseudobulk_id": 0.3},
+                                    per_key={"paired": 50, "pseudobulk_id": 15})
+    rows = sc.loc[kept["sc"]]
+    pair_rows, pb_rows = rows[rows["paired"] > 0], rows[rows["paired"] == 0]
+    chk("each link column has its own budget (pairs <= 2000, pseudobulk cells <= 3000)",
+        len(pair_rows) <= 2000 and len(pb_rows) <= 3000, str(info["per_link"]))
+    chk("pairs come first and are all kept (their budget is their own)",
+        info["per_link"]["paired"]["keys_accepted"] == n_pairs and len(pair_rows) == n_pairs * 50)
+    chk("per-link caps: 50 cells per pair, 15 per pseudobulk",
+        pair_rows.groupby("paired").size().max() == 50 and set(pb_rows.groupby("pseudobulk_id").size()) == {15})
+    chk("pseudobulks fill their budget with whole keys (200 x 15)",
+        info["per_link"]["pseudobulk_id"]["keys_accepted"] == 200 and len(pb_rows) == 3000)
+    chk("kept pseudobulk rows match the kept cells' keys",
+        set(pb.loc[kept["pseudobulk"], "pseudobulk_id"]) == set(pb_rows["pseudobulk_id"]))
+    scalar_a, _ = select_linked_rows(pools, budgets, specs, ["tissue"], seed=0, linked_frac=0.25, per_key=10)
+    scalar_b, _ = select_linked_rows(pools, budgets, specs, ["tissue"], seed=0, linked_frac=0.25,
+                                     per_key={"paired": 10, "pseudobulk_id": 10})
+    chk("a per_key mapping with equal values matches the scalar", list(scalar_a["sc"]) == list(scalar_b["sc"]))
+    chk("an unknown column in a mapping is refused",
+        raises(lambda: select_linked_rows(pools, budgets, specs, linked_frac={"donor": 0.1})))
+    chk("parse_per_link: scalar, mapping and COL=VALUE list",
+        parse_per_link(0.3) == 0.3 and parse_per_link(["0.3"]) == 0.3 and parse_per_link(None) is None
+        and parse_per_link(["paired=0.06", "pseudobulk_id=0.3"]) == {"paired": 0.06, "pseudobulk_id": 0.3}
+        and parse_per_link({"paired": "50"}, int) == {"paired": 50})
+    chk("a malformed entry is refused", raises(lambda: parse_per_link(["paired=0.1", "oops"])))
+
+
 def check_caps() -> None:
     print("\n-- label caps, pairs that form their own stratum --")
     from utils.sampling import label_caps, parse_label_caps
@@ -288,6 +333,7 @@ def main() -> None:
     check_subsample()
     check_modes()
     check_links()
+    check_per_link()
     check_caps()
     check_split()
     finish()
