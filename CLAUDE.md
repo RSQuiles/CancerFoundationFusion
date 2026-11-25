@@ -91,6 +91,20 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
   `--loss-weight-agg 0` the cells are still drawn but the loss is not trained on. Add
   `aggregation` to `--monitor-losses` to log its raw value. That makes a batch-matched
   control (`align_agg_ctrl` in `experiments/configs/leiden_s1_alignment.json`).
+  - `--agg-loss mse|infonce` (default `mse`), `--agg-temperature` (0.1): `infonce`
+    (`TransformerModule.aggregation_contrastive_loss`) is a symmetric InfoNCE between each
+    pseudobulk and the mean of its cells' L2-normalized CLS embeddings: each pseudobulk
+    must find its own cell mean among the batch's other pseudobulks' cell means, and the
+    reverse. Rows with the same `--pb-id-column` id (the collator's `pb_link_id`; one
+    pseudobulk drawn twice) are positives of each other, never negatives (supervised
+    contrastive L_out form); without ids every row is its own. It is `ln(n)` when every
+    similarity is equal. `train/agg_top1` (monitoring, logged by either form) is how often
+    the nearest candidate is the own one (chance = 1 / pseudobulks with cells).
+  - The probe records the form a run does not train as `agg_alt` and prints `agg forms:
+    ... override loss_weight_agg <w>`, like `paired_alt`. `align_agg_infonce` in
+    `leiden_s1_alignment.json` tests it on the batches of `align_agg`; its weight comes from
+    the probe `align_calib_agg_infonce`. `python scripts/check_contrastive_loss.py`
+    self-checks it (the method part needs torch).
 - **Alignment ablation:** `experiments/configs/leiden_s1_alignment.json` warm-starts ten
   runs from `unified_baseline`:
   - two controls (seeds 0 and 1, the noise floor);

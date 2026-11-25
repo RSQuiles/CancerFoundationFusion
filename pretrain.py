@@ -367,6 +367,12 @@ def main(input_args=None):
         print(f"[paired] loss {args.paired_loss}"
               + (f", temperature {args.paired_temperature}, negatives = the other pairs of the batch"
                  if args.paired_loss == "infonce" else ", CLS distances pb-bulk, cells-bulk, cells-pb"))
+    if args.agg_consistency:
+        print(f"[aggregation] loss {args.agg_loss} (weight {args.loss_weight_agg}"
+              + (", logged only" if args.loss_weight_agg <= 0 else "") + ")"
+              + (f", temperature {args.agg_temperature}, negatives = the other pseudobulks' cell means "
+                 f"(copies of one pseudobulk id are positives)"
+                 if args.agg_loss == "infonce" else ", MSE pseudobulk vs mean of its cells"))
 
     datamodule = BulkSCDataModule(
         data_path=args.train_path,
@@ -494,6 +500,8 @@ def main(input_args=None):
         weight_paired=args.loss_weight_paired,
         paired_loss=args.paired_loss,
         paired_temperature=args.paired_temperature,
+        agg_loss=args.agg_loss,
+        agg_temperature=args.agg_temperature,
         weight_agg=args.loss_weight_agg,
         weight_dat=args.loss_weight_dat,
         weight_reconstruction=args.loss_weight_reconstruction,

@@ -37,6 +37,13 @@
     "in align_paired_mse's overrides (1.0 there is a placeholder).",
     "Paired runs: paired_sampling also draws a paired batch every 10 steps (the paired loss is",
     "bound to it), so their batches differ from the control's on those steps.",
+    "Aggregation loss: align_agg_infonce is align_agg with agg_loss infonce (symmetric InfoNCE: each",
+    "pseudobulk must find the mean of its own 4 cells among the batch's other pseudobulks' cell means,",
+    "and the reverse; copies of one pseudobulk_id are positives, never negatives). Same batches as",
+    "align_agg and align_agg_ctrl; train/agg_top1 is logged by all three. Its loss_weight_agg (4.0)",
+    "is a placeholder: first launch --only align_calib_agg_infonce (a probe with only that term on;",
+    "the shared weights above stay as calibrated) and set the 'agg' suggestion it prints",
+    "(loss_weight_agg) in align_agg_infonce's overrides, then --only align_agg_infonce.",
     "Evaluation: evaluate/configs/leiden_s1_alignment_evaluation.yaml."
   ],
   "experiments_root": "/cluster/work/boeva/rquiles/unifiedFM_experiments",
@@ -234,6 +241,44 @@
         "features": {
           "agg_consistency": true,
           "agg_fn": "mean",
+          "monitor_losses": [
+            "mmd",
+            "contrastive",
+            "cdd"
+          ]
+        }
+      }
+    },
+    {
+      "name": "align_calib_agg_infonce",
+      "overrides": {
+        "trainer": {
+          "calibrate_loss_steps": 300
+        },
+        "data": {
+          "pb_id_column": "pseudobulk_id"
+        },
+        "features": {
+          "agg_consistency": true,
+          "agg_fn": "mean",
+          "agg_loss": "infonce",
+          "agg_temperature": 0.1,
+          "monitor_losses": []
+        }
+      }
+    },
+    {
+      "name": "align_agg_infonce",
+      "overrides": {
+        "data": {
+          "pb_id_column": "pseudobulk_id"
+        },
+        "features": {
+          "agg_consistency": true,
+          "agg_fn": "mean",
+          "agg_loss": "infonce",
+          "agg_temperature": 0.1,
+          "loss_weight_agg": 4.0,
           "monitor_losses": [
             "mmd",
             "contrastive",

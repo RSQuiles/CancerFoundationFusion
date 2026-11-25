@@ -921,6 +921,14 @@ def build_parser() -> argparse.ArgumentParser:
                              "each row's own pair must beat the other pairs; cosine, scale-invariant).")
     parser.add_argument("--paired-temperature", type=float, default=0.1,
                         help="Temperature of --paired-loss infonce.")
+    parser.add_argument("--agg-loss", type=str, choices=["mse", "infonce"], default="mse",
+                        help="Aggregation-consistency objective (--agg-consistency): 'mse' (each "
+                             "pseudobulk's CLS vs the mean CLS of its sampled cells; the original) or "
+                             "'infonce' (symmetric InfoNCE: each pseudobulk must find its own cells' mean "
+                             "among the batch's other pseudobulks' cell means, and the reverse; copies of "
+                             "one pseudobulk id are positives; cosine, scale-invariant).")
+    parser.add_argument("--agg-temperature", type=float, default=0.1,
+                        help="Temperature of --agg-loss infonce.")
     parser.add_argument("--loss-weight-agg",            type=float, default=1.0, help="Weight for aggregation consistency loss. 0 with --agg-consistency: the cells are still drawn into each batch but the loss is only logged (add aggregation to --monitor-losses), a batch-matched control.")
     parser.add_argument("--loss-weight-dat",            type=float, default=1.0, help="Weight for DAT condition loss.")
     parser.add_argument("--loss-weight-reconstruction", type=float, default=1.0, help="Weight applied to all reconstruction losses (loss_expr, loss_mvc, loss_gen).")

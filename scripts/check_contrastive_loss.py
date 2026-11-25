@@ -352,10 +352,97 @@ def check_paired_infonce() -> None:
     check("one pair: zero loss, graph kept", float(one) == 0.0 and one.requires_grad)
 
 
+def _np_agg_infonce(p, c, ids, t):
+    """Numpy reference of TransformerModule.aggregation_contrastive_loss (rows with the
+    same id are positives; anchors = rows with at least one negative)."""
+    import numpy as np
+
+    pn = p / np.linalg.norm(p, axis=1, keepdims=True)
+    cn = c / np.linalg.norm(c, axis=1, keepdims=True)
+    sim = pn @ cn.T / t
+    ids = np.asarray(ids)
+    pos = ids[:, None] == ids[None, :]
+    anchors = (~pos).any(axis=1)
+
+    def direction(s, positives):
+        s = s - s.max(axis=1, keepdims=True)
+        logp = s - np.log(np.exp(s).sum(axis=1, keepdims=True))
+        per_row = (logp * positives).sum(axis=1) / positives.sum(axis=1)
+        return -per_row[anchors].mean()
+
+    return float((direction(sim, pos) + direction(sim.T, pos.T)) / 2)
+
+
+def check_agg_infonce() -> None:
+    import numpy as np
+
+    print("aggregation InfoNCE (pseudobulk vs mean of its cells)")
+    rng = np.random.default_rng(1)
+    n, d, t = 20, 32, 0.1
+    p = rng.normal(size=(n, d))
+    c = p + 0.3 * rng.normal(size=(n, d))
+    ids = np.arange(n)
+    check("reference with distinct ids equals the paired form on one view",
+          abs(_np_agg_infonce(p, c, ids, t) - _np_paired_infonce([(p, c)], t)) < 1e-9)
+    try:
+        import torch
+    except ImportError:
+        print("  [skip] torch not importable (method vs reference)")
+        return
+    fn = load_module_py().TransformerModule.aggregation_contrastive_loss
+    T = lambda a: torch.tensor(a, dtype=torch.float32)  # noqa: E731
+    got = float(fn(T(p), T(c), temperature=t))
+    check("no ids: method matches the reference", abs(got - _np_agg_infonce(p, c, ids, t)) < 1e-4)
+
+    # Pseudobulk 0 drawn twice (rows 0 and 1): both rows' cells are its cells.
+    dup_p = p.copy()
+    dup_p[1] = p[0]
+    dup_c = c.copy()
+    dup_c[1] = p[0] + 0.3 * rng.normal(size=d)
+    dup_ids = ids.copy()
+    dup_ids[1] = 0
+    got_dup = float(fn(T(dup_p), T(dup_c), pb_ids=torch.tensor(dup_ids), temperature=t))
+    ref_dup = _np_agg_infonce(dup_p, dup_c, dup_ids, t)
+    check("duplicate ids: method matches the reference", abs(got_dup - ref_dup) < 1e-4,
+          f"{got_dup:.6f} vs {ref_dup:.6f}")
+    # For two identical copies the loss VALUE is the same either way (the positives'
+    # log-probabilities are only regrouped); the gradients differ. As negatives, each copy
+    # is pulled to its own cells and pushed from the other copy's cells, so the two copies
+    # are driven apart; as positives, both get the same pull.
+    def copy_grads(id_arr):
+        pg = T(dup_p).requires_grad_(True)
+        fn(pg, T(dup_c), pb_ids=torch.tensor(id_arr), temperature=t).backward()
+        return float(torch.nn.functional.cosine_similarity(pg.grad[0], pg.grad[1], dim=0))
+
+    cos_dup, cos_neg = copy_grads(dup_ids), copy_grads(ids)
+    check("duplicate ids: the two copies get the same pull (no repulsion between them)",
+          cos_dup > 0.999 and cos_neg < 0.9, f"gradient cosine {cos_dup:.3f} (positives) vs {cos_neg:.3f} (negatives)")
+
+    stats: dict = {}
+    fn(T(p), T(c), temperature=t, stats=stats)
+    check("agg_top1 = 1 for well separated pseudobulks", float(stats["agg_top1"]) == 1.0, str(stats))
+    stats = {}
+    fn(T(p), T(np.roll(c, 1, axis=0)), temperature=t, stats=stats)
+    check("agg_top1 = 0 when every cell mean belongs to another pseudobulk", float(stats["agg_top1"]) == 0.0)
+    stats = {}
+    fn(T(dup_p), T(dup_c), pb_ids=torch.tensor(dup_ids), temperature=t, stats=stats)
+    check("agg_top1 counts a copy's cells as a hit", float(stats["agg_top1"]) == 1.0, str(stats))
+
+    same = fn(T(p[:3]).requires_grad_(True), T(c[:3]), pb_ids=torch.tensor([4, 4, 4]), temperature=t)
+    check("all rows one pseudobulk: no negative, zero loss, graph kept", float(same) == 0.0 and same.requires_grad)
+    one = fn(T(p[:1]).requires_grad_(True), T(c[:1]), temperature=t)
+    check("one pseudobulk: zero loss, graph kept", float(one) == 0.0 and one.requires_grad)
+    scaled = float(fn(T(4 * p), T(0.1 * c), temperature=t))
+    check("scale-invariant", abs(scaled - got) < 1e-4)
+    bf = fn(T(p).bfloat16().requires_grad_(True), T(c).bfloat16(), temperature=t)
+    check("bf16 input: finite, bf16 output", math.isfinite(float(bf)) and bf.dtype == torch.bfloat16)
+
+
 def main() -> None:
     check_cli()
     check_allocation()
     check_paired_infonce()
+    check_agg_infonce()
     check_loss()
     check_stats()
     check_sampler()

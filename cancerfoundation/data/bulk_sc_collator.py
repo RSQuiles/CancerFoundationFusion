@@ -253,6 +253,9 @@ class BulkSCCollator(AnnDataCollator):
         unified_is_real: List[int] = []
         unified_pseudobulk_index: List[int] = []
         unified_is_sc_for_pb: List[int] = []  # mask for sc_for_pb samples
+        # pb_id_column code of each pseudobulk row (-1 elsewhere, or without an id): the
+        # aggregation InfoNCE treats copies of one pseudobulk as positives, not negatives.
+        unified_pb_link: List[int] = []
 
         # 0 -> real bulk
         for sample in bulk_samples:
@@ -261,6 +264,7 @@ class BulkSCCollator(AnnDataCollator):
             unified_is_real.append(1)
             unified_pseudobulk_index.append(-1)
             unified_is_sc_for_pb.append(0)
+            unified_pb_link.append(-1)
 
         # 1 -> sc  (in paired batches these are drawn from the matched SC pool;
         #            sample_pseudobulk_index carries the local PB index when matched)
@@ -275,6 +279,7 @@ class BulkSCCollator(AnnDataCollator):
                 pb_local = -1
             unified_pseudobulk_index.append(pb_local)
             unified_is_sc_for_pb.append(0)
+            unified_pb_link.append(-1)
 
         # 2 -> pseudobulk (aggregated SC, or precomputed rows when paired / precomputed_pb;
         #                   real whenever the row is a precomputed one)
@@ -285,6 +290,8 @@ class BulkSCCollator(AnnDataCollator):
             unified_is_real.append(pb_is_real)
             unified_pseudobulk_index.append(pb_idx)
             unified_is_sc_for_pb.append(0)
+            link = sample.get(self.pb_id_column) if self.pb_id_column else None
+            unified_pb_link.append(int(link) if link is not None else -1)
 
         # 3 (1) -> sc for pb. On the fly these are the very cells that were aggregated;
         #          with precomputed PB rows they are the constituent cells the sampler
@@ -303,6 +310,7 @@ class BulkSCCollator(AnnDataCollator):
                 unified_is_real.append(1)
                 unified_pseudobulk_index.append(sc_pseudobulk_index[sc_idx])
                 unified_is_sc_for_pb.append(1)
+                unified_pb_link.append(-1)
 
         """
         # 4 -> matched bulk (optional)
@@ -336,6 +344,7 @@ class BulkSCCollator(AnnDataCollator):
             unified_pseudobulk_index
         )  # similar to above, but for all samples in the batch
         data_dict["pseudobulk_sizes"] = torch.LongTensor(pseudobulk_sizes)
+        data_dict["pb_link_id"] = torch.LongTensor(unified_pb_link)
         data_dict["is_paired_batch"] = torch.tensor(is_paired, dtype=torch.bool)
         # True when the PB rows are precomputed rather than aggregated in this batch.
         # The aggregation loss uses it to pick its reduction: a *sum* of n_sc_per_pb

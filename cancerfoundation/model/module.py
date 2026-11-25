@@ -80,6 +80,8 @@ class TransformerModule(nn.Module):
         monitor_losses: Optional[list[str]] = None,
         paired_loss: str = "mse",
         paired_temperature: float = 0.1,
+        agg_loss: str = "mse",
+        agg_temperature: float = 0.1,
         # Contrastive Domain Discrepancy (CAN) parameters
         cdd: bool = False,
         weight_cdd: float = 0.3,
@@ -121,6 +123,8 @@ class TransformerModule(nn.Module):
             contrastive_temperature (float): Its temperature. Defaults to 0.1.
             aggregation (bool): If True, enable aggregation consistency losses. Defaults to False.
             agg_fn (Optional[str]): The function to use for aggregating single-cell embeddings into pseudobulk embeddings. Defaults to "mean".
+            agg_loss (str): Aggregation-consistency objective, "mse" (default, the original) or "infonce" (see aggregation_contrastive_loss).
+            agg_temperature (float): Temperature of agg_loss "infonce". Defaults to 0.1.
         """
         super().__init__()
         self.model_type = "Transformer"
@@ -190,6 +194,15 @@ class TransformerModule(nn.Module):
             raise ValueError(f"paired_loss must be 'mse' or 'infonce', got {paired_loss!r}")
         self.paired_loss = paired_loss
         self.paired_temperature = paired_temperature
+        # Aggregation-consistency objective: "mse" (pseudobulk CLS vs the mean CLS of its
+        # sampled cells, the original) or "infonce" (symmetric InfoNCE: each pseudobulk
+        # must find its own cells' mean among the batch's other pseudobulks' cell means,
+        # and the reverse; copies of one pseudobulk_id are positives, never negatives).
+        # See aggregation_contrastive_loss.
+        if agg_loss not in ("mse", "infonce"):
+            raise ValueError(f"agg_loss must be 'mse' or 'infonce', got {agg_loss!r}")
+        self.agg_loss = agg_loss
+        self.agg_temperature = agg_temperature
         # Loss-weight calibration (utils/loss_balance.py): when set to a dict, forward
         # stores each term's raw, unweighted, undetached loss here. Runtime only, never
         # an __init__ argument, so checkpoints are unaffected.
@@ -1220,18 +1233,13 @@ class TransformerModule(nn.Module):
                 tensors["is_sc_for_pb"]
             ), "Embeddings and input dictionaries must have the same batch size"
 
-            # Map each sc_for_pb cell to its pseudobulk local index (0…n_pb-1).
-            sc_assignment: dict = {}
-            for idx in range(len(embeddings)):
-                if tensors["is_sc_for_pb"][idx] == 1:
-                    pb_local_idx = tensors["sample_pseudobulk_index"][idx].item()
-                    sc_assignment.setdefault(pb_local_idx, []).append(idx)
-
             # Resolve local PB indices to global positions in the embeddings tensor.
             # sample_pseudobulk_index stores 0-based local PB indices, but PBs occupy
             # positions n_bulk+n_sc … n_bulk+n_sc+n_pb-1 in the unified batch — they
             # cannot be used directly to index into embeddings without this lookup.
             pb_global_pos = (tensors["conditions"]["modality"] == 2).nonzero(as_tuple=True)[0]
+            sc_mask = tensors["is_sc_for_pb"] == 1
+            sc_local = tensors["sample_pseudobulk_index"][sc_mask].long()
 
             # A precomputed pseudobulk aggregates all N of its cells, but only
             # n_sc_per_pseudobulk of them are in the batch, so a sum would scale with
@@ -1247,24 +1255,62 @@ class TransformerModule(nn.Module):
                         f"n_sc_per_pseudobulk, not with the pseudobulk it is matched to."
                     )
                 agg_fn = "mean"
+            if sc_local.numel() and agg_fn not in ("mean", "sum"):
+                raise ValueError(f"Unknown agg_fn: {agg_fn}")
 
-            loss_agg = torch.tensor(0.0, device=loss.device)
-            for pb_local_idx, sc_indices in sc_assignment.items():
-                pb_embedding = embeddings[pb_global_pos[pb_local_idx]]
-                sc_embeddings = embeddings[sc_indices]
-                if agg_fn == "mean":
-                    sc_embedding_agg = sc_embeddings.mean(dim=0)
-                elif agg_fn == "sum":
-                    sc_embedding_agg = sc_embeddings.sum(dim=0)
+            if sc_local.numel() and pb_global_pos.numel():
+                n_pb_rows, d_model = pb_global_pos.numel(), embeddings.size(1)
+                sc_embs = embeddings[sc_mask].float()
+                counts = torch.zeros(n_pb_rows, device=embeddings.device).index_add(
+                    0, sc_local, torch.ones(sc_local.numel(), device=embeddings.device))
+                has_sc = counts > 0  # the pseudobulks with cells in this batch
+                pb_embs = embeddings[pb_global_pos[has_sc]].float()
+
+                # MSE form (the original): each pseudobulk vs the mean (or sum) of its
+                # cells' raw CLS embeddings, MSE over D, then the mean over the batch's
+                # pseudobulks (it was a sum, so the weight does not scale with their number).
+                sums = torch.zeros(n_pb_rows, d_model, device=embeddings.device).index_add(
+                    0, sc_local, sc_embs)[has_sc]
+                sc_agg = sums if agg_fn == "sum" else sums / counts[has_sc].unsqueeze(1)
+                loss_agg_mse = (pb_embs - sc_agg).pow(2).mean(dim=1).mean()
+
+                # InfoNCE form: the mean of the L2-normalised cell embeddings (every cell
+                # counts equally whatever its norm; mean vs sum does not matter under
+                # cosine) against the batch's pseudobulks. Copies of one pseudobulk_id
+                # (pb_link_id from the collator) are positives, never negatives.
+                unit_sums = torch.zeros(n_pb_rows, d_model, device=embeddings.device).index_add(
+                    0, sc_local, F.normalize(sc_embs, dim=1))[has_sc]
+                cell_means = unit_sums / counts[has_sc].unsqueeze(1)
+                pb_ids = None
+                link = tensors.get("pb_link_id")
+                if link is not None:
+                    pb_ids = link[pb_global_pos[has_sc]].long()
+                    # -1 = no id (e.g. an on-the-fly pseudobulk): unique, own row only.
+                    unique = -1 - torch.arange(pb_ids.numel(), device=pb_ids.device)
+                    pb_ids = torch.where(pb_ids >= 0, pb_ids, unique)
+                agg_stats: dict = {}
+                if self.agg_loss == "infonce" or self.loss_terms is not None:
+                    loss_agg_infonce = self.aggregation_contrastive_loss(
+                        pb_embs, cell_means, pb_ids=pb_ids,
+                        temperature=self.agg_temperature, stats=agg_stats)
                 else:
-                    raise ValueError(f"Unknown agg_fn: {agg_fn}")
-                loss_agg = loss_agg + F.mse_loss(pb_embedding, sc_embedding_agg)
+                    loss_agg_infonce = None
+                    with torch.no_grad():  # agg_top1 only, so mse runs log it too
+                        self.aggregation_contrastive_loss(
+                            pb_embs, cell_means, pb_ids=pb_ids,
+                            temperature=self.agg_temperature, stats=agg_stats)
+                if "agg_top1" in agg_stats:
+                    # Monitoring, either form: how often the nearest candidate (cosine) is
+                    # the own pseudobulk / cell mean, both directions. Chance ~ 1 / n_pb.
+                    loss_dict["agg_top1"] = agg_stats["agg_top1"]
 
-            if sc_assignment:
-                # Mean over the batch's pseudobulks (it was a sum), so the weight does not
-                # scale with how many pseudobulks a batch holds.
-                loss_agg = loss_agg / len(sc_assignment)
+                loss_agg = (loss_agg_infonce if self.agg_loss == "infonce" else loss_agg_mse)
+                loss_agg = loss_agg.to(embeddings.dtype)
                 self._record_term("agg", loss_agg)
+                if self.loss_terms is not None:
+                    # The other form, for the probe only (its weight for runs that use it).
+                    alt = loss_agg_mse if self.agg_loss == "infonce" else loss_agg_infonce
+                    self._record_term("agg_alt", alt.to(embeddings.dtype))
                 if self.aggregation:
                     loss = loss + self.weight_agg * loss_agg
                     loss_dict["loss_agg"] = loss_agg.detach() * self.weight_agg
@@ -1420,6 +1466,64 @@ class TransformerModule(nn.Module):
             return ref.sum() * 0.0 if ref is not None else torch.zeros(())
         out = torch.stack(terms).mean()
         return out.to(views[0][2].dtype)
+
+    @staticmethod
+    def aggregation_contrastive_loss(
+        pb_embs: torch.Tensor,
+        cell_means: torch.Tensor,
+        pb_ids: Optional[torch.Tensor] = None,
+        temperature: float = 0.1,
+        stats: Optional[dict] = None,
+    ) -> torch.Tensor:
+        """Symmetric InfoNCE between pseudobulks and the mean embedding of their cells.
+
+        ``pb_embs`` and ``cell_means`` are ``(n, D)``, aligned by row: row i of
+        ``cell_means`` is the mean of the sampled cells of pseudobulk i. With cosine
+        similarities ``S = norm(P) norm(C)^T / t`` and positives ``pos_ij = [id_i == id_j]``::
+
+            L_dir(i) = -1/|P(i)| * sum_{j in P(i)} log( exp(S_ij) / sum_k exp(S_ik) )
+            L = ( mean_i L_pb->cells(i) + mean_i L_cells->pb(i) ) / 2
+
+        Each pseudobulk must find its own cells' mean among the batch's other
+        pseudobulks' cell means, and each cell mean its own pseudobulk. Rows with the same
+        ``pb_ids`` (one pseudobulk drawn twice) are positives of each other, so a
+        pseudobulk is never pushed away from itself. Without ``pb_ids`` every row is its
+        own id and the loss equals :meth:`paired_contrastive_loss` on one view (``ln(n)``
+        when every similarity is equal). A row whose candidates are all positives has no
+        negative and is no anchor; without any anchor (or with ``n < 2``) the loss is a
+        zero that keeps the graph.
+
+        ``stats``, when given, receives ``agg_top1``: the share of rows whose most similar
+        candidate is a positive, both directions averaged (monitoring, no gradient).
+        """
+        n = pb_embs.size(0)
+        if n < 2:
+            return pb_embs.sum() * 0.0
+        if pb_ids is None:
+            pb_ids = torch.arange(n, device=pb_embs.device)
+        # float32 for the similarities and the log-sum-exp (bf16 is too coarse at t=0.1).
+        p = F.normalize(pb_embs.float(), dim=1)
+        c = F.normalize(cell_means.float(), dim=1)
+        sim = (p @ c.t()) / temperature                         # (n, n)
+        pos = pb_ids.reshape(-1, 1) == pb_ids.reshape(1, -1)    # symmetric, diagonal True
+        anchors = (~pos).any(dim=1)                             # at least one negative
+        if stats is not None:
+            with torch.no_grad():
+                rows = torch.arange(n, device=sim.device)
+                hit_pc = pos[rows, sim.argmax(dim=1)].float().mean()
+                hit_cp = pos[sim.argmax(dim=0), rows].float().mean()
+                stats["agg_top1"] = (hit_pc + hit_cp) / 2
+        if not anchors.any():
+            return pb_embs.sum() * 0.0
+        pos_f = pos.float()
+
+        def _direction(s: torch.Tensor, positives: torch.Tensor) -> torch.Tensor:
+            log_prob = s - torch.logsumexp(s, dim=1, keepdim=True)
+            mean_pos = (log_prob * positives).sum(1) / positives.sum(1)
+            return -mean_pos[anchors].mean()
+
+        loss = (_direction(sim, pos_f) + _direction(sim.t(), pos_f.t())) / 2
+        return loss.to(pb_embs.dtype)
 
     def _paired_alignment_loss(
         self,

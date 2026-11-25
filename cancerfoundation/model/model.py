@@ -143,6 +143,8 @@ class CancerFoundation(pl.LightningModule):
         weight_paired: float = 1.0,
         paired_loss: str = "mse",
         paired_temperature: float = 0.1,
+        agg_loss: str = "mse",
+        agg_temperature: float = 0.1,
         weight_agg: float = 1.0,
         weight_dat: float = 1.0,
         weight_reconstruction: float = 1.0,
@@ -291,6 +293,8 @@ class CancerFoundation(pl.LightningModule):
         self.weight_paired = weight_paired
         self.paired_loss = paired_loss
         self.paired_temperature = paired_temperature
+        self.agg_loss = agg_loss
+        self.agg_temperature = agg_temperature
         self.weight_agg = weight_agg
         self.weight_dat = weight_dat
         self.weight_reconstruction = weight_reconstruction
@@ -477,6 +481,8 @@ class CancerFoundation(pl.LightningModule):
                 weight_paired=self.weight_paired,
                 paired_loss=self.paired_loss,
                 paired_temperature=self.paired_temperature,
+                agg_loss=self.agg_loss,
+                agg_temperature=self.agg_temperature,
                 weight_agg=self.weight_agg,
                 weight_dat=self.weight_dat,
                 weight_reconstruction=self.weight_reconstruction,

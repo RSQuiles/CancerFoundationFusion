@@ -84,6 +84,18 @@ def check_suggest() -> None:
     line = paired_forms_line(alt) or ""
     check("paired forms line names both forms and weights", "infonce" in line and "mse" in line and "override" in line)
 
+    from utils.loss_balance import forms_line
+
+    agg_records = [{**r, "terms": {**r["terms"], **({"agg_alt": {"loss": 3.0, "grad": r["recon_grad"] * 0.06}}
+                                                    if "agg" in r["terms"] else {})}} for r in records]
+    aa = suggest_weights(agg_records, {**weights, "agg_alt": 1.0}, 0.3)
+    aa["agg_forms"] = {"trained": "mse", "alt": "infonce"}
+    aline = forms_line(aa, "agg_alt") or ""
+    check("other aggregation form calibrated on the same batches, kept out of the shared snippet",
+          abs(aa["terms"]["agg_alt"]["suggested_weight"] - 5) < 0.3 and aa["terms"]["agg_alt"]["batches"] == 90
+          and "agg_alt" not in config_snippet(aa)
+          and "agg_loss infonce -> override loss_weight_agg" in aline)
+
     report = format_report(res)
     check("report lists every term and the rule", all(k in report for k in true_ratio) and "R / median" in report)
     snippet = json.loads(config_snippet(res))
