@@ -84,7 +84,7 @@ from evaluate._plot_style import (  # noqa: E402
     INK_2,
     MUTED,
     SEQ_RAMP,
-    SERIES,
+    series_colors,
     Col,
     draw_metric_table,
     highlight_note,
@@ -187,6 +187,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--formats", nargs="+", default=["png", "pdf"], help="Figure file formats")
     parser.add_argument("--dpi", type=int, default=200)
     parser.add_argument("--list", action="store_true", help="Print the available models and plots, then exit")
+    from evaluate._recompute import add_recompute_arg
+
+    add_recompute_arg(parser, comparison=True)
     return parser
 
 
@@ -387,7 +390,7 @@ def table_columns(space: str | None) -> list[Col]:
 def _colors(rows: list[str], group: Group) -> dict[str, tuple[str, str]]:
     """``{row: (color, linestyle)}``: models take the categorical slots in order, solid;
     the shared baselines are grey, dashed (gene mean) or dotted (sample mean)."""
-    slot = dict(zip(group.models, SERIES))
+    slot = dict(zip(group.models, series_colors(len(group.models))))
     style = {BASELINE_LABELS["gene_mean"]: (MUTED, "--"), BASELINE_LABELS["sample_mean"]: (MUTED, ":")}
     return {row: style.get(row, (slot.get(row, MUTED), "-")) for row in rows}
 
@@ -543,8 +546,6 @@ PLOTS: list[PlotSpec] = [
     PlotSpec("rank_mae_by_target", "all", lambda s: True, compute_rank_mae_by_target, draw_rank_mae_by_target),
 ]
 PLOT_NAMES = [p.name for p in PLOTS]
-# One categorical slot per model, never cycled: more models than slots are not drawn as lines.
-LINE_PLOTS = {"mae_by_bin", "mae_by_target", "rank_mae_by_target"}
 
 
 def select_plots(requested: list[str]) -> list[PlotSpec]:
@@ -562,6 +563,9 @@ def main(argv: list[str] | None = None) -> Path | None:
     from experiments.layout import ASSESSMENT_MANIFEST, ExperimentLayout
 
     args = parse_with_config(build_parser(), "reconstruction_plot", argv)
+    from evaluate._recompute import note_comparison
+
+    note_comparison(args)
     if not args.plan:
         sys.exit("Error: give --plan")
     if not args.name and not args.list:
@@ -598,10 +602,6 @@ def main(argv: list[str] | None = None) -> Path | None:
             if group.n_shared == 0:
                 skipped[key] = "no entry scored by every model"
                 print(f"  [skip] {key}: no entry scored by every model")
-                continue
-            if spec.name in LINE_PLOTS and len(group.models) > len(SERIES):
-                skipped[key] = f"more than {len(SERIES)} models in one line plot"
-                print(f"  [skip] {key}: {skipped[key]}; pass fewer --models")
                 continue
             group_dir = out_dir / group.name
             group_dir.mkdir(parents=True, exist_ok=True)

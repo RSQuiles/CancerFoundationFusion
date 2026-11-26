@@ -113,6 +113,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", type=Path, default=None,
                         help="Output directory (default: results/reconstruction/<name>/<plan>/)")
     parser.add_argument("--seed", type=int, default=0)
+    from evaluate._recompute import add_recompute_arg
+
+    add_recompute_arg(parser)
     return parser
 
 
@@ -232,6 +235,15 @@ def main(argv: list[str] | None = None) -> dict:
         sys.exit("Error: give --plan")
     layout = ExperimentLayout.from_root(args.root)
     plan = load_plan(resolve_plan_path(args.plan, args.root))
+    from evaluate._recompute import skip_existing
+
+    pre_name = args.model or args.name or args.reconstructor
+    if pre_name:
+        pre_head = args.head if args.model else DEFAULT_HEAD
+        pre_dir = args.out_dir or run_dir(layout, row_label(pre_name, pre_head), plan_slug(plan))
+        if skip_existing(f"reconstruction {row_label(pre_name, pre_head)} on {plan.plan_id}",
+                         [pre_dir / "metrics.json", pre_dir / "entries.parquet"], args.recompute):
+            return {}
     name, reconstructor = make_reconstructor(args, layout)
     source = resolve_source(plan, args.input)
     print(f"Plan {plan.plan_id}: {plan.n_samples} samples, {len(plan.genes)} genes; rows from {source.name}")

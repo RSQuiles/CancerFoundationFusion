@@ -32,6 +32,68 @@ def read_results(path: Path) -> pd.DataFrame:
     return df
 
 
+BATCH, BIO, TOTAL = "Batch correction", "Bio conservation", "Total"
+
+
+def split_results(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+    """A ``get_results`` frame -> (metric values per model, metric type per metric column),
+    the aggregate columns left out."""
+    types = df.loc[METRIC_TYPE].astype(str)
+    metrics = [c for c in df.columns if types[c] != AGGREGATE_SCORE]
+    values = df.drop(index=METRIC_TYPE)[metrics].astype(float)
+    return values, types[metrics]
+
+
+def results_table(values: pd.DataFrame, types: pd.Series, min_max_scale: bool) -> pd.DataFrame:
+    """The ``Benchmarker.get_results`` frame rebuilt from metric values (scib_metrics 0.6.2):
+    optional min-max scaling per metric column, the mean per metric type, and Total =
+    0.4 batch + 0.6 bio when both groups are there; then the ``Metric Type`` row."""
+    df = values.astype(float).copy()
+    if min_max_scale:
+        lo, hi = df.min(), df.max()
+        span = (hi - lo).where(hi > lo, 1.0)  # as sklearn's MinMaxScaler: a constant column -> 0
+        df = (df - lo) / span
+    per_class = pd.DataFrame({t: df[list(types.index[types == t])].mean(axis=1)
+                              for t in sorted(set(types))}, index=df.index)
+    if BATCH in per_class and BIO in per_class:
+        per_class[TOTAL] = 0.4 * per_class[BATCH] + 0.6 * per_class[BIO]
+    out = pd.concat([df, per_class], axis=1).astype(object)
+    out.loc[METRIC_TYPE] = list(types) + [AGGREGATE_SCORE] * per_class.shape[1]
+    return out
+
+
+def check_aggregates(stored: pd.DataFrame, tol: float = 1e-6) -> None:
+    """Recompute a stored raw table's aggregates from its metrics; raise if they differ (a
+    merge would then not reproduce scib_metrics' arithmetic)."""
+    values, types = split_results(stored)
+    rebuilt = results_table(values, types, min_max_scale=False)
+    aggs = [c for c in stored.columns if c not in types.index]
+    a = stored.drop(index=METRIC_TYPE)[aggs].astype(float)
+    b = rebuilt.drop(index=METRIC_TYPE).reindex(columns=aggs).astype(float)
+    diff = float((a - b).abs().max().max()) if len(aggs) else 0.0
+    if not diff <= tol:
+        raise ValueError(f"recomputed scIB aggregates differ from the stored ones (max {diff:.3g})")
+
+
+def merge_results(stored: pd.DataFrame | None, new: pd.DataFrame | None, rows: list[str]):
+    """Raw and min-max ``get_results`` frames for ``rows``: each row's metrics from ``new``
+    if there, else from ``stored``. Aggregates and scaling are recomputed over ``rows``."""
+    frames = [f for f in (new, stored) if f is not None]
+    parts = [split_results(f) for f in frames]
+    types = parts[0][1]
+    for _, t in parts[1:]:
+        if list(t.index) != list(types.index) or list(t) != list(types):
+            raise ValueError("the stored scIB results have other metrics than this run "
+                             f"({list(t.index)} vs {list(types.index)}); rerun with --recompute")
+    values = pd.concat([v for v, _ in parts])
+    values = values[~values.index.duplicated(keep="first")]
+    missing = [r for r in rows if r not in values.index]
+    if missing:
+        raise ValueError(f"no scIB results for {missing}")
+    values = values.loc[rows]
+    return results_table(values, types, False), results_table(values, types, True)
+
+
 def relabel(df: pd.DataFrame, labels: dict[str, str]) -> pd.DataFrame:
     """Rename the model rows by ``labels`` (model -> display name); others keep their name."""
     rows = [r for r in df.index if r != METRIC_TYPE]

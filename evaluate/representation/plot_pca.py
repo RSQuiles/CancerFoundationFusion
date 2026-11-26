@@ -93,6 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "(e.g. tissue_general=Tissue); a mapping in --config")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dpi", type=int, default=200)
+    from evaluate._recompute import add_recompute_arg
+
+    add_recompute_arg(parser)
     return parser
 
 
@@ -221,12 +224,16 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit("Error: give --models (or --input)")
     layout = ExperimentLayout.from_root(args.root)
     label = canonical_modality(args.modality)
+    from evaluate._recompute import skip_existing
+
     for model in args.models:
+        out_dir = args.out_dir or layout.representation_dir(model, args.variant)
+        stem = out_dir / f"pca_{label}_{args.part}{suffix}"
+        if skip_existing(f"{model}: {stem.name}.png", [stem.with_suffix(".png")], args.recompute):
+            continue
         precomputed = is_precomputed(args.already_pca, model)
         print(f"[{model}] {label} {args.part}: " + ("precomputed PCs" if precomputed else "fitting PCA"))
         adata = load_embedding(layout, model, label, args.part, args.variant)
-        out_dir = args.out_dir or layout.representation_dir(model, args.variant)
-        stem = out_dir / f"pca_{label}_{args.part}{suffix}"
         title = format_title(args.title, f"{model}: {label} {args.part}" + (f" [{tag}]" if tag else ""),
                              model=model, modality=label, modality_name=DISPLAY_NAMES.get(label, label),
                              part=args.part, filter=tag, pcs=pcs, variant=args.variant or "")

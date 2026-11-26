@@ -84,6 +84,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_normalization_args(parser)
     add_input_mode_args(parser)
     add_model_run_args(parser)
+    from evaluate._recompute import add_recompute_arg
+
+    add_recompute_arg(parser)
     return parser
 
 
@@ -136,17 +139,20 @@ def embed_suite(
     identity: dict,
     modality: str = "bulk",
     overwrite: bool = False,
+    check: bool = True,
 ) -> dict:
     """Embed each dataset with ``embed_fn(adata) -> (emb, panel genes or None)``.
 
     Writes ``<out_dir>/<dataset>.npz`` (``emb``, ``obs_names``) and keeps
     ``<out_dir>/embed.json`` current after every dataset, so an interrupted run
-    resumes where it stopped. Returns the card.
+    resumes where it stopped. Returns the card. ``check=False`` (recompute false) keeps
+    existing files without comparing how they were made.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     card = read_card(out_dir)
-    check_identity(card, identity, overwrite)
+    if check:
+        check_identity(card, identity, overwrite)
     if overwrite:
         card = {}
     card.update(identity)
@@ -246,6 +252,16 @@ def main(argv: list[str] | None = None) -> dict:
     suite_path = S.suite_dir(repo, args.suite)
     datasets = S.list_datasets(suite_path, args.datasets)
 
+    from evaluate._recompute import skip_existing
+
+    pre_name = args.model or args.name or args.embedder
+    pre_dir = args.out_dir or layout.geneicl_embedding_dir(pre_name, args.suite)
+    if skip_existing(f"GeneICL embeddings {pre_name} ({len(datasets)} {args.suite} datasets)",
+                     [pre_dir / EMBED_CARD, *(pre_dir / f"{ds}.npz" for ds in datasets)], args.recompute):
+        return read_card(pre_dir)
+    if not args.recompute and args.overwrite:
+        print("[recompute false] datasets already embedded are kept; only the missing ones are embedded")
+
     if args.model:
         name, embed_fn, vocab, identity = model_backend(args, layout)
     else:
@@ -263,7 +279,8 @@ def main(argv: list[str] | None = None) -> dict:
     out_dir = args.out_dir or layout.geneicl_embedding_dir(name, args.suite)
     print(f"{name}: {len(datasets)} {args.suite} datasets -> {out_dir}")
     card = embed_suite(suite_path, datasets, out_dir, embed_fn, cols, genes, identity,
-                       modality=args.modality, overwrite=args.overwrite)
+                       modality=args.modality, overwrite=args.overwrite and args.recompute,
+                       check=args.recompute)
     print("Done.")
     return card
 

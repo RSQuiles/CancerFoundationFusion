@@ -102,6 +102,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Metric tables: shade the top N values of each column, darker = better (0 = no shading; the best stays bold)")
     p.add_argument("--formats", nargs="+", default=["png", "pdf"])
     p.add_argument("--dpi", type=int, default=200)
+    from evaluate._recompute import add_recompute_arg
+
+    add_recompute_arg(p)
     return p
 
 
@@ -438,7 +441,18 @@ def main(argv: list[str] | None = None) -> Path:
     all_links, all_cov, hashes = [], [], {}
     missing: dict[str, dict[str, list[str]]] = {}
     sources: dict[str, str] = {}
-    for model in ([] if args.links_from else models):
+    # --no-recompute: a model already in this analysis's links.csv keeps its rows; only the
+    # others are computed (the summary and the figure are always rebuilt).
+    reused: list[str] = []
+    own_links = out_dir / "links.csv"
+    if not args.recompute and not args.links_from and own_links.exists():
+        present = set(pd.read_csv(own_links, usecols=["model"])["model"].astype(str))
+        reused = [m for m in models if m in present]
+        for m in reused:
+            print(f"[skip] {m}: link metrics present in {own_links} (recompute false)")
+        for m in (m for m in models if m not in present):
+            print(f"[compute] {m}: not in {own_links}")
+    for model in ([] if args.links_from else [m for m in models if m not in reused]):
         print(f"[{model}]")
         data = {}
         for mod in (MOD_SC, MOD_PB, MOD_BULK):
@@ -472,6 +486,17 @@ def main(argv: list[str] | None = None) -> Path:
         all_cov = cov_frame.to_dict("records")
     else:
         links = pd.DataFrame(all_links)
+        if reused:
+            old_links, old_cov, old_src, old_man = links_from(layout, [args.name], reused)
+            man = old_man.get(args.name, {})
+            for model in reused:
+                hashes[model] = (man.get("panel_hashes") or {}).get(model)
+                if model in (man.get("missing_link_columns") or {}):
+                    missing[model] = man["missing_link_columns"][model]
+            links = pd.concat([old_links, links], ignore_index=True) if len(links) else old_links
+            all_cov = old_cov.to_dict("records") + all_cov
+            order = {m: i for i, m in enumerate(models)}
+            links = links.sort_values("model", key=lambda c: c.map(order), kind="stable").reset_index(drop=True)
     summary = summarize(links).reindex(models)
     scib, scib_meta = scib_aggregates(layout, args.scib_runs)
     if not scib.empty:
@@ -494,6 +519,7 @@ def main(argv: list[str] | None = None) -> Path:
         "label_filter": filters, "panel_hashes": hashes, "figures": figures,
         "highlight_top": args.highlight_top, "missing_link_columns": missing,
         "links_from": sources if args.links_from else None,
+        "links_reused": reused or None,
         "scib_runs": {g: m.get("runs") for g, m in scib_meta.items()},
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }, indent=2), encoding="utf-8")

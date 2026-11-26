@@ -63,6 +63,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--baselines", action="store_true",
                         help="Also list each model's two baselines (computed in that model's space)")
     parser.add_argument("--dpi", type=int, default=200)
+    from evaluate._recompute import add_recompute_arg
+
+    add_recompute_arg(parser, comparison=True)
     return parser
 
 
@@ -132,6 +135,9 @@ def main(argv: list[str] | None = None) -> pd.DataFrame:
     from experiments.layout import ExperimentLayout
 
     args = parse_with_config(build_parser(), "compare", argv)
+    from evaluate._recompute import note_comparison
+
+    note_comparison(args)
     if not (args.models and args.plan):
         sys.exit("Error: give --models and --plan")
     layout = ExperimentLayout.from_root(args.root)

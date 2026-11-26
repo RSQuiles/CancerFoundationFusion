@@ -421,6 +421,18 @@ def check_splits() -> None:
               "pseudobulk_id" in test_rows.obs.columns
               and "pseudobulk_id" not in ad.read_h5ad(layout.embedding_file("pca", "bulk", "test")).obs.columns)
 
+        # --no-recompute: present files are skipped (nothing rewritten); a missing one recomputes
+        before = layout.embedding_file("pca", "sc", "test").stat().st_mtime_ns
+        again = subprocess.run(cmd + ["--no-recompute"], capture_output=True, text=True)
+        check("--no-recompute skips a model whose files are present",
+              again.returncode == 0 and "[skip]" in again.stdout
+              and layout.embedding_file("pca", "sc", "test").stat().st_mtime_ns == before)
+        layout.embedding_file("pca", "bulk", "test").unlink()
+        third = subprocess.run(cmd + ["--no-recompute"], capture_output=True, text=True)
+        check("--no-recompute recomputes when a file is missing",
+              third.returncode == 0 and "[compute]" in third.stdout
+              and layout.embedding_file("pca", "bulk", "test").exists())
+
 
 def main() -> None:
     check_recover_counts()

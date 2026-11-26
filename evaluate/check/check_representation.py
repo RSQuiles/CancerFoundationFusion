@@ -26,6 +26,7 @@ from experiments.check._harness import check, finish, raises
 from experiments.layout import ExperimentLayout
 from evaluate.representation import plot_alignment, plot_pca, plot_umap
 from evaluate._cli import format_title, parse_mapping, parse_quotas
+from utils.sampling import match_label_rows
 
 MODEL = "toy_model"
 SIZES = {"sc": 800, "pseudobulk": 60, "bulk": 40}
@@ -117,6 +118,8 @@ def check_variant() -> None:
 
 
 def check_alignment() -> None:
+    import anndata as ad
+
     print("\n-- plot_alignment --")
     check("quotas parsed", parse_quotas(["sc=1_000", "pb=all"], ["sc", "pseudobulk", "bulk"])
           == {"sc": 1000, "pseudobulk": None, "bulk": None})
@@ -144,6 +147,30 @@ def check_alignment() -> None:
         check("--cell-means: a key with too few cells gets no star",
               not raises(lambda: plot_alignment.main(["--root", tmp, "--models", MODEL, "--cell-means",
                                                       "--link-col", "paired", "--min-cells", "50"])))
+
+        # --match-labels: per tissue, as many sc rows as bulk rows (bulk is the smaller here)
+        plot_alignment.main(["--root", tmp, "--models", MODEL, "--modalities", "sc", "bulk",
+                             "--match-labels", "--color", "modality", "tissue_general"])
+        stem = out / "alignment_test_sc-bulk_matched"
+        check("--match-labels: own figure name with the modalities", stem.with_suffix(".png").exists()
+              and (out / "alignment_test.png").exists())
+        matched = pd.read_parquet(stem.with_suffix(".parquet"))
+        ct = pd.crosstab(matched["tissue_general"], matched["modality"])
+        files = {m: ad.read_h5ad(layout.embedding_file(MODEL, m, "test")) for m in ("sc", "bulk")}
+        full = pd.crosstab(pd.concat([f.obs["tissue_general"] for f in files.values()]),
+                           pd.concat([f.obs["modality"] for f in files.values()]))
+        check("--match-labels: equal rows per tissue and modality, the smaller count",
+              set(ct.columns) == {"sc", "bulk"} and (ct["sc"] == ct["bulk"]).all()
+              and all(ct.loc[t, "bulk"] == full.loc[t].min() for t in ct.index))
+        labels = np.concatenate([f.obs["tissue_general"].astype(str).to_numpy() for f in files.values()])
+        batches = np.concatenate([np.full(f.n_obs, m, dtype=object) for m, f in files.items()])
+        ref, _ = match_label_rows(labels, batches, np.ones(len(labels), bool), ["sc", "bulk"], seed=0)
+        names = np.concatenate([f.obs_names.to_numpy() for f in files.values()])
+        check("--match-labels: the rows match_label_rows picks (as the matched scIB run)",
+              set(names[ref]) == set(matched.index))
+        check("--match-labels with --paired-only refused",
+              raises(lambda: plot_alignment.main(["--root", tmp, "--models", MODEL, "--match-labels",
+                                                  "--paired-only"]), SystemExit))
 
         segs = plot_alignment.pair_segments(
             np.zeros((4, 2)),

@@ -70,6 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume", action="store_true",
                         help="Keep folds already on disk (benchmark.py overwrite=false)")
     parser.add_argument("--dry-run", action="store_true", help="Print the command and stop")
+    from evaluate._recompute import add_recompute_arg
+
+    add_recompute_arg(parser)
     return parser
 
 
@@ -129,6 +132,13 @@ def main(argv: list[str] | None = None) -> dict:
         sys.exit("Error: give --model")
     name = validate_model_name(args.model)
     layout = ExperimentLayout.from_root(args.root)
+    from evaluate._recompute import skip_existing
+
+    done_dir = layout.task_dir(task_name(args.suite), name)
+    if skip_existing(f"GeneICL probe {name} ({args.suite})",
+                     [done_dir / f for f in ("run.json", "probe_classification.csv", "probe_regression.csv")],
+                     args.recompute):
+        return json.loads((done_dir / "run.json").read_text(encoding="utf-8"))
     repo = S.resolve_geneicl(args.geneicl_repo)
     suite_path = S.suite_dir(repo, args.suite)
     emb_dir = args.emb_dir or layout.geneicl_embedding_dir(name, args.suite)

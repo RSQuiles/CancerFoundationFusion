@@ -363,6 +363,66 @@ def stratified_subsample(
     return obs.index[picked]
 
 
+def match_label_rows(
+    labels,
+    batches,
+    keep,
+    modalities: Iterable[str],
+    cap: int | None = None,
+    seed: int = 0,
+) -> tuple[np.ndarray, dict[str, int]]:
+    """Per label, the same number of rows from every modality (``batches`` value).
+
+    ``labels``, ``batches`` and the boolean ``keep`` are aligned per row. For each label,
+    ``n = min`` over ``modalities`` of its kept rows (at most ``cap``); a label missing from
+    one modality gets none. ``n`` rows of it are then drawn from each modality with
+    ``np.random.default_rng(seed)``, modalities in the given order and labels sorted, so
+    equal rows (in equal order) and seed give equal picks. Used by the matched scIB runs
+    and the matched alignment UMAPs, which therefore show the same rows. Returns the
+    boolean mask and ``{label: n}`` for the labels drawn.
+    """
+    labels = np.asarray(labels, dtype=object).astype(str)
+    batches = np.asarray(batches, dtype=object).astype(str)
+    keep = np.asarray(keep, dtype=bool)
+    modalities = list(modalities)
+    positions: dict[str, dict[str, np.ndarray]] = {m: {} for m in modalities}
+    for m in modalities:
+        idx = np.flatnonzero(keep & (batches == m))
+        for lab in np.unique(labels[idx]):
+            positions[m][lab] = idx[labels[idx] == lab]
+    all_labels = sorted(set().union(*(p.keys() for p in positions.values())))
+    rng = np.random.default_rng(seed)
+    mask = np.zeros(len(labels), dtype=bool)
+    matched: dict[str, int] = {}
+    for lab in all_labels:
+        n = min(len(positions[m].get(lab, ())) for m in modalities)
+        if cap is not None:
+            n = min(n, int(cap))
+        if n <= 0:
+            continue
+        matched[lab] = int(n)
+        for m in modalities:
+            pool = positions[m][lab]
+            mask[pool if n == len(pool) else rng.choice(pool, size=n, replace=False)] = True
+    return mask, matched
+
+
+def describe_match(matched: dict[str, int], all_labels: Iterable[str], cap: int | None = None,
+                   prefix: str = "--match-labels") -> list[str]:
+    """Log lines for a ``match_label_rows`` result."""
+    lines = []
+    if matched:
+        largest = max(matched, key=matched.get)
+        smallest = min(matched, key=matched.get)
+        lines.append(f"  {prefix}: {sum(matched.values())} rows per modality over {len(matched)} labels "
+                     f"(largest {largest}={matched[largest]}, smallest {smallest}={matched[smallest]}"
+                     + (f", cap {cap}" if cap is not None else "") + ")")
+    unmatched = sorted(set(map(str, all_labels)) - set(matched))
+    if unmatched:
+        lines.append(f"  {prefix}: {len(unmatched)} labels not in every modality get no row, e.g. {unmatched[:5]}")
+    return lines
+
+
 def _hash_rank(values: Iterable[str], seed: int) -> list[str]:
     """``values`` in a seeded order that does not depend on which others are present."""
     import hashlib

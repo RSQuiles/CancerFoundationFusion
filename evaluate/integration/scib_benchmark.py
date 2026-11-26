@@ -43,6 +43,13 @@ Reading the numbers:
   kept (after ``--filter``). A tissue only one modality has stays apart rightly, but the
   label-free iLISI and PCR count that as a batch effect. Isolated labels is then off (every
   label would be "isolated"); ``meta.json`` lists ``dropped_labels``.
+- **Matched modalities** (``--match-labels``, ``--match-cap N``): per label, the same number
+  of rows from every modality (the smallest count, after ``--filter`` / ``--shared-labels``),
+  seeded. Otherwise the larger modality (bulk vs pseudobulk is ~9:1 in leiden_s1) fills
+  every kNN neighborhood and every per-label silhouette, and iLISI, graph connectivity,
+  kBET, PCR and BRAS mostly describe it. Replaces ``--per-modality``. With ``--no-recompute``
+  a stored ``scib.csv`` made with another row selection (e.g. before matching) is not
+  merged: every model is recomputed.
 - **Bio conservation only** (``--bio-only``): no batch-correction metric is computed, so
   one modality is enough (several are pooled). The table then has a "Bio conservation"
   score and no "Total". kBET and ``--pre-integrated`` are batch-only and refused; list
@@ -76,7 +83,7 @@ from evaluate._cli import parse_mapping, parse_quotas, parse_with_config  # noqa
 from evaluate.io import EMB_KEY, load_embedding, panel_hashes  # noqa: E402
 from evaluate.modalities import MOD_BULK, MOD_PB  # noqa: E402
 from experiments.layout import ExperimentLayout, canonical_modality, validate_model_name  # noqa: E402
-from utils.sampling import filter_mask, parse_filter_specs, stratified_subsample  # noqa: E402
+from utils.sampling import describe_match, filter_mask, match_label_rows, parse_filter_specs, stratified_subsample  # noqa: E402
 
 UNKNOWN_LABEL = "unknown"
 
@@ -111,6 +118,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Keep only labels present in every modality of the run (after --filter); "
                              "isolated labels is then off. A tissue only one modality has is not a "
                              "batch effect, but iLISI and PCR would count it as one")
+    parser.add_argument("--match-labels", action="store_true",
+                        help="Per label, draw the same number of rows from every modality of the run: "
+                             "min over the modalities (after --filter / --shared-labels), so the kNN "
+                             "batch metrics and BRAS are not dominated by the larger modality. A label "
+                             "one modality lacks gets 0 rows. Replaces --per-modality")
+    parser.add_argument("--match-cap", type=int, default=None, metavar="N",
+                        help="With --match-labels: at most N rows per label and modality")
     parser.add_argument("--row-labels", nargs="*", default=None, metavar="MODEL=LABEL",
                         help="Row names of the results table figure (default: the model names)")
     parser.add_argument("--plot-only", action="store_true",
@@ -120,6 +134,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--xla-autotune", action="store_true",
                         help="Keep XLA's GPU kernel autotuning (default: off, it stalled JAX compiles "
                              "for minutes per metric)")
+    from evaluate._recompute import add_recompute_arg
+
+    add_recompute_arg(parser)
     return parser
 
 
@@ -211,6 +228,56 @@ def unshared_labels(obs: pd.DataFrame, keep: np.ndarray, label_key: str, batch_k
     return sorted(set().union(*per_mod) - set.intersection(*per_mod)) if per_mod else []
 
 
+def selection_settings(args, modalities: list[str]) -> dict:
+    """The settings that decide which rows are scored (stored in meta.json)."""
+    return {"modalities": list(modalities), "part": args.part, "variant": args.variant,
+            "batch_key": args.batch_key, "label_key": args.label_key,
+            "filters": parse_filter_specs(args.filter), "shared_labels": bool(args.shared_labels),
+            "match_labels": bool(getattr(args, "match_labels", False)),
+            "match_cap": getattr(args, "match_cap", None),
+            "per_modality": [] if getattr(args, "match_labels", False) else list(args.per_modality or []),
+            "seed": args.seed}
+
+
+def selection_changes(meta_path: Path, args, modalities: list[str]) -> list[str]:
+    """Row-selection settings that differ from a stored run's meta.json. A meta from before
+    an option existed counts as its default (e.g. ``match_labels`` false). No meta: none."""
+    if not meta_path.exists():
+        return []
+    old = json.loads(meta_path.read_text(encoding="utf-8"))
+    defaults = {"variant": None, "shared_labels": False, "match_labels": False, "match_cap": None,
+                "per_modality": [], "filters": {}}
+    new = selection_settings(args, modalities)
+    if new["match_labels"] and old.get("match_labels"):
+        old_pm = []  # ignored when matching
+    else:
+        old_pm = list(old.get("per_modality") or [])
+    changed = []
+    for key, value in new.items():
+        before = old_pm if key == "per_modality" else old.get(key, defaults.get(key))
+        if key == "modalities" and before is not None:
+            before = list(before)
+        if before != value:
+            changed.append(f"{key}: {before!r} -> {value!r}")
+    return changed
+
+
+def matched_rows(obs: pd.DataFrame, keep: np.ndarray, label_key: str, batch_key: str,
+                 modalities: list[str], cap: int | None = None, seed: int = 0):
+    """Per label, the same number of rows from every modality: ``n = min`` over the
+    modalities of the label's kept rows (at most ``cap``). A label missing from one
+    modality gets none. Seeded and in a fixed order (modalities as given, labels sorted),
+    so equal obs and seed give equal rows (``utils.sampling.match_label_rows``, shared with
+    the matched alignment UMAPs). Returns the boolean mask and ``{label: n}``."""
+    labels = obs[label_key].astype(object).where(obs[label_key].notna(), UNKNOWN_LABEL).astype(str).to_numpy()
+    batches = obs[batch_key].astype(str).to_numpy()
+    mask, matched = match_label_rows(labels, batches, keep, modalities, cap=cap, seed=seed)
+    in_run = np.isin(batches, list(modalities)) & np.asarray(keep, dtype=bool)
+    for line in describe_match(matched, set(labels[in_run]), cap):
+        print(line)
+    return mask, matched
+
+
 def select_rows(obs: pd.DataFrame, args, modalities: list[str], return_dropped: bool = False):
     """Filter, then (``--shared-labels``) labels every modality has, then a label-stratified
     subsample per batch value (modality); boolean mask (and the dropped labels)."""
@@ -223,6 +290,11 @@ def select_rows(obs: pd.DataFrame, args, modalities: list[str], return_dropped: 
         print(f"  --shared-labels: {len(dropped)} labels not in every modality dropped "
               f"({int((keep & out).sum())} rows), e.g. {dropped[:5]}")
         keep = keep & ~out
+    if getattr(args, "match_labels", False):
+        mask, matched = matched_rows(obs, keep, args.label_key, args.batch_key, modalities,
+                                     cap=getattr(args, "match_cap", None), seed=args.seed)
+        args._matched_per_label = matched  # for meta.json
+        return (mask, dropped) if return_dropped else mask
     quotas = parse_quotas(args.per_modality, modalities)
     chosen = set()
     for mod in modalities:
@@ -292,6 +364,13 @@ def main(argv: list[str] | None = None) -> Path:
     xla_flags = None if (args.dry_run or args.plot_only) else configure_xla(args.xla_autotune)
     if args.bio_only and args.shared_labels:
         sys.exit("Error: --shared-labels concerns batches; drop it with --bio-only")
+    if args.match_labels and args.bio_only:
+        sys.exit("Error: --match-labels balances modalities; drop it with --bio-only")
+    if args.match_labels and any(not s.strip().lower().endswith(("=all", "=none", "="))
+                                 for s in args.per_modality or []):
+        sys.exit("Error: --match-labels sets the rows per modality itself; drop --per-modality")
+    if args.match_cap is not None and not args.match_labels:
+        sys.exit("Error: --match-cap needs --match-labels")
     if args.bio_only and args.kbet:
         sys.exit("Error: --kbet is a batch-correction metric; drop it with --bio-only")
     if args.bio_only and args.pre_integrated:
@@ -310,6 +389,35 @@ def main(argv: list[str] | None = None) -> Path:
 
     print(f"scIB '{args.name}': {rows} on {modalities} ({args.part})"
           + (f", reference {args.pre_integrated}" if args.pre_integrated else ""))
+
+    # --no-recompute: a model that is already a row of this run's scib.csv keeps its metrics;
+    # only the others go through the Benchmarker. The aggregates, the min-max table and the
+    # figures are rebuilt over all rows (scib_plot.merge_results).
+    out_dir = layout.scib_dir(args.name)
+    stored, todo = None, rows
+    if not args.recompute and not args.dry_run and (out_dir / "scib.csv").exists():
+        from evaluate.integration.scib_plot import check_aggregates, read_results
+
+        stored = read_results(out_dir / "scib.csv")
+        try:
+            check_aggregates(stored)
+        except ValueError as exc:
+            sys.exit(f"Error: {exc}; rerun with --recompute")
+        changed = selection_changes(out_dir / "meta.json", args, modalities)
+        if changed:
+            # Other rows (e.g. matching switched on): stored metrics are not comparable.
+            print(f"[compute] every row: the stored scib.csv used another row selection ({changed}); "
+                  f"recomputing all models instead of merging")
+            stored = None
+    if stored is not None:
+        present = set(stored.index) - {"Metric Type"}
+        todo = [r for r in rows if r not in present]
+        for r in rows:
+            print(f"[skip] {r}: scIB metrics present in {out_dir / 'scib.csv'} (recompute false)"
+                  if r in present else f"[compute] {r}: not in {out_dir / 'scib.csv'}")
+        if not todo:
+            write_merged(out_dir, args, labels, stored, None, rows, models)
+            return out_dir
     obs, embs, hashes = load_models(layout, models, modalities, args.part, args.variant)
     for key in (args.batch_key, args.label_key):
         if key not in obs.columns:
@@ -326,8 +434,13 @@ def main(argv: list[str] | None = None) -> Path:
     if len(distinct) > 1:
         print("  [note] the models used different gene panels (expected across models)")
 
-    out_dir = layout.scib_dir(args.name)
     out_dir.mkdir(parents=True, exist_ok=True)
+    old_meta = (json.loads((out_dir / "meta.json").read_text(encoding="utf-8"))
+                if stored is not None and (out_dir / "meta.json").exists() else {})
+    if stored is not None and old_meta.get("n_rows") not in (None, int(len(obs))):
+        print(f"  [WARNING] the stored rows were scored on {old_meta['n_rows']} rows, the new ones on "
+              f"{len(obs)} (a model embedded other rows?): the merged table mixes two row sets; "
+              "rerun with --recompute to score every model on the same rows")
     table, summary = label_batch_report(obs, args.batch_key, args.label_key, args.min_label_cells,
                                         args.bio_only)
     table.to_csv(out_dir / "label_batch.csv")
@@ -337,8 +450,11 @@ def main(argv: list[str] | None = None) -> Path:
         "modalities": modalities, "batch_key": args.batch_key, "label_key": args.label_key,
         "filters": parse_filter_specs(args.filter), "per_modality": args.per_modality, "seed": args.seed,
         "shared_labels": args.shared_labels, "dropped_labels": dropped_labels,
+        "match_labels": args.match_labels, "match_cap": args.match_cap,
+        "matched_per_label": getattr(args, "_matched_per_label", None),
         "n_rows": int(len(obs)), "kbet": args.kbet, "leiden": args.leiden, "bio_only": args.bio_only,
         "panel_hashes": hashes, "xla_flags": xla_flags,
+        "computed": todo, "reused": [r for r in rows if r not in todo],
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"), **summary,
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -354,13 +470,40 @@ def main(argv: list[str] | None = None) -> Path:
     keep = mask.nonzero()[0]
     for m in models:
         adata.obsm[m] = embs[m][keep]
-    bm = run_benchmark(adata, args, rows, args.pre_integrated)
+    bm = run_benchmark(adata, args, todo, args.pre_integrated)
+    if stored is not None:
+        write_merged(out_dir, args, labels, stored, bm.get_results(min_max_scale=False, clean_names=True),
+                     rows, models)
+        return out_dir
     bm.get_results(min_max_scale=False, clean_names=True).to_csv(out_dir / "scib.csv")
     bm.get_results(min_max_scale=True, clean_names=True).to_csv(out_dir / "scib_minmax.csv")
     update_manifest(out_dir, figures=draw_figures(out_dir, args, labels))
     print(bm.get_results(min_max_scale=False, clean_names=True))
     print(f"wrote {out_dir}")
     return out_dir
+
+
+def write_merged(out_dir: Path, args, labels: dict[str, str], stored, new, rows: list[str],
+                 models: list[str]) -> None:
+    """scib.csv / scib_minmax.csv over ``rows`` from stored and new metrics, then the figures."""
+    from evaluate.integration.scib_plot import merge_results
+
+    try:
+        raw, scaled = merge_results(stored, new, rows)
+    except ValueError as exc:
+        sys.exit(f"Error: {exc}")
+    raw.to_csv(out_dir / "scib.csv")
+    scaled.to_csv(out_dir / "scib_minmax.csv")
+    meta_path = out_dir / "meta.json"
+    if new is None and meta_path.exists():  # nothing computed: keep the meta, update the rows
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta.update(models=rows, computed=[], reused=rows,
+                    updated=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    update_manifest(out_dir, models=models, rows=rows, row_labels=labels,
+                    figures=draw_figures(out_dir, args, labels))
+    print(raw)
+    print(f"wrote {out_dir}")
 
 
 if __name__ == "__main__":

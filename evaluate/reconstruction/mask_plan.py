@@ -210,6 +210,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--overwrite", action=argparse.BooleanOptionalAction, default=True,
                         help="Replace an existing plan of the same name (default); --no-overwrite refuses it")
+    from evaluate._recompute import add_recompute_arg
+
+    add_recompute_arg(parser)
     return parser
 
 
@@ -239,6 +242,10 @@ def main(argv: list[str] | None = None) -> Path:
         rows = part_file.read_text(encoding="utf-8").split()
         out = args.out or layout.mask_plan(label, args.split, args.part, args.name)
         plan_id = f"{label}:{args.split}:{args.part}:{args.name}"
+    from evaluate._recompute import skip_existing
+
+    if skip_existing(f"mask plan {plan_id}", [out], args.recompute):
+        return out
     if out.exists() and not args.overwrite:
         sys.exit(f"Error: {out} exists and --no-overwrite was given")
 

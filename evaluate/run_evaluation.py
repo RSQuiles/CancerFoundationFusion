@@ -106,6 +106,27 @@ SCRIPTS: dict[str, str] = {
     "embed_splits": "embed.embed_splits",
 }
 
+SCRIPT_MODULES = frozenset(SCRIPTS.values())
+# The global switch (evaluate/_recompute.py): every SCRIPTS module accepts it; it is dropped
+# for any other module, and the coordinator's --recompute / --no-recompute override it.
+RECOMPUTE_KEY = "recompute"
+
+
+def apply_recompute(runs: list["Run"], value: bool | None) -> None:
+    """Set ``recompute`` on every run of a SCRIPTS module (None = keep the config's)."""
+    if value is None:
+        return
+    for r in runs:
+        if r.module in SCRIPT_MODULES:
+            r.args = {k: v for k, v in r.args.items() if _norm(k) != RECOMPUTE_KEY}
+            r.args[RECOMPUTE_KEY] = value
+
+
+def run_recompute(r: "Run"):
+    """The run's recompute value (None = not set, the script's default: recompute)."""
+    return next((v for k, v in r.args.items() if _norm(k) == RECOMPUTE_KEY), None)
+
+
 # "definitions" is never read: it holds YAML anchors (model lists, labels) that the tasks
 # reference with aliases, so a list is written once (evaluate/configs/compare_models.yaml).
 TOP_KEYS = {"project_root", "shared", "environments", "default_environment", "tasks", "definitions"}
@@ -295,6 +316,8 @@ def build_runs(cfg: dict, envs: dict[str, Environment]) -> list[Run]:
                         merged.pop(next((m for m in merged if _norm(m) == _norm(k)), None), None)
                         merged[k] = v
                 merged = {k: v for k, v in merged.items() if _norm(k) not in drop}
+                if module not in SCRIPT_MODULES:   # only our scripts know the switch
+                    merged = {k: v for k, v in merged.items() if _norm(k) != RECOMPUTE_KEY}
                 clash = sorted(k for k in merged if _norm(k) in SECTIONS)
                 if clash and pass_as == "config":
                     raise ConfigError(f"{where}: key(s) {clash} are section names of evaluate/_cli.py "
@@ -471,7 +494,9 @@ def run_all(runs: list[Run], envs: dict[str, Environment], cwd: Path, logs_dir: 
         r.command = env.argv(r.module, script_args(r))
         r.log_path = logs_dir / f"{r.file_stem}.log"
         print(RULE)
-        print(f"==== [{r.index}/{total}] {r.title} | env: {r.environment}")
+        rc = run_recompute(r)
+        print(f"==== [{r.index}/{total}] {r.title} | env: {r.environment}"
+              + (f" | recompute={rc}" if rc is not None else ""))
         print(f"     module : {r.module}")
         print(f"     config : {r.config_path}")
         print(f"     log    : {r.log_path}")
@@ -521,7 +546,8 @@ def write_summary(path: Path, config: Path, runs: list[Run], started: datetime, 
         "dry_run": dry_run,
         "steps": [
             {"index": r.index, "task": r.task, "step": r.step, "label": r.label, "module": r.module,
-             "environment": r.environment, "pass_as": r.pass_as, "status": r.status,
+             "environment": r.environment, "pass_as": r.pass_as, "recompute": run_recompute(r),
+             "status": r.status,
              "returncode": r.returncode, "seconds": r.seconds, "config": str(r.config_path),
              "log": str(r.log_path) if r.log_path else None, "command": r.command}
             for r in runs
@@ -551,6 +577,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Check every step's arguments in its environment, then stop")
     p.add_argument("--continue-on-error", action="store_true",
                    help="Run the later steps after a failure")
+    p.add_argument("--recompute", action=argparse.BooleanOptionalAction, default=None,
+                   help="Override the config's 'recompute' for every step (--no-recompute skips "
+                        "per-model results already present; comparisons are always redone)")
     p.add_argument("--run-dir", type=Path, default=None,
                    help="Where configs, logs and summary.json go "
                         "(default: <root>/results/_eval_runs/<config stem>_<timestamp>; a temp dir with --dry-run)")
@@ -566,6 +595,7 @@ def main(argv: list[str] | None = None) -> int:
         _unknown(_mapping(cfg, str(args.config)), TOP_KEYS, str(args.config))
         envs = load_environments(cfg.get("environments"))
         runs = select_runs(build_runs(cfg, envs), args.only, args.skip, args.start)
+        apply_recompute(runs, args.recompute)
     except ConfigError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2

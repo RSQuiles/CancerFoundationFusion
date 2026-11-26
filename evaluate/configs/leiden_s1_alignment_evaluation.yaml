@@ -1,8 +1,12 @@
 # Evaluation of the alignment-loss ablation (experiments/configs/leiden_s1_alignment.json):
-# each alignment loss on its own and the InfoNCE form of the aggregation loss. Nine runs
+# each alignment loss on its own, the InfoNCE form of the aggregation loss, DAT, and the
+# combinations paired + aggregation (InfoNCE) + one class/marginal loss. Thirteen runs
 # warm-started from unified_baseline, 50k steps each, differing only in the alignment loss
 # they train on. align_combo (every loss together) is trained by the launch config but not
 # evaluated here: it trains the paired loss with the default form and weight.
+# Stage 2 (align_dat and the three combos) was added later: with recompute: false (shared)
+# the whole config reruns, skipping every result already present, so only the new models
+# are embedded, plotted, scored, reconstructed and probed; every comparison is rebuilt.
 # A seed-1 control (align_ctrl_s1) would be added to the model lists below (anchors runs,
 # all, scib_models, geneicl_models, row_labels).
 # The loss weights were calibrated (align_calib, checkpoints/align_calib/loss_balance.json):
@@ -21,6 +25,11 @@
 #                               cells but only logs the loss (loss_weight_agg 0)
 #   align_agg_infonce           the same batches, aggregation as InfoNCE (own cell mean vs the
 #                               batch's other pseudobulks' cell means)
+#   align_dat                   marginal, adversarial (bulk vs pseudobulk discriminator;
+#                               weight 10, the reversed gradient ramped in over 1000 steps)
+#   align_combo_cdd             paired (InfoNCE) + aggregation (InfoNCE) + CDD
+#   align_combo_contrastive     paired (InfoNCE) + aggregation (InfoNCE) + contrastive
+#   align_combo_dat             paired (InfoNCE) + aggregation (InfoNCE) + DAT
 # The parent, unified_baseline, is a row everywhere (its embeddings and reconstruction runs
 # come from leiden_s1_baselines_evaluation.yaml; embed_parent re-embeds it if needed).
 #
@@ -37,8 +46,8 @@
 #     align_agg_infonce (same batches: MSE vs InfoNCE aggregation);
 #   - the cost: bio conservation per modality (own panels), reconstruction with the
 #     expression decoder (gen) and from the CLS embedding alone (mvc), GeneICL.
-# Reconstruction line plots take at most 8 models, hence two comparisons per plan:
-# leiden_s1_alignment (parent, control, the 5 single-loss runs incl. both paired forms) and
+# Two reconstruction comparisons per plan: leiden_s1_alignment (parent, control, the
+# single-loss runs incl. both paired forms, DAT and the three combos) and
 # leiden_s1_alignment_agg (parent, control, the three aggregation runs).
 #
 # Prerequisite: curated tissue labels (map_archs4_tissue.sh --curate-only) before embed.
@@ -47,6 +56,11 @@ project_root: /cluster/work/boeva/rquiles/CancerFoundationFusion
 
 shared:
   root: /cluster/work/boeva/rquiles/unifiedFM_experiments
+  # false: a model's result already present at its usual location is skipped ([skip] in
+  # the log), so adding a model computes only that model; comparisons, summaries and
+  # cross-model figures are always redone. Not checked for staleness: after retraining a
+  # model, delete its results or run with --recompute (or set true here / per step).
+  recompute: false
 
 default_environment: container
 environments:
@@ -99,7 +113,8 @@ tasks:
         script: embed_splits
         foreach:
           model: &runs [align_ctrl, align_mmd, align_contrastive, align_cdd, align_paired,
-                        align_paired_mse, align_agg_ctrl, align_agg, align_agg_infonce]
+                        align_paired_mse, align_agg_ctrl, align_agg, align_agg_infonce,
+                        align_dat, align_combo_cdd, align_combo_contrastive, align_combo_dat]
         args:
           modalities: [sc, bulk, pseudobulk]
           parts: [test]
@@ -136,7 +151,8 @@ tasks:
         foreach: {modality: [bulk, pseudobulk]}
         args:
           models: &all [unified_baseline, align_ctrl, align_mmd, align_contrastive, align_cdd,
-                        align_paired, align_paired_mse, align_agg_ctrl, align_agg, align_agg_infonce]
+                        align_paired, align_paired_mse, align_agg_ctrl, align_agg, align_agg_infonce,
+                        align_dat, align_combo_cdd, align_combo_contrastive, align_combo_dat]
           variant: own_panel
           subsample: 20000
           color: [tissue_general]
@@ -150,6 +166,21 @@ tasks:
           cell_means: true
           link_col: pseudobulk_id
           title: "{model}: modality alignment ({counts})"
+      # Each modality pair and all three, matched: per tissue the same number of rows from
+      # every modality (the smallest count; curated tissues only, seed 0), the rows the
+      # matched scIB runs score -> alignment_test_<mods>_matched_cellxgene-archs4.png.
+      # The modality order of each set is the scIB run's (it fixes the seeded draw).
+      alignment_matched:
+        script: alignment
+        foreach:
+          modalities: [[bulk, pseudobulk], [sc, pseudobulk], [sc, bulk], [sc, pseudobulk, bulk]]
+        args:
+          models: *all
+          match_labels: true
+          filter: ["tissue_label_source=cellxgene,archs4"]
+          seed: 0
+          color: [modality, tissue_general]
+          title: "{model}: {modalities}, matched per tissue ({counts})"
       alignment_pairs:
         script: alignment
         args:
@@ -192,6 +223,10 @@ tasks:
         align_agg_ctrl: "agg batches, control"
         align_agg: "+ aggregation (MSE)"
         align_agg_infonce: "+ aggregation (InfoNCE)"
+        align_dat: "+ DAT"
+        align_combo_cdd: "paired + agg + CDD"
+        align_combo_contrastive: "paired + agg + contrastive"
+        align_combo_dat: "paired + agg + DAT"
         pca_leiden_s1: "PCA"
     steps:
       scib_bulk_pb:             # the main alignment table: batch = modality, label = tissue
@@ -201,12 +236,15 @@ tasks:
           name: leiden_s1_alignment_bulk_pb
           models: &scib_models [unified_baseline, align_ctrl, align_mmd, align_contrastive, align_cdd,
                                 align_paired, align_paired_mse, align_agg_ctrl, align_agg, align_agg_infonce,
+                                align_dat, align_combo_cdd, align_combo_contrastive, align_combo_dat,
                                 pca_leiden_s1]
           pre_integrated: pca_leiden_s1
           modalities: [bulk, pseudobulk]
-          per_modality: ["bulk=all", "pseudobulk=all"]
           batch_key: modality
           shared_labels: true       # as in the baselines config
+          # per tissue, as many bulk rows as pseudobulk rows (the smaller count), drawn with
+          # the fixed seed: bulk is ~9x pseudobulk and would fill every neighborhood otherwise
+          match_labels: true
       scib_sc_pb:               # the agg question (and side effects of the bulk losses)
         environment: host
         script: scib
@@ -215,7 +253,7 @@ tasks:
           models: *scib_models
           pre_integrated: pca_leiden_s1
           modalities: [sc, pseudobulk]
-          per_modality: ["sc=5000", "pseudobulk=all"]
+          match_labels: true
           batch_key: modality
           shared_labels: true
       scib_all:
@@ -225,7 +263,6 @@ tasks:
           <<: *scib_sc
           name: leiden_s1_alignment_all
           modalities: [sc, pseudobulk, bulk]
-          per_modality: ["sc=5000", "pseudobulk=all", "bulk=all"]
       # Cost of alignment inside each modality: bio conservation on own panels.
       scib_sc_tissue:
         environment: host
@@ -284,16 +321,17 @@ tasks:
         args:
           <<: *cf_run
           head: mvc
-      # Per plan, four comparisons (line plots take at most 8 models):
-      #   main (parent, control, MMD, contrastive, CDD, paired InfoNCE and MSE)
-      #   and agg (parent, control, agg_ctrl, agg MSE and InfoNCE), each for gen and mvc.
+      # Per plan, four comparisons: main (parent, control, MMD, contrastive, CDD, paired
+      #   InfoNCE and MSE, DAT, the three combos) and agg (parent, control, agg_ctrl, agg MSE
+      #   and InfoNCE), each for gen and mvc.
       compare:                  # -> results/reconstruction/_compare/<plan>/<name>/
         environment: host
         foreach: {plan: *plans}
         args: &cmp_main
           name: leiden_s1_alignment
           models: [unified_baseline, align_ctrl, align_mmd, align_contrastive, align_cdd,
-                   align_paired, align_paired_mse]
+                   align_paired, align_paired_mse, align_dat, align_combo_cdd,
+                   align_combo_contrastive, align_combo_dat]
           baselines: true
       compare_agg:
         script: compare
@@ -310,7 +348,8 @@ tasks:
         args: &cmp_main_mvc
           name: leiden_s1_alignment_mvc
           models: [unified_baseline@mvc, align_ctrl@mvc, align_mmd@mvc, align_contrastive@mvc,
-                   align_cdd@mvc, align_paired@mvc, align_paired_mse@mvc]
+                   align_cdd@mvc, align_paired@mvc, align_paired_mse@mvc, align_dat@mvc,
+                   align_combo_cdd@mvc, align_combo_contrastive@mvc, align_combo_dat@mvc]
           baselines: true
       compare_agg_mvc:
         script: compare
@@ -366,7 +405,8 @@ tasks:
         args:
           models: &geneicl_models [unified_baseline, align_ctrl, align_mmd, align_contrastive, align_cdd,
                                    align_paired, align_paired_mse, align_agg_ctrl, align_agg,
-                                   align_agg_infonce, pca]
+                                   align_agg_infonce, align_dat, align_combo_cdd,
+                                   align_combo_contrastive, align_combo_dat, pca]
           reference: [scfoundation, en]
           name: leiden_s1_alignment
       geneicl_plot:

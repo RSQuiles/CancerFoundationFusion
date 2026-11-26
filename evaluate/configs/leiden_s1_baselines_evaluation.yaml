@@ -43,6 +43,11 @@ project_root: /cluster/work/boeva/rquiles/CancerFoundationFusion
 
 shared:
   root: /cluster/work/boeva/rquiles/unifiedFM_experiments
+  # false: a model's result already present at its usual location is skipped ([skip] in
+  # the log), so adding a model computes only that model; comparisons, summaries and
+  # cross-model figures are always redone. Not checked for staleness: after retraining a
+  # model, delete its results or run with --recompute (or set true here / per step).
+  recompute: false
 
 default_environment: container
 environments:
@@ -196,6 +201,28 @@ tasks:
           cell_means: true
           link_col: pseudobulk_id
           title: "{model}: modality alignment ({counts})"
+      # Each modality pair and all three, matched: per tissue the same number of rows from
+      # every modality (the smallest count; curated tissues only, seed 0), the rows the
+      # matched scIB runs score -> alignment_test_<mods>_matched_cellxgene-archs4.png.
+      # The modality order of each set is the scIB run's (it fixes the seeded draw).
+      alignment_matched:
+        script: alignment
+        foreach:
+          modalities: [[sc, pseudobulk], [sc, bulk], [sc, pseudobulk, bulk]]
+        args: &align_matched
+          models: *align_models
+          match_labels: true
+          filter: ["tissue_label_source=cellxgene,archs4"]
+          seed: 0
+          color: [modality, tissue_general]
+          title: "{model}: {modalities}, matched per tissue ({counts})"
+      # Bulk vs pseudobulk also for BulkFormer (no cells), as in scib_bulk_pb.
+      alignment_matched_bulk_pb:
+        script: alignment
+        args:
+          <<: *align_matched
+          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca, *bf_emb]
+          modalities: [bulk, pseudobulk]
       # Paired rows only, every one of them: per pair the mean of its cells (star) ->
       # pseudobulk -> bulk -> alignment_test_paired.png
       alignment_pairs:
@@ -255,11 +282,13 @@ tasks:
           models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *bf_emb, *pca]
           pre_integrated: *pca
           modalities: [bulk, pseudobulk]
-          per_modality: ["bulk=all", "pseudobulk=all"]
           batch_key: modality
           shared_labels: true
-      # Single cells vs each other modality, and all three. Same keys as above; 5000 cells
-      # (label-stratified) so the cells do not swamp the batch metrics. BulkFormer is left
+          match_labels: true
+      # match_labels: per tissue, the same number of rows from every modality of the run
+      # (the smallest count, seeded), so no modality fills the kNN neighborhoods and the
+      # per-tissue silhouettes (bulk is ~9x pseudobulk; cells outnumber both).
+      # Single cells vs each other modality, and all three. Same keys as above. BulkFormer is left
       # out: it has no cells, and scIB keeps only the rows every model embedded.
       scib_sc_pb:
         environment: host
@@ -269,7 +298,7 @@ tasks:
           models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca]
           pre_integrated: *pca
           modalities: [sc, pseudobulk]
-          per_modality: ["sc=5000", "pseudobulk=all"]
+          match_labels: true
           batch_key: modality
           shared_labels: true
       scib_sc_bulk:
@@ -279,7 +308,6 @@ tasks:
           <<: *scib_sc
           name: leiden_s1_sc_bulk
           modalities: [sc, bulk]
-          per_modality: ["sc=5000", "bulk=all"]
       scib_all:
         environment: host
         script: scib
@@ -287,7 +315,6 @@ tasks:
           <<: *scib_sc
           name: leiden_s1_all
           modalities: [sc, pseudobulk, bulk]
-          per_modality: ["sc=5000", "pseudobulk=all", "bulk=all"]
       # Bio conservation per modality, own panels (one modality -> bio_only). PCA is a row.
       scib_sc_tissue:
         environment: host
@@ -437,8 +464,9 @@ tasks:
 
   # ---- 5. GeneICL benchmark (bulk downstream tasks) --------------------------------------
   # Final checkpoints. bulkformer's probe results are reused from earlier evaluations;
-  # Everything is recomputed: embed_suite overwrites existing files (overwrite: false
-  # skips them) and run_probe recomputes every fold (resume: true keeps finished ones).
+  # With recompute false (shared), a model with embeddings / probe results is skipped;
+  # with recompute true, embed_suite overwrites existing files (overwrite: false skips them)
+  # and run_probe recomputes every fold (resume: true keeps finished ones).
   geneicl:
     shared:
       geneicl_repo: /cluster/work/boeva/rquiles/Codebases/GeneICL

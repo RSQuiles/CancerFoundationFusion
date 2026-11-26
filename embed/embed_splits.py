@@ -131,6 +131,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_normalization_args(parser)
     add_input_mode_args(parser)
     add_model_run_args(parser)
+    from evaluate._recompute import add_recompute_arg
+
+    add_recompute_arg(parser)
     return parser
 
 
@@ -362,6 +365,14 @@ def main(argv: list[str] | None = None) -> None:
     model_name = args.model or args.name or args.embedder
     labels = list(dict.fromkeys(canonical_modality(m) for m in args.modalities))
 
+    from evaluate._recompute import skip_existing
+
+    out_dir = layout.embedding_dir(model_name, args.variant)
+    expected = [layout.embedding_file(model_name, m, part, args.variant) for m in labels for part in args.parts]
+    what = f"embeddings {model_name}" + (f"/{args.variant}" if args.variant else "") + f" {labels} {args.parts}"
+    if skip_existing(what, [*expected, out_dir / "embed.json"], args.recompute):
+        return
+
     print(f"Collecting rows for {labels} from split '{args.split}'")
     linked, linked_info = ({}, None)
     if args.keep_linked and "test" in args.parts:
@@ -401,7 +412,6 @@ def main(argv: list[str] | None = None) -> None:
         "variant": args.variant,
     })
 
-    out_dir = layout.embedding_dir(model_name, args.variant)
     print(f"Writing embeddings for '{model_name}' to {out_dir}")
     # One file per piece, from the piece's own obs: the pooled obs keeps only the columns
     # every modality has, which drops e.g. pseudobulk_id (bulk lacks it).

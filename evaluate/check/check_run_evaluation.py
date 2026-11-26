@@ -184,6 +184,41 @@ def check_merge_and_expand() -> None:
           cmd[:2] == ["bash", "-c"] and cmd[2].endswith("exec python -u -m m --config 'a b.yaml'"))
 
 
+def check_recompute(tmp: Path) -> None:
+    print("\n-- recompute switch --")
+    cfg = {
+        "shared": {"root": "/r", "recompute": False},
+        "tasks": {"t": {"steps": {
+            "umap": {},
+            "other": {"module": "some.module", "pass_as": "config"},
+            "forced": {"script": "scib", "args": {"recompute": True}},
+        }}},
+    }
+    runs = R.build_runs(cfg, R.load_environments({}))
+    by = {r.step: r for r in runs}
+    check("shared recompute reaches a SCRIPTS step", by["umap"].args.get("recompute") is False)
+    check("recompute dropped for a module outside SCRIPTS", "recompute" not in by["other"].args)
+    check("a step can override it", by["forced"].args.get("recompute") is True)
+    R.apply_recompute(runs, True)
+    check("--recompute overrides every SCRIPTS step",
+          by["umap"].args["recompute"] is True and "recompute" not in by["other"].args)
+    R.apply_recompute(runs, None)
+    check("no CLI value keeps the config's", by["umap"].args["recompute"] is True)
+
+    from evaluate._recompute import skip_existing
+
+    f = tmp / "present.txt"
+    f.write_text("x", encoding="utf-8")
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        a = skip_existing("x", [f], recompute=False)
+        b = skip_existing("x", [f, tmp / "missing.txt"], recompute=False)
+        c = skip_existing("x", [f], recompute=True)
+    check("skip_existing: present -> skip, missing -> compute, recompute -> compute",
+          a is True and b is False and c is False and "[skip]" in buf.getvalue()
+          and "[compute]" in buf.getvalue())
+
+
 def check_execution(tmp: Path) -> None:
     print("\n-- execution --")
     _write_fakes(tmp)
@@ -262,6 +297,7 @@ def main() -> int:
     check_merge_and_expand()
     check_example()
     with tempfile.TemporaryDirectory() as tmp:
+        check_recompute(Path(tmp))
         check_execution(Path(tmp))
     print(f"\n{'All checks passed.' if not FAILURES else f'{len(FAILURES)} check(s) FAILED: {FAILURES}'}")
     return 1 if FAILURES else 0

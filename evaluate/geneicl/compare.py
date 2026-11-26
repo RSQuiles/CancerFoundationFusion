@@ -60,6 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="GeneICL result tags shown alongside (e.g. scfoundation en geneicl_trm_s0)")
     parser.add_argument("--name", default=None,
                         help="Name of this comparison: results/geneicl_<suite>/_compare/<name>/ (default: default)")
+    from evaluate._recompute import add_recompute_arg
+
+    add_recompute_arg(parser, comparison=True)
     return parser
 
 
@@ -183,6 +186,9 @@ def main(argv: list[str] | None = None) -> pd.DataFrame:
     from experiments.layout import ExperimentLayout
 
     args = parse_with_config(build_parser(), "geneicl_compare", argv)
+    from evaluate._recompute import note_comparison
+
+    note_comparison(args)
     if not (args.models or args.reference):
         sys.exit("Error: give --models and/or --reference")
     layout = ExperimentLayout.from_root(args.root)

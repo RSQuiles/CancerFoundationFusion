@@ -28,6 +28,22 @@ DEFAULT_HIGHLIGHT_TOP = 2
 # Categorical slots in fixed order (dataviz reference palette, light mode): models in a
 # line or box plot take them by position, never cycled; baselines use MUTED.
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
+# Further distinct colors for line plots with more than len(SERIES) models (never grey).
+EXTRA_SERIES = ["#0d366b", "#8a3b12", "#00756b", "#7a5a00", "#a3245e", "#5b8a00", "#3b2a8f", "#8f1d1b",
+                "#56a5d8", "#f2a07b", "#6fcfae", "#c9b458"]
+
+
+def series_colors(n: int) -> list[str]:
+    """``n`` distinct categorical colors: SERIES first, then EXTRA_SERIES, then evenly spaced
+    hues; never grey (MUTED is kept for baselines)."""
+    colors = (SERIES + EXTRA_SERIES)[:n]
+    if n > len(colors):
+        import colorsys
+
+        k = n - len(colors)
+        colors += ["#%02x%02x%02x" % tuple(int(255 * c) for c in colorsys.hsv_to_rgb(i / k, 0.7, 0.75))
+                   for i in range(k)]
+    return colors
 
 
 def pyplot():

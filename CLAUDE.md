@@ -747,6 +747,33 @@ then their steps). The per-script configs and `.sh` wrappers stay for standalone
   - Every output has its own `name` (`baselines_vs_alignment*`). A new figure is a new
     step with another name and model list; UMAP and alignment templates are included,
     disabled.
+- **`recompute`** (`evaluate/_recompute.py`; a `shared` key, `--recompute/--no-recompute` on
+  the coordinator overrides it; dropped for `module:` steps outside `SCRIPTS`). With
+  `false`, a per-model result **present at its usual location** is skipped (`[skip]` in the
+  log, `[compute]` for what is missing); there is no staleness check, so results made
+  before the switch count and a retrained model needs `--recompute` or its results deleted.
+  Comparisons are always redone. Every `SCRIPTS` module accepts it; the scripts default to
+  `true` (standalone runs as before). What "present" is per script:
+  - `embed_splits`: every file it would write plus `embed.json` (the whole call is skipped);
+  - `plot_umap` / `plot_pca` / `plot_alignment`: each model's `.png`;
+  - `run_reconstruction`: `metrics.json` + `entries.parquet`; `mask_plan`: the plan file;
+  - `geneicl_embed`: each dataset's `.npz` (no identity refusal); `geneicl_probe`:
+    `run.json` + the probe CSVs;
+  - `integration`: a model already in the analysis's own `links.csv` keeps its rows (manifest
+    `links_reused`); the summary, figure and scIB columns are rebuilt;
+  - `scib_benchmark`: a model already a row of the run's `scib.csv` keeps its raw metrics;
+    only the others go through the Benchmarker (on the same row selection, which still
+    loads every model), then `scib_plot.merge_results` rebuilds the aggregates (mean per
+    metric type, Total = 0.4 batch + 0.6 bio), `scib_minmax.csv` and the figures over all
+    rows. The stored aggregates are re-derived first (`check_aggregates`, else stop), and a
+    changed row count (`meta.json` `n_rows`) is warned about. `meta.json` lists `computed`
+    and `reused`.
+  - comparison scripts (`compare`, `reconstruction_plot`, `geneicl_compare`,
+    `geneicl_plot`) accept the key and say they are always redone.
+
+  The leiden_s1 configs set `recompute: false`, so adding a model to their lists computes
+  only that model. `python -m evaluate.check.check_recompute` self-checks the helpers and
+  the scIB merge offline.
 - `python -m evaluate.check.check_run_evaluation` self-checks it offline (fake steps).
 
 ### Representation figures (new `evaluate/`)
@@ -783,6 +810,17 @@ plus obs. `plot_alignment` fits ONE UMAP over all modalities and refuses files w
   - **Output:** `alignment_<part>_pb_cells[_<tag>].{png,parquet}` plus `.selection.json`.
   - **Refused** when a file lacks the link column (run `embed.restore_obs`) or when no
     tissue qualifies.
+- **Matched modalities** (`plot_alignment --match-labels [--match-key COL] [--match-cap N]`):
+  per label (default the first `--stratify-by`, `tissue_general`), the same number of rows
+  from every modality, the smallest count, drawn with `--seed` by
+  `utils.sampling.match_label_rows`. The matched scIB runs use that function in the same
+  pooling order, so with the same `--filter`, modalities (in the same order) and seed the
+  figure shows the rows its scIB table scored (up to the few rows scIB drops because not
+  every model embedded them). It replaces the per-modality subsample (`--per-modality`,
+  `--stratify-mode`, `--unknown-frac`, `--cap-labels` are not used) and is refused with
+  `--paired-only` / `--pb-cells`. Output `alignment_<part>_<mods>_matched[_<filter>]`. Both
+  leiden_s1 evaluations have a step `alignment_matched` (pairs and all three, curated
+  tissues; the baselines one adds `alignment_matched_bulk_pb` with BulkFormer).
 - **PCA** (`plot_pca.py`, `plot_pca.sh`, config block `pca:`): the same inputs, filter,
   subsample, colours, titles and labels as `plot_umap`, but a PCA (centred, not scaled)
   fitted on the plotted rows, drawing `--components` (default PC1 vs PC2) with the
@@ -908,9 +946,11 @@ python -m evaluate.reconstruction.plot_reconstruction --plan bulk:leiden_s0:test
   `space_free_table` (n/a for baseline rows). A gain near 0 means the row ranks a sample's
   masked genes no better than each gene's usual level: it learned gene identity, not the
   sample.
-- **Line plots take at most 8 rows**, the palette size. To compare more (e.g. 5 models ×
-  2 heads), draw the tables for all rows and the line plots per head; see
-  `evaluate/configs/sc_pretrain_evaluation.yaml`.
+- **Line plots take any number of rows**: the first 8 models get the `SERIES` palette, the
+  next ones `EXTRA_SERIES` and then evenly spaced hues (`_plot_style.series_colors`), never
+  grey (grey marks the baselines). Past ~10 curves a plot gets hard to read, so splitting
+  (tables for all rows, line plots per head, as `evaluate/configs/sc_pretrain_evaluation.yaml`
+  does) is still an option, not a requirement.
 - **Metrics** (`metrics.py`), each also for two baselines on the same entries (`gene_mean`
   over the plan's unmasked samples, `sample_mean` over the sample's context):
   - **native:** mse and mae (also split by zero / non-zero target); for bins, exact and
@@ -979,6 +1019,19 @@ python -m evaluate.integration.scib_benchmark --name tissue_s0_test --plot-only 
   kBET skip such labels anyway. Isolated labels is off then, since every label would be
   "isolated". `meta.json` lists `dropped_labels`. The leiden_s1 batch runs use it; the
   bio-only runs keep every tissue.
+- **Matched modalities** (`--match-labels`, config `match_labels: true`; `--match-cap N`):
+  after `--filter` and `--shared-labels`, each label gets the same number of rows from
+  every modality of the run: the smallest count (at most N), drawn with `--seed`
+  (`scib_benchmark.matched_rows`). Otherwise the larger modality (bulk is about 9x
+  pseudobulk in leiden_s1) fills the kNN neighborhoods and per-label silhouettes, and iLISI,
+  graph connectivity, kBET, PCR and BRAS mostly describe it. It replaces `--per-modality`
+  (a quota with it is refused) and is refused with `--bio-only`. `meta.json` records
+  `matched_per_label`. Every leiden_s1 cross-modality run (`*_bulk_pb`, `*_sc_pb`,
+  `*_sc_bulk`, `*_all`) uses it; the bio-only runs do not.
+- **Stored results and the row selection:** with `recompute: false`, a stored `scib.csv`
+  whose `meta.json` used another row selection (modalities, part, variant, keys, filter,
+  shared labels, matching, quotas, seed; `selection_changes`) is not merged: every model is
+  recomputed, since the stored rows were scored on other rows.
 - **Bio conservation only** (`--bio-only`, config `bio_only: true`): the batch-correction
   group is off (`batch_correction_metrics=None`), so a single modality is accepted
   (several are pooled); without the flag one modality is refused. The table has a "Bio

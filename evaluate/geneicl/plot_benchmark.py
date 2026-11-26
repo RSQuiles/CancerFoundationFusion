@@ -106,6 +106,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--formats", nargs="+", default=["png", "pdf"], help="Figure file formats")
     parser.add_argument("--dpi", type=int, default=200)
     parser.add_argument("--list", action="store_true", help="Print the available models and plots, then exit")
+    from evaluate._recompute import add_recompute_arg
+
+    add_recompute_arg(parser, comparison=True)
     return parser
 
 
@@ -237,6 +240,9 @@ def main(argv: list[str] | None = None) -> Path | None:
     from experiments.layout import ASSESSMENT_MANIFEST, ExperimentLayout
 
     args = parse_with_config(build_parser(), "geneicl_plot", argv)
+    from evaluate._recompute import note_comparison
+
+    note_comparison(args)
     if not args.name and not args.list:
         sys.exit("Error: give --name (the comparison's folder under results/geneicl_<suite>/_plots/)")
     layout = ExperimentLayout.from_root(args.root)

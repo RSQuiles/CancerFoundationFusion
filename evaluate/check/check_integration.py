@@ -274,6 +274,41 @@ def main() -> None:
               and (obs[mask]["modality"] == "bulk").sum() == 40)
         args.shared_labels = False
 
+        margs = scib_benchmark.build_parser().parse_args(["--models", "m1", "--name", "x", "--match-labels"])
+        mmask = scib_benchmark.select_rows(obs, margs, ["bulk", "pseudobulk"])
+        counts = pd.crosstab(obs[mmask]["tissue_general"], obs[mmask]["modality"])
+        full = pd.crosstab(obs["tissue_general"], obs["modality"])
+        check("--match-labels: equal rows per tissue in both modalities, the smaller count",
+              (counts["bulk"] == counts["pseudobulk"]).all()
+              and all(counts.loc[t, "bulk"] == full.loc[t].min() for t in counts.index))
+        check("--match-labels: a tissue one modality lacks gets no row", "skin" not in counts.index)
+        check("--match-labels: same seed, same rows",
+              (scib_benchmark.select_rows(obs, margs, ["bulk", "pseudobulk"]) == mmask).all())
+        margs.match_cap = 5
+        capped = pd.crosstab(obs[scib_benchmark.select_rows(obs, margs, ["bulk", "pseudobulk"])]["tissue_general"],
+                             obs["modality"])
+        check("--match-cap bounds each tissue and modality", int(capped.to_numpy().max()) <= 5)
+        old_meta = Path(tmp) / "meta_old.json"
+        old_meta.write_text(json.dumps({"modalities": ["bulk", "pseudobulk"], "part": "test", "batch_key": "modality",
+                                        "label_key": "tissue_general", "filters": {}, "per_modality": [],
+                                        "shared_labels": False, "seed": 0}), encoding="utf-8")
+        margs.match_cap = None
+        changed = scib_benchmark.selection_changes(old_meta, margs, ["bulk", "pseudobulk"])
+        check("a stored run without matching counts as another row selection",
+              any(c.startswith("match_labels") for c in changed))
+        nargs = scib_benchmark.build_parser().parse_args(["--models", "m1", "--name", "x"])
+        check("an unchanged selection is not flagged",
+              scib_benchmark.selection_changes(old_meta, nargs, ["bulk", "pseudobulk"]) == [])
+        refused = scib_benchmark.build_parser().parse_args(
+            ["--models", "m1", "--name", "x", "--match-labels", "--per-modality", "bulk=40"])
+        try:
+            scib_benchmark.main(["--models", "m1", "--name", "x", "--match-labels", "--per-modality", "bulk=40",
+                                 "--root", tmp, "--dry-run"])
+            ok = False
+        except SystemExit as exc:
+            ok = "per-modality" in str(exc)
+        check("--match-labels with a --per-modality quota is refused", ok and refused.match_labels)
+
         _, summary = scib_benchmark.label_batch_report(picked, "modality", "tissue_general", 10)
         check("pre-flight: skin is bulk-only, so 2 of 3 labels usable",
               summary["n_labels"] == 3 and summary["n_labels_usable"] == 2)

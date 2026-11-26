@@ -32,7 +32,14 @@ panel separates modalities by construction.
         --per-modality sc=5000 bulk=all pseudobulk=all --stratify-by tissue_general \\
         --filter tissue_general=lung --connect-pairs --color modality tissue_general paired
 
-Writes ``results/representation/_alignment/<model>/alignment_<part>[_paired|_pb_cells][_<tag>].{png,parquet}``
+``--match-labels`` (``--match-key``, ``--match-cap``) replaces the per-modality subsample:
+per label, the same number of rows from every modality (the smallest count), drawn by
+``utils.sampling.match_label_rows`` with ``--seed``. It is what the matched scIB runs do, in
+the same pooling order, so with the same ``--filter``, modalities and seed the UMAP shows
+the rows its scIB table scored. No modality outnumbers another in any tissue, so the map is
+not shaped by the larger one.
+
+Writes ``results/representation/_alignment/<model>/alignment_<part>[_paired|_pb_cells|_<mods>_matched][_<tag>].{png,parquet}``
 (plus ``.selection.json`` with ``--pb-cells``).
 """
 
@@ -54,7 +61,7 @@ from experiments.layout import ExperimentLayout, canonical_modality  # noqa: E40
 from utils.sampling import filter_mask, filter_tag, parse_filter_specs, parse_label_caps, STRATIFY_MODES, stratified_subsample  # noqa: E402
 from evaluate.io import EMB_KEY, load_embedding, panel_hashes  # noqa: E402
 from evaluate.modalities import MOD_BULK, MOD_CELL_MEAN, MOD_PB, MOD_SC, MODALITIES, PAIRED_COL  # noqa: E402
-from utils.sampling import link_keys  # noqa: E402
+from utils.sampling import describe_match, link_keys, match_label_rows  # noqa: E402
 from evaluate.representation.render import compute_umap, draw_umap_panels, save_coords, save_figure  # noqa: E402
 
 MODALITY_COL = "modality"
@@ -111,6 +118,18 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Cells (in the sc file, after --filter) a pseudobulk needs to be chosen")
     pb.add_argument("--pb-label-key", default="tissue_general",
                     help="obs column with the tissue the pseudobulks are grouped by")
+    match = parser.add_argument_group(
+        "matched modalities (--match-labels)",
+        "Per label, the same number of rows from every modality (the smallest count), drawn "
+        "with --seed by utils.sampling.match_label_rows, the function and order the matched "
+        "scIB runs use: with the same --filter and seed, the figure shows the rows its scIB "
+        "table scored. Replaces the per-modality subsample (--per-modality, --stratify-mode, "
+        "--unknown-frac, --cap-labels are not used).")
+    match.add_argument("--match-labels", action="store_true", help="This mode")
+    match.add_argument("--match-key", default=None,
+                       help="obs column matched on (default: the first --stratify-by column)")
+    match.add_argument("--match-cap", type=int, default=None, metavar="N",
+                       help="At most N rows per label and modality")
     parser.add_argument("--color", nargs="+", default=None,
                         help="obs columns to colour by (default: modality tissue_general paired; "
                              "with --paired-only: paired)")
@@ -131,6 +150,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-dist", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dpi", type=int, default=200)
+    from evaluate._recompute import add_recompute_arg
+
+    add_recompute_arg(parser)
     return parser
 
 
@@ -314,6 +336,43 @@ def collect_pb_cells(layout: ExperimentLayout, model: str, args, filters) -> tup
     return combined, hashes, sel
 
 
+UNKNOWN_LABEL = "unknown"
+
+
+def match_key(args) -> str:
+    """The obs column --match-labels matches on."""
+    if args.match_key:
+        return args.match_key
+    if not args.stratify_by:
+        raise SystemExit("Error: --match-labels needs --match-key or a --stratify-by column")
+    return args.stratify_by[0]
+
+
+def matched_selection(loaded: dict, key: str, cap: int | None, seed: int) -> dict[str, np.ndarray]:
+    """Per modality, the boolean rows ``match_label_rows`` keeps over the pooled modalities.
+
+    The pieces are pooled in ``loaded``'s order (the ``--modalities`` order) with their rows
+    in file order, the way scib_benchmark pools them, so equal rows and seed give the rows
+    the matched scIB run scores. A missing label counts as ``unknown``, as in scIB.
+    """
+    order = list(loaded)
+    for label, adata in loaded.items():
+        if key not in adata.obs.columns:
+            raise SystemExit(f"Error: --match-labels: {label} has no '{key}' column")
+    labels = np.concatenate([
+        a.obs[key].astype(object).where(a.obs[key].notna(), UNKNOWN_LABEL).astype(str).to_numpy()
+        for a in loaded.values()])
+    batches = np.concatenate([np.full(a.n_obs, label, dtype=object) for label, a in loaded.items()])
+    mask, matched = match_label_rows(labels, batches, np.ones(len(labels), bool), order, cap=cap, seed=seed)
+    for line in describe_match(matched, set(labels), cap):
+        print(line)
+    out, start = {}, 0
+    for label, adata in loaded.items():
+        out[label] = mask[start:start + adata.n_obs]
+        start += adata.n_obs
+    return out
+
+
 def collect(layout: ExperimentLayout, model: str, args, filters) -> tuple:
     import anndata as ad
 
@@ -330,7 +389,7 @@ def collect(layout: ExperimentLayout, model: str, args, filters) -> tuple:
     if None in hashes.values():
         print(f"  [warn] no panel hash recorded for some files: {hashes}")
 
-    pieces, extra = [], []
+    loaded, extra = {}, []
     for label in labels:
         try:
             adata = load_embedding(layout, model, label, args.part, args.variant)
@@ -347,14 +406,26 @@ def collect(layout: ExperimentLayout, model: str, args, filters) -> tuple:
                                    [*args.color, args.paired_col, *args.stratify_by])
             if means is not None:
                 extra.append(means)
-        strata = [c for c in args.stratify_by if c in adata.obs.columns]
-        keep = stratified_subsample(adata.obs, quotas[label], strata, args.min_per_stratum, args.seed,
-                                    mode=args.stratify_mode, unknown_frac=args.unknown_frac,
-                                    caps=parse_label_caps(args.cap_labels))
-        adata = adata[adata.obs_names.isin(keep)].copy()
-        print(f"  {label}: {adata.n_obs} rows")
-        if adata.n_obs:
-            pieces.append(adata)
+        loaded[label] = adata
+
+    pieces = []
+    if args.match_labels:
+        picked = matched_selection(loaded, match_key(args), args.match_cap, args.seed)
+        for label, adata in loaded.items():
+            adata = adata[picked[label]].copy()
+            print(f"  {label}: {adata.n_obs} rows")
+            if adata.n_obs:
+                pieces.append(adata)
+    else:
+        for label, adata in loaded.items():
+            strata = [c for c in args.stratify_by if c in adata.obs.columns]
+            keep = stratified_subsample(adata.obs, quotas[label], strata, args.min_per_stratum, args.seed,
+                                        mode=args.stratify_mode, unknown_frac=args.unknown_frac,
+                                        caps=parse_label_caps(args.cap_labels))
+            adata = adata[adata.obs_names.isin(keep)].copy()
+            print(f"  {label}: {adata.n_obs} rows")
+            if adata.n_obs:
+                pieces.append(adata)
     if len(pieces) < 2:
         raise SystemExit(f"[{model}] fewer than two modalities left to align")
     combined = ad.concat(pieces + extra, join="outer", merge="same", label=None)
@@ -362,10 +433,33 @@ def collect(layout: ExperimentLayout, model: str, args, filters) -> tuple:
     return combined, hashes
 
 
+def output_suffix(args, tag: str) -> str:
+    """``alignment_<part><suffix>``: ``_paired``, ``_pb_cells`` or, with --match-labels,
+    ``_<modalities>_matched`` (e.g. ``_bulk-pseudobulk_matched``), then ``_<filter tag>``."""
+    if args.paired_only:
+        mode = "_paired"
+    elif args.pb_cells:
+        mode = "_pb_cells"
+    elif args.match_labels:
+        mods = "-".join(dict.fromkeys(canonical_modality(m) for m in args.modalities))
+        mode = f"_{mods}_matched"
+    else:
+        mode = ""
+    return mode + (f"_{tag}" if tag else "")
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_with_config(build_parser(), "alignment", argv)
     if args.pb_cells and args.paired_only:
         sys.exit("Error: --pb-cells and --paired-only are separate figures; give one")
+    if args.match_labels and (args.pb_cells or args.paired_only):
+        sys.exit("Error: --match-labels is its own figure; drop --pb-cells / --paired-only")
+    if args.match_cap is not None and not args.match_labels:
+        sys.exit("Error: --match-cap needs --match-labels")
+    if args.match_labels:
+        print(f"[match] rows per '{match_key(args)}' matched across {args.modalities} (seed {args.seed}"
+              + (f", cap {args.match_cap}" if args.match_cap is not None else "")
+              + "); --per-modality, --stratify-mode, --unknown-frac and --cap-labels are not used")
     if args.color is None:
         args.color = ([args.link_col, args.pb_label_key] if args.pb_cells
                       else [args.paired_col] if args.paired_only
@@ -374,11 +468,17 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit("Error: give --models")
     filters = parse_filter_specs(args.filter)
     tag = filter_tag(filters)
-    suffix = ("_paired" if args.paired_only else "_pb_cells" if args.pb_cells else "") + (f"_{tag}" if tag else "")
+    suffix = output_suffix(args, tag)
     layout = ExperimentLayout.from_root(args.root)
     labels = parse_mapping(args.labels)
 
+    from evaluate._recompute import skip_existing
+
     for model in args.models:
+        out_dir = args.out_dir or layout.alignment_dir(model, args.variant)
+        stem = out_dir / f"alignment_{args.part}{suffix}"
+        if skip_existing(f"{model}: {stem.name}.png", [stem.with_suffix(".png")], args.recompute):
+            continue
         print(f"[{model}] alignment of {args.part}" + (" (pseudobulks with their cells)" if args.pb_cells else ""))
         selection = None
         if args.pb_cells:
@@ -428,8 +528,6 @@ def main(argv: list[str] | None = None) -> None:
                      f"(at most {args.cells_per_pb}); stars: the mean of ALL their cells in the file "
                      "(as integration.py's pb_cells edge), joined to their pseudobulk.",
                      fontsize=7, color="#898781", ha="left", va="bottom")
-        out_dir = args.out_dir or layout.alignment_dir(model, args.variant)
-        stem = out_dir / f"alignment_{args.part}{suffix}"
         save_figure(fig, stem.with_suffix(".png"), dpi=args.dpi)
         save_coords(obs, coords, stem.with_suffix(".parquet"))
         if selection is not None:
