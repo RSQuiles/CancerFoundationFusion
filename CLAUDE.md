@@ -1212,6 +1212,30 @@ python -m evaluate.geneicl.plot_benchmark --name main [--models unified_v1 pca] 
   the manifest. `--reference` adds GeneICL rows as in `compare`. Each run also writes the
   plotted `per_task.csv` / `summary.csv` and `manifest.json` (`"models"`, so
   `rename_model` rewrites it). Rerunning a name overwrites its figures.
+- **Transfer SIS** (`transfer.py`, config section `geneicl_transfer`). It adapts the
+  Synergistic Information Score of Richter et al. (Nat. Mach. Intell. 2026) to bulk-only
+  tasks by comparing models instead of fused modalities:
+  `tSIS_t(m | B) = (P_t(m) - max_{b in B} P_t(b)) / max_{b in B} P_t(b)`.
+  - `P` is the probe score, `f1_macro` and `r2_pooled_oof` by default (`--metrics`).
+  - `--baselines SET=B1,B2` names the question: `align_ctrl` for the alignment, `bulk_baseline`
+    for multimodal pretraining, `pca` for the FM itself. `--models` takes one list or
+    `SET=M1,M2`.
+  - Suite tSIS is a ratio of means over tasks whose baseline reaches `--min-baseline` (F1 0.2,
+    R2 0.05; the others count only in `mean_delta`).
+  - The 95 % CI comes from a cluster bootstrap over **datasets**. The sign-flip permutation p
+    and the BH q are also over datasets.
+  - **Noise floor:** `<--null-control>_s1` if its probes exist (seed variance). Else
+    `<control>@<--null-cv-tag>`, the control re-probed with CV seed 43 by
+    `run_probe --run-tag cv43` into `<model>/cv43/`, read as row `model@tag` (probe noise
+    only; the verdicts say so). `--null-pairs A=B` sets the pair explicitly.
+  - **Verdicts:** `gain` / `loss` when the CI excludes 0 and `|tSIS|` exceeds the floor, else
+    `no gain`.
+  - **Outputs** in `results/geneicl_<suite>/_compare/transfer/<name>/`: `per_task.csv`,
+    `summary.csv`, `null.csv`, a forest plot `transfer_sis`, a table figure
+    `transfer_sis_table`, and `manifest.json` (plain model names).
+  - **Configs:** the alignment config has `geneicl_probe_cv43` and `geneicl_transfer`;
+    `compare_models.yaml` has the multimodal / pipeline / foundation sets.
+  - `check_geneicl` checks it offline (the transfer part needs no anndata).
 - **Environments:** `embed_suite.sh` (container), `run_probe.sh` (conda env from
   GeneICL's `eval/environment.yaml`, default name `geneicl-benchmark`); compare and
   plot_benchmark anywhere. Config blocks: `geneicl_embed`, `geneicl_probe`, `geneicl_compare`,

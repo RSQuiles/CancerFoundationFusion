@@ -36,7 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from evaluate._cli import parse_with_config  # noqa: E402
 from evaluate.geneicl import suite as S  # noqa: E402
-from evaluate.geneicl.run_probe import OUT_STEM, task_name  # noqa: E402
+from evaluate.geneicl.run_probe import OUT_STEM, probe_dir, split_row, task_name  # noqa: E402
 
 TASK_TYPES = ("classification", "regression")
 METRICS = {
@@ -163,8 +163,8 @@ def load_runs(layout, suite: str, models: list[str], reference: list[str] = (),
               ) -> tuple[dict[str, dict], list[str]]:
     """``{row label: run}`` for ``models`` then the found ``reference`` tags (``ref:<tag>``)."""
     runs: dict[str, dict] = {}
-    for model in models:
-        prefix = layout.task_dir(task_name(suite), model) / OUT_STEM
+    for model in models:              # a row is a model, or model@tag (run_probe --run-tag)
+        prefix = probe_dir(layout, suite, *split_row(model)) / OUT_STEM
         run = read_run(prefix)
         if all(run[tt] is None for tt in TASK_TYPES):
             sys.exit(f"Error: no {prefix}_*.csv; run evaluate.geneicl.run_probe for '{model}' first")

@@ -416,6 +416,17 @@ tasks:
         args:
           seed: 42
           resume: false
+      # Noise floor of the transfer SIS when no seed replicate (align_ctrl_s1) exists: the
+      # control re-probed with another CV seed -> results/geneicl_benchmark/align_ctrl/cv43/
+      # (probe noise only; once align_ctrl_s1 is trained and probed, it is used instead).
+      geneicl_probe_cv43:
+        script: geneicl_probe
+        environment: geneicl
+        args:
+          model: align_ctrl
+          seed: 43
+          run_tag: cv43
+          resume: false
       geneicl_compare:
         environment: geneicl
         args:
@@ -433,3 +444,16 @@ tasks:
           reference: [scfoundation, en]
           name: leiden_s1_alignment
           formats: [png, pdf]
+      # Transfer SIS (evaluate/geneicl/transfer.py): relative probe gain of each run's bulk
+      # embedding over align_ctrl (F1 macro, pooled R2), dataset-bootstrap CI, noise floor
+      # from align_ctrl_s1 if probed, else align_ctrl@cv43 (above)
+      # -> results/geneicl_benchmark/_compare/transfer/leiden_s1_alignment/
+      geneicl_transfer:
+        environment: host
+        drop: [geneicl_repo]
+        args:
+          name: leiden_s1_alignment
+          baselines: {alignment: align_ctrl}
+          models: *runs
+          null_control: align_ctrl
+          row_labels: *row_labels

@@ -187,6 +187,25 @@ tasks:
           models: *geneicl_models
           reference: [scfoundation, en]
           formats: [png, pdf]
+      # Transfer SIS across the two evaluations (probe CSVs only), one baseline set per
+      # question: does multimodal pretraining help bulk tasks (vs bulk only), do the
+      # alignment runs beat bulk only (confounded by their 50k extra steps), does the
+      # FM beat PCA. Noise floor: align_ctrl's replicate (see the alignment config).
+      geneicl_transfer:
+        environment: host
+        drop: [geneicl_repo]
+        args:
+          name: baselines_vs_alignment
+          baselines:
+            multimodal: bulk_baseline
+            pipeline: bulk_baseline
+            foundation: pca
+          models:
+            multimodal: bulk_sc_baseline,unified_baseline
+            pipeline: align_ctrl,align_mmd,align_contrastive,align_cdd,align_paired,align_paired_mse,align_agg_ctrl,align_agg
+            foundation: sc_baseline,bulk_baseline,bulk_sc_baseline,unified_baseline,align_ctrl,align_contrastive,align_paired
+          null_control: align_ctrl
+          row_labels: *row_labels
 
   # ---- templates: other figures from existing embeddings (disabled; --only runs them) -----
   # These compute a UMAP (CPU, minutes per model) but embed nothing. Copy a step, set the

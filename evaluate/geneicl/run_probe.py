@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -70,6 +71,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume", action="store_true",
                         help="Keep folds already on disk (benchmark.py overwrite=false)")
     parser.add_argument("--dry-run", action="store_true", help="Print the command and stop")
+    parser.add_argument("--run-tag", default=None,
+                        help="Write to results/geneicl_<suite>/<model>/<tag>/ instead of the model's "
+                             "directory (e.g. cv43 for a re-probe with --seed 43, the probe-noise floor "
+                             "of evaluate.geneicl.transfer); read back as the row '<model>@<tag>'")
     from evaluate._recompute import add_recompute_arg
 
     add_recompute_arg(parser)
@@ -124,6 +129,26 @@ def build_command(python: str, repo: Path, key: str, emb_dir: Path, data_dir: Pa
     return [python, str(SHIM), str(repo), key, *(f"{k}={hydra_value(v)}" for k, v in overrides.items())]
 
 
+TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+TAG_SEP = "@"
+
+
+def probe_dir(layout, suite: str, model: str, tag: str | None = None) -> Path:
+    """Where a model's probe results live: its task directory, or ``<that>/<tag>/``."""
+    base = layout.task_dir(task_name(suite), model)
+    if not tag:
+        return base
+    if not TAG_RE.match(tag) or tag.startswith("_"):
+        raise SystemExit(f"Error: --run-tag {tag!r}: letters, digits, '_' and '-' only")
+    return base / tag
+
+
+def split_row(row: str) -> tuple[str, str | None]:
+    """``"align_ctrl@cv43"`` -> ``("align_ctrl", "cv43")``; a plain model -> ``(model, None)``."""
+    model, sep, tag = row.partition(TAG_SEP)
+    return model, (tag or None) if sep else None
+
+
 def main(argv: list[str] | None = None) -> dict:
     from experiments.layout import ExperimentLayout, validate_model_name
 
@@ -134,7 +159,7 @@ def main(argv: list[str] | None = None) -> dict:
     layout = ExperimentLayout.from_root(args.root)
     from evaluate._recompute import skip_existing
 
-    done_dir = layout.task_dir(task_name(args.suite), name)
+    done_dir = probe_dir(layout, args.suite, name, args.run_tag)
     if skip_existing(f"GeneICL probe {name} ({args.suite})",
                      [done_dir / f for f in ("run.json", "probe_classification.csv", "probe_regression.csv")],
                      args.recompute):
@@ -152,7 +177,7 @@ def main(argv: list[str] | None = None) -> dict:
     if missing:
         sys.exit(f"Error: {len(missing)} datasets have no embeddings in {emb_dir}: {missing}. "
                  "Embed them, or restrict the run with --datasets")
-    out_dir = layout.task_dir(task_name(args.suite), name)
+    out_dir = done_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     data_dir = subset_suite(suite_path, datasets, out_dir / SUBSET_DIR) if args.datasets else suite_path
 
@@ -166,7 +191,8 @@ def main(argv: list[str] | None = None) -> dict:
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     subprocess.run(cmd, check=True)
     run = {
-        "model": name, "suite": args.suite, "probe_key": key, "seed": args.seed, "resume": args.resume,
+        "model": name, "run_tag": args.run_tag, "suite": args.suite, "probe_key": key, "seed": args.seed,
+        "resume": args.resume,
         "datasets": args.datasets or None, "started": started,
         "finished": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "geneicl_repo": str(repo), "geneicl_commit": S.geneicl_commit(repo), "python": python,

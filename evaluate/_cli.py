@@ -9,7 +9,7 @@ from pathlib import Path
 # Script-specific blocks of a --config YAML; every other top-level key is shared.
 SECTIONS = ("umap", "pca", "alignment", "mask_plan", "reconstruction", "compare", "reconstruction_plot",
             "scib", "integration", "geneicl_embed", "geneicl_probe", "geneicl_compare", "geneicl_plot",
-            "embed_splits")
+            "geneicl_transfer", "embed_splits")
 
 
 def parse_with_config(

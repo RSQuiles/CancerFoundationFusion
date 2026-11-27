@@ -327,6 +327,94 @@ def check_plot(tmp: Path, layout: ExperimentLayout) -> None:
           {out / "manifest.json", sub / "manifest.json"} <= set(layout.model_reference_files()))
 
 
+def _fake_probe(layout: ExperimentLayout, row: str, f1: dict, noise: dict, seed: int = 0) -> None:
+    """probe_*.csv of one row: per-task fold F1 = ``f1[task]``; regression OOF predictions
+    ``y + noise[task] * e`` (pooled R2 known), written where run_probe would write them."""
+    model, tag = run_probe.split_row(row)
+    out = run_probe.probe_dir(layout, "benchmark", model, tag)
+    out.mkdir(parents=True, exist_ok=True)
+    cls = [{"model": "cancerfoundation", "dataset": t.split("::")[0], "task_id": t, "task_type": "classification",
+            "fold": k, "auroc": 0.5 + v / 2, "auprc": v, "balanced_accuracy": v, "mcc": v - 0.3, "f1_macro": v}
+           for t, v in f1.items() for k in range(5)]
+    pd.DataFrame(cls).to_csv(out / "probe_classification.csv", index=False)
+    rng = np.random.default_rng(seed)
+    reg, oof = [], []
+    for t, s in noise.items():
+        y = np.linspace(-1, 1, 50)
+        e = np.random.default_rng(abs(hash(t)) % 2**32).normal(size=50)   # same draw for every row
+        oof += [{"task_id": t, "y_true": yy, "pred": yy + s * ee, "fold": i % 5} for i, (yy, ee) in enumerate(zip(y, e))]
+        reg += [{"model": "cancerfoundation", "dataset": t.split("::")[0], "task_id": t, "task_type": "regression",
+                 "fold": k, "spearman": 0.5, "pearson": 0.5, "r2": 0.3 + rng.normal(0, 0.01)} for k in range(5)]
+    pd.DataFrame(reg).to_csv(out / "probe_regression.csv", index=False)
+    pd.DataFrame(oof).to_csv(out / "probe_regression.oof.csv", index=False)
+
+
+def check_transfer(tmp: Path) -> None:
+    """Transfer SIS on fake probe results (no embedding, no GeneICL env)."""
+    print("\n-- transfer SIS --")
+    from evaluate.geneicl import transfer
+
+    root = tmp / "transfer_root"
+    layout = ExperimentLayout(root)
+    rng = np.random.default_rng(0)
+    cls_tasks = [f"D{d}::c{k}" for d in range(10) for k in range(2)]
+    reg_tasks = [f"D{d}::r{k}" for d in range(10) for k in range(2)]
+    f1 = {t: float(rng.uniform(0.4, 0.7)) for t in cls_tasks}
+    f1["D0::c0"] = 0.1                                    # below --min-baseline: no tSIS
+    noise = {t: 0.5 for t in reg_tasks}
+    _fake_probe(layout, "ctrl", f1, noise)
+    _fake_probe(layout, "same", f1, noise)
+    _fake_probe(layout, "better", {t: v * 1.1 for t, v in f1.items()}, {t: 0.3 for t in reg_tasks})
+    _fake_probe(layout, "worse", {t: v * 0.9 for t, v in f1.items()}, {t: 0.7 for t in reg_tasks})
+    _fake_probe(layout, "ctrl@cv43", {t: v * (1 + 0.004 * (-1) ** i) for i, (t, v) in enumerate(f1.items())}, noise)
+
+    base = ["--root", str(root), "--baselines", "alignment=ctrl", "--models", "same", "better", "worse",
+            "--n-boot", "500", "--n-perm", "500", "--formats", "png", "--name", "t"]
+    out = transfer.main(base)
+    summary = pd.read_csv(out / "summary.csv")
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    get = summary.set_index(["model", "metric"])
+    check("fallback noise floor: the control re-probed with another CV seed",
+          manifest["noise_floor"] == "probe" and manifest["null_pairs"] == [["ctrl@cv43", "ctrl"]])
+    check("identical model: tSIS 0, no gain",
+          np.isclose(get.loc[("same", "f1_macro"), "suite_tsis"], 0) and get.loc[("same", "f1_macro"), "verdict"] == "no gain")
+    check("+10 % on every task: suite tSIS 0.10, CI above 0, gain",
+          np.isclose(get.loc[("better", "f1_macro"), "suite_tsis"], 0.1)
+          and get.loc[("better", "f1_macro"), "ci_lo"] > 0 and get.loc[("better", "f1_macro"), "verdict"] == "gain")
+    check("-10 %: loss", get.loc[("worse", "f1_macro"), "verdict"] == "loss")
+    check("less regression noise -> higher pooled R2 -> gain",
+          get.loc[("better", "r2_pooled_oof"), "suite_tsis"] > 0 and get.loc[("worse", "r2_pooled_oof"), "suite_tsis"] < 0)
+    check("low-baseline task: no tSIS, still in delta",
+          get.loc[("better", "f1_macro"), "n_low_baseline"] == 1 and get.loc[("better", "f1_macro"), "n_tasks"] == 20)
+    check("the noise floor is the replicate's |tSIS|",
+          0 < get.loc[("better", "f1_macro"), "null_abs_tsis"] < 0.01)
+    check("manifest lists plain model names", set(manifest["models"]) == {"ctrl", "same", "better", "worse"})
+
+    _fake_probe(layout, "ctrl_s1", {t: v * 1.03 for t, v in f1.items()}, noise)
+    _fake_probe(layout, "slight", {t: v * 1.02 for t, v in f1.items()}, noise)
+    out = transfer.main(base + ["--models", "same", "better", "worse", "slight", "--name", "t2"])
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    summary = pd.read_csv(out / "summary.csv").set_index(["model", "metric"])
+    check("a seed replicate (<control>_s1) is preferred when present",
+          manifest["noise_floor"] == "seed" and manifest["null_pairs"] == [["ctrl_s1", "ctrl"]])
+    check("seed floor 0.03: a +10 % model is still a gain",
+          np.isclose(summary.loc[("better", "f1_macro"), "null_abs_tsis"], 0.03)
+          and summary.loc[("better", "f1_macro"), "verdict"] == "gain")
+    check("seed floor 0.03: a +2 % model with a CI above 0 is not a gain",
+          summary.loc[("slight", "f1_macro"), "ci_lo"] > 0
+          and summary.loc[("slight", "f1_macro"), "verdict"] == "no gain")
+
+    _fake_probe(layout, "other", {t: (0.9 if t == "D1::c0" else v) for t, v in f1.items()}, noise)
+    out = transfer.main(["--root", str(root), "--baselines", "both=ctrl,other", "--models", "better",
+                         "--null-pairs", "ctrl_s1=ctrl", "--n-boot", "200", "--n-perm", "200",
+                         "--formats", "png", "--name", "t3"])
+    per_task = pd.read_csv(out / "per_task.csv")
+    row = per_task[(per_task.task_id == "D1::c0") & (per_task.metric == "f1_macro")].iloc[0]
+    check("per task the best baseline of the set is the reference",
+          row["baseline_used"] == "other" and np.isclose(row["baseline_score"], 0.9))
+    check("unknown metric refused", raises(lambda: transfer.main(base + ["--metrics", "nope"]), SystemExit))
+
+
 def main() -> None:
     try:
         with tempfile.TemporaryDirectory() as d:
@@ -334,6 +422,7 @@ def main() -> None:
             repo = tmp / "GeneICL"
             suite = _write_geneicl(repo)
             layout = ExperimentLayout(tmp / "root")
+            check_transfer(tmp)
             check_suite(tmp, repo, suite)
             check_embed(tmp, repo, suite, layout)
             check_probe(tmp, repo, layout)

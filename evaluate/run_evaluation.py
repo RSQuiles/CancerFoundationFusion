@@ -102,6 +102,8 @@ SCRIPTS: dict[str, str] = {
     "geneicl_compare": "evaluate.geneicl.compare",
     "geneicl_plot": "evaluate.geneicl.plot_benchmark",
     "plot_benchmark": "evaluate.geneicl.plot_benchmark",
+    "geneicl_transfer": "evaluate.geneicl.transfer",
+    "transfer_sis": "evaluate.geneicl.transfer",
     # embeddings (prerequisite of representation and alignment)
     "embed_splits": "embed.embed_splits",
 }
