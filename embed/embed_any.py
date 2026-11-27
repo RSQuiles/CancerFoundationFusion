@@ -10,6 +10,9 @@ model: ``<out-dir>/<name>.h5ad`` (obs + ``obsm["X_emb"]``, no X) plus
     python embed_any.py --embedder bulkformer --input bulk.h5ad --out-dir out/ \\
         --option repo=/path/to/bulkformer-latest --option gene_column=gene_id
 
+``scvi`` and ``harmony`` are integration references: they use the batch label
+(``batch_key``, default ``modality``); see ``SCVIEmbedder`` and ``HarmonyEmbedder``.
+
 Adding a model
 --------------
 Subclass ``Embedder``, decorate it with ``@register("<name>")`` and implement
@@ -273,13 +276,13 @@ def conversion_summary(labels, names) -> dict[str, Any]:
             "n_invalid": int((labels == "invalid").sum()), "by_label": by_label, "rows": rows}
 
 
-def report_conversion(summary: dict[str, Any]) -> None:
+def report_conversion(summary: dict[str, Any], who: str = "bulkformer") -> None:
     """The warning line for rows that were not raw counts and were converted."""
     if not summary["n_converted"]:
         return
     converted = {k: v for k, v in summary["by_label"].items() if "->" in k}
     examples = [n for names in summary["rows"].values() for n in names[:2]][:5]
-    print(f"  [bulkformer] [WARNING] {summary['n_converted']} of {summary['n_rows']} rows were not raw "
+    print(f"  [{who}] [WARNING] {summary['n_converted']} of {summary['n_rows']} rows were not raw "
           f"counts and were converted to counts: {converted}, e.g. {examples}"
           + ("; '~' = approximate (not integral after conversion)"
              if any(k.endswith("~") for k in converted) else ""))
@@ -518,6 +521,274 @@ class BulkFormerEmbedder(Embedder):
         if self._manifest is not None:
             out["checkpoint_metadata"] = self._manifest.get("checkpoint_metadata")
             out["options"]["amp_dtype"] = self.amp_dtype
+        if self.input_conversion is not None:
+            out["input_conversion"] = self.input_conversion
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Integration references: scVI and Harmony
+# --------------------------------------------------------------------------- #
+#
+# Methods built to remove a batch effect, given the batch label (``batch_key``, default
+# ``modality``). They are reference rows for the scIB tables: CancerFoundation never sees
+# the modality label when it embeds, so they are not competitors on equal terms.
+# Neither imports cancerfoundation (its package init loads torch, lightning and SCDL),
+# so both run in a light env: scvi-tools, scanpy, harmonypy, anndata, pyyaml (plus
+# scikit-misc for seurat_v3 HVGs).
+
+
+def counts_matrix(adata, genes=None, chunk_rows: int = 2048):
+    """``(counts, labels, library)`` of ``adata`` as raw counts, ``chunk_rows`` at a time.
+
+    Every row goes through ``recover_counts`` over ALL its genes (part of the
+    single-cell source is normalized), then ``genes`` (var names, ``None`` = all) are
+    kept, as a float32 CSR matrix. ``library`` is each row's count total over all
+    genes; ``labels`` says per row what was converted (``invalid`` = not usable).
+    """
+    import scipy.sparse as sp
+
+    cols = None if genes is None else adata.var_names.get_indexer(list(genes))
+    if cols is not None and (cols < 0).any():
+        missing = [g for g, c in zip(genes, cols) if c < 0]
+        raise ValueError(f"{len(missing)} fitted genes are missing from the input, e.g. {missing[:5]}")
+    blocks, labels, library = [], [], []
+    for start in range(0, adata.n_obs, chunk_rows):
+        counts, lab = recover_counts(adata.X[start:start + chunk_rows])
+        library.append(np.where(lab == "invalid", 0.0, counts.sum(axis=1)))
+        counts[lab == "invalid"] = 0.0
+        blocks.append(sp.csr_matrix((counts if cols is None else counts[:, cols]).astype(np.float32)))
+        labels.append(lab)
+    return sp.vstack(blocks).tocsr(), np.concatenate(labels), np.concatenate(library)
+
+
+def select_hvgs(counts, var_names, batches, n_top: int, verbose_name: str) -> tuple[list[str], str]:
+    """``(genes in var order, flavor)``: scanpy HVGs on raw counts, ranked across batches.
+
+    ``seurat_v3`` (the scVI recipe; needs scikit-misc) on the counts, else ``seurat`` on
+    log1p CP10K. With more than one batch, ``batch_key`` ranks genes within each batch
+    first, so a large modality does not pick the genes alone.
+    """
+    import anndata as ad
+    import pandas as pd
+    import scanpy as sc
+
+    a = ad.AnnData(X=counts.copy(), obs=pd.DataFrame({"batch": np.asarray(batches).astype(str)}),
+                   var=pd.DataFrame(index=list(map(str, var_names))))
+    batch_key = "batch" if a.obs["batch"].nunique() > 1 else None
+    n_top = min(int(n_top), a.n_vars)
+    try:
+        sc.pp.highly_variable_genes(a, flavor="seurat_v3", n_top_genes=n_top, batch_key=batch_key)
+        flavor = "seurat_v3"
+    except ImportError:
+        print(f"  [{verbose_name}] [WARNING] seurat_v3 needs scikit-misc; using seurat on log1p CP10K")
+        sc.pp.normalize_total(a, target_sum=1e4)
+        sc.pp.log1p(a)
+        sc.pp.highly_variable_genes(a, flavor="seurat", n_top_genes=n_top, batch_key=batch_key)
+        flavor = "seurat"
+    return [g for g, keep in zip(a.var_names, a.var["highly_variable"].to_numpy()) if keep], flavor
+
+
+def _batch_labels(adata, batch_key: str, who: str) -> np.ndarray:
+    if batch_key not in adata.obs.columns:
+        raise KeyError(f"{who}: batch_key {batch_key!r} not in obs: {list(adata.obs.columns)}")
+    return adata.obs[batch_key].astype(str).to_numpy()
+
+
+def _report_invalid(labels, names, who: str) -> None:
+    bad = labels == "invalid"
+    if bad.any():
+        print(f"  [{who}] [WARNING] {int(bad.sum())} of {len(labels)} rows are not usable (negative, "
+              f"non-finite or zero total) and get no embedding, e.g. {list(np.asarray(names)[bad][:5])}")
+
+
+@register("scvi")
+class SCVIEmbedder(Embedder):
+    """scVI (scvi-tools) latent, trained with the modality as the batch covariate.
+
+    ``fit`` (the train-subset rows): every row back to raw counts (``recover_counts``),
+    ``n_hvg`` HVGs (``select_hvgs``), then ``scvi.model.SCVI`` with ``batch_key`` as the
+    batch. ``embed``: the latent mean of each row (``get_latent_representation``); its
+    batch must be one seen in ``fit``. Rows that cannot be read as counts are NaN rows,
+    which ``write_embeddings`` leaves out. Counts recovered only approximately (``~``)
+    are rounded for the NB likelihood.
+
+    Options: ``batch_key`` (``modality``), ``n_hvg`` (4000), ``n_latent`` (30),
+    ``n_hidden`` (128), ``n_layers`` (2), ``gene_likelihood`` (``nb``), ``max_epochs``
+    (scvi-tools' default for the data size when unset), ``train_batch_size`` (512),
+    ``early_stopping`` (true), ``accelerator`` (``auto``), ``seed`` (0), ``chunk_rows``.
+    """
+
+    def __init__(self, batch_key: str = "modality", n_hvg: int = 4000, n_latent: int = 30,
+                 n_hidden: int = 128, n_layers: int = 2, gene_likelihood: str = "nb",
+                 max_epochs: int | None = None, train_batch_size: int = 512, early_stopping: bool = True,
+                 accelerator: str = "auto", seed: int = 0, chunk_rows: int = 2048, **options: Any) -> None:
+        if gene_likelihood not in ("nb", "zinb", "poisson"):
+            raise ValueError(f"gene_likelihood must be nb, zinb or poisson, got {gene_likelihood!r}")
+        super().__init__(batch_key=batch_key, n_hvg=n_hvg, n_latent=n_latent, n_hidden=n_hidden,
+                         n_layers=n_layers, gene_likelihood=gene_likelihood, max_epochs=max_epochs,
+                         train_batch_size=train_batch_size, early_stopping=early_stopping,
+                         accelerator=accelerator, seed=seed, chunk_rows=chunk_rows, **options)
+        self.batch_key, self.n_hvg, self.seed = batch_key, int(n_hvg), int(seed)
+        self.chunk_rows = int(chunk_rows)
+        self._model = None
+        self._batches: list[str] = []
+        self._fit_info: dict[str, Any] = {}
+        self.input_conversion: dict[str, Any] | None = None
+
+    def _anndata(self, counts, batches, names):
+        import anndata as ad
+        import pandas as pd
+
+        counts = counts.copy()
+        counts.data = np.rint(counts.data)
+        return ad.AnnData(X=counts, obs=pd.DataFrame({self.batch_key: pd.Categorical(batches)},
+                                                     index=list(map(str, names))),
+                          var=pd.DataFrame(index=self.genes))
+
+    def fit(self, adata) -> None:
+        import scvi
+
+        batches = _batch_labels(adata, self.batch_key, "scvi")
+        counts, labels, _ = counts_matrix(adata, chunk_rows=self.chunk_rows)
+        _report_invalid(labels, adata.obs_names, "scvi")
+        ok = labels != "invalid"
+        self.genes, flavor = select_hvgs(counts[ok], adata.var_names, batches[ok], self.n_hvg, "scvi")
+        cols = adata.var_names.get_indexer(self.genes)
+        train = self._anndata(counts[ok][:, cols], batches[ok], adata.obs_names[ok])
+        train = train[np.asarray(train.X.sum(axis=1)).ravel() > 0].copy()  # no zero library in training
+        self._batches = sorted(set(train.obs[self.batch_key]))
+
+        scvi.settings.seed = self.seed
+        scvi.model.SCVI.setup_anndata(train, batch_key=self.batch_key)
+        o = self.options
+        self._model = scvi.model.SCVI(train, n_latent=int(o["n_latent"]), n_hidden=int(o["n_hidden"]),
+                                      n_layers=int(o["n_layers"]), gene_likelihood=o["gene_likelihood"])
+        print(f"scVI: {train.n_obs} rows x {len(self.genes)} HVGs ({flavor}), batch '{self.batch_key}' "
+              f"{ {str(k): int(v) for k, v in train.obs[self.batch_key].value_counts().items()} }")
+        self._model.train(max_epochs=o["max_epochs"], batch_size=int(o["train_batch_size"]),
+                          early_stopping=bool(o["early_stopping"]), accelerator=o["accelerator"])
+        history = getattr(self._model, "history", None) or {}
+        elbo = history.get("elbo_train")
+        self._fit_info = {"fit_rows": int(train.n_obs), "hvg_flavor": flavor, "batches": self._batches,
+                          "epochs": int(len(elbo)) if elbo is not None else None,
+                          "fit_input_conversion": conversion_summary(labels, adata.obs_names)}
+
+    def embed(self, adata) -> np.ndarray:
+        if self._model is None:
+            raise RuntimeError("SCVIEmbedder.embed called before fit")
+        batches = _batch_labels(adata, self.batch_key, "scvi")
+        unseen = sorted(set(batches) - set(self._batches))
+        if unseen:
+            raise ValueError(f"scvi: batches {unseen} were not in the fit rows {self._batches}; "
+                             "fit on rows of every modality you embed (parts: [test, train_subset])")
+        counts, labels, _ = counts_matrix(adata, self.genes, chunk_rows=self.chunk_rows)
+        self.input_conversion = conversion_summary(labels, adata.obs_names)
+        report_conversion(self.input_conversion, "scvi")
+        _report_invalid(labels, adata.obs_names, "scvi")
+        ok = labels != "invalid"
+        out = np.full((adata.n_obs, int(self.options["n_latent"])), np.nan, dtype=np.float32)
+        if ok.any():
+            query = self._anndata(counts[ok], batches[ok], adata.obs_names[ok])
+            out[ok] = np.asarray(self._model.get_latent_representation(
+                adata=query, batch_size=int(self.options["train_batch_size"])), dtype=np.float32)
+        return out
+
+    def provenance(self) -> dict[str, Any]:
+        out = super().provenance()
+        out.update({"uses_batch_labels": self.batch_key, **self._fit_info})
+        if self.input_conversion is not None:
+            out["input_conversion"] = self.input_conversion
+        return out
+
+
+def harmony_correct(Z: np.ndarray, batches, seed: int = 0, max_iter: int = 10) -> np.ndarray:
+    """``harmonypy.run_harmony`` on rows ``Z`` with one batch label per row, rows out."""
+    import harmonypy
+    import pandas as pd
+
+    meta = pd.DataFrame({"batch": np.asarray(batches).astype(str)})
+    ho = harmonypy.run_harmony(Z, meta, ["batch"], random_state=seed, max_iter_harmony=max_iter)
+    out = ho.Z_corr
+    if hasattr(out, "detach"):  # torch versions of harmonypy
+        out = out.detach().cpu().numpy()
+    out = np.asarray(out)
+    if out.shape == Z.shape:  # rows already (newer versions); a square input stays as is
+        return out.astype(np.float32)
+    if out.shape == Z.shape[::-1]:  # (dims, rows), harmonypy 0.0.x
+        return out.T.astype(np.float32)
+    raise ValueError(f"harmonypy returned shape {out.shape} for an input of {Z.shape}")
+
+
+@register("harmony")
+class HarmonyEmbedder(Embedder):
+    """PCA corrected by Harmony (harmonypy) on the batch label.
+
+    ``fit`` (the train-subset rows): rows back to raw counts (``recover_counts``),
+    ``n_hvg`` HVGs (``select_hvgs``), CPM + log1p (library over all genes) and a PCA.
+    ``embed``: the PCA of the rows, then Harmony over ALL the rows of the call with
+    ``batch_key``. Harmony is transductive: the correction depends on every row it
+    sees, so ``embed_splits`` corrects the test and train-subset rows of all modalities
+    together in its one call.
+
+    Options: ``batch_key`` (``modality``), ``n_hvg`` (2000), ``n_pcs`` (50),
+    ``max_iter`` (10), ``seed`` (0), ``chunk_rows``.
+    """
+
+    def __init__(self, batch_key: str = "modality", n_hvg: int = 2000, n_pcs: int = 50,
+                 max_iter: int = 10, seed: int = 0, chunk_rows: int = 2048, **options: Any) -> None:
+        super().__init__(batch_key=batch_key, n_hvg=n_hvg, n_pcs=n_pcs, max_iter=max_iter, seed=seed,
+                         chunk_rows=chunk_rows, **options)
+        self.batch_key, self.n_hvg, self.n_pcs = batch_key, int(n_hvg), int(n_pcs)
+        self.max_iter, self.seed, self.chunk_rows = int(max_iter), int(seed), int(chunk_rows)
+        self._pca = None
+        self._fit_info: dict[str, Any] = {}
+        self.input_conversion: dict[str, Any] | None = None
+
+    @staticmethod
+    def _log_cpm(counts, library) -> np.ndarray:
+        X = counts.toarray().astype(np.float64)
+        scale = np.divide(1e6, library, out=np.zeros_like(library, dtype=np.float64), where=library > 0)
+        return np.log1p(X * scale[:, None]).astype(np.float32)
+
+    def fit(self, adata) -> None:
+        from sklearn.decomposition import PCA
+
+        batches = _batch_labels(adata, self.batch_key, "harmony")
+        counts, labels, library = counts_matrix(adata, chunk_rows=self.chunk_rows)
+        _report_invalid(labels, adata.obs_names, "harmony")
+        ok = labels != "invalid"
+        self.genes, flavor = select_hvgs(counts[ok], adata.var_names, batches[ok], self.n_hvg, "harmony")
+        cols = adata.var_names.get_indexer(self.genes)
+        X = self._log_cpm(counts[ok][:, cols], library[ok])
+        n_comps = min(self.n_pcs, len(self.genes), int(ok.sum()) - 1)
+        self._pca = PCA(n_components=n_comps, random_state=self.seed).fit(X)
+        print(f"Harmony: PCA of {n_comps} components on {len(self.genes)} HVGs ({flavor}), fitted on "
+              f"{int(ok.sum())} rows ({self._pca.explained_variance_ratio_.sum():.1%} variance)")
+        self._fit_info = {"fit_rows": int(ok.sum()), "hvg_flavor": flavor, "n_pcs": int(n_comps),
+                          "fit_input_conversion": conversion_summary(labels, adata.obs_names)}
+
+    def embed(self, adata) -> np.ndarray:
+        if self._pca is None:
+            raise RuntimeError("HarmonyEmbedder.embed called before fit")
+        batches = _batch_labels(adata, self.batch_key, "harmony")
+        counts, labels, library = counts_matrix(adata, self.genes, chunk_rows=self.chunk_rows)
+        self.input_conversion = conversion_summary(labels, adata.obs_names)
+        report_conversion(self.input_conversion, "harmony")
+        _report_invalid(labels, adata.obs_names, "harmony")
+        ok = labels != "invalid"
+        out = np.full((adata.n_obs, self._pca.n_components_), np.nan, dtype=np.float32)
+        if not ok.any():
+            return out
+        Z = self._pca.transform(self._log_cpm(counts[ok], library[ok])).astype(np.float64)
+        print(f"  [harmony] correcting {int(ok.sum())} rows on '{self.batch_key}' "
+              f"{ {str(k): int(v) for k, v in zip(*np.unique(batches[ok], return_counts=True))} }")
+        out[ok] = harmony_correct(Z, batches[ok], seed=self.seed, max_iter=self.max_iter)
+        return out
+
+    def provenance(self) -> dict[str, Any]:
+        out = super().provenance()
+        out.update({"uses_batch_labels": self.batch_key, "transductive": True, **self._fit_info})
         if self.input_conversion is not None:
             out["input_conversion"] = self.input_conversion
         return out

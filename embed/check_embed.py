@@ -273,6 +273,151 @@ def check_any() -> None:
     EMBEDDERS.pop("_bad_shape")
 
 
+def _fake_integration_modules():
+    """Stand-ins for ``scvi`` and ``harmonypy`` with their call signatures (no torch).
+
+    The fake SCVI records what it was trained on and returns the first ``n_latent``
+    columns of log1p counts; the fake Harmony removes each batch's mean and returns
+    ``(dims, rows)``, as harmonypy 0.0.x does.
+    """
+    import types
+
+    calls: dict = {}
+
+    class SCVI:
+        @staticmethod
+        def setup_anndata(adata, batch_key):
+            calls["setup"] = {"batch_key": batch_key, "n": adata.n_obs,
+                              "integral": bool(np.allclose(adata.X.data, np.round(adata.X.data)))}
+            adata.uns["_fake_registered"] = True
+
+        def __init__(self, adata, n_latent, n_hidden, n_layers, gene_likelihood):
+            calls["init"] = {"n_latent": n_latent, "genes": list(adata.var_names),
+                             "min_library": float(np.asarray(adata.X.sum(axis=1)).min())}
+            self.n_latent, self.history = n_latent, {}
+
+        def train(self, max_epochs, batch_size, early_stopping, accelerator):
+            calls["train"] = {"max_epochs": max_epochs, "batch_size": batch_size}
+
+        def get_latent_representation(self, adata, batch_size):
+            calls["latent"] = {"n": adata.n_obs, "genes": list(adata.var_names)}
+            X = adata.X.toarray()
+            return np.log1p(X[:, : self.n_latent])
+
+    scvi = types.ModuleType("scvi")
+    scvi.settings = types.SimpleNamespace(seed=None)
+    scvi.model = types.SimpleNamespace(SCVI=SCVI)
+
+    def run_harmony(data_mat, meta, vars_use, random_state=0, max_iter_harmony=10):
+        calls["harmony"] = {"shape": data_mat.shape, "vars": vars_use}
+        Z = np.array(data_mat, dtype=np.float64)
+        b = meta[vars_use[0]].to_numpy()
+        for v in np.unique(b):
+            Z[b == v] -= Z[b == v].mean(axis=0)
+        return types.SimpleNamespace(Z_corr=Z.T)
+
+    harmonypy = types.ModuleType("harmonypy")
+    harmonypy.run_harmony = run_harmony
+    return {"scvi": scvi, "harmonypy": harmonypy}, calls
+
+
+def check_integration_embedders() -> None:
+    """scvi and harmony embedders with fake backends: plumbing, count recovery, refusals."""
+    print("\n-- scvi / harmony embedders (fake backends) --")
+    from embed.embed_any import counts_matrix, harmony_correct
+
+    check("scvi and harmony registered", {"scvi", "harmony"} <= set(EMBEDDERS))
+    mods, calls = _fake_integration_modules()
+    saved = {k: sys.modules.get(k) for k in mods}
+    sys.modules.update(mods)
+    try:
+        train, test = _adata(200, mods=("sc", "bulk"), seed=3), _adata(60, mods=("sc", "bulk"), seed=4)
+        # one normalized row (ln CP10K + 1) and one unusable row in the embedded set
+        row = test.X[0] / test.X[0].sum() * 1e4
+        test.X[0] = np.log1p(row)
+        test.X[1] = -1.0
+        counts, labels, library = counts_matrix(test, chunk_rows=16)
+        check("counts_matrix recovers a log1p row and flags an unusable one",
+              labels[0] == "log1p->counts" and labels[1] == "invalid" and library[1] == 0
+              and counts.shape == test.shape)
+        check("counts_matrix refuses missing genes",
+              raises(lambda: counts_matrix(test, ["G0", "nope"]), ValueError))
+
+        sv = build_embedder("scvi", {"n_hvg": 20, "n_latent": 5, "max_epochs": 3})
+        emb = run_embedder(sv, test, fit_adata=train)
+        check("scvi fits on one set, embeds another", emb.shape == (60, 5) and len(sv.genes) == 20)
+        check("scvi trains on the batch key, integral counts, no zero library",
+              calls["setup"]["batch_key"] == "modality" and calls["setup"]["integral"]
+              and calls["init"]["min_library"] > 0 and calls["train"]["max_epochs"] == 3)
+        check("scvi embeds the fitted HVGs only", calls["latent"]["genes"] == sv.genes)
+        check("scvi: unusable row is NaN, the rest finite",
+              np.isnan(emb[1]).all() and np.isfinite(np.delete(emb, 1, axis=0)).all())
+        prov = sv.provenance()
+        check("scvi provenance records the batch label and conversions",
+              prov["uses_batch_labels"] == "modality" and prov["input_conversion"]["n_converted"] == 1
+              and prov["batches"] == ["bulk", "sc"])
+        other = test.copy()
+        other.obs["modality"] = "pseudobulk"
+        check("scvi refuses a batch it was not fitted on", raises(lambda: sv.embed(other), ValueError))
+        check("scvi refuses a missing batch key",
+              raises(lambda: build_embedder("scvi", {"batch_key": "nope"}).fit(train), KeyError))
+        check("scvi refuses an unknown likelihood",
+              raises(lambda: build_embedder("scvi", {"gene_likelihood": "mse"}), ValueError))
+
+        hm = build_embedder("harmony", {"n_hvg": 20, "n_pcs": 4})
+        emb = run_embedder(hm, test, fit_adata=train)
+        ok = np.isfinite(emb).all(axis=1)
+        check("harmony: PCA dims out, unusable row NaN", emb.shape == (60, 4) and not ok[1] and ok.sum() == 59)
+        check("harmony corrects every usable row of the call at once",
+              calls["harmony"]["shape"] == (59, 4) and calls["harmony"]["vars"] == ["batch"])
+        b = test.obs["modality"].to_numpy()[ok]
+        check("harmony output is per batch centered (fake correction applied, rows out)",
+              all(np.allclose(emb[ok][b == v].mean(axis=0), 0, atol=1e-5) for v in np.unique(b)))
+        check("harmony provenance: transductive, batch label",
+              hm.provenance()["transductive"] and hm.provenance()["uses_batch_labels"] == "modality")
+        Z = np.arange(12.0).reshape(6, 2)
+        rows_out = types_ns(lambda data_mat, meta, vars_use, **k: data_mat)
+        sys.modules["harmonypy"] = rows_out
+        check("harmony_correct accepts rows-out results too", np.allclose(harmony_correct(Z, list("aabbcc")), Z))
+        sys.modules["harmonypy"] = mods["harmonypy"]
+
+        # the real call path: embed_splits pools both modalities and parts, fits on train_subset
+        import anndata as ad
+
+        from embed import embed_splits
+
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = _write_split_root(tmp)
+            embed_splits.main(["--root", tmp, "--embedder", "harmony", "--name", "harmony_s0", "--split", "s0",
+                               "--modalities", "sc", "bulk", "--parts", "test", "train_subset",
+                               "--train-subset", "50", "--option", "n_hvg=20", "--option", "n_pcs=4"])
+            files = sorted(p.name for p in layout.embedding_dir("harmony_s0").glob("*.h5ad"))
+            card = json.loads(layout.embed_card("harmony_s0").read_text())
+            check("embed_splits --embedder harmony writes the four files",
+                  files == ["bulk_test.h5ad", "bulk_train_subset.h5ad", "sc_test.h5ad", "sc_train_subset.h5ad"])
+            check("harmony corrected all modalities and parts in one call (30+30 test + 50+50 train)",
+                  calls["harmony"]["shape"] == (160, 4))
+            check("fitted on the train subset, recorded as transductive",
+                  all(f["fitted_on"] == "train_subset" and f["transductive"] for f in card["files"].values()))
+            check("harmony test file holds the test rows",
+                  ad.read_h5ad(layout.embedding_file("harmony_s0", "sc", "test")).n_obs == 30)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+
+def types_ns(run):
+    """A fake harmonypy whose ``run_harmony`` returns ``Z_corr = run(...)``."""
+    import types
+
+    mod = types.ModuleType("harmonypy")
+    mod.run_harmony = lambda *a, **k: types.SimpleNamespace(Z_corr=run(*a, **k))
+    return mod
+
+
 def _write_split_root(tmp: str) -> ExperimentLayout:
     """Raw sc and bulk h5ads with a split s0 (30 test rows, 90 train rows each)."""
     layout = ExperimentLayout(Path(tmp))
@@ -439,6 +584,7 @@ def main() -> None:
     check_machinery()
     check_input_modes()
     check_any()
+    check_integration_embedders()
     check_selection()
     check_obs_kept()
     check_splits()

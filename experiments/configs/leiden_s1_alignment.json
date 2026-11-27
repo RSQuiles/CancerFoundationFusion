@@ -68,6 +68,12 @@
     "align_agg (also base_config, which align_agg uses); loss_weight_dat in align_dat and",
     "align_combo_dat. A different name from the earlier align_calib, whose loss_balance.json",
     "would otherwise be re-read instead of recomputed.",
+    "Follow-ups of align_combo_cdd (the most promising combination; same batches and schedule):",
+    "align_combo_cdd_agg2 doubles the aggregation InfoNCE weight (4 -> 8) to recover the",
+    "pseudobulk <-> cells sample identity CDD erodes (pb_cells rank 0.042 vs 0.016 in",
+    "align_combo_contrastive) while keeping CDD's bulk-pseudobulk mixing; align_combo_cdd_contrastive",
+    "adds the contrastive loss at half its calibrated weight (4.1 -> 2.05, since the pressures add)",
+    "to test whether contrastive's identity and bio conservation complement CDD's mixing.",
     "Evaluation: evaluate/configs/leiden_s1_alignment_evaluation.yaml."
   ],
   "experiments_root": "/cluster/work/boeva/rquiles/unifiedFM_experiments",
@@ -423,6 +429,57 @@
             "mmd",
             "contrastive",
             "cdd"
+          ]
+        }
+      }
+    },
+    {
+      "name": "align_combo_cdd_agg2",
+      "overrides": {
+        "data": {
+          "paired_sampling": true,
+          "paired_every_n": 10,
+          "pb_id_column": "pseudobulk_id"
+        },
+        "features": {
+          "cdd": true,
+          "cdd_warmup_steps": 1000,
+          "cdd_ramp_steps": 1000,
+          "agg_consistency": true,
+          "agg_fn": "mean",
+          "agg_loss": "infonce",
+          "loss_weight_agg": 8.0,
+          "paired_loss": "infonce",
+          "loss_weight_paired": 4.0,
+          "monitor_losses": [
+            "mmd",
+            "contrastive"
+          ]
+        }
+      }
+    },
+    {
+      "name": "align_combo_cdd_contrastive",
+      "overrides": {
+        "data": {
+          "paired_sampling": true,
+          "paired_every_n": 10,
+          "pb_id_column": "pseudobulk_id"
+        },
+        "features": {
+          "cdd": true,
+          "cdd_warmup_steps": 1000,
+          "cdd_ramp_steps": 1000,
+          "contrastive_training": true,
+          "loss_weight_contrastive": 2.05,
+          "agg_consistency": true,
+          "agg_fn": "mean",
+          "agg_loss": "infonce",
+          "loss_weight_agg": 4.0,
+          "paired_loss": "infonce",
+          "loss_weight_paired": 4.0,
+          "monitor_losses": [
+            "mmd"
           ]
         }
       }

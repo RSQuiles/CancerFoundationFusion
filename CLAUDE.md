@@ -112,7 +112,11 @@ See `debug.sh` for a complete example with all common parameters. Key parameters
   - the aggregation pair;
   - `align_combo_agg` (MMD + contrastive + paired + aggregation), and `align_combo` (the
     same with the aggregation loss only logged, cells still drawn) in
-    `leiden_s1_alignment_test.json`, launched first as a test (`base_from` the main one).
+    `leiden_s1_alignment_test.json`, launched first as a test (`base_from` the main one);
+  - stage 2: `align_dat` and the combos paired + aggregation (InfoNCE) + one of CDD /
+    contrastive / DAT (`align_combo_cdd`, `_contrastive`, `_dat`), then two follow-ups of
+    `align_combo_cdd`: `align_combo_cdd_agg2` (aggregation weight 8) and
+    `align_combo_cdd_contrastive` (+ contrastive at half weight, 2.05).
 
   The loss weights are calibrated by `align_calib` (see "Calibrating loss weights").
   - **Batches** (every run, controls included): 128 rows = 51 bulk + 51 pseudobulk + 26
@@ -677,6 +681,31 @@ python embed/embed_any.py --embedder pca --input data.h5ad --out-dir out/ --opti
   not depend on `normalize`. The old `normalized`/`log1p_only` options are refused.
   It imports `cancerfoundation`, whose package init loads torch, so `check_embed` skips
   the PCA runs where torch does not load.
+- **Integration references `scvi` and `harmony`** (`SCVIEmbedder`, `HarmonyEmbedder`):
+  methods built to remove a batch effect, given the batch label (`batch_key`, default
+  `modality`), which no CancerFoundation model sees when it embeds. They are reference
+  rows for the scIB tables, not competitors on equal terms.
+  - **Input:** every row back to raw counts (`counts_matrix` -> `recover_counts`, as
+    BulkFormer; unusable rows become NaN rows, left out of the file), then HVGs ranked
+    across the batches (`select_hvgs`: scanpy `seurat_v3` on counts, needs scikit-misc,
+    else `seurat` on log1p CP10K).
+  - **scvi:** `fit` trains `scvi.model.SCVI` on the train-subset rows (counts rounded,
+    zero-library rows left out); `embed` is the latent mean. A batch not in the fit rows
+    is refused. Options `n_hvg` (4000), `n_latent` (30), `n_hidden`, `n_layers`,
+    `gene_likelihood`, `max_epochs` (scvi-tools' default), `train_batch_size`,
+    `early_stopping`, `accelerator`, `seed`.
+  - **harmony:** PCA of log1p CPM (library over all genes) on `n_hvg` (2000) HVGs fitted
+    on the train subset, then `harmonypy` on the batch label over ALL rows of the
+    `embed` call. Transductive: `embed_splits` corrects test and train-subset rows of
+    every modality together. `harmony_correct` accepts both `Z_corr` orientations.
+  - Neither imports `cancerfoundation`, so they run in a light conda env (scvi-tools,
+    scanpy, scikit-misc, harmonypy, pyyaml; environment `integration_ref` in
+    `leiden_s1_baselines_evaluation.yaml`). `embed.json` records `uses_batch_labels`, the
+    conversions, and for Harmony `transductive`.
+  - In the leiden_s1 evaluations: `scvi_leiden_s1` (20000 train rows per modality) and
+    `harmony_leiden_s1`, embedded by the baselines config on the joint test rows, are rows
+    of every cross-modality scIB run, the integration summaries and the matched UMAPs
+    (baselines). They have no own-panel files, so the bio-only runs leave them out.
 - Set `self.genes` to the genes a model actually reads, so its files get a `panel_hash`.
 - **Modality.** The obs column `modality` (`--modality-col`) picks the gene-selection
   scheme: one value names the file's modality, several share one panel. Without the

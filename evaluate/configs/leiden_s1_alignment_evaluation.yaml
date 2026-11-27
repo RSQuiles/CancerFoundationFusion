@@ -1,6 +1,6 @@
 # Evaluation of the alignment-loss ablation (experiments/configs/leiden_s1_alignment.json):
 # each alignment loss on its own, the InfoNCE form of the aggregation loss, DAT, and the
-# combinations paired + aggregation (InfoNCE) + one class/marginal loss. Thirteen runs
+# combinations paired + aggregation (InfoNCE) + one class/marginal loss. Fifteen runs
 # warm-started from unified_baseline, 50k steps each, differing only in the alignment loss
 # they train on. align_combo (every loss together) is trained by the launch config but not
 # evaluated here: it trains the paired loss with the default form and weight.
@@ -8,7 +8,7 @@
 # the whole config reruns, skipping every result already present, so only the new models
 # are embedded, plotted, scored, reconstructed and probed; every comparison is rebuilt.
 # A seed-1 control (align_ctrl_s1) would be added to the model lists below (anchors runs,
-# all, scib_models, geneicl_models, row_labels).
+# all, scib_cross, scib_models, geneicl_models, row_labels).
 # The loss weights were calibrated (align_calib, checkpoints/align_calib/loss_balance.json):
 # each term pulls on the backbone with the same share of the reconstruction gradient at the
 # parent, so the runs differ in what they align, not in how hard they push.
@@ -30,6 +30,8 @@
 #   align_combo_cdd             paired (InfoNCE) + aggregation (InfoNCE) + CDD
 #   align_combo_contrastive     paired (InfoNCE) + aggregation (InfoNCE) + contrastive
 #   align_combo_dat             paired (InfoNCE) + aggregation (InfoNCE) + DAT
+#   align_combo_cdd_agg2        align_combo_cdd with the aggregation weight doubled (4 -> 8)
+#   align_combo_cdd_contrastive align_combo_cdd + contrastive at half weight (2.05)
 # The parent, unified_baseline, is a row everywhere (its embeddings and reconstruction runs
 # come from leiden_s1_baselines_evaluation.yaml; embed_parent re-embeds it if needed).
 #
@@ -114,7 +116,8 @@ tasks:
         foreach:
           model: &runs [align_ctrl, align_mmd, align_contrastive, align_cdd, align_paired,
                         align_paired_mse, align_agg_ctrl, align_agg, align_agg_infonce,
-                        align_dat, align_combo_cdd, align_combo_contrastive, align_combo_dat]
+                        align_dat, align_combo_cdd, align_combo_contrastive, align_combo_dat,
+                        align_combo_cdd_agg2, align_combo_cdd_contrastive]
         args:
           modalities: [sc, bulk, pseudobulk]
           parts: [test]
@@ -152,7 +155,8 @@ tasks:
         args:
           models: &all [unified_baseline, align_ctrl, align_mmd, align_contrastive, align_cdd,
                         align_paired, align_paired_mse, align_agg_ctrl, align_agg, align_agg_infonce,
-                        align_dat, align_combo_cdd, align_combo_contrastive, align_combo_dat]
+                        align_dat, align_combo_cdd, align_combo_contrastive, align_combo_dat,
+                        align_combo_cdd_agg2, align_combo_cdd_contrastive]
           variant: own_panel
           subsample: 20000
           color: [tissue_general]
@@ -227,17 +231,24 @@ tasks:
         align_combo_cdd: "paired + agg + CDD"
         align_combo_contrastive: "paired + agg + contrastive"
         align_combo_dat: "paired + agg + DAT"
+        align_combo_cdd_agg2: "paired + agg x2 + CDD"
+        align_combo_cdd_contrastive: "paired + agg + CDD + contrastive"
         pca_leiden_s1: "PCA"
+        scvi_leiden_s1: "scVI (reference)"
+        harmony_leiden_s1: "Harmony (reference)"
     steps:
       scib_bulk_pb:             # the main alignment table: batch = modality, label = tissue
         environment: host
         script: scib
         args:
           name: leiden_s1_alignment_bulk_pb
-          models: &scib_models [unified_baseline, align_ctrl, align_mmd, align_contrastive, align_cdd,
-                                align_paired, align_paired_mse, align_agg_ctrl, align_agg, align_agg_infonce,
-                                align_dat, align_combo_cdd, align_combo_contrastive, align_combo_dat,
-                                pca_leiden_s1]
+          # + the scVI / Harmony references embedded by the baselines evaluation (they use
+          # the modality label, no CancerFoundation model does); not in the own-panel runs
+          # (scib_models), which have no files for them
+          models: &scib_cross [unified_baseline, align_ctrl, align_mmd, align_contrastive, align_cdd,
+                               align_paired, align_paired_mse, align_agg_ctrl, align_agg, align_agg_infonce,
+                               align_dat, align_combo_cdd, align_combo_contrastive, align_combo_dat,
+                               pca_leiden_s1, scvi_leiden_s1, harmony_leiden_s1]
           pre_integrated: pca_leiden_s1
           modalities: [bulk, pseudobulk]
           batch_key: modality
@@ -250,7 +261,7 @@ tasks:
         script: scib
         args: &scib_sc
           name: leiden_s1_alignment_sc_pb
-          models: *scib_models
+          models: *scib_cross
           pre_integrated: pca_leiden_s1
           modalities: [sc, pseudobulk]
           match_labels: true
@@ -269,7 +280,10 @@ tasks:
         script: scib
         args: &bio
           name: leiden_s1_alignment_sc_tissue
-          models: *scib_models
+          models: &scib_models [unified_baseline, align_ctrl, align_mmd, align_contrastive, align_cdd,
+                                align_paired, align_paired_mse, align_agg_ctrl, align_agg, align_agg_infonce,
+                                align_dat, align_combo_cdd, align_combo_contrastive, align_combo_dat,
+                                align_combo_cdd_agg2, align_combo_cdd_contrastive, pca_leiden_s1]
           variant: own_panel
           bio_only: true
           modalities: [sc]
@@ -297,7 +311,7 @@ tasks:
         drop: [filter, n_jobs]
         args:
           name: leiden_s1_alignment
-          models: *scib_models
+          models: *scib_cross
           label_filter: ["tissue_label_source=cellxgene,archs4"]
           min_cells: 15          # pseudobulks are kept with 15 test cells (pairs up to 50)
           scib_runs: [leiden_s1_alignment_bulk_pb, leiden_s1_alignment_sc_pb, leiden_s1_alignment_all]
@@ -331,7 +345,8 @@ tasks:
           name: leiden_s1_alignment
           models: [unified_baseline, align_ctrl, align_mmd, align_contrastive, align_cdd,
                    align_paired, align_paired_mse, align_dat, align_combo_cdd,
-                   align_combo_contrastive, align_combo_dat]
+                   align_combo_contrastive, align_combo_dat, align_combo_cdd_agg2,
+                   align_combo_cdd_contrastive]
           baselines: true
       compare_agg:
         script: compare
@@ -349,7 +364,8 @@ tasks:
           name: leiden_s1_alignment_mvc
           models: [unified_baseline@mvc, align_ctrl@mvc, align_mmd@mvc, align_contrastive@mvc,
                    align_cdd@mvc, align_paired@mvc, align_paired_mse@mvc, align_dat@mvc,
-                   align_combo_cdd@mvc, align_combo_contrastive@mvc, align_combo_dat@mvc]
+                   align_combo_cdd@mvc, align_combo_contrastive@mvc, align_combo_dat@mvc,
+                   align_combo_cdd_agg2@mvc, align_combo_cdd_contrastive@mvc]
           baselines: true
       compare_agg_mvc:
         script: compare
@@ -406,7 +422,8 @@ tasks:
           models: &geneicl_models [unified_baseline, align_ctrl, align_mmd, align_contrastive, align_cdd,
                                    align_paired, align_paired_mse, align_agg_ctrl, align_agg,
                                    align_agg_infonce, align_dat, align_combo_cdd,
-                                   align_combo_contrastive, align_combo_dat, pca]
+                                   align_combo_contrastive, align_combo_dat, align_combo_cdd_agg2,
+                                   align_combo_cdd_contrastive, pca]
           reference: [scfoundation, en]
           name: leiden_s1_alignment
       geneicl_plot:

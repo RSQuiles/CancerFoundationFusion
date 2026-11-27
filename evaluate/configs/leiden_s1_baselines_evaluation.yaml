@@ -4,7 +4,9 @@
 #   bulk_sc_baseline  sc + bulk (unified, pb_ratio 0)
 #   unified_baseline  sc + bulk + precomputed pseudobulk, no alignment loss
 # against PCA and BulkFormer, all on the leiden_s1 test parts (linked split: pairs and
-# pseudobulks in test were never seen in training).
+# pseudobulks in test were never seen in training). scVI and Harmony, trained on the
+# modality as the batch, are integration references in the cross-modality scIB tables
+# (environment integration_ref; the alignment evaluation reuses their files).
 #
 #   CONFIG=evaluate/configs/leiden_s1_baselines_evaluation.yaml sbatch evaluate/run_evaluation.sh
 #
@@ -67,6 +69,13 @@ environments:
       source ~/.bashrc
       conda activate bulkformer-latest || exit 1
   host: {}                  # the env run_evaluation.sh activated (bulkFM: scib_metrics, matplotlib)
+  # scVI / Harmony references (embed_any "scvi", "harmony"; no cancerfoundation import):
+  #   conda create -n scvi python=3.11 -y && conda activate scvi
+  #   pip install scvi-tools scanpy scikit-misc harmonypy pyyaml
+  integration_ref:
+    setup: |
+      source ~/.bashrc
+      conda activate scvi || exit 1
 
 tasks:
   # ---- 1. embeddings ------------------------------------------------------------------
@@ -129,6 +138,33 @@ tasks:
           modalities: [bulk, pseudobulk]   # BulkFormer reads its own vocabulary, no panel
           parts: [test]
           option: &bf_option [repo=/cluster/work/boeva/rquiles/Codebases/Bulkformer-latest]
+      # Integration references: methods built to remove a batch effect, given the batch
+      # label (modality), which no CancerFoundation model sees when it embeds. Read their
+      # scIB rows as how far a dedicated method gets on the same rows, not as competitors.
+      # Same test rows as the models above (same settings); fitted on the train subset.
+      #   scVI: raw counts (normalized rows converted back, recover_counts), 4000 HVGs
+      #         (seurat_v3 across modalities), batch = modality; 20000 train rows per modality.
+      #   Harmony: PCA of log1p CPM on 2000 HVGs fitted on the train subset, then Harmony on
+      #         the modality over all rows of the call (transductive: test + train subset).
+      scvi_joint:
+        script: embed_splits
+        environment: integration_ref
+        args:
+          embedder: scvi
+          name: &scvi scvi_leiden_s1
+          modalities: [sc, bulk, pseudobulk]
+          parts: [test, train_subset]
+          train_subset: 20000
+          option: [batch_key=modality, n_hvg=4000, n_latent=30]
+      harmony_joint:
+        script: embed_splits
+        environment: integration_ref
+        args:
+          embedder: harmony
+          name: &harmony harmony_leiden_s1
+          modalities: [sc, bulk, pseudobulk]
+          parts: [test, train_subset]
+          option: [batch_key=modality, n_hvg=2000, n_pcs=50]
 
       cf_own_panel:
         script: embed_splits
@@ -210,7 +246,7 @@ tasks:
         foreach:
           modalities: [[sc, pseudobulk], [sc, bulk], [sc, pseudobulk, bulk]]
         args: &align_matched
-          models: *align_models
+          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca, *scvi, *harmony]
           match_labels: true
           filter: ["tissue_label_source=cellxgene,archs4"]
           seed: 0
@@ -221,7 +257,7 @@ tasks:
         script: alignment
         args:
           <<: *align_matched
-          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca, *bf_emb]
+          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca, *bf_emb, *scvi, *harmony]
           modalities: [bulk, pseudobulk]
       # Paired rows only, every one of them: per pair the mean of its cells (star) ->
       # pseudobulk -> bulk -> alignment_test_paired.png
@@ -267,6 +303,8 @@ tasks:
         unified_baseline: "sc + bulk + pb"
         pca_leiden_s1: "PCA"
         bulkformer_leiden_s1: "BulkFormer"
+        scvi_leiden_s1: "scVI (reference)"
+        harmony_leiden_s1: "Harmony (reference)"
     steps:
       # Bulk vs pseudobulk on one joint panel: batch = modality, label = tissue. This is
       # the reference table for the later alignment-loss experiments. PCA is the
@@ -279,7 +317,7 @@ tasks:
         script: scib
         args:
           name: leiden_s1_bulk_pb
-          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *bf_emb, *pca]
+          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *bf_emb, *pca, *scvi, *harmony]
           pre_integrated: *pca
           modalities: [bulk, pseudobulk]
           batch_key: modality
@@ -295,7 +333,7 @@ tasks:
         script: scib
         args: &scib_sc
           name: leiden_s1_sc_pb
-          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca]
+          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca, *scvi, *harmony]
           pre_integrated: *pca
           modalities: [sc, pseudobulk]
           match_labels: true
@@ -360,7 +398,7 @@ tasks:
         drop: [filter, n_jobs]
         args:
           name: leiden_s1_baselines
-          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca, *bf_emb]
+          models: [sc_baseline, bulk_baseline, bulk_sc_baseline, unified_baseline, *pca, *bf_emb, *scvi, *harmony]
           label_filter: ["tissue_label_source=cellxgene,archs4"]
           min_cells: 15             # pseudobulks are kept with 15 test cells (pairs up to 50)
           scib_runs: [leiden_s1_sc_pb, leiden_s1_sc_bulk, leiden_s1_bulk_pb, leiden_s1_all]
